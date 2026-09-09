@@ -314,7 +314,3 @@ Docs: `docs/PROTOCOL.md` (wire protocol), `docs/AGENT_API.md` (tools, HTTP, MCP)
 
 GNU Affero General Public License, version 3 only. See `LICENSE` and
 `LEGAL.md`.
-
-If you change UOTerm and give it to anyone, you must publish your changes
-under the same licence. This holds if you only let people reach it over a
-network, through its HTTP or MCP interface, and never hand out a copy.
