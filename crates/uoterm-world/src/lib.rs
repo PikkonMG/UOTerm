@@ -21,8 +21,8 @@ pub use radar::{
     default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT, RADAR_SIZE,
 };
 pub use state::{
-    facet_free_movement, facet_rules, is_ghost_body, Container, DoorItem, DoorUpdate, Item, Mobile,
-    MultiItem, MultiUpdate, SelfState, SkillValue, World, BODY_GHOST_ELF_FEMALE,
+    facet_free_movement, facet_rules, is_ghost_body, Container, DoorItem, DoorUpdate, Harm, Item,
+    Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, World, BODY_GHOST_ELF_FEMALE,
     BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_MALE, FACET_RULES_FELUCCA,
     FACET_RULES_TRAMMEL, MAP_RULE_FREE_MOVEMENT,
 };
@@ -30,10 +30,11 @@ pub use state::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
     use uoterm_protocol::{
         ContainerItem, EquipItem, GroundItem, Inbound, MobileView, ObjectProperty, OpenGump,
         Point3, Serial, SpeechLine, TargetCursor, FLAG_FROZEN, FLAG_HIDDEN, FLAG_WAR,
-        GRAPHIC_BACKPACK, LAYER_BACKPACK, NOTO_INNOCENT,
+        GRAPHIC_BACKPACK, LAYER_BACKPACK, LAYER_BANK, NOTO_INNOCENT,
     };
 
     /// The cliloc a shard uses for a name that has a prefix and a suffix field.
@@ -349,6 +350,25 @@ mod tests {
     }
 
     #[test]
+    fn bank_box_is_the_worn_container_on_the_bank_layer() {
+        let mut w = World::new();
+        login(&mut w);
+        assert_eq!(w.bank_box(), None, "no bank box before the server sends it");
+        const BANK: Serial = Serial(0x4000_0B0B);
+        w.apply(&Inbound::Equipped(EquipItem {
+            serial: BANK,
+            graphic: 0x2436,
+            layer: LAYER_BANK,
+            hue: 0,
+        }));
+        assert_eq!(
+            w.bank_box(),
+            Some(BANK),
+            "the item on the bank layer is the bank box"
+        );
+    }
+
+    #[test]
     fn container_does_not_duplicate_serial() {
         let mut w = World::new();
         let item = in_container(CORPSE, GOLD, GRAPHIC_GOLD, ONE_OF_IT);
@@ -630,6 +650,95 @@ mod tests {
         assert!(
             w.last_swing.is_none(),
             "the fight ended, so the last swing is no longer live"
+        );
+    }
+
+    /// What the character already wore at login reaches the client in the
+    /// draw-mobile packet and nowhere else: no equip packet is ever sent for
+    /// it. Copying those rows onto the paperdoll alone leaves the items out of
+    /// the item map, and then a lookup by serial or by graphic finds nothing.
+    ///
+    /// Measured on a live shard: her dagger showed on layer one, and
+    /// `items.get(&serial)` found nothing.
+    #[test]
+    fn what_she_already_wears_at_login_is_an_item_as_well_as_a_row() {
+        const DAGGER: Serial = Serial(0x4000_0301);
+        const GRAPHIC_DAGGER: u16 = 0x0F52;
+        const LAYER_ONE_HANDED: u8 = 1;
+
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::MobileIncoming(MobileView {
+            serial: w.self_state.serial,
+            body: 0x190,
+            x: 10,
+            y: 20,
+            z: 1,
+            direction: 0,
+            hue: 0,
+            flags: 0,
+            notoriety: NOTO_INNOCENT,
+            hits: None,
+            hits_max: None,
+            equipment: vec![EquipItem {
+                serial: DAGGER,
+                graphic: GRAPHIC_DAGGER,
+                layer: LAYER_ONE_HANDED,
+                hue: 0,
+            }],
+        }));
+        assert!(
+            w.self_state
+                .equipment
+                .iter()
+                .any(|eq| eq.serial == DAGGER && eq.layer == LAYER_ONE_HANDED),
+            "the paperdoll row is kept"
+        );
+        let held = w.items.get(&DAGGER).expect("the dagger is an item too");
+        assert_eq!(held.graphic, GRAPHIC_DAGGER);
+        assert_eq!(held.layer, Some(LAYER_ONE_HANDED));
+        assert_eq!(
+            held.parent,
+            Some(w.self_state.serial),
+            "and it hangs on her, not on the ground"
+        );
+        assert!(
+            w.find_item_graphic(GRAPHIC_DAGGER).is_some(),
+            "so a search by graphic finds it"
+        );
+    }
+
+    /// The swing packet is the only one that names an attacker. Every packet
+    /// that takes health away names the one who loses it and nobody else, so
+    /// without the swing the character never learns who is hitting her.
+    #[test]
+    fn a_swing_at_her_names_her_attacker_and_the_memory_ends() {
+        const A_BEAST: Serial = Serial(0x0000_2222);
+        const WITHIN: Duration = Duration::from_secs(30);
+        const LONG_AFTER: Duration = Duration::from_secs(60);
+
+        let mut w = World::new();
+        login(&mut w);
+        assert!(w.recent_attacker(Instant::now(), WITHIN).is_none());
+        w.apply(&Inbound::Swing {
+            flag: 0,
+            attacker: A_BEAST,
+            defender: w.self_state.serial,
+        });
+        let now = Instant::now();
+        assert_eq!(
+            w.recent_attacker(now, WITHIN),
+            Some(A_BEAST),
+            "the swing at her names the one swinging"
+        );
+        assert!(
+            w.last_swing.is_none(),
+            "and it is not one of her own swings"
+        );
+        assert_eq!(
+            w.recent_attacker(now + LONG_AFTER, WITHIN),
+            None,
+            "the memory ends by itself, or she answers a thing that has walked away"
         );
     }
 

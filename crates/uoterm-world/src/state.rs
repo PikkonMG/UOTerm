@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use uoterm_protocol::{
     weapon_range, ContainerItem, EquipItem, GroundItem, Inbound, MobileView, ObjectProperty,
     OpenGump, Point3, Serial, TargetCursor, DIR_RUNNING, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED,
-    FLAG_WAR, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE,
+    FLAG_WAR, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE,
 };
 
 use crate::events::{Event, EventKind, EVENT_LOG_CAP};
@@ -234,6 +234,17 @@ pub struct MultiItem {
     pub location: Point3,
 }
 
+/// Who last harmed the character, and when.
+///
+/// Only the swing packet names an attacker: the packets that take health away
+/// name the one who loses it and nobody else. So the swing is what writes the
+/// name here, and every wound after it moves the time on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Harm {
+    pub by: Serial,
+    pub at: Instant,
+}
+
 /// What an item packet did to the record of one building.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MultiUpdate {
@@ -274,6 +285,9 @@ pub struct World {
     /// The gap between the last two of those swings.
     #[serde(skip)]
     pub last_swing_gap: Option<Duration>,
+    /// Who last harmed the character, and when. See [`Harm`].
+    #[serde(skip)]
+    pub harmed_by: Option<Harm>,
     pub logged_in: bool,
     pub goal: String,
     pub nav_goal: Option<Point3>,
@@ -379,6 +393,7 @@ impl World {
             Inbound::Damage { serial, amount } => {
                 if *serial == self.self_state.serial {
                     self.self_state.hits = self.self_state.hits.saturating_sub(*amount);
+                    self.note_harm_now();
                 }
                 self.push_event(Event::new(
                     EventKind::Damaged,
@@ -606,6 +621,17 @@ impl World {
                 }
                 self.last_swing = Some(now);
             }
+            // Somebody is swinging at the character. This is the only packet
+            // that names the one doing it, so it is the only place the name
+            // can be learned.
+            Inbound::Swing {
+                attacker, defender, ..
+            } if *defender == self.self_state.serial => {
+                self.harmed_by = Some(Harm {
+                    by: *attacker,
+                    at: Instant::now(),
+                });
+            }
             Inbound::CombatantChanged { serial } => {
                 if serial.is_valid() {
                     self.combatant = Some(*serial);
@@ -665,8 +691,17 @@ impl World {
             self.self_state.body = view.body;
             self.self_state.notoriety = view.notoriety;
             self.apply_self_flags(view.flags);
+            // Every worn item is an item as well as a row on the paperdoll.
+            // Copying the rows alone leaves what the character already wore at
+            // login out of the item map altogether, so a lookup by serial or
+            // by graphic finds nothing: a dagger on layer one, and no dagger.
+            // `wear` writes the row and the item together, which is why the
+            // rows are cleared here and put back through it.
             if !view.equipment.is_empty() {
-                self.self_state.equipment.clone_from(&view.equipment);
+                self.self_state.equipment.clear();
+                for worn in &view.equipment {
+                    self.wear(worn);
+                }
             }
             self.refresh_dead_from_body(view.body);
             return;
@@ -822,6 +857,7 @@ impl World {
                     Some(serial),
                     format!("{} -> {}", self.self_state.hits, current),
                 ));
+                self.note_harm_now();
             }
             self.self_state.hits = current;
             self.self_state.hits_max = max;
@@ -987,6 +1023,37 @@ impl World {
 
     pub fn fighting(&self) -> bool {
         self.combatant.is_some_and(Serial::is_valid)
+    }
+
+    /// A wound the character has just taken moves the attacker memory on. It
+    /// names nobody: the packets that take health away name the one who loses
+    /// it, so a wound only says the one already named is still at work.
+    fn note_harm_now(&mut self) {
+        if let Some(harm) = self.harmed_by.as_mut() {
+            harm.at = Instant::now();
+        }
+    }
+
+    /// Who harmed the character no longer ago than `within`, if anybody.
+    ///
+    /// The memory has to end by itself. Nothing on the wire says a fight is
+    /// over, so a character who answers his attacker for ever answers a corpse
+    /// or a thing that has walked away.
+    pub fn recent_attacker(&self, now: Instant, within: Duration) -> Option<Serial> {
+        let harm = self.harmed_by?;
+        (now.saturating_duration_since(harm.at) <= within).then_some(harm.by)
+    }
+
+    /// The bank box the character wears, if the server has sent his equipment.
+    /// It rides on [`LAYER_BANK`] like any worn item; the server fills and
+    /// opens it when he says "bank" beside a banker, so an agent can address it
+    /// by this serial without waiting for the open packet.
+    pub fn bank_box(&self) -> Option<Serial> {
+        self.self_state
+            .equipment
+            .iter()
+            .find(|item| item.layer == LAYER_BANK)
+            .map(|item| item.serial)
     }
 
     /// True when a swing is overdue given the last gap the server gave us.
