@@ -57,8 +57,17 @@ const LOGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_WORLD_DRAIN: Duration = Duration::from_millis(100);
 const LOGIN_CHAR_IN_WORLD: &str = "character already in world";
 const LOGIN_INCOMPLETE: &str = "login did not complete";
-/// One shared budget covering use, lift and the bandage command.
-const ACTION_BUDGET: Duration = Duration::from_millis(1000);
+/// One shared budget covering the double-click, the lift, the drop and the
+/// bandage command. The server adds this much to a single delay of its own on
+/// each of them, and answers anything sent inside it with the line
+/// [`CLILOC_ACTION_TOO_SOON`] names. Charging less than the server charges is
+/// what makes a character send an action that is thrown away.
+const ACTION_BUDGET: Duration = Duration::from_millis(ACTION_BUDGET_MS);
+const ACTION_BUDGET_MS: u64 = 500;
+/// The shortest gap between two double-clicks. The action budget alone lets
+/// two through in one second, and a working client sends one.
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(DOUBLE_CLICK_INTERVAL_MS);
+const DOUBLE_CLICK_INTERVAL_MS: u64 = 1000;
 const CLILOC_ACTION_TOO_SOON: u32 = 500_119;
 const ACTION_TOO_SOON_WORDS: &str = "wait to perform another action";
 const CLILOC_BANDAGE_START: u32 = 500_956;
@@ -134,7 +143,16 @@ const WAITS_GIVE_UP: u32 = 25;
 /// on every tick, and short enough that nobody sees him stop.
 const REPLAN_RESUME: Duration = Duration::from_millis(150);
 /// How long he gives a door to swing before he tries the same step again.
-const DOOR_RETRY_WAIT: Duration = Duration::from_millis(700);
+/// A door click is answered within a round trip (about 60 ms measured), so
+/// 500 ms covers the swing before the next attempt.
+const DOOR_RETRY_WAIT: Duration = Duration::from_millis(500);
+/// How long a door macro waits to be aimed before it is given up.
+///
+/// The macro may only go out once every request already sent has been answered
+/// and the character faces the door tile, so it waits for a turn and for the
+/// wire to empty. Long enough for a turn and a step to be answered, and short
+/// enough that a macro asked for at one door is never sent at another.
+const DOOR_AIM_TIMEOUT: Duration = Duration::from_millis(3000);
 /// How many refusals of one crossing are the first one. Past that the way is
 /// shut and the cell is marked.
 const EDGE_REFUSALS_FIRST: u32 = 1;
@@ -260,12 +278,17 @@ struct Inner {
     multi_shapes: Option<Arc<MultiData>>,
     movement: Movement,
     doors: DoorOpener,
+    /// The door macro the character owes, which waits until it can be aimed.
+    door_macro: Option<DoorMacro>,
     era: Era,
     version: ClientVersion,
     follow: Option<Serial>,
     follow_state: FollowState,
     cliloc: Option<Arc<ClilocData>>,
     next_action_at: Instant,
+    /// When the next double-click may go out. It is a limit of its own on top
+    /// of the action budget: see [`DOUBLE_CLICK_INTERVAL`].
+    next_double_click_at: Instant,
     next_bandage_at: Instant,
     next_heal_potion_at: Instant,
     attack_sent: Option<Serial>,
@@ -282,6 +305,22 @@ struct Inner {
     /// refusal that close behind it is about his stamina and about nothing in
     /// the way.
     last_fatigued: Option<Instant>,
+}
+
+/// A door macro the character means to send, held until it can be aimed.
+///
+/// The macro names no door: the server offsets one tile in the direction the
+/// character faces and opens whatever door stands there. So the macro says
+/// nothing on its own, and everything about it is in the facing it leaves on.
+#[derive(Clone, Copy, Debug)]
+struct DoorMacro {
+    /// The tile he asks from. He is opening the door from where he stood when
+    /// he asked, and a macro sent from anywhere else aims somewhere else.
+    from: Point3,
+    /// The tile the door stands in, which is the tile he must face.
+    tile: Point3,
+    /// When the macro is given up on: see [`DOOR_AIM_TIMEOUT`].
+    give_up_at: Instant,
 }
 
 /// The tiles a walk must go around, kept apart by what proves each one shut,
@@ -549,12 +588,14 @@ async fn run_session(
         multi_shapes: shapes,
         movement: Movement::default(),
         doors: DoorOpener::default(),
+        door_macro: None,
         era: opts.era,
         version: opts.version,
         follow: None,
         follow_state: FollowState::default(),
         cliloc,
         next_action_at: Instant::now() - ACTION_BUDGET,
+        next_double_click_at: Instant::now() - DOUBLE_CLICK_INTERVAL,
         next_bandage_at: Instant::now() - ACTION_BUDGET,
         next_heal_potion_at: Instant::now() - ACTION_BUDGET,
         attack_sent: None,
@@ -615,6 +656,7 @@ async fn run_session(
             _ = tick.tick() => {
                 reflex_tick(&mut inner);
                 pump_doors(&mut inner);
+                pump_door_macro(&mut inner);
                 pump_movement(&mut inner, Instant::now());
                 pump_names(&mut inner);
                 harvest_new_events(&mut inner);
@@ -1320,12 +1362,14 @@ mod relay_tests {
             multi_shapes: None,
             movement: Movement::default(),
             doors: DoorOpener::default(),
+            door_macro: None,
             era: Era::Modern,
             version: ClientVersion::MODERN,
             follow: None,
             follow_state: FollowState::default(),
             cliloc: None,
             next_action_at: now - ACTION_BUDGET,
+            next_double_click_at: now - DOUBLE_CLICK_INTERVAL,
             next_bandage_at: now - ACTION_BUDGET,
             next_heal_potion_at: now - ACTION_BUDGET,
             attack_sent: None,
@@ -1500,8 +1544,8 @@ mod relay_tests {
     /// The refusal packet: its id, the sequence it refuses, the tile the
     /// character really stands on and the way he faces on it.
     const MOVE_REJECT_LEN: usize = 8;
-    /// The way a refused character is left facing. A refusal says which way he
-    /// looks; no walk cares, so every test uses the one direction.
+    /// A facing a refusal states, told apart from every direction the tests
+    /// walk in so that a walk's own guess can never be mistaken for it.
     const FACING_AFTER_A_REFUSAL: Direction = Direction::North;
 
     /// One refusal, as the server sends it: the sequence it answers, the tile
@@ -1510,7 +1554,12 @@ mod relay_tests {
     ///
     /// The sequence must be one he is waiting on, or the client reads the
     /// packet as the echo of a refusal it has already dealt with.
-    fn refusal_at(sequence: u8, at: Point3) -> [u8; MOVE_REJECT_LEN] {
+    ///
+    /// `facing` is the direction of the step being refused. A server turns a
+    /// request in any other direction into a turn on the spot and answers it,
+    /// so the only request it ever refuses is one in the direction the
+    /// character already faces.
+    fn refusal_at(sequence: u8, at: Point3, facing: Direction) -> [u8; MOVE_REJECT_LEN] {
         [
             PKT_MOVE_REJECT,
             sequence,
@@ -1518,9 +1567,17 @@ mod relay_tests {
             at.x as u8,
             (at.y >> 8) as u8,
             at.y as u8,
-            FACING_AFTER_A_REFUSAL as u8,
+            facing as u8,
             at.z as u8,
         ]
+    }
+
+    /// The direction of the step the server is about to refuse.
+    fn about_to_be_refused(inner: &Inner) -> Direction {
+        inner
+            .movement
+            .refused_direction()
+            .expect("the refused step is on the wire")
     }
 
     /// A step is a request, not a move. The character asks to walk east and
@@ -1875,7 +1932,12 @@ mod relay_tests {
             movement::IN_FLIGHT_MAX,
             "the wire is full before the refusal"
         );
-        ingest(&mut inner, &refusal_at(movement::SEQ_FIRST, MEASURED_START));
+        let refusal = refusal_at(
+            movement::SEQ_FIRST,
+            MEASURED_START,
+            about_to_be_refused(&inner),
+        );
+        ingest(&mut inner, &refusal);
         assert!(
             inner.movement.in_flight.is_empty(),
             "every step the server threw away is gone"
@@ -2199,7 +2261,9 @@ mod relay_tests {
             vec![MEASURED_SOUTH, MEASURED_END],
         );
         pump_movement(&mut inner, Instant::now());
-        ingest(&mut inner, &refusal_at(movement::SEQ_FIRST, MEASURED_START));
+        let refused = about_to_be_refused(&inner);
+        let refusal = refusal_at(movement::SEQ_FIRST, MEASURED_START, refused);
+        ingest(&mut inner, &refusal);
         assert_eq!(
             reported_at(&inner),
             MEASURED_START,
@@ -2207,7 +2271,7 @@ mod relay_tests {
         );
         assert_eq!(
             inner.world.read().self_state.direction,
-            FACING_AFTER_A_REFUSAL as u8,
+            refused as u8,
             "facing the way it says as well"
         );
         assert!(
@@ -2317,7 +2381,8 @@ mod relay_tests {
             "the step the walk expected climbs, or the test proves nothing"
         );
 
-        ingest(&mut inner, &refusal_at(movement::SEQ_FIRST, foot));
+        let refusal = refusal_at(movement::SEQ_FIRST, foot, about_to_be_refused(&inner));
+        ingest(&mut inner, &refusal);
         assert_eq!(
             reported_at(&inner),
             foot,
@@ -2716,7 +2781,13 @@ mod relay_tests {
             .expect("the second step is out");
         assert_ne!(first.sequence, dropped.sequence);
         assert_eq!(
-            refuse_step(&mut inner, first.sequence, REFUSED_FROM, now),
+            refuse_step(
+                &mut inner,
+                first.sequence,
+                REFUSED_FROM,
+                first.direction,
+                now,
+            ),
             Refusal::TryTheDoor,
             "the first refusal is the real one"
         );
@@ -2726,7 +2797,13 @@ mod relay_tests {
         now += DOOR_RETRY_WAIT + STEP_PACE;
         let asked_again = step_onto_the_wire(&mut inner, &mut now);
         assert_eq!(
-            refuse_step(&mut inner, dropped.sequence, REFUSED_FROM, now),
+            refuse_step(
+                &mut inner,
+                dropped.sequence,
+                REFUSED_FROM,
+                dropped.direction,
+                now,
+            ),
             Refusal::StaleEcho,
             "the echo carries a sequence he is not waiting on"
         );
@@ -2753,7 +2830,7 @@ mod relay_tests {
             let step = step_onto_the_wire(&mut inner, &mut now);
             ingest(&mut inner, &system_message(said));
             assert_eq!(
-                refuse_step(&mut inner, step.sequence, REFUSED_FROM, now),
+                refuse_step(&mut inner, step.sequence, REFUSED_FROM, step.direction, now,),
                 Refusal::Fatigued,
                 "{said:?} is the server saying he has no stamina left"
             );
@@ -2784,7 +2861,7 @@ mod relay_tests {
         walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
         let step = step_onto_the_wire(&mut inner, &mut now);
         assert_eq!(
-            refuse_step(&mut inner, step.sequence, REFUSED_FROM, now),
+            refuse_step(&mut inner, step.sequence, REFUSED_FROM, step.direction, now,),
             Refusal::Waiting
         );
         assert!(
@@ -2816,7 +2893,7 @@ mod relay_tests {
             inner.movement.hold();
             walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
             let step = step_onto_the_wire(&mut inner, &mut now);
-            let what = refuse_step(&mut inner, step.sequence, REFUSED_FROM, now);
+            let what = refuse_step(&mut inner, step.sequence, REFUSED_FROM, step.direction, now);
             // He waits for the person to step off, and asks again once that
             // wait and the pace of a person are both up.
             now += MOBILE_WAIT + STEP_PACE;
@@ -2885,7 +2962,7 @@ mod relay_tests {
         walks_from(&mut inner, REFUSED_FROM, vec![into_the_wall]);
         let step = step_onto_the_wire(&mut inner, &mut now);
         assert_eq!(
-            refuse_step(&mut inner, step.sequence, REFUSED_FROM, now),
+            refuse_step(&mut inner, step.sequence, REFUSED_FROM, step.direction, now,),
             Refusal::Building,
             "the house is on the wire already, so the refusal needs no mark to explain it"
         );
@@ -2965,7 +3042,8 @@ mod relay_tests {
         let mut now = Instant::now();
         walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
         let first = step_onto_the_wire(&mut inner, &mut now);
-        ingest(&mut inner, &refusal_at(first.sequence, REFUSED_FROM));
+        let refusal = refusal_at(first.sequence, REFUSED_FROM, first.direction);
+        ingest(&mut inner, &refusal);
         assert_eq!(
             reported_at(&inner),
             REFUSED_FROM,
@@ -2975,8 +3053,9 @@ mod relay_tests {
             inner.movement.blocked.tiles().is_empty(),
             "the first refusal is worth a door and one more try, and marks nothing"
         );
+        pump_door_macro(&mut inner);
         assert!(
-            inner.outbound.iter().any(|pkt| *pkt == encode::open_door()),
+            asked_for_the_door(&inner),
             "so she asks for the door that may be standing in it"
         );
 
@@ -2988,7 +3067,8 @@ mod relay_tests {
             second.arrives_at, THE_HOUSE_WALL,
             "the same step, aimed at the same tile"
         );
-        ingest(&mut inner, &refusal_at(second.sequence, REFUSED_FROM));
+        let refusal = refusal_at(second.sequence, REFUSED_FROM, second.direction);
+        ingest(&mut inner, &refusal);
         assert_eq!(
             inner.movement.blocked.tiles(),
             vec![THE_HOUSE_WALL],
@@ -3083,7 +3163,7 @@ mod relay_tests {
             // says where she really stands, and open ground confirms it.
             if in_the_house_wall(step.arrives_at) {
                 refused.push(step.arrives_at);
-                let refusal = refusal_at(step.sequence, reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner), step.direction);
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
@@ -3153,7 +3233,7 @@ mod relay_tests {
             };
             if in_the_long_wall(step.arrives_at) && !step.turn {
                 refused.push(step.arrives_at);
-                let refusal = refusal_at(step.sequence, reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner), step.direction);
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
@@ -3259,7 +3339,7 @@ mod relay_tests {
             // really stands, and open ground confirms the step.
             if aimed_at(&step, WOODLAND_REFUSED) {
                 asked.push(step.arrives_at);
-                let refusal = refusal_at(step.sequence, reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner), step.direction);
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
@@ -3674,7 +3754,7 @@ mod relay_tests {
                 .any(|tile| tile.x == step.arrives_at.x && tile.y == step.arrives_at.y);
             if into_the_wall {
                 refused.push(step.arrives_at);
-                let refusal = refusal_at(step.sequence, reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner), step.direction);
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
@@ -3739,6 +3819,48 @@ mod relay_tests {
         );
     }
 
+    /// Where she stood on a live shard, one tile south of a bank door.
+    const STANDING_BY_THE_DOOR: Point3 = Point3 {
+        x: 1438,
+        y: 1693,
+        z: 0,
+    };
+    /// The door itself, one tile north of her.
+    const DOOR_TO_THE_NORTH: Point3 = Point3 {
+        x: 1438,
+        y: 1692,
+        z: 0,
+    };
+    const DOOR_SERIAL: Serial = Serial(0x4002_021B);
+    const DOOR_GRAPHIC: u16 = 1653;
+
+    /// Her, standing beside that door and facing whichever way the test needs.
+    fn door_beside_her(facing: Direction) -> Inner {
+        let mut inner = test_session();
+        {
+            let mut world = inner.world.write();
+            world.logged_in = true;
+            world.self_state.location = STANDING_BY_THE_DOOR;
+            world.self_state.direction = facing as u8;
+            world.note_door(DOOR_SERIAL, DOOR_GRAPHIC, DOOR_TO_THE_NORTH);
+        }
+        inner.outbound.clear();
+        inner
+    }
+
+    /// True when the macro that names no door is waiting to go out.
+    fn asked_for_the_door(inner: &Inner) -> bool {
+        inner.outbound.iter().any(|pkt| *pkt == encode::open_door())
+    }
+
+    /// True when a turn in that direction is waiting to go out.
+    fn turned_toward(inner: &Inner, direction: Direction) -> bool {
+        inner
+            .outbound
+            .iter()
+            .any(|pkt| pkt.first() == Some(&PKT_MOVE) && pkt.get(1) == Some(&(direction as u8)))
+    }
+
     /// The door must still be opened, and never merely walked around. A shut
     /// door is the commonest thing on a shard that refuses a step, and the one
     /// the character can do something about, so the door is asked first: a
@@ -3749,49 +3871,102 @@ mod relay_tests {
     /// so a character facing the wrong way opens nothing and is told nothing.
     ///
     /// Measured on a live shard: she stood one tile south of a bank door
-    /// facing east, the tool sent the macro, and the door never moved.
+    /// facing east, the tool sent the macro, and the door never moved. Thirty
+    /// asks over five minutes were all silent, and the door swung the instant
+    /// a turn was confirmed.
+    ///
+    /// A turn in the same batch as the macro is the fault itself. The server
+    /// queues a move it has no credit for and drains that queue later; the
+    /// macro is not queued with it, so it runs first, while she still faces
+    /// the old way.
     #[test]
-    fn the_open_door_tool_turns_to_face_the_door_first() {
-        const STANDING_AT: Point3 = Point3 {
-            x: 1438,
-            y: 1693,
-            z: 0,
-        };
-        const DOOR_TO_THE_NORTH: Point3 = Point3 {
-            x: 1438,
-            y: 1692,
-            z: 0,
-        };
-        const DOOR_SERIAL: Serial = Serial(0x4002_021B);
-        const DOOR_GRAPHIC: u16 = 1653;
+    fn the_door_macro_never_leaves_with_the_turn_that_aims_it() {
+        let mut inner = door_beside_her(Direction::East);
+        let asked = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_OPEN_DOOR.into(),
+                args: json!({}),
+            },
+        );
+        assert!(asked.ok, "{asked:?}");
+        pump_door_macro(&mut inner);
+        assert!(
+            turned_toward(&inner, Direction::North),
+            "she must turn toward the door"
+        );
+        assert!(
+            !asked_for_the_door(&inner),
+            "and the macro must wait: a turn nobody has answered aims nothing"
+        );
 
-        let mut inner = test_session();
-        {
-            let mut world = inner.world.write();
-            world.self_state.location = STANDING_AT;
-            world.self_state.direction = Direction::East as u8;
-            world.note_door(DOOR_SERIAL, DOOR_GRAPHIC, DOOR_TO_THE_NORTH);
-        }
+        let turn = inner
+            .movement
+            .in_flight
+            .back()
+            .expect("the turn is on the wire")
+            .sequence;
+        ingest(&mut inner, &move_ack(turn));
+        inner.outbound.clear();
+        pump_door_macro(&mut inner);
+        assert!(
+            asked_for_the_door(&inner),
+            "once the turn is answered the macro goes out"
+        );
+        assert!(
+            !turned_toward(&inner, Direction::North),
+            "and it goes out alone"
+        );
+    }
+
+    /// The macro goes out on the first tick when she already faces the door,
+    /// because then there is nothing to wait for.
+    #[test]
+    fn a_door_she_already_faces_is_asked_for_at_once() {
+        let mut inner = door_beside_her(Direction::North);
+        let asked = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_OPEN_DOOR.into(),
+                args: json!({}),
+            },
+        );
+        assert!(asked.ok, "{asked:?}");
+        pump_door_macro(&mut inner);
+        assert!(asked_for_the_door(&inner));
+        assert!(
+            inner.movement.in_flight.is_empty(),
+            "and no turn was needed"
+        );
+    }
+
+    /// A macro asked for at one door must never be sent at another. She walks
+    /// away before the turn is answered, and the ask is dropped.
+    #[test]
+    fn a_door_macro_is_dropped_when_she_leaves_the_tile_she_asked_from() {
+        const A_TILE_SOUTH: Point3 = Point3 {
+            x: 1438,
+            y: 1694,
+            z: 0,
+        };
+
+        let mut inner = door_beside_her(Direction::East);
+        want_door_macro(
+            &mut inner,
+            STANDING_BY_THE_DOOR,
+            DOOR_TO_THE_NORTH,
+            Instant::now(),
+        );
+        inner.movement.clear_in_flight();
+        inner.world.write().self_state.location = A_TILE_SOUTH;
         inner.outbound.clear();
 
-        face_the_nearest_door(&mut inner, Instant::now());
-        inner.outbound.push_back(encode::open_door());
-
-        let turned = inner.outbound.iter().position(|pkt| {
-            pkt.first() == Some(&PKT_MOVE) && pkt.get(1) == Some(&(Direction::North as u8))
-        });
-        let asked = inner
-            .outbound
-            .iter()
-            .position(|pkt| *pkt == encode::open_door());
+        pump_door_macro(&mut inner);
         assert!(
-            turned.is_some(),
-            "she must turn toward the door before asking for it"
+            !asked_for_the_door(&inner),
+            "the macro aims from the tile it was asked from and from no other"
         );
-        assert!(
-            turned < asked,
-            "and the turn must go out first, or the macro aims at the old facing"
-        );
+        assert!(inner.door_macro.is_none(), "and it is forgotten");
     }
 
     #[test]
@@ -3817,7 +3992,11 @@ mod relay_tests {
         );
         ingest(
             &mut inner,
-            &refusal_at(movement::SEQ_FIRST, inn.in_front_of_the_door),
+            &refusal_at(
+                movement::SEQ_FIRST,
+                inn.in_front_of_the_door,
+                FACING_AFTER_A_REFUSAL,
+            ),
         );
         assert!(
             inner.movement.blocked.tiles().is_empty(),
@@ -3827,9 +4006,28 @@ mod relay_tests {
             queue_move(&mut inner, inn.outside),
             "so the way out is still planned"
         );
-        pump_doors(&mut inner);
+        // The refusal states her facing, and it is not the doorway, so the
+        // turn goes out first and the macro waits for its answer.
+        pump_door_macro(&mut inner);
         assert!(
-            inner.outbound.iter().any(|pkt| *pkt == encode::open_door()),
+            turned_toward(&inner, Direction::South),
+            "she turns to the tile that refused her"
+        );
+        assert!(
+            !asked_for_the_door(&inner),
+            "and asks for nothing while that turn is unanswered"
+        );
+        let turn = inner
+            .movement
+            .in_flight
+            .back()
+            .expect("the turn is on the wire")
+            .sequence;
+        ingest(&mut inner, &move_ack(turn));
+        inner.outbound.clear();
+        pump_door_macro(&mut inner);
+        assert!(
+            asked_for_the_door(&inner),
             "and she opens the door instead of walking around it"
         );
         assert!(
@@ -3838,6 +4036,41 @@ mod relay_tests {
                 .iter()
                 .any(|pkt| *pkt == encode::double_click(inn.door.serial)),
             "with the macro that names no door, which cannot pick the wrong one of a pair"
+        );
+    }
+
+    /// The refusal packet carries x, y, z and a direction. It is the only
+    /// facing a server ever states: the answer to a confirmed move carries a
+    /// sequence and a notoriety and no facing at all. Throwing it away leaves
+    /// the door macro aimed by a guess.
+    #[test]
+    fn a_refusal_states_the_facing_and_it_is_written_down() {
+        let inn = movement::tests::inn_corridor();
+        let mut inner = test_session();
+        inner.map = inn.map;
+        walks_from(
+            &mut inner,
+            inn.in_front_of_the_door,
+            vec![inn.door.location],
+        );
+        let now = Instant::now();
+        pump_movement(&mut inner, now);
+        assert_eq!(
+            inner.world.read().self_state.direction,
+            Direction::South as u8,
+            "before the refusal the world holds the way the walk asked to face"
+        );
+        refuse_step(
+            &mut inner,
+            movement::SEQ_FIRST,
+            inn.in_front_of_the_door,
+            FACING_AFTER_A_REFUSAL,
+            now,
+        );
+        assert_eq!(
+            inner.world.read().self_state.direction,
+            FACING_AFTER_A_REFUSAL as u8,
+            "the server's own word on the facing is what the world holds after it"
         );
     }
 
@@ -4292,13 +4525,97 @@ mod relay_tests {
         assert_eq!(&p[3..5], &EXT_BANDAGE_TARGET.to_be_bytes());
     }
 
+    /// The budget is the server's own: it adds half a second to one shared
+    /// delay on a double-click, on a lift and on the bandage command. A client
+    /// that charges itself a whole second waits twice as long as it must; one
+    /// that charges itself nothing on a path the server charges sends an
+    /// action the server throws away.
     #[test]
-    fn action_budget_is_one_thousand_milliseconds() {
-        assert_eq!(ACTION_BUDGET, Duration::from_millis(1000));
+    fn the_action_budget_is_the_one_the_server_charges() {
+        assert_eq!(ACTION_BUDGET, Duration::from_millis(500));
         let mut inner = test_session();
         assert!(action_ready(&inner));
         mark_action(&mut inner);
         assert!(!action_ready(&inner));
+    }
+
+    /// The lift and the drop are charged as well. They were not, so a lift
+    /// went out inside the budget of the double-click before it and the server
+    /// threw it away.
+    #[test]
+    fn a_lift_and_a_drop_are_charged_the_action_budget() {
+        const ITEM: Serial = Serial(0x4000_0001);
+        const PACK: Serial = Serial(0x4000_0002);
+        const ONE: u16 = 1;
+
+        let mut inner = test_session();
+        let lifted = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_LIFT.into(),
+                args: json!({ "serial": ITEM.0, "amount": ONE }),
+            },
+        );
+        assert!(lifted.ok, "{lifted:?}");
+        assert!(!action_ready(&inner), "the lift is charged for");
+
+        let dropped = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_DROP.into(),
+                args: json!({ "serial": ITEM.0, "dest": PACK.0 }),
+            },
+        );
+        assert!(
+            !dropped.ok,
+            "and the drop inside that budget is refused, not sent for the server to throw away"
+        );
+
+        inner.next_action_at = Instant::now();
+        let dropped = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_DROP.into(),
+                args: json!({ "serial": ITEM.0, "dest": PACK.0 }),
+            },
+        );
+        assert!(dropped.ok, "{dropped:?}");
+        assert!(!action_ready(&inner), "and the drop is charged for too");
+    }
+
+    /// One double-click a second, and never two of the same waiting to go out
+    /// together. The second of a pair is the click that shuts the door it has
+    /// just opened, or drinks the second potion.
+    #[test]
+    fn a_double_click_is_sent_once_a_second_and_never_twice_over() {
+        const A_THING: Serial = Serial(0x4000_0301);
+        const ANOTHER_THING: Serial = Serial(0x4000_0302);
+
+        let mut inner = test_session();
+        assert!(send_double_click(&mut inner, A_THING));
+        assert_eq!(inner.outbound.len(), 1);
+
+        inner.next_action_at = Instant::now();
+        assert!(
+            !send_double_click(&mut inner, ANOTHER_THING),
+            "a second double-click inside the second is not sent"
+        );
+
+        inner.next_double_click_at = Instant::now();
+        assert!(
+            !send_double_click(&mut inner, A_THING),
+            "and one already waiting to go out is never queued twice"
+        );
+        assert_eq!(
+            inner.outbound.len(),
+            1,
+            "so one click on that serial is all the server sees"
+        );
+
+        assert!(
+            send_double_click(&mut inner, ANOTHER_THING),
+            "a click on something else, once the second is up, still goes out"
+        );
     }
 }
 
@@ -4345,11 +4662,23 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                             accept_move_ack(inner, *sequence);
                         }
                         Inbound::MoveReject {
-                            sequence, x, y, z, ..
+                            sequence,
+                            x,
+                            y,
+                            direction,
+                            z,
                         } => {
                             // The world model snaps the character to the tile the
                             // refusal carries when it applies the packet below.
-                            refuse_step(inner, *sequence, Point3::new(*x, *y, *z), Instant::now());
+                            // The facing goes in here, before the refusal ladder
+                            // aims a door macro with it.
+                            refuse_step(
+                                inner,
+                                *sequence,
+                                Point3::new(*x, *y, *z),
+                                Direction::from_byte(*direction),
+                                Instant::now(),
+                            );
                         }
                         Inbound::FastwalkKeys(keys) => {
                             inner.movement.set_fastwalk(*keys);
@@ -4573,7 +4902,19 @@ enum Refusal {
 /// shove unless stamina is full. A refusal at an occupied tile is therefore
 /// nearly always a moment's business and not a wall, and a character who marks
 /// it walks the long way round every person he meets.
-fn refuse_step(inner: &mut Inner, sequence: u8, at: Point3, now: Instant) -> Refusal {
+///
+/// `facing` is the direction the refusal carries. It is the only facing a
+/// server ever states: the answer to a confirmed move carries a sequence and a
+/// notoriety and no facing at all. Everything else this client knows about
+/// which way the character looks is worked out from what it asked for, so this
+/// one word is written down before anything reads it.
+fn refuse_step(
+    inner: &mut Inner,
+    sequence: u8,
+    at: Point3,
+    facing: Direction,
+    now: Instant,
+) -> Refusal {
     // The oldest request on the wire is the one being refused: the server
     // answers in the order it was sent, so nothing sent after it can be
     // answered first.
@@ -4589,6 +4930,10 @@ fn refuse_step(inner: &mut Inner, sequence: u8, at: Point3, now: Instant) -> Ref
         );
         return Refusal::StaleEcho;
     }
+    // The server's own word on the facing, before the door rung below aims a
+    // macro with it. The world model writes the same word when it applies the
+    // packet, which is after this.
+    inner.world.write().self_state.direction = facing as u8;
     // The tile he was trying to enter, at the height the step was aimed at,
     // and the tile he was stepping from, which is the one the refusal carries.
     let cell = Point3::new(refused.arrives_at.x, refused.arrives_at.y, at.z);
@@ -4621,7 +4966,10 @@ fn refuse_step(inner: &mut Inner, sequence: u8, at: Point3, now: Instant) -> Ref
             replan_the_route(inner);
         }
         Refusal::TryTheDoor => {
-            open_the_door_ahead(inner, at, refused.direction, now);
+            // The tile that refused him is the door itself, and the macro
+            // opens whatever door stands in the tile he faces. It goes out
+            // once he faces that tile and nothing is left on the wire.
+            want_door_macro(inner, at, cell, now);
             // The same step goes out again once the leaf has had time to
             // swing: the refusal put it back at the head of the route.
             // Nothing is marked, because one refusal at a doorway is the door.
@@ -4685,55 +5033,24 @@ fn somebody_stands_on(inner: &Inner, cell: Point3) -> bool {
     })
 }
 
-/// Turns the character to the door beside him, so the open-door macro has
-/// something to aim at.
+/// The tile of the door beside the character, which the open-door macro has to
+/// be aimed at.
 ///
 /// The macro names no door. The server offsets one tile in the direction the
 /// character faces and opens whatever door it finds there, so a character
-/// facing the wrong way opens nothing and is told nothing. The turn is the
-/// whole of the aim.
-fn face_the_nearest_door(inner: &mut Inner, now: Instant) {
+/// facing the wrong way opens nothing and is told nothing.
+fn nearest_door_tile(inner: &Inner) -> Option<Point3> {
     /// A door the character can reach without walking is on one of the eight
     /// tiles around him, so no further than this in either direction.
     const WITHIN_REACH: u32 = 1;
 
-    let (at, reported) = {
-        let world = inner.world.read();
-        (
-            world.self_state.location,
-            Direction::from_byte(world.self_state.direction),
-        )
-    };
-    let facing = inner.movement.facing_after(reported);
-    let nearest = inner
-        .world
-        .read()
+    let world = inner.world.read();
+    let at = world.self_state.location;
+    world
         .door_tiles()
         .into_iter()
         .filter(|tile| at.chebyshev(*tile) <= WITHIN_REACH)
-        .min_by_key(|tile| at.chebyshev(*tile));
-    let Some(door) = nearest else {
-        return;
-    };
-    if let Some(toward) = movement::facing_toward(at, door) {
-        if let Some(turn) = inner.movement.build_turn(facing, toward, at, now) {
-            inner.outbound.push_back(turn);
-        }
-    }
-}
-
-/// Turns the character to the tile that refused him and asks the server to
-/// open whatever door stands in it.
-///
-/// The macro names no door. The server opens the door in the tile the
-/// character faces, so it cannot pick the wrong one and he needs no walk to
-/// the door item to send it. The turn is what aims it.
-fn open_the_door_ahead(inner: &mut Inner, at: Point3, toward: Direction, now: Instant) {
-    let facing = Direction::from_byte(inner.world.read().self_state.direction);
-    if let Some(turn) = inner.movement.build_turn(facing, toward, at, now) {
-        inner.outbound.push_back(turn);
-    }
-    inner.outbound.push_back(encode::open_door());
+        .min_by_key(|tile| at.chebyshev(*tile))
 }
 
 /// Ends a trip that is going nowhere, and tells the caller why so it can
@@ -5037,9 +5354,9 @@ fn door_route(inner: &mut Inner, from: Point3, dest: Point3) -> DoorRoute {
     }
 }
 
-/// Opens the door the character has walked up to. He turns to it first, the way
-/// a player does, and asks once: the second ask is the one that shuts it
-/// again.
+/// Asks for the door the character has walked up to, once: the second ask is
+/// the one that shuts it again. [`pump_door_macro`] turns him to it the way a
+/// player does and sends the ask when it can.
 ///
 /// What he sends is the macro that names no door: the server opens whatever
 /// door stands in the tile he faces. It cannot pick the wrong door of a pair,
@@ -5057,30 +5374,80 @@ fn pump_doors(inner: &mut Inner) {
     // The tile the server last put him on. He is due to click a door only once
     // the server has confirmed the step that brought him in front of it, so he
     // never reaches for a door from a tile he has not reached.
-    let (at, reported) = {
+    let at = inner.world.read().self_state.location;
+    // The attempt is not spent here. [`pump_door_macro`] spends it on the tick
+    // the macro really leaves, which may be a turn or two later.
+    let Some(door) = inner.doors.due_at(at) else {
+        return;
+    };
+    want_door_macro(inner, at, door.location, now);
+}
+
+/// Asks for the macro that opens the door in `tile`, from the tile `from`.
+///
+/// Nothing goes out here, not even the turn that aims it. [`pump_door_macro`]
+/// sends both, on the tick each of them may go: a client that puts a turn on
+/// the wire from wherever a door is asked for puts one there while the walk is
+/// deliberately holding still, and the server's silence on it then reads as a
+/// server that has stopped answering.
+fn want_door_macro(inner: &mut Inner, from: Point3, tile: Point3, now: Instant) {
+    inner.door_macro = Some(DoorMacro {
+        from,
+        tile,
+        give_up_at: now + DOOR_AIM_TIMEOUT,
+    });
+}
+
+/// Sends the door macro the character owes, once it can be aimed.
+///
+/// The macro names no door: the server offsets one tile in the direction the
+/// character faces and opens whatever door stands there. So two things have to
+/// hold before it goes out, and this is the only place either is tested.
+///
+/// The wire must be empty. The server queues a move it has no credit for and
+/// drains that queue later; the macro is not queued with it. A macro sent
+/// while a turn is still waiting for its answer therefore runs before the turn
+/// is applied, while the character still faces the old way, and opens nothing.
+/// The server says nothing back either, so the character asks for ever and no
+/// door ever moves. Thirty asks in five minutes were all silent, and the door
+/// swung the moment a turn was confirmed.
+///
+/// And he must already face the door tile. When he does not, the turn goes out
+/// here alone and the macro waits for the tick after the answer, so a turn and
+/// the macro never leave together.
+fn pump_door_macro(inner: &mut Inner) {
+    let Some(want) = inner.door_macro else {
+        return;
+    };
+    let now = Instant::now();
+    let (at, facing) = {
         let w = inner.world.read();
         (
             w.self_state.location,
             Direction::from_byte(w.self_state.direction),
         )
     };
-    // The way he will face once the wire is empty, not the way the world model
-    // last heard about. A walk acknowledgement carries no facing, so the world
-    // still holds whichever direction some earlier packet set. Reading that
-    // makes the turn below look unnecessary, and the macro then asks the
-    // server to open a door in whatever tile he happened to face.
-    let facing = inner.movement.facing_after(reported);
-    let Some(door) = inner.doors.due(at, now) else {
+    // He asked from one tile, and a macro aimed from a tile he has left opens
+    // whatever stands beside wherever he is now.
+    if now >= want.give_up_at || at.chebyshev(want.from) != 0 {
+        tracing::debug!(at = %at, door = %want.tile, "the door macro was never aimed");
+        inner.door_macro = None;
         return;
-    };
-    // The turn goes to the server, and the server says which way he ends up
-    // facing. Writing that facing here would be the same guess the walk used
-    // to make. It is also what aims the macro below: the server opens the door
-    // in the tile he faces.
-    if let Some(toward) = facing_toward(at, door.location) {
+    }
+    if !inner.movement.in_flight.is_empty() {
+        return;
+    }
+    if let Some(toward) = facing_toward(at, want.tile) {
         if let Some(turn) = inner.movement.build_turn(facing, toward, at, now) {
             inner.outbound.push_back(turn);
+            return;
         }
+    }
+    inner.door_macro = None;
+    // A door on a route is one attempt per click, and this is where the click
+    // leaves. A macro nothing planned a route for spends no attempt.
+    if let Some(door) = inner.doors.due(at, now) {
+        tracing::info!(serial = %door.serial, door = %door.location, "asking for the door he faces");
     }
     inner.outbound.push_back(encode::open_door());
 }
@@ -5091,6 +5458,30 @@ fn action_ready(inner: &Inner) -> bool {
 
 fn mark_action(inner: &mut Inner) {
     inner.next_action_at = Instant::now() + ACTION_BUDGET;
+}
+
+/// Sends one double-click and charges what it costs, or sends nothing and says
+/// so.
+///
+/// A working client keeps two rules here that the action budget alone does not.
+/// One double-click a second, because the budget is shorter than that and lets
+/// a second one through; and never two of the same waiting to go out together,
+/// because the second is the one that shuts the door, closes the container or
+/// drinks the potion twice. Everything that double-clicks goes through here.
+fn send_double_click(inner: &mut Inner, serial: Serial) -> bool {
+    let now = Instant::now();
+    if now < inner.next_double_click_at || !action_ready(inner) {
+        return false;
+    }
+    let packet = encode::double_click(serial);
+    if inner.outbound.contains(&packet) {
+        tracing::debug!(%serial, "a double-click on that serial is already waiting to go out");
+        return false;
+    }
+    inner.next_double_click_at = now + DOUBLE_CLICK_INTERVAL;
+    inner.outbound.push_back(packet);
+    mark_action(inner);
+    true
 }
 
 fn backpack_serial(world: &uoterm_world::World) -> Option<Serial> {
@@ -5155,11 +5546,11 @@ fn pump_loot(inner: &mut Inner) {
             let _ = queue_move(inner, Point3::new(x, y, z));
         }
         LootStep::Open(serial) => {
-            inner.outbound.push_back(encode::double_click(serial));
-            mark_action(inner);
+            send_double_click(inner, serial);
         }
         LootStep::Lift { serial, amount } => {
             inner.outbound.push_back(encode::lift(serial, amount));
+            mark_action(inner);
             inner.world.write().holding = Some(serial);
             inner.sent_drop = None;
         }
@@ -5170,6 +5561,7 @@ fn pump_loot(inner: &mut Inner) {
                     dest,
                     drop_grid(inner),
                 ));
+                mark_action(inner);
                 inner.sent_drop = Some(serial);
             }
         }
@@ -5237,11 +5629,9 @@ fn reflex_tick(inner: &mut Inner) {
                     return;
                 }
             }
-            if !action_ready(inner) {
+            if !send_double_click(inner, serial) {
                 return;
             }
-            inner.outbound.push_back(encode::double_click(serial));
-            mark_action(inner);
             if let Some(item) = world.items.get(&serial) {
                 if item.graphic == GRAPHIC_POTION_HEAL {
                     inner.next_heal_potion_at =
@@ -5485,6 +5875,7 @@ fn walk_hold(inner: &mut Inner, args: &Value) -> ToolResult {
         .and_then(|v| v.as_u64())
         .unwrap_or(HOLD_MS_NONE);
     let asked_for = hold_step_count(hold_ms, running);
+    let force_one = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     // The walk carries on from the end of the steps already on the wire, so a
     // walk ordered in the middle of one does not double back over them.
     let from = inner
@@ -5493,7 +5884,16 @@ fn walk_hold(inner: &mut Inner, args: &Value) -> ToolResult {
     // The map is what says how high each of these steps lands, so the facet
     // is opened before it is asked.
     inner.ensure_facet();
-    let points = hold_path(inner.tiles(), from, dir, asked_for);
+    let mut points = hold_path(inner.tiles(), from, dir, asked_for);
+    // A shard may place the character on a boat, teleporter landing, or other
+    // server-supported surface absent from the static client map. Permit an
+    // explicitly forced single step so the server can authoritatively accept
+    // or reject that recovery move. Never force a held movement stream.
+    if points.is_empty() && force_one && asked_for == WALK_STEPS_ONE {
+        if let Some(next) = from.neighbour(dir) {
+            points.push(next);
+        }
+    }
     let Some(dest) = points.last().copied() else {
         return ToolResult::err("cannot step that way");
     };
@@ -5732,26 +6132,26 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         }
         TOOL_WALK => walk_hold(inner, args),
         TOOL_OPEN_DOOR => {
-            face_the_nearest_door(inner, Instant::now());
-            inner.outbound.push_back(encode::open_door());
+            let Some(tile) = nearest_door_tile(inner) else {
+                return ToolResult::err("no door beside the character");
+            };
+            let at = inner.world.read().self_state.location;
+            want_door_macro(inner, at, tile, Instant::now());
             ToolResult::action(TOOL_OPEN_DOOR)
         }
         TOOL_STOP | TOOL_CANCEL_GOAL => {
             inner.goal = Goal::Idle;
             inner.follow = None;
             inner.doors.give_up();
+            inner.door_macro = None;
             inner.movement.clear();
             inner.world.write().goal = Goal::Idle.name().into();
             ToolResult::ok(json!(Goal::Idle.name()))
         }
         TOOL_USE | TOOL_OPEN_CONTAINER => {
-            if !action_ready(inner) {
+            if !send_double_click(inner, arg_serial(args, "serial")) {
                 return ToolResult::err("must wait to perform another action");
             }
-            inner
-                .outbound
-                .push_back(encode::double_click(arg_serial(args, "serial")));
-            mark_action(inner);
             ToolResult::action(TOOL_USE)
         }
         TOOL_LOOT => {
@@ -5793,10 +6193,14 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .unwrap_or(1)
                 .max(1) as u16;
             inner.outbound.push_back(encode::lift(serial, amount));
+            mark_action(inner);
             inner.world.write().holding = Some(serial);
             ToolResult::action(TOOL_LIFT)
         }
         TOOL_DROP => {
+            if !action_ready(inner) {
+                return ToolResult::err("must wait to perform another action");
+            }
             let dest = args
                 .get("dest")
                 .and_then(|v| v.as_u64())
@@ -5814,6 +6218,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     .outbound
                     .push_back(encode::drop(serial, loc.x, loc.y, loc.z, dest, grid));
             }
+            mark_action(inner);
             ToolResult::action(TOOL_DROP)
         }
         TOOL_EQUIP => {
@@ -5864,9 +6269,22 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 } else {
                     args.get("button").and_then(|v| v.as_u64()).unwrap_or(0) as u32
                 };
-                inner
-                    .outbound
-                    .push_back(encode::gump_response(g.serial, g.gump_id, button, &[]));
+                let switches = if call.name == TOOL_GUMP_CLOSE {
+                    Vec::new()
+                } else {
+                    args.get("switches")
+                        .and_then(|v| v.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|v| v.as_u64().map(|n| n as u32))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                inner.outbound.push_back(encode::gump_response(
+                    g.serial, g.gump_id, button, &switches,
+                ));
                 inner.world.write().close_gump(g.gump_id);
                 ToolResult::action(if call.name == TOOL_GUMP_CLOSE {
                     TOOL_GUMP_CLOSE

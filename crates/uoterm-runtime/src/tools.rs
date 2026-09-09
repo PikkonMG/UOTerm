@@ -281,12 +281,14 @@ pub fn mcp_tool_list() -> Value {
                         "direction": {"type": "string"},
                         "running": {"type": "boolean"},
                         "hold_ms": {"type": "integer"},
+                        "force": {"type": "boolean"},
                         "radius": {"type": "integer"},
                         "name": {"type": "string"},
                         "graphic": {"type": "integer"},
                         "container": {"type": "string"},
                         "distance": {"type": "integer"},
-                        "cliloc": {"type": "integer"}
+                        "cliloc": {"type": "integer"},
+                        "switches": {"type": "array", "items": {"type": "integer"}}
                     }
                 }
             })

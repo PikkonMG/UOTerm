@@ -118,3 +118,8 @@ MEMORY.md
 .context/
 .worktrees/
 .sandbox/
+
+# ---------------------------------------------------------------------------
+# Local scratch notes and reference material. Kept on disk, never committed.
+# ---------------------------------------------------------------------------
+capture-notes/

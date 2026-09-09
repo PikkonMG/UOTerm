@@ -345,6 +345,31 @@ mod tests {
         assert!(obs.result.get("facing").and_then(|v| v.as_str()).is_some());
         assert!(obs.result.get("x").is_some());
         assert!(obs.result.get("doors").is_some());
+
+        // The macro that opens a door names no door: the server opens whatever
+        // door stands in the tile the character faces. So there has to be one
+        // beside him, or there is nothing for the macro to aim at and the tool
+        // says so instead of asking for a door that is not there.
+        const DOOR_SERIAL: uoterm_protocol::Serial = uoterm_protocol::Serial(0x4002_021B);
+        const DOOR_GRAPHIC: u16 = 1653;
+        let no_door = handle
+            .call(ToolCall {
+                name: TOOL_OPEN_DOOR.into(),
+                args: serde_json::json!({}),
+            })
+            .await;
+        assert!(!no_door.ok, "{no_door:?}");
+
+        let beside_him = {
+            let world = handle.world.read();
+            let at = world.self_state.location;
+            uoterm_protocol::Point3::new(at.x, at.y.saturating_sub(1), at.z)
+        };
+        handle
+            .world
+            .write()
+            .note_door(DOOR_SERIAL, DOOR_GRAPHIC, beside_him);
+
         let opened = handle
             .call(ToolCall {
                 name: TOOL_OPEN_DOOR.into(),
