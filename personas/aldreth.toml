@@ -1,0 +1,8 @@
+name = "Aldreth"
+class = "banker_idle"
+tier = "journeyman"
+active_hours = ["10:00-22:00"]
+risk_tolerance = 0.10
+chat_rate_per_hour = 12
+typo_rate = 0.03
+allow_emote = false

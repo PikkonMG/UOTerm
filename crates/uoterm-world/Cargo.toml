@@ -1,0 +1,15 @@
+[package]
+name = "uoterm-world"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "World model, MUL/UOP map query, journal, and observe snapshots"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uoterm-protocol.workspace = true

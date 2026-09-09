@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/uoterm-protocol",
+    "crates/uoterm-world",
+    "crates/uoterm-nav",
+    "crates/uoterm-runtime",
+    "crates/uoterm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/PikkonMG/UOTerm"
+authors = ["UOTerm contributors"]
+rust-version = "1.80"
+description = "Headless Ultima Online client and agent runtime for private shards"
+
+[workspace.dependencies]
+uoterm-protocol = { path = "crates/uoterm-protocol" }
+uoterm-world = { path = "crates/uoterm-world" }
+uoterm-nav = { path = "crates/uoterm-nav" }
+uoterm-runtime = { path = "crates/uoterm-runtime" }
+
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+bytes = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"
+axum = "0.8"
+indexmap = { version = "2", features = ["serde"] }
+parking_lot = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

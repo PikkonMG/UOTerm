@@ -1,0 +1,15 @@
+host = "127.0.0.1"
+port = 2593
+era = "modern"
+
+[[agents]]
+profile = "profiles/example.toml"
+persona = "personas/lumberjack.toml"
+
+[[agents]]
+profile = "profiles/aldreth.toml"
+persona = "personas/aldreth.toml"
+
+[[agents]]
+profile = "profiles/cedric.toml"
+persona = "personas/cedric.toml"

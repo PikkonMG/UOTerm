@@ -1,0 +1,8 @@
+name = "Ryn of Minoc"
+class = "traveler"
+tier = "journeyman"
+active_hours = ["09:00-21:00"]
+risk_tolerance = 0.45
+chat_rate_per_hour = 4
+typo_rate = 0.02
+allow_emote = false

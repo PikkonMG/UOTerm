@@ -1,0 +1,6 @@
+account = "your_account"
+password_env = "UO_PASS"
+character = "Mara"
+shard = "Test Shard"
+version = "7.0.102.3"
+era = "modern"

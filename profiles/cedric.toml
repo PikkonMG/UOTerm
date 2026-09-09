@@ -1,0 +1,6 @@
+account = "cedric"
+password_env = "UO_PASS"
+character = "Cedric"
+shard = "Test Shard"
+version = "7.0.102.3"
+era = "modern"

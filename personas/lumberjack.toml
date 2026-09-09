@@ -1,0 +1,8 @@
+name = "Mara of Yew"
+class = "lumberjack"
+tier = "journeyman"
+active_hours = ["06:00-23:00"]
+risk_tolerance = 0.35
+chat_rate_per_hour = 8
+typo_rate = 0.02
+allow_emote = false

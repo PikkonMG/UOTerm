@@ -1,0 +1,8 @@
+name = "Cedric"
+class = "traveler"
+tier = "novice"
+active_hours = ["08:00-20:00"]
+risk_tolerance = 0.45
+chat_rate_per_hour = 6
+typo_rate = 0.04
+allow_emote = false

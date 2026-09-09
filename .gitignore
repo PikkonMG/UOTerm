@@ -1,0 +1,120 @@
+# ---------------------------------------------------------------------------
+# Ultima Online client data. Copyrighted game files. Never commit them.
+# The `deny-assets` CI job fails the build if any of these are tracked.
+# ---------------------------------------------------------------------------
+*.mul
+*.uop
+*.idx
+*.def
+*.enu
+*.rle
+Client.exe
+client.exe
+
+# ---------------------------------------------------------------------------
+# Secrets and credentials. Passwords go in the UO_PASS environment variable,
+# API tokens in UOTERM_API_TOKEN. Never in a file.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.keystore
+*.jks
+.netrc
+.npmrc.local
+credentials
+credentials.*
+
+# ---------------------------------------------------------------------------
+# Local operator config. Each has a committed `.example` to copy from.
+# ---------------------------------------------------------------------------
+uoterm.toml
+!uoterm.toml.example
+profiles/*.toml
+!profiles/example.toml
+!profiles/aldreth.toml
+!profiles/cedric.toml
+
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+/target/
+**/*.rs.bk
+*.pdb
+
+# ---------------------------------------------------------------------------
+# Test and run artifacts
+# ---------------------------------------------------------------------------
+*.log
+harvest.jsonl
+*.jsonl
+core
+core.*
+perf.data
+perf.data.old
+flamegraph.svg
+*.profraw
+/tmp/
+.uoterm-local/
+
+# ---------------------------------------------------------------------------
+# Editors and IDEs
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+.fleet/
+.zed/
+.history/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Operating system
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# AI coding tools: local caches, memories and session state. Machine-specific.
+# ---------------------------------------------------------------------------
+AGENTS.md
+MEMORY.md
+*.pkl
+.serena/
+.claude/
+.claude-code/
+.codex/
+.cursor/
+.windsurf/
+.aider/
+.cline/
+.roo/
+.kilo/
+.continue/
+.openhands/
+.agents/
+.superpowers/
+.pi/
+.pi-desktop/
+.pi-desktop-gui/
+.pi-subagents/
+.mcp/
+.mcp-server/
+.mcpservers/
+.context7/
+.playwright-mcp/
+.openmemory/
+.mem0/
+.memory/
+.knowledge/
+.context/
+.worktrees/
+.sandbox/

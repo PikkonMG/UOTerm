@@ -1,0 +1,28 @@
+[package]
+name = "uoterm-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Session, reflex, persona, and populate runtime"
+
+[dependencies]
+uoterm-protocol.workspace = true
+uoterm-world.workspace = true
+uoterm-nav.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+dirs.workspace = true
+rand.workspace = true
+parking_lot.workspace = true
+indexmap.workspace = true
+hex.workspace = true
+axum.workspace = true

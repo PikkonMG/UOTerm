@@ -1,0 +1,19 @@
+# Client-side waypoint graph. Coordinates are Britannia map 0.
+
+[[waypoints]]
+name = "britain_bank"
+x = 1425
+y = 1695
+z = 0
+
+[[waypoints]]
+name = "yew_gate"
+x = 548
+y = 980
+z = 0
+
+[[waypoints]]
+name = "minoc_mine"
+x = 2560
+y = 500
+z = 0
