@@ -22,7 +22,8 @@ use crate::tools::{
     TOOL_GUMP_RESPOND, TOOL_JOURNAL_SEARCH, TOOL_LIFT, TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE,
     TOOL_MOVE_TO, TOOL_OBSERVE, TOOL_OPEN_CONTAINER, TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL,
     TOOL_SET_PERSONA, TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_TARGET, TOOL_TRADE_OFFER, TOOL_UNEQUIP,
-    TOOL_USE, TOOL_USE_SKILL, TOOL_WAIT_TARGET, TOOL_WALK, TOOL_WAR_MODE, TOOL_WHISPER,
+    TOOL_USE, TOOL_USE_SKILL, TOOL_VENDOR_BUY, TOOL_VENDOR_SELL, TOOL_WAIT_TARGET, TOOL_WALK,
+    TOOL_WAR_MODE, TOOL_WHISPER,
 };
 use parking_lot::RwLock;
 use rand::Rng;
@@ -271,6 +272,9 @@ struct Inner {
     target_intent: Option<Serial>,
     loot: Option<LootJob>,
     sent_drop: Option<Serial>,
+    /// The next server-authored sell list is filtered to this graphic, then
+    /// the request is cleared.
+    pending_vendor_sell_graphic: Option<u16>,
     last_event_seq: u64,
     last_name_retry: Instant,
     last_path_fail: Option<(Point3, Instant)>,
@@ -557,6 +561,7 @@ async fn run_session(
         target_intent: None,
         loot: None,
         sent_drop: None,
+        pending_vendor_sell_graphic: None,
         last_path_fail: None,
         last_fatigued: None,
         last_event_seq: 0,
@@ -1327,6 +1332,7 @@ mod relay_tests {
             target_intent: None,
             loot: None,
             sent_drop: None,
+            pending_vendor_sell_graphic: None,
             last_path_fail: None,
             last_fatigued: None,
             last_event_seq: 0,
@@ -4384,6 +4390,20 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     if let Inbound::LiftRejected { .. } = &msg {
                         inner.world.write().holding = None;
                     }
+                    if let Inbound::VendorSellList { vendor, entries } = &msg {
+                        if let Some(graphic) = inner.pending_vendor_sell_graphic.take() {
+                            let items: Vec<(Serial, u16)> = entries
+                                .iter()
+                                .filter(|entry| entry.graphic == graphic && entry.amount > 0)
+                                .map(|entry| (entry.serial, entry.amount))
+                                .collect();
+                            if !items.is_empty() {
+                                inner
+                                    .outbound
+                                    .push_back(encode::vendor_sell(*vendor, &items));
+                            }
+                        }
+                    }
                     if let Inbound::Speech(line) = &msg {
                         if says_bandage_started(&line.text) {
                             let dex = inner.world.read().self_state.dex;
@@ -5935,6 +5955,48 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             inner.outbound.push_back(encode::trade_start(serial));
             ToolResult::action(TOOL_TRADE_OFFER)
         }
+        TOOL_VENDOR_SELL => {
+            let Some(vendor_name) = args
+                .get("vendor_name")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                return ToolResult::err("vendor_sell needs vendor_name");
+            };
+            let Some(graphic) = args
+                .get("graphic")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u16::try_from(value).ok())
+            else {
+                return ToolResult::err("vendor_sell needs item graphic");
+            };
+            inner.pending_vendor_sell_graphic = Some(graphic);
+            let speech = format!("{vendor_name} sell");
+            match queue_keyword_speech(inner, &speech, 0x0177) {
+                Ok(()) => ToolResult::action(TOOL_VENDOR_SELL),
+                Err(error) => {
+                    inner.pending_vendor_sell_graphic = None;
+                    ToolResult::err(error)
+                }
+            }
+        }
+        TOOL_VENDOR_BUY => {
+            let vendor = arg_serial(args, "vendor");
+            let item = arg_serial(args, "item");
+            let amount = args
+                .get("amount")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u16::try_from(value).ok())
+                .unwrap_or(1);
+            if vendor == Serial(0) || item == Serial(0) || amount == 0 {
+                return ToolResult::err("vendor_buy needs vendor, item, and positive amount");
+            }
+            inner
+                .outbound
+                .push_back(encode::vendor_buy(vendor, &[(item, amount)]));
+            ToolResult::action(TOOL_VENDOR_BUY)
+        }
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
                 p.clamp_rates();
@@ -6064,6 +6126,24 @@ fn queue_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<
         _ => encode::say(&t, false),
     };
     inner.outbound.push_back(pkt);
+    Ok(())
+}
+
+/// Sends a client-recognized command phrase with the numbered speech keyword
+/// that drives shard-side NPC handlers. Command text is never typo-mutated
+/// because its keyword and visible words must agree.
+fn queue_keyword_speech(
+    inner: &mut Inner,
+    text: &str,
+    keyword: u16,
+) -> std::result::Result<(), &'static str> {
+    let text = speech_allowed(&mut inner.speech, &inner.persona, text, SPEECH_REGULAR)?;
+    inner.outbound.push_back(encode::keyword_speech(
+        SPEECH_REGULAR,
+        DEFAULT_SPEECH_HUE,
+        &[keyword],
+        &text,
+    ));
     Ok(())
 }
 

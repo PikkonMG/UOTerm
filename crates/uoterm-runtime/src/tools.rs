@@ -32,6 +32,8 @@ pub const TOOL_TARGET: &str = "target";
 pub const TOOL_OPEN_CONTAINER: &str = "open_container";
 pub const TOOL_LOOT: &str = "loot";
 pub const TOOL_TRADE_OFFER: &str = "trade_offer";
+pub const TOOL_VENDOR_SELL: &str = "vendor_sell";
+pub const TOOL_VENDOR_BUY: &str = "vendor_buy";
 pub const TOOL_GUMP_RESPOND: &str = "gump_respond";
 pub const TOOL_GUMP_CLOSE: &str = "gump_close";
 pub const TOOL_SET_GOAL: &str = "set_goal";
@@ -238,6 +240,16 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (TOOL_TRADE_OFFER, "Secure trade offer.", "mobile serial"),
     (
+        TOOL_VENDOR_SELL,
+        "Ask a named nearby NPC vendor for its sell list and sell every listed backpack item matching the required graphic.",
+        "vendor name and item graphic",
+    ),
+    (
+        TOOL_VENDOR_BUY,
+        "Buy an amount of one item from an open NPC vendor basket.",
+        "vendor serial, shop item serial, and amount",
+    ),
+    (
         TOOL_GUMP_RESPOND,
         "Click a gump button. button 0 closes.",
         "open gump",
@@ -279,7 +291,11 @@ pub fn mcp_tool_list() -> Value {
                         "name": {"type": "string"},
                         "graphic": {"type": "integer"},
                         "container": {"type": "string"},
-                        "distance": {"type": "integer"}
+                        "distance": {"type": "integer"},
+                        "vendor_name": {"type": "string"},
+                        "vendor": {"type": "string"},
+                        "item": {"type": "string"},
+                        "amount": {"type": "integer"}
                     }
                 }
             })
