@@ -3738,6 +3738,56 @@ mod relay_tests {
     /// the character can do something about, so the door is asked first: a
     /// tile a door stands on is the door logic's, and is never remembered as a
     /// wall to go around.
+    /// The open-door macro names no door. The server offsets one tile in the
+    /// direction the character faces and opens whatever door it finds there,
+    /// so a character facing the wrong way opens nothing and is told nothing.
+    ///
+    /// Measured on a live shard: she stood one tile south of a bank door
+    /// facing east, the tool sent the macro, and the door never moved.
+    #[test]
+    fn the_open_door_tool_turns_to_face_the_door_first() {
+        const STANDING_AT: Point3 = Point3 {
+            x: 1438,
+            y: 1693,
+            z: 0,
+        };
+        const DOOR_TO_THE_NORTH: Point3 = Point3 {
+            x: 1438,
+            y: 1692,
+            z: 0,
+        };
+        const DOOR_SERIAL: Serial = Serial(0x4002_021B);
+        const DOOR_GRAPHIC: u16 = 1653;
+
+        let mut inner = test_session();
+        {
+            let mut world = inner.world.write();
+            world.self_state.location = STANDING_AT;
+            world.self_state.direction = Direction::East as u8;
+            world.note_door(DOOR_SERIAL, DOOR_GRAPHIC, DOOR_TO_THE_NORTH);
+        }
+        inner.outbound.clear();
+
+        face_the_nearest_door(&mut inner, Instant::now());
+        inner.outbound.push_back(encode::open_door());
+
+        let turned = inner.outbound.iter().position(|pkt| {
+            pkt.first() == Some(&PKT_MOVE) && pkt.get(1) == Some(&(Direction::North as u8))
+        });
+        let asked = inner
+            .outbound
+            .iter()
+            .position(|pkt| *pkt == encode::open_door());
+        assert!(
+            turned.is_some(),
+            "she must turn toward the door before asking for it"
+        );
+        assert!(
+            turned < asked,
+            "and the turn must go out first, or the macro aims at the old facing"
+        );
+    }
+
     #[test]
     fn a_refusal_at_a_shut_door_opens_the_door_and_blocks_no_tile() {
         let inn = movement::tests::inn_corridor();
@@ -4614,6 +4664,43 @@ fn somebody_stands_on(inner: &Inner, cell: Point3) -> bool {
     })
 }
 
+/// Turns the character to the door beside him, so the open-door macro has
+/// something to aim at.
+///
+/// The macro names no door. The server offsets one tile in the direction the
+/// character faces and opens whatever door it finds there, so a character
+/// facing the wrong way opens nothing and is told nothing. The turn is the
+/// whole of the aim.
+fn face_the_nearest_door(inner: &mut Inner, now: Instant) {
+    /// A door the character can reach without walking is on one of the eight
+    /// tiles around him, so no further than this in either direction.
+    const WITHIN_REACH: u32 = 1;
+
+    let (at, reported) = {
+        let world = inner.world.read();
+        (
+            world.self_state.location,
+            Direction::from_byte(world.self_state.direction),
+        )
+    };
+    let facing = inner.movement.facing_after(reported);
+    let nearest = inner
+        .world
+        .read()
+        .door_tiles()
+        .into_iter()
+        .filter(|tile| at.chebyshev(*tile) <= WITHIN_REACH)
+        .min_by_key(|tile| at.chebyshev(*tile));
+    let Some(door) = nearest else {
+        return;
+    };
+    if let Some(toward) = movement::facing_toward(at, door) {
+        if let Some(turn) = inner.movement.build_turn(facing, toward, at, now) {
+            inner.outbound.push_back(turn);
+        }
+    }
+}
+
 /// Turns the character to the tile that refused him and asks the server to
 /// open whatever door stands in it.
 ///
@@ -4949,13 +5036,19 @@ fn pump_doors(inner: &mut Inner) {
     // The tile the server last put him on. He is due to click a door only once
     // the server has confirmed the step that brought him in front of it, so he
     // never reaches for a door from a tile he has not reached.
-    let (at, facing) = {
+    let (at, reported) = {
         let w = inner.world.read();
         (
             w.self_state.location,
             Direction::from_byte(w.self_state.direction),
         )
     };
+    // The way he will face once the wire is empty, not the way the world model
+    // last heard about. A walk acknowledgement carries no facing, so the world
+    // still holds whichever direction some earlier packet set. Reading that
+    // makes the turn below look unnecessary, and the macro then asks the
+    // server to open a door in whatever tile he happened to face.
+    let facing = inner.movement.facing_after(reported);
     let Some(door) = inner.doors.due(at, now) else {
         return;
     };
@@ -5618,6 +5711,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         }
         TOOL_WALK => walk_hold(inner, args),
         TOOL_OPEN_DOOR => {
+            face_the_nearest_door(inner, Instant::now());
             inner.outbound.push_back(encode::open_door());
             ToolResult::action(TOOL_OPEN_DOOR)
         }
