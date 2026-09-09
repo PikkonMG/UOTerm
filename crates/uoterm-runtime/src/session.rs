@@ -5843,9 +5843,22 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 } else {
                     args.get("button").and_then(|v| v.as_u64()).unwrap_or(0) as u32
                 };
-                inner
-                    .outbound
-                    .push_back(encode::gump_response(g.serial, g.gump_id, button, &[]));
+                let switches = if call.name == TOOL_GUMP_CLOSE {
+                    Vec::new()
+                } else {
+                    args.get("switches")
+                        .and_then(|v| v.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|v| v.as_u64().map(|n| n as u32))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                inner.outbound.push_back(encode::gump_response(
+                    g.serial, g.gump_id, button, &switches,
+                ));
                 inner.world.write().close_gump(g.gump_id);
                 ToolResult::action(if call.name == TOOL_GUMP_CLOSE {
                     TOOL_GUMP_CLOSE

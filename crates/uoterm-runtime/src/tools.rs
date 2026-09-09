@@ -279,7 +279,8 @@ pub fn mcp_tool_list() -> Value {
                         "name": {"type": "string"},
                         "graphic": {"type": "integer"},
                         "container": {"type": "string"},
-                        "distance": {"type": "integer"}
+                        "distance": {"type": "integer"},
+                        "switches": {"type": "array", "items": {"type": "integer"}}
                     }
                 }
             })
