@@ -1279,8 +1279,8 @@ fn parse_compressed_gump(r: &mut PacketReader<'_>) -> Result<Inbound> {
     let layout = String::from_utf8_lossy(&layout_bytes).into_owned();
     let _lines = r.u32()?;
     let text_packed = r.u32()? as usize;
-    // ModernUO writes a single zero length word when a compressed gump has no
-    // text strings. There is no following uncompressed-length word in that
+    // Some shards write a single zero length word when a compressed gump has
+    // no text strings. There is no following uncompressed-length word in that
     // representation.
     if text_packed == 0 {
         return Ok(Inbound::Gump(OpenGump {
@@ -2671,7 +2671,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_gump_accepts_modernuo_empty_text_block() {
+    fn compressed_gump_accepts_empty_text_block() {
         fn z(bytes: &[u8]) -> Vec<u8> {
             use flate2::write::ZlibEncoder;
             use flate2::Compression;
