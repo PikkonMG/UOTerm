@@ -44,15 +44,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # No file that ships may name another project. Rules and packet shapes
-      # are learned from other sources and written fresh here, but the name of
-      # the source belongs in the report that proposed the change, never in the
-      # code. POL/vCrypter is allowed: it names a public key formula, not a
-      # repository.
-      - name: Forbid naming another project
+      # No file that ships may name a client or assistant tool. Server
+      # emulators may be named, because a user aims this client at a private
+      # shard and needs to know which server behaviour it targets. Client and
+      # tool names carry no such need, so they stay out. The match is
+      # whole-word to spare normal English.
+      - name: Forbid naming a client or tool
         run: |
-          if git grep -niE 'classicuo|modernuo|servuo|uox3|sphereserver|stealth|razor|orionuo' \
-              -- crates docs README.md LEGAL.md Cargo.toml | grep -v 'POL/vCrypter'; then
-            echo "A shipped file names another project. Say what it does instead."
+          if git grep -niwE 'classicuo|orionuo|razor|stealth' \
+              -- crates docs README.md LEGAL.md Cargo.toml; then
+            echo "A shipped file names a client or assistant tool. Say what it does instead."
             exit 1
           fi
