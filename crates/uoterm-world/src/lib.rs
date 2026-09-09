@@ -213,6 +213,7 @@ mod tests {
             y: 20,
             z: 1,
             hue: 0,
+            multi: false,
         }));
         assert_eq!(w.find_mobiles(None, None, None).len(), 1);
         assert_eq!(w.find_items(Some(0x0EED), None, None).len(), 1);
@@ -383,6 +384,7 @@ mod tests {
             y: 20,
             z: 1,
             hue: 0,
+            multi: false,
         }));
         w.apply(&Inbound::OpenContainer {
             serial: CORPSE,
@@ -670,6 +672,7 @@ mod tests {
             y: 10,
             z: 0,
             hue: 0,
+            multi: false,
         }));
         let radar = render_radar(&w, RadarOptions { size: 5 }, default_tile);
         assert!(radar.contains('m'));

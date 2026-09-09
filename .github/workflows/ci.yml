@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: CLI help
+        run: cargo run -p uoterm -- --help
+
+  deny-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Forbid client data files
+        run: |
+          if git ls-files | grep -Ei '\.(mul|uop|idx|def)$'; then
+            echo "Game data files must not be committed"
+            exit 1
+          fi
+
+  deny-other-projects:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No file that ships may name another project. Rules and packet shapes
+      # are learned from other sources and written fresh here, but the name of
+      # the source belongs in the report that proposed the change, never in the
+      # code. POL/vCrypter is allowed: it names a public key formula, not a
+      # repository.
+      - name: Forbid naming another project
+        run: |
+          if git grep -niE 'classicuo|modernuo|servuo|uox3|sphereserver|stealth|razor|orionuo' \
+              -- crates docs README.md LEGAL.md Cargo.toml | grep -v 'POL/vCrypter'; then
+            echo "A shipped file names another project. Say what it does instead."
+            exit 1
+          fi

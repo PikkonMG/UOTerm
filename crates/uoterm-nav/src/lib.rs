@@ -15,7 +15,10 @@ pub use mul::{
     MulMap, ENV_TEST_UOPATH, TILEDATA_NAME,
 };
 pub use multi::{MultiData, MultiFiles, MultiPiece};
-pub use path::{pathfind, pathfind_flat, Obstacles, Path, PathError, Step};
+pub use path::{
+    pathfind, pathfind_flat, BlockedMove, Obstacles, Path, PathError, Step, SAME_MOVE_HEIGHT,
+    SAME_SPOT_HEIGHT,
+};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};
 pub use step::{
     is_standing_surface, LandCorners, TileColumn, TilePiece, PERSON_HEIGHT, STEP_HEIGHT,
@@ -50,7 +53,7 @@ mod tests {
         MULTI_RECORD_HS, MULTI_RECORD_OLD, MULTI_UOP_CLILOC, MULTI_UOP_HEADER, MULTI_UOP_LOOSE,
         MULTI_UOP_NAMES, MULTI_UOP_RECORD,
     };
-    use crate::path::DIRS;
+    use crate::path::{expand_budget, DIRS};
     use crate::speech::{SPEECH_MUL_NAMES, SPEECH_RECORD_HEADER};
     use crate::step::{footing, land_is_ignored, Footing};
     use crate::uop::multi_uop_name;
@@ -212,6 +215,7 @@ mod tests {
             &Obstacles {
                 soft: &somebody,
                 hard: &[],
+                ..Obstacles::NONE
             },
         )
         .unwrap();
@@ -241,6 +245,7 @@ mod tests {
             &Obstacles {
                 soft: &on_the_spot,
                 hard: &[],
+                ..Obstacles::NONE
             },
         )
         .expect("a person standing there is no reason to refuse the walk");
@@ -258,6 +263,7 @@ mod tests {
                 &Obstacles {
                     soft: &[],
                     hard: &on_the_spot,
+                    ..Obstacles::NONE
                 },
             )
             .unwrap_err(),
@@ -278,10 +284,12 @@ mod tests {
             Obstacles {
                 soft: &under_his_feet,
                 hard: &[],
+                ..Obstacles::NONE
             },
             Obstacles {
                 soft: &[],
                 hard: &under_his_feet,
+                ..Obstacles::NONE
             },
         ] {
             let path = pathfind(&map, WALK_FROM, WALK_TO, &obstacles)
@@ -316,10 +324,12 @@ mod tests {
             Obstacles {
                 soft: &midway,
                 hard: &[],
+                ..Obstacles::NONE
             },
             Obstacles {
                 soft: &[],
                 hard: &midway,
+                ..Obstacles::NONE
             },
         ] {
             assert_eq!(
@@ -328,6 +338,321 @@ mod tests {
                 "{obstacles:?} stands in the only way through"
             );
         }
+    }
+
+    /// The floor of the upper storey, and the ground under it.
+    const UPPER_STOREY_Z: i8 = 32;
+    const UNDER_THE_STOREY_Z: i8 = 0;
+    /// The corridor of the upper storey. It is one tile wide, so whatever
+    /// shuts a tile of it shuts the whole way through.
+    const STOREY_CORRIDOR_LONG: u16 = 5;
+    const STOREY_CORRIDOR_SHUT_X: u16 = 2;
+
+    /// A refusal is about a spot, which is a tile at a height, and not about a
+    /// whole column of the world. A tile shut on the ground floor leaves the
+    /// room above it open, and a tile shut on a bridge leaves the ground under
+    /// the bridge open. Read by the two ground coordinates alone, one refusal
+    /// downstairs shut the corridor upstairs as well, and the walk along it
+    /// was reported as one nothing can reach.
+    #[test]
+    fn a_spot_shut_on_one_storey_leaves_the_storey_above_it_open() {
+        let mut map = ColumnMap::flat(STOREY_CORRIDOR_LONG, 1, UNDER_THE_STOREY_Z);
+        for x in 0..STOREY_CORRIDOR_LONG {
+            map.put(x, 0, floor_at(UPPER_STOREY_Z));
+        }
+        let start = Point3::new(0, 0, UPPER_STOREY_Z);
+        let goal = Point3::new(STOREY_CORRIDOR_LONG - 1, 0, UPPER_STOREY_Z);
+        let downstairs = [Point3::new(STOREY_CORRIDOR_SHUT_X, 0, UNDER_THE_STOREY_Z)];
+        let upstairs = [Point3::new(STOREY_CORRIDOR_SHUT_X, 0, UPPER_STOREY_Z)];
+
+        let shut_below = Obstacles {
+            hard: &downstairs,
+            ..Obstacles::NONE
+        };
+        assert!(
+            shut_below.blocks(downstairs[0]),
+            "the spot it was recorded at is shut"
+        );
+        assert!(
+            !shut_below.blocks(upstairs[0]),
+            "and the spot a storey above it is not"
+        );
+
+        let path = pathfind(&map, start, goal, &shut_below)
+            .expect("what is shut downstairs shuts nothing upstairs");
+        assert_eq!(
+            path.steps.last().map(|s| (s.x, s.y, s.z)),
+            Some((goal.x, goal.y, UPPER_STOREY_Z)),
+            "and the walk runs the length of the corridor: {:?}",
+            path.steps
+        );
+        assert_eq!(
+            pathfind(
+                &map,
+                start,
+                goal,
+                &Obstacles {
+                    hard: &upstairs,
+                    ..Obstacles::NONE
+                }
+            )
+            .unwrap_err(),
+            PathError::Unreachable,
+            "a spot shut on his own storey stands in his way"
+        );
+    }
+
+    /// The tiles of one flight of the switchback, in the order they are
+    /// walked. The flight runs right round the well and comes back over its
+    /// own first tile, a storey higher.
+    const SWITCHBACK_RING: [(u16, u16); 12] = [
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (3, 0),
+        (3, 1),
+        (3, 2),
+        (3, 3),
+        (2, 3),
+        (1, 3),
+        (0, 3),
+        (0, 2),
+        (0, 1),
+    ];
+    /// How far one step of the switchback climbs.
+    const SWITCHBACK_RISE: i8 = 2;
+    /// How far the upper flight stands above the lower one. A person is
+    /// [`PERSON_HEIGHT`] tall and cannot stand under less.
+    const SWITCHBACK_STOREY: i8 = 24;
+    /// The tiles inside the well, which are solid from the ground up so that
+    /// no step crosses the middle and no diagonal cuts the turn.
+    const SWITCHBACK_WELL: [(u16, u16); 4] = [(1, 1), (1, 2), (2, 1), (2, 2)];
+    /// How tall the solid inside of the well is: over the top of both flights.
+    const SWITCHBACK_WELL_HEIGHT: u8 = 64;
+    /// The ground of the well and of the ledge beside it.
+    const SWITCHBACK_GROUND_Z: i8 = 0;
+    const SWITCHBACK_WIDE: u16 = 5;
+    const SWITCHBACK_DEEP: u16 = 4;
+    /// The landing the upper flight leads onto. It stands off the well, it
+    /// draws no ground of its own, and its one floor is the height the upper
+    /// flight arrives at, so the lower flight can never reach it.
+    const SWITCHBACK_LANDING: Point3 = Point3 {
+        x: 4,
+        y: 0,
+        z: SWITCHBACK_STOREY + SWITCHBACK_RISE * 3,
+    };
+
+    /// Two flights of stairs, one over the other, round a solid well.
+    fn switchback() -> ColumnMap {
+        const NODRAW_LAND_ID: u16 = 2;
+        let mut map = ColumnMap::flat(SWITCHBACK_WIDE, SWITCHBACK_DEEP, SWITCHBACK_GROUND_Z);
+        for (step, (x, y)) in SWITCHBACK_RING.iter().enumerate() {
+            let climbed = SWITCHBACK_RISE * step as i8;
+            map.raise(*x, *y, climbed);
+            map.put(*x, *y, floor_at(SWITCHBACK_STOREY + climbed));
+        }
+        for (x, y) in SWITCHBACK_WELL {
+            map.put(x, y, solid_at(SWITCHBACK_GROUND_Z, SWITCHBACK_WELL_HEIGHT));
+        }
+        map.at(SWITCHBACK_LANDING.x, SWITCHBACK_LANDING.y).land_id = NODRAW_LAND_ID;
+        map.put(
+            SWITCHBACK_LANDING.x,
+            SWITCHBACK_LANDING.y,
+            floor_at(SWITCHBACK_LANDING.z),
+        );
+        map
+    }
+
+    /// A switchback runs up one way, turns, and comes back over its own steps.
+    /// Both flights stand over the same tiles, a storey apart, so a search
+    /// that remembers where it has been by the two ground coordinates alone
+    /// shuts the upper flight the moment it walks the lower one: it reaches
+    /// each tile at the lower height first and then refuses to look at that
+    /// tile again. Every storey above the first is out of reach that way, and
+    /// this walk was reported as one nothing can reach.
+    #[test]
+    fn a_switchback_is_climbed_though_both_flights_stand_over_one_tile() {
+        let map = switchback();
+        let (foot_x, foot_y) = SWITCHBACK_RING[0];
+        let foot = Point3::new(foot_x, foot_y, SWITCHBACK_GROUND_Z);
+        let path = pathfind(&map, foot, SWITCHBACK_LANDING, &Obstacles::NONE)
+            .expect("both flights are open and the landing is at the top of them");
+        assert_eq!(
+            path.steps.last().map(|s| (s.x, s.y, s.z)),
+            Some((
+                SWITCHBACK_LANDING.x,
+                SWITCHBACK_LANDING.y,
+                SWITCHBACK_LANDING.z
+            )),
+            "the walk ends on the landing only the upper flight reaches: {:?}",
+            path.steps
+        );
+        let (crossed_x, crossed_y) = SWITCHBACK_RING[1];
+        let heights: Vec<i8> = path
+            .steps
+            .iter()
+            .filter(|s| (s.x, s.y) == (crossed_x, crossed_y))
+            .map(|s| s.z)
+            .collect();
+        assert_eq!(
+            heights,
+            vec![SWITCHBACK_RISE, SWITCHBACK_STOREY + SWITCHBACK_RISE],
+            "and it crosses that one tile twice, once on each flight: {:?}",
+            path.steps
+        );
+    }
+
+    /// A grid wide enough that the search opens more nodes than the budget
+    /// once was, with every tile of the way open.
+    const FAR_GRID: u16 = 200;
+
+    /// The number of nodes a search may open must grow with the distance to
+    /// the goal. A penalty on the ground -- here a door on every tile, which
+    /// is what the inside of a building is -- takes the straight line away
+    /// from the search, and what it opens then grows with the square of the
+    /// distance. A budget fixed at twenty four thousand nodes ran out on this
+    /// walk although every tile of the way is open, and a goal a character
+    /// could have walked to was reported as one nothing can reach.
+    #[test]
+    fn a_far_goal_over_penalised_ground_is_not_refused_for_want_of_nodes() {
+        let mut map = MockMap::new(FAR_GRID, FAR_GRID);
+        for y in 0..FAR_GRID {
+            for x in 0..FAR_GRID {
+                map.set_door(x, y, true);
+            }
+        }
+        let start = Point3::new(0, 0, 0);
+        let goal = Point3::new(FAR_GRID - 1, FAR_GRID - 1, 0);
+        let path = pathfind(&map, start, goal, &Obstacles::NONE)
+            .expect("every tile between the two is open");
+        assert_eq!(
+            path.steps.last().map(|s| (s.x, s.y)),
+            Some((goal.x, goal.y)),
+            "and the walk arrives"
+        );
+    }
+
+    /// The budget itself. The numbers are written out here and not taken from
+    /// the constants, so that a change to one of them fails this test instead
+    /// of passing quietly.
+    #[test]
+    fn the_node_budget_grows_with_the_distance_and_stops_at_a_ceiling() {
+        /// The nodes granted whatever the distance.
+        const BASE: usize = 65_536;
+        /// The nodes granted for each unit of the squared distance.
+        const PER_SQUARE: usize = 4;
+        /// The most any one search may open.
+        const CEILING: usize = 2_000_000;
+        /// A walk of this many tiles, and one no character ever takes.
+        const NEAR: u16 = 1;
+        const FAR: u16 = 100;
+        const FURTHER_THAN_ANY_MAP: u16 = u16::MAX;
+        let at = |x: u16| Point3::new(x, 0, 0);
+        assert_eq!(
+            expand_budget(at(0), at(NEAR)),
+            BASE + PER_SQUARE,
+            "the next tile is granted the whole of the base"
+        );
+        assert_eq!(
+            expand_budget(at(0), at(FAR)),
+            BASE + usize::from(FAR) * usize::from(FAR) * PER_SQUARE,
+            "and a far goal is granted the square of the distance"
+        );
+        assert_eq!(
+            expand_budget(at(0), at(FURTHER_THAN_ANY_MAP)),
+            CEILING,
+            "and no goal at all is granted more than the ceiling"
+        );
+    }
+
+    /// Where the walk to `goal` steps in from, or `None` when there is no
+    /// walk. The direction of a step names the tile it was taken from.
+    fn stepped_in_from<M: TileQuery + ?Sized>(
+        map: &M,
+        start: Point3,
+        goal: Point3,
+        obstacles: &Obstacles,
+    ) -> Option<(u16, u16)> {
+        let last = *pathfind(map, start, goal, obstacles).ok()?.steps.last()?;
+        let (dx, dy) = last.direction.delta();
+        Some((
+            (i32::from(last.x) - dx) as u16,
+            (i32::from(last.y) - dy) as u16,
+        ))
+    }
+
+    /// A height far enough from the walk that a move remembered there is
+    /// another move: see [`SAME_MOVE_HEIGHT`].
+    const ANOTHER_STOREY_Z: i8 = 20;
+
+    /// A tile at the top of a step is entered from the step below it and from
+    /// nowhere else, so the server refuses the step onto it from the side and
+    /// grants the very same tile from the front. Kept as a shut tile, that one
+    /// refusal shuts the stair and the storey it leads to. Kept as a shut
+    /// move, it shuts the way in that failed and the walk goes round.
+    #[test]
+    fn a_refused_move_shuts_that_one_way_in_and_leaves_the_tile_open() {
+        const CROSSROADS: u16 = 3;
+        let map = MockMap::new(CROSSROADS, CROSSROADS);
+        let start = Point3::new(0, 1, 0);
+        let step_below = Point3::new(1, 1, 0);
+        let top_of_the_step = Point3::new(2, 1, 0);
+        let refused = [BlockedMove {
+            from: step_below,
+            to: top_of_the_step,
+        }];
+        let remembered_elsewhere = [BlockedMove {
+            from: Point3::new(step_below.x, step_below.y, ANOTHER_STOREY_Z),
+            to: Point3::new(top_of_the_step.x, top_of_the_step.y, ANOTHER_STOREY_Z),
+        }];
+
+        assert_eq!(
+            stepped_in_from(&map, start, top_of_the_step, &Obstacles::NONE),
+            Some((step_below.x, step_below.y)),
+            "the straight way in is the way the walk goes with nothing in it"
+        );
+        let round = stepped_in_from(
+            &map,
+            start,
+            top_of_the_step,
+            &Obstacles {
+                moves: &refused,
+                ..Obstacles::NONE
+            },
+        )
+        .expect("the tile is reached still, from a side that was never refused");
+        assert_ne!(
+            round,
+            (step_below.x, step_below.y),
+            "but never by the move that was refused"
+        );
+        assert_eq!(
+            stepped_in_from(
+                &map,
+                start,
+                top_of_the_step,
+                &Obstacles {
+                    moves: &remembered_elsewhere,
+                    ..Obstacles::NONE
+                }
+            ),
+            Some((step_below.x, step_below.y)),
+            "a move remembered a storey away is another move"
+        );
+        assert_eq!(
+            pathfind(
+                &map,
+                start,
+                top_of_the_step,
+                &Obstacles {
+                    hard: &[top_of_the_step],
+                    ..Obstacles::NONE
+                }
+            )
+            .unwrap_err(),
+            PathError::BlockedGoal,
+            "the same refusal kept as a shut tile would have shut the tile itself"
+        );
     }
 
     #[test]

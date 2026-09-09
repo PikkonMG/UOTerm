@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 
 use crate::error::{ProtocolError, Result};
-use crate::types::{Era, VARIABLE_LEN_FLAG};
+use crate::types::{
+    ClientVersion, Era, VARIABLE_LEN_FLAG, WORLD_ITEM_SA_LEN, WORLD_ITEM_SA_LEN_PRE_HIGH_SEAS,
+};
 
 pub use crate::types::VARIABLE_LEN_FLAG as VARIABLE_LEN;
 
@@ -29,8 +31,10 @@ const LEN_KR_E9: u16 = 75;
 const LEN_KR_EA: u16 = 3;
 const LEN_SEED: u16 = 21;
 /// Classic Client 7.0.9.0+ / 7.0.116 SA world-item size.
-/// 7.0.0.0–7.0.8.x used 24. Overlay `0xF3: 24` for those shards.
-const LEN_WORLD_ITEM_SA: u16 = 26;
+/// 7.0.0.0–7.0.8.x used 24. [`PacketTable::for_version`] picks between them.
+/// The framer and the decoder must read the same width, so both sizes come
+/// from the one pair of constants the decoder uses.
+const LEN_WORLD_ITEM_SA: u16 = WORLD_ITEM_SA_LEN as u16;
 const LEN_TIME_SYNC_RESP: u16 = 25;
 const LEN_NEW_MAP: u16 = 21;
 const LEN_CREATE_CHAR_70160: u16 = 106;
@@ -38,6 +42,11 @@ const LEN_PUBLIC_HOUSE: u16 = 2;
 const LEN_ASSISTANT_HANDSHAKE: u16 = 8;
 const LEN_KR_ACCOUNT_LOGIN: u16 = 78;
 const LEN_CD_UNKNOWN: u16 = 1;
+const LEN_CONTAINER_PRE_HIGH_SEAS: u16 = 7;
+const LEN_MULTI_PLACEMENT_PRE_HIGH_SEAS: u16 = 26;
+const LEN_QUEST_ARROW_PRE_HIGH_SEAS: u16 = 6;
+/// `0xF3` without the trailing word High Seas added.
+const LEN_WORLD_ITEM_SA_PRE_HIGH_SEAS: u16 = WORLD_ITEM_SA_LEN_PRE_HIGH_SEAS as u16;
 
 /// Interprets one slot from a 256-entry era table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,10 +76,33 @@ pub struct PacketTable {
 }
 
 impl PacketTable {
+    /// Table for one era at the version that era defaults to.
     pub fn for_era(era: Era) -> Self {
+        Self::for_version(era, era.default_version())
+    }
+
+    /// Table for one era, refined by the client version the session speaks.
+    ///
+    /// The modern table carries the High Seas sizes, which the reference
+    /// client only uses from 7.0.9.0 up. A server writes the smaller forms to
+    /// a session it holds as Stygian Abyss but not High Seas, so framing such
+    /// a stream with the larger sizes leaves bytes behind on every one of
+    /// those packets and the stream then desynchronises.
+    ///
+    /// The modern table serves 7.0.0.0 and up, where every earlier gate
+    /// (6.0.1.7, 6.0.6.0 and 6.0.14.2) is already met. Below that the T2A
+    /// table is the right base, and this call leaves it alone.
+    pub fn for_version(era: Era, version: ClientVersion) -> Self {
         match era {
             Era::T2a => Self::t2a(),
-            Era::Modern => Self::modern(),
+            Era::Modern if version.has_high_seas() => Self::modern(),
+            Era::Modern => {
+                let mut table = Self::modern();
+                for &(id, len) in PRE_HIGH_SEAS_OVERRIDES {
+                    table.lengths[id as usize] = len;
+                }
+                table
+            }
         }
     }
 
@@ -164,6 +196,9 @@ pub const T2A_LENGTHS: [u16; 256] = [
 ///
 /// Patches T2A 2.0.7. Sizes follow the reference client version gates at
 /// 6.0.1.7 (grid), 6.0.14.2 (32-bit 0xB9), and 7.0.9.0 (0x24/0x99/0xBA/0xF3).
+/// The 7.0.9.0 four sit here at their High Seas sizes; a session below that
+/// version wants [`PacketTable::for_version`], which puts back the smaller
+/// forms a server writes to it.
 ///
 /// 0xF1: this table uses variable (self-describing). A reference client from
 /// 7.0.9.0 up uses fixed 9. Overlay `0xF1: 9` if a shard sends the 7.0.9
@@ -236,6 +271,16 @@ const MODERN_OVERRIDES: &[(u8, u16)] = &[
     (0xFC, VARIABLE_LEN_FLAG),
     (0xFD, VARIABLE_LEN_FLAG),
     (0xFE, LEN_ASSISTANT_HANDSHAKE),
+];
+
+/// Sizes the reference client uses below 7.0.9.0 for the four packets High
+/// Seas grew. It moves all four at that one boundary, and the modern table
+/// above holds their larger forms.
+const PRE_HIGH_SEAS_OVERRIDES: &[(u8, u16)] = &[
+    (0x24, LEN_CONTAINER_PRE_HIGH_SEAS),
+    (0x99, LEN_MULTI_PLACEMENT_PRE_HIGH_SEAS),
+    (0xBA, LEN_QUEST_ARROW_PRE_HIGH_SEAS),
+    (0xF3, LEN_WORLD_ITEM_SA_PRE_HIGH_SEAS),
 ];
 
 #[cfg(test)]
@@ -453,6 +498,59 @@ mod tests {
         let t = PacketTable::modern();
         let unknown: Vec<u8> = (0u8..=255).filter(|&id| !t.is_known(id)).collect();
         assert_eq!(unknown, vec![0xFF], "only 0xFF stays unknown on modern");
+    }
+
+    /// A server writes `0xF3` two bytes shorter to a session it holds as
+    /// Stygian Abyss but not High Seas, and the reference client sizes the
+    /// same four packets by that one 7.0.9.0 boundary.
+    #[test]
+    fn high_seas_gate_picks_the_world_item_size() {
+        const VERSION_PRE_HIGH_SEAS: &str = "7.0.8.2";
+        const VERSION_HIGH_SEAS: &str = "7.0.9.0";
+        let older: ClientVersion = VERSION_PRE_HIGH_SEAS.parse().unwrap();
+        let newer: ClientVersion = VERSION_HIGH_SEAS.parse().unwrap();
+        assert!(!older.has_high_seas());
+        assert!(newer.has_high_seas());
+
+        let pre = PacketTable::for_version(Era::Modern, older);
+        assert_eq!(
+            pre.fixed_len(0xF3),
+            Some(LEN_WORLD_ITEM_SA_PRE_HIGH_SEAS),
+            "0xF3 below 7.0.9.0"
+        );
+        assert_eq!(pre.fixed_len(0x24), Some(LEN_CONTAINER_PRE_HIGH_SEAS));
+        assert_eq!(pre.fixed_len(0x99), Some(LEN_MULTI_PLACEMENT_PRE_HIGH_SEAS));
+        assert_eq!(pre.fixed_len(0xBA), Some(LEN_QUEST_ARROW_PRE_HIGH_SEAS));
+
+        let hs = PacketTable::for_version(Era::Modern, newer);
+        assert_eq!(hs.fixed_len(0xF3), Some(LEN_WORLD_ITEM_SA));
+        assert_eq!(hs.fixed_len(0x24), Some(LEN_CONTAINER));
+        assert_eq!(hs.fixed_len(0x99), Some(LEN_MULTI_PLACEMENT));
+        assert_eq!(hs.fixed_len(0xBA), Some(LEN_QUEST_ARROW));
+    }
+
+    /// The gate must move nothing else and must leave both era defaults as
+    /// they were.
+    #[test]
+    fn high_seas_gate_leaves_every_other_slot_alone() {
+        const VERSION_PRE_HIGH_SEAS: &str = "7.0.8.2";
+        let older: ClientVersion = VERSION_PRE_HIGH_SEAS.parse().unwrap();
+        let pre = PacketTable::for_version(Era::Modern, older);
+        let modern = PacketTable::modern();
+        let gated: Vec<u8> = (0u8..=255)
+            .filter(|&id| pre.get(id) != modern.get(id))
+            .collect();
+        assert_eq!(gated, vec![0x24, 0x99, 0xBA, 0xF3]);
+
+        for era in [Era::T2a, Era::Modern] {
+            let by_era = PacketTable::for_era(era);
+            let by_version = PacketTable::for_version(era, era.default_version());
+            for id in 0u8..=255 {
+                assert_eq!(by_era.get(id), by_version.get(id), "0x{id:02X} {era}");
+            }
+        }
+        // The T2A table has no `0xF3` at all, so no version may add one.
+        assert!(!PacketTable::for_version(Era::T2a, ClientVersion::MODERN).is_known(0xF3));
     }
 
     #[test]

@@ -36,7 +36,8 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, interval_at, MissedTickBehavior};
 use uoterm_nav::{
-    pathfind, pathfind_flat, MapError, MockMap, MulMap, MultiData, Obstacles, TileQuery,
+    pathfind, pathfind_flat, BlockedMove, MapError, MockMap, MulMap, MultiData, Obstacles,
+    TileQuery,
 };
 use uoterm_protocol::crypto::{for_mode, IdentityCipher, StreamCipher};
 use uoterm_protocol::encode;
@@ -76,6 +77,10 @@ const FORGOT_MEMORY_FULL: &str = "it was the oldest and the memory is full";
 /// Why a refused tile is forgotten: the server has just put the character on
 /// it, which is proof it takes him.
 const FORGOT_HE_STANDS_ON_IT: &str = "he stands on it";
+/// Why a refused tile is forgotten: the character has been told to walk
+/// somewhere else, and the mark was made on the way to somewhere he is no
+/// longer going.
+const FORGOT_NEW_DESTINATION: &str = "a new destination was set";
 const MOCK_GRID: u16 = 2048;
 #[cfg(test)]
 const GREEDY_STEP_CAP: usize = 64;
@@ -89,6 +94,53 @@ const SPEECH_REJECTED: &str = "speech rejected by persona policy";
 const SPEECH_RATE_LIMITED: &str = "persona chat rate exceeded";
 /// The facet a session reads before the shard says which one it is on.
 const START_MAP_INDEX: u8 = 0;
+/// The word the server writes when the character has no stamina left to move
+/// with. It is read out of the line in lower case, so the shard may write it
+/// in whatever case it likes.
+const FATIGUED_WORD: &str = "fatigued";
+/// The number of that same line in the client string file, which a shard sends
+/// instead of the words. It reaches this client as the number behind a `#`.
+const CLILOC_TOO_FATIGUED: u32 = 500_110;
+/// How a numbered line is written once it has been read off the wire.
+const CLILOC_PREFIX: &str = "#";
+/// How recently the server must have said the character is too tired for a
+/// refusal to be about that and not about the way ahead.
+const FATIGUE_WINDOW: Duration = Duration::from_millis(1500);
+/// How long he rests before he tries again once he is told he is too tired.
+/// Stamina comes back on its own, and nothing else has to happen.
+const FATIGUE_WAIT: Duration = Duration::from_millis(2000);
+/// How long he waits for somebody to step off the tile he wants. A person is
+/// off his tile in about this long, and waiting costs nothing but the wait.
+const MOBILE_WAIT: Duration = Duration::from_millis(500);
+/// How far apart in height a mobile and the cell may stand and still be on the
+/// same floor. Half a body: further than that and the person is upstairs.
+const MOBILE_SAME_FLOOR_Z: i16 = 8;
+/// How often he waits at one cell before he treats it as shut after all. A
+/// person who has not moved in this many tries is not going to.
+const WAITS_BLOCK_CELL: u32 = 15;
+/// How often he waits over the whole trip before he gives the trip up. The
+/// count that blocks a cell starts again each time; this one does not, so a
+/// character shut in by a crowd stops instead of shuffling for ever.
+const WAITS_GIVE_UP: u32 = 25;
+/// How long he pauses before walking the new route after a refusal he has
+/// planned his way around. Long enough that the route is planned once and not
+/// on every tick, and short enough that nobody sees him stop.
+const REPLAN_RESUME: Duration = Duration::from_millis(150);
+/// How long he gives a door to swing before he tries the same step again.
+const DOOR_RETRY_WAIT: Duration = Duration::from_millis(700);
+/// How many refusals of one crossing are the first one. Past that the way is
+/// shut and the cell is marked.
+const EDGE_REFUSALS_FIRST: u32 = 1;
+/// How long he pauses before the new route once a crossing is proven shut.
+/// It is a random span so that two characters refused at one wall do not walk
+/// into it again together on the same tick.
+const SHUT_RESUME_MIN_MS: u64 = 200;
+const SHUT_RESUME_MAX_MS: u64 = 400;
+/// What the log and the caller are told when a trip ends because the character
+/// has waited too long for the same way to open.
+const WAITED_TOO_LONG: &str = "waited too long for the way to open";
+/// What they are told when a trip ends because no route it plans gets anywhere.
+const REPLANNED_TOO_OFTEN: &str = "the route was planned again too many times";
 
 enum SessionCmd {
     Tool(ToolCall, oneshot::Sender<ToolResult>),
@@ -210,6 +262,10 @@ struct Inner {
     last_event_seq: u64,
     last_name_retry: Instant,
     last_path_fail: Option<(Point3, Instant)>,
+    /// When the server last said the character was too tired to move. A
+    /// refusal that close behind it is about his stamina and about nothing in
+    /// the way.
+    last_fatigued: Option<Instant>,
 }
 
 /// The tiles a walk must go around, kept apart by what proves each one shut,
@@ -223,14 +279,18 @@ struct InTheWay {
     /// The tiles the server refused, and the walls of the buildings the
     /// character can see: each is proven shut.
     hard: Vec<Point3>,
+    /// The crossings the server refused, each shut in the one direction it was
+    /// refused in and open from every other side.
+    moves: Vec<BlockedMove>,
 }
 
 impl InTheWay {
-    /// The two lists as the route finder reads them.
+    /// The three lists as the route finder reads them.
     fn obstacles(&self) -> Obstacles<'_> {
         Obstacles {
             soft: &self.soft,
             hard: &self.hard,
+            moves: &self.moves,
         }
     }
 }
@@ -303,6 +363,7 @@ impl Inner {
         InTheWay {
             soft: self.mobiles(),
             hard,
+            moves: self.movement.refused_edges.moves(),
         }
     }
 
@@ -383,7 +444,10 @@ async fn run_session(
     mut rx: mpsc::Receiver<SessionCmd>,
     login_tx: oneshot::Sender<Result<()>>,
 ) -> Result<()> {
-    let table = PacketTable::for_era(opts.era);
+    // The world-item packet is two bytes shorter below client 7.0.9.0, and
+    // three other packets move with it. Reading the wrong width there loses
+    // two bytes per item and the whole stream then runs out of step.
+    let table = PacketTable::for_version(opts.era, opts.version);
     let mut maps = HashMap::new();
     if let Some(path) = &opts.uopath {
         match shared_facet(&facets, path, START_MAP_INDEX) {
@@ -449,6 +513,7 @@ async fn run_session(
         last_skill: Instant::now() - ACTION_COOLDOWN,
         last_bandage: Instant::now() - BANDAGE_COOLDOWN,
         last_path_fail: None,
+        last_fatigued: None,
         last_event_seq: 0,
         last_name_retry: Instant::now(),
     };
@@ -494,7 +559,7 @@ async fn run_session(
             n = reader.read(&mut buf) => {
                 let n = n.map_err(|e| RuntimeError::Network(e.to_string()))?;
                 if n == 0 { break; }
-                ingest_wire(&mut inner, &mut buf[..n]);
+                read_from_the_wire(&mut inner, &mut buf[..n]);
             }
             _ = ping.tick() => { inner.outbound.push_back(encode::ping(1)); }
             _ = tick.tick() => {
@@ -572,6 +637,19 @@ fn ingest_wire(inner: &mut Inner, data: &mut [u8]) -> Vec<Inbound> {
         inner.cipher.decrypt(data);
     }
     ingest(inner, data)
+}
+
+/// Everything one read off the socket sets going: the packets themselves, and
+/// then the walk.
+///
+/// The walk is pumped here and not on the tick alone. The answer to a step is
+/// what frees the wire for the next one, so a walk pumped only on the tick
+/// leaves every step waiting up to one whole tick after its answer landed, and
+/// a character loses that much ground on every step of a run.
+fn read_from_the_wire(inner: &mut Inner, data: &mut [u8]) -> Vec<Inbound> {
+    let msgs = ingest_wire(inner, data);
+    pump_movement(inner, Instant::now());
+    msgs
 }
 
 async fn tcp_write(writer: &mut tokio::net::tcp::OwnedWriteHalf, bytes: &[u8]) -> Result<()> {
@@ -1100,6 +1178,7 @@ mod relay_tests {
             &Obstacles {
                 soft: &standing_there,
                 hard: &[],
+                moves: &[],
             },
         )
         .expect("a tile beside the target");
@@ -1201,15 +1280,29 @@ mod relay_tests {
             last_skill: now,
             last_bandage: now,
             last_path_fail: None,
+            last_fatigued: None,
             last_event_seq: 0,
             last_name_retry: now,
         }
     }
 
-    /// Stands the character on a tile the way a server packet does, and gives
-    /// him the route to walk from it at a walking pace.
+    /// Stands the character on a tile the way a server packet does, facing the
+    /// way the route starts, and gives him that route to walk at a walking
+    /// pace.
+    ///
+    /// He faces it because a person who has just walked this way already does,
+    /// and a step in the direction he faces goes out as a step. A step in any
+    /// other direction turns him first and moves him nowhere; the tests that
+    /// measure the turn set the facing themselves.
     fn walks_from(inner: &mut Inner, at: Point3, route: Vec<Point3>) {
-        inner.world.write().self_state.location = at;
+        let facing = route.first().and_then(|first| facing_toward(at, *first));
+        {
+            let mut world = inner.world.write();
+            world.self_state.location = at;
+            if let Some(facing) = facing {
+                world.self_state.direction = facing as u8;
+            }
+        }
         inner.movement.run_override = Some(WALKING);
         let dest = *route.last().expect("a route has a destination");
         inner.movement.set_path(route, dest);
@@ -1225,6 +1318,69 @@ mod relay_tests {
     /// The tile the client reports the character on.
     fn reported_at(inner: &Inner) -> Point3 {
         inner.world.read().self_state.location
+    }
+
+    /// One reflex tick, the shortest span a walk can be held back by.
+    const ONE_TICK: Duration = Duration::from_millis(REFLEX_TICK_MS);
+    /// The two ways a shard says the character has no stamina left to move
+    /// with: in words, and as the number of the same line in the client string
+    /// file.
+    const TOO_FATIGUED_IN_WORDS: &str = "You are too fatigued to move.";
+    const TOO_FATIGUED_AS_A_NUMBER: &str = "#500110";
+    /// Where the text of a system message starts in the packet the server
+    /// writes: past the id, the length, the serial, the graphic, the kind, the
+    /// hue, the font and the thirty bytes of the speaker's name.
+    const ASCII_MESSAGE_NAME_LEN: usize = 30;
+
+    /// One line of speech from the server, as it sends a system message: no
+    /// speaker, and the text in plain bytes.
+    fn system_message(text: &str) -> Vec<u8> {
+        let mut pkt = vec![PKT_ASCII_MESSAGE, 0, 0];
+        pkt.extend_from_slice(&Serial::INVALID.0.to_be_bytes());
+        pkt.extend_from_slice(&u16::MAX.to_be_bytes());
+        pkt.push(SPEECH_SYSTEM);
+        pkt.extend_from_slice(&NO_HUE.to_be_bytes());
+        pkt.extend_from_slice(&NO_HUE.to_be_bytes());
+        pkt.extend_from_slice(&[0; ASCII_MESSAGE_NAME_LEN]);
+        pkt.extend_from_slice(text.as_bytes());
+        pkt.push(0);
+        let len = pkt.len() as u16;
+        pkt[1..3].copy_from_slice(&len.to_be_bytes());
+        pkt
+    }
+
+    /// How many requests one step of a route can cost: the turn that aims it,
+    /// where the character does not already face that way, and the step
+    /// itself.
+    const REQUESTS_PER_STEP: usize = 2;
+
+    /// Pumps until a real step is on the wire, answering the turn that aims it
+    /// where the route changes direction. Gives back that step.
+    fn step_onto_the_wire(inner: &mut Inner, now: &mut Instant) -> movement::PendingStep {
+        for _ in 0..REQUESTS_PER_STEP {
+            pump_movement(inner, *now);
+            let sent = inner
+                .movement
+                .in_flight
+                .back()
+                .cloned()
+                .expect("a request goes out");
+            if !sent.turn {
+                return sent;
+            }
+            accept_move_ack(inner, sent.sequence);
+            *now += STEP_PACE;
+        }
+        panic!("a step never went out");
+    }
+
+    /// Walks one step of the route and has the server agree to it, turning
+    /// first where the route changes direction. Gives back the step.
+    fn walk_one_step(inner: &mut Inner, now: &mut Instant) -> movement::PendingStep {
+        let step = step_onto_the_wire(inner, now);
+        accept_move_ack(inner, step.sequence);
+        *now += STEP_PACE;
+        step
     }
 
     /// The move requests the character has queued for the wire.
@@ -1294,12 +1450,16 @@ mod relay_tests {
     /// looks; no walk cares, so every test uses the one direction.
     const FACING_AFTER_A_REFUSAL: Direction = Direction::North;
 
-    /// One refusal, as the server sends it: the tile it carries is where the
-    /// character stands, and every step he had on the wire is thrown away.
-    fn refusal_at(at: Point3) -> [u8; MOVE_REJECT_LEN] {
+    /// One refusal, as the server sends it: the sequence it answers, the tile
+    /// it carries, which is where the character really stands, and the way he
+    /// is left facing. Every request he had on the wire is thrown away with it.
+    ///
+    /// The sequence must be one he is waiting on, or the client reads the
+    /// packet as the echo of a refusal it has already dealt with.
+    fn refusal_at(sequence: u8, at: Point3) -> [u8; MOVE_REJECT_LEN] {
         [
             PKT_MOVE_REJECT,
-            movement::SEQ_FIRST,
+            sequence,
             (at.x >> 8) as u8,
             at.x as u8,
             (at.y >> 8) as u8,
@@ -1389,12 +1549,13 @@ mod relay_tests {
     /// for the answer to the first.
     #[test]
     fn the_next_step_goes_out_at_the_pace_and_waits_for_no_answer() {
+        const STRAIGHT_STEPS: usize = 2;
         let mut inner = test_session();
-        walks_from(
-            &mut inner,
-            MEASURED_START,
-            vec![MEASURED_EAST, MEASURED_SOUTH],
-        );
+        // Straight on, so the pace is all that spaces these two steps: a
+        // change of direction costs a turn first, which is measured on its own.
+        let route = route_east(MEASURED_START, STRAIGHT_STEPS);
+        let second_tile = route[1];
+        walks_from(&mut inner, MEASURED_START, route);
         let now = Instant::now();
         pump_movement(&mut inner, now);
         assert_eq!(
@@ -1407,7 +1568,7 @@ mod relay_tests {
             steps_sent(&inner),
             vec![
                 step_request(Direction::East, movement::SEQ_FIRST),
-                step_request(Direction::South, movement::SEQ_AFTER_WRAP),
+                step_request(Direction::East, movement::SEQ_AFTER_WRAP),
             ],
             "and the second follows a step's pace later, unanswered as the first still is"
         );
@@ -1423,10 +1584,77 @@ mod relay_tests {
             "the first answer moves him one tile, and only one"
         );
         accept_move_ack(&mut inner, movement::SEQ_AFTER_WRAP);
+        assert_eq!(reported_at(&inner), second_tile, "and so does the second");
+    }
+
+    /// The worst of the measured faults. A move request in a direction the
+    /// character does not face turns him and moves him nowhere: the server
+    /// sets the new location to the old one and answers all the same. So the
+    /// same direction has to go out twice, once to turn and once to step.
+    ///
+    /// Against the code before this test the client sent the step alone and
+    /// credited the tile to its answer, so every change of direction put its
+    /// idea of where he stood one tile ahead of the truth, and one further
+    /// ahead on every corner after that.
+    #[test]
+    fn a_change_of_direction_turns_him_first_and_the_turn_takes_no_tile() {
+        let mut inner = test_session();
+        walks_from(
+            &mut inner,
+            MEASURED_START,
+            vec![MEASURED_EAST, MEASURED_SOUTH],
+        );
+        let now = Instant::now();
+        pump_movement(&mut inner, now);
+        accept_move_ack(&mut inner, movement::SEQ_FIRST);
+        assert_eq!(reported_at(&inner), MEASURED_EAST, "the step east lands");
+
+        pump_movement(&mut inner, now + STEP_PACE);
+        let turn = inner
+            .movement
+            .in_flight
+            .back()
+            .cloned()
+            .expect("a request goes out");
+        assert!(
+            turn.turn,
+            "he faces east and the route turns south, so he turns"
+        );
+        assert_eq!(
+            inner.movement.path.len(),
+            1,
+            "and the turn takes no tile out of the route: {:?}",
+            inner.movement.path
+        );
+        accept_move_ack(&mut inner, turn.sequence);
+        assert_eq!(
+            reported_at(&inner),
+            MEASURED_EAST,
+            "the answer to a turn moves him nowhere at all"
+        );
+        assert_eq!(
+            inner.world.read().self_state.direction,
+            Direction::South as u8,
+            "it only changes the way he faces"
+        );
+
+        pump_movement(&mut inner, now + STEP_PACE + movement::TURN_PACE);
+        let step = inner
+            .movement
+            .in_flight
+            .back()
+            .cloned()
+            .expect("the step follows the turn");
+        assert!(
+            !step.turn,
+            "the same direction again, and this one is the step"
+        );
+        assert_eq!(step.direction, Direction::South);
+        accept_move_ack(&mut inner, step.sequence);
         assert_eq!(
             reported_at(&inner),
             MEASURED_SOUTH,
-            "and so does the second"
+            "and that answer is the one that moves him"
         );
     }
 
@@ -1518,6 +1746,64 @@ mod relay_tests {
         );
     }
 
+    /// One answer, as the server sends it: the sequence it confirms and the
+    /// notoriety of the character it moves.
+    const MOVE_ACK_NOTORIETY: u8 = 1;
+
+    fn move_ack(sequence: u8) -> Vec<u8> {
+        vec![PKT_MOVE_ACK, sequence, MOVE_ACK_NOTORIETY]
+    }
+
+    /// The answer to a step is what frees the wire for the next one, so the
+    /// walk is pumped the moment that answer lands and not only on the next
+    /// tick.
+    ///
+    /// Pumped on the tick alone, every step of a full wire leaves up to a
+    /// whole [`REFLEX_TICK_MS`] after its slot opened, and a character loses
+    /// that much ground on every step of a long run.
+    #[test]
+    fn an_answer_off_the_wire_sends_the_next_step_at_once() {
+        let full = movement::IN_FLIGHT_MAX;
+        let mut inner = test_session();
+        walks_from(
+            &mut inner,
+            MEASURED_START,
+            route_east(MEASURED_START, full + 1),
+        );
+        // Fill the wire at the pace of a person, ending level with now, so
+        // that the cap is the only thing holding the next step back.
+        let start = Instant::now() - STEP_PACE * full as u32;
+        for sent in 0..full {
+            pump_movement(&mut inner, start + STEP_PACE * sent as u32);
+        }
+        assert_eq!(inner.movement.in_flight.len(), full, "the wire is full");
+        assert_eq!(steps_sent(&inner).len(), full);
+        let oldest = inner
+            .movement
+            .in_flight
+            .front()
+            .cloned()
+            .expect("a step is waiting for its answer");
+
+        read_from_the_wire(&mut inner, &mut move_ack(oldest.sequence));
+        assert_eq!(
+            reported_at(&inner),
+            oldest.arrives_at,
+            "the answer moves him one tile"
+        );
+        assert_eq!(
+            steps_sent(&inner).len(),
+            full + 1,
+            "and the step it made room for goes out in the same breath, \
+             without waiting for a tick"
+        );
+        assert_eq!(
+            inner.movement.in_flight.len(),
+            full,
+            "so the wire stays full"
+        );
+    }
+
     /// A refusal ends every step on the wire at once. The server threw them
     /// all away, so the character snaps to the tile the refusal carries and
     /// starts his counting again from there.
@@ -1535,12 +1821,17 @@ mod relay_tests {
             movement::IN_FLIGHT_MAX,
             "the wire is full before the refusal"
         );
-        ingest(&mut inner, &refusal_at(MEASURED_START));
+        ingest(&mut inner, &refusal_at(movement::SEQ_FIRST, MEASURED_START));
         assert!(
             inner.movement.in_flight.is_empty(),
             "every step the server threw away is gone"
         );
-        assert!(!inner.movement.walking(), "and the route with them");
+        assert_eq!(
+            inner.movement.path.len(),
+            movement::IN_FLIGHT_MAX,
+            "the route is kept: one refusal is worth one more try at the same step, \
+             and the step that was refused goes back at the head of it"
+        );
         assert_eq!(
             reported_at(&inner),
             MEASURED_START,
@@ -1737,11 +2028,17 @@ mod relay_tests {
             .insert(SOMEBODY_ELSE, standing_at(target_at));
         runs_from(&mut inner, start, route);
         let now = Instant::now();
-        let steps_out = 3;
-        for sent in 0..steps_out {
+        // Three steps and the turn that aims the last of them, which changes
+        // direction: four requests, which is the whole of what the wire holds.
+        let requests_out = movement::IN_FLIGHT_MAX;
+        for sent in 0..requests_out {
             pump_movement(&mut inner, now + RUN_PACE * sent as u32);
         }
-        assert_eq!(inner.movement.in_flight.len(), steps_out, "three steps out");
+        assert_eq!(
+            inner.movement.in_flight.len(),
+            requests_out,
+            "three steps and the turn that aims the last are out"
+        );
         assert_eq!(reported_at(&inner), start, "and none of them has moved him");
         assert_eq!(
             inner.movement.stepping_from(reported_at(&inner)),
@@ -1761,25 +2058,35 @@ mod relay_tests {
         );
         assert_eq!(
             inner.movement.in_flight.len(),
-            steps_out,
-            "and holds on to the steps the server is going to answer"
+            requests_out,
+            "and holds on to the requests the server is going to answer"
         );
-        for (i, tile) in [
-            Point3::new(FOLLOW_START_X + 1, FOLLOW_ROW, 0),
-            Point3::new(FOLLOW_START_X + 2, FOLLOW_ROW, 0),
-            beside_the_target,
-        ]
-        .iter()
-        .enumerate()
-        {
-            accept_move_ack(&mut inner, i as u8);
-            assert_eq!(reported_at(&inner), *tile, "answer {i} moves him one tile");
+        // Each answer puts him on the tile its own request carries: a step on
+        // the tile it was aimed at, and the turn on the tile he already
+        // stands on.
+        let owed: Vec<movement::PendingStep> = inner.movement.in_flight.iter().cloned().collect();
+        for (i, request) in owed.iter().enumerate() {
+            accept_move_ack(&mut inner, request.sequence);
+            assert_eq!(
+                reported_at(&inner),
+                request.arrives_at,
+                "answer {i} puts him on the tile that request carries"
+            );
         }
+        assert_eq!(
+            reported_at(&inner),
+            beside_the_target,
+            "and the last of them leaves him beside the target"
+        );
     }
 
     /// The measured walk, done the way this client now walks it: east, south,
     /// south, one confirmed step at a time, ending on the tile it was aimed at
     /// with the arrival recorded from that same tile.
+    /// How many changes of direction the measured walk has in it: east, then
+    /// south. Each one costs a turn before the step.
+    const TURNS_ON_THE_MEASURED_WALK: usize = 1;
+
     #[test]
     fn a_route_is_walked_one_confirmed_step_at_a_time() {
         let route = [MEASURED_EAST, MEASURED_SOUTH, MEASURED_END];
@@ -1787,23 +2094,31 @@ mod relay_tests {
         walks_from(&mut inner, MEASURED_START, route.to_vec());
         let mut now = Instant::now();
         for (i, tile) in route.iter().enumerate() {
-            pump_movement(&mut inner, now);
-            assert_eq!(steps_sent(&inner).len(), i + 1, "step {i} goes out alone");
-            accept_move_ack(&mut inner, i as u8);
+            let step = walk_one_step(&mut inner, &mut now);
+            assert_eq!(
+                step.arrives_at, *tile,
+                "step {i} is aimed where the route says"
+            );
             assert_eq!(reported_at(&inner), *tile, "step {i} is confirmed");
-            now += STEP_PACE;
         }
         assert_eq!(
             steps_sent(&inner),
             vec![
                 step_request(Direction::East, movement::SEQ_FIRST),
+                // East to south is a change of direction, so the same
+                // direction goes out twice: once to turn, once to step.
                 step_request(Direction::South, movement::SEQ_AFTER_WRAP),
                 step_request(Direction::South, movement::SEQ_AFTER_WRAP + 1),
+                step_request(Direction::South, movement::SEQ_AFTER_WRAP + 2),
             ],
             "the steps go out in the order the route names them"
         );
         pump_movement(&mut inner, now);
-        assert_eq!(steps_sent(&inner).len(), route.len(), "the walk is done");
+        assert_eq!(
+            steps_sent(&inner).len(),
+            route.len() + TURNS_ON_THE_MEASURED_WALK,
+            "the walk is done, and nothing more goes out"
+        );
         assert_eq!(
             inner
                 .world
@@ -1830,7 +2145,7 @@ mod relay_tests {
             vec![MEASURED_SOUTH, MEASURED_END],
         );
         pump_movement(&mut inner, Instant::now());
-        ingest(&mut inner, &refusal_at(MEASURED_START));
+        ingest(&mut inner, &refusal_at(movement::SEQ_FIRST, MEASURED_START));
         assert_eq!(
             reported_at(&inner),
             MEASURED_START,
@@ -1842,8 +2157,13 @@ mod relay_tests {
             "facing the way it says as well"
         );
         assert!(
-            !inner.movement.walking(),
-            "the refused step and the route it belonged to are both gone"
+            inner.movement.in_flight.is_empty(),
+            "every request the server threw away is gone"
+        );
+        assert_eq!(
+            inner.movement.path.front().copied(),
+            Some(MEASURED_SOUTH),
+            "and the refused step goes back at the head of the route, for one more try"
         );
         assert!(
             inner.outbound.iter().any(|pkt| *pkt == encode::resync()),
@@ -1943,7 +2263,7 @@ mod relay_tests {
             "the step the walk expected climbs, or the test proves nothing"
         );
 
-        ingest(&mut inner, &refusal_at(foot));
+        ingest(&mut inner, &refusal_at(movement::SEQ_FIRST, foot));
         assert_eq!(
             reported_at(&inner),
             foot,
@@ -1955,8 +2275,8 @@ mod relay_tests {
             "at the height the refusal carries, not the one the step was aimed at"
         );
         assert!(
-            !inner.movement.walking(),
-            "and the refused step and the route it belonged to are both gone"
+            inner.movement.in_flight.is_empty(),
+            "and every request the server threw away is gone"
         );
     }
 
@@ -1988,14 +2308,12 @@ mod relay_tests {
 
         let mut now = Instant::now();
         for (taken, tile) in climb.iter().enumerate() {
-            pump_movement(&mut inner, now);
-            accept_move_ack(&mut inner, taken as u8);
+            walk_one_step(&mut inner, &mut now);
             assert_eq!(
                 reported_at(&inner).z,
                 hill_z(tile.y),
                 "step {taken} of the follow is recorded at the height of the ground it reached"
             );
-            now += STEP_PACE;
         }
         assert_eq!(
             reported_at(&inner).chebyshev(target_at),
@@ -2300,9 +2618,6 @@ mod relay_tests {
         at.x == HOUSE_WALL_X && (LONG_WALL_FROM_Y..=LONG_WALL_TO_Y).contains(&at.y)
     }
 
-    /// Open ground, where no door stands on any tile a refusal is about.
-    const NO_DOOR_IN_SIGHT: &[uoterm_world::DoorItem] = &[];
-
     /// True when the queued route crosses that tile.
     fn route_crosses(inner: &Inner, at: Point3) -> bool {
         inner
@@ -2319,24 +2634,311 @@ mod relay_tests {
         inner.movement.hold();
     }
 
+    // The tests below walk one refusal down each rung of the ladder, in the
+    // order the rungs are tried. A refusal has many causes and only one of
+    // them is a wall, so going straight from a refusal to a blocked tile marks
+    // a tile over and over for reasons no mark can fix: that is what filed 68
+    // refusals against one tile beside the Britain bank.
+
+    /// One refusal makes the server drop every request that reached it after
+    /// the one it refused, and it answers some of those with a refusal of
+    /// their own. Acting on the echo would block a second tile for a step that
+    /// was never really refused.
+    #[test]
+    fn a_refusal_on_a_sequence_he_is_not_waiting_on_is_a_stale_echo() {
+        let mut inner = test_session();
+        let mut now = Instant::now();
+        // Two steps out. The server refuses the first and drops the second,
+        // and answers the second with a refusal of its own.
+        walks_from(&mut inner, REFUSED_FROM, route_east(REFUSED_FROM, 2));
+        let first = step_onto_the_wire(&mut inner, &mut now);
+        now += STEP_PACE;
+        pump_movement(&mut inner, now);
+        let dropped = inner
+            .movement
+            .in_flight
+            .back()
+            .cloned()
+            .expect("the second step is out");
+        assert_ne!(first.sequence, dropped.sequence);
+        assert_eq!(
+            refuse_step(&mut inner, first.sequence, REFUSED_FROM, now),
+            Refusal::TryTheDoor,
+            "the first refusal is the real one"
+        );
+
+        // He has already put the refused step back and asked again, so the
+        // wire holds a request of its own by the time the echo lands.
+        now += DOOR_RETRY_WAIT + STEP_PACE;
+        let asked_again = step_onto_the_wire(&mut inner, &mut now);
+        assert_eq!(
+            refuse_step(&mut inner, dropped.sequence, REFUSED_FROM, now),
+            Refusal::StaleEcho,
+            "the echo carries a sequence he is not waiting on"
+        );
+        assert!(
+            inner.movement.blocked.tiles().is_empty(),
+            "so the echo marks nothing"
+        );
+        assert_eq!(
+            inner.movement.in_flight.front().map(|out| out.sequence),
+            Some(asked_again.sequence),
+            "and it does not throw away the request he really is waiting on"
+        );
+    }
+
+    /// A shard says the character is too tired to move and then refuses his
+    /// step. That is his own stamina and nothing in the way, so he rests and
+    /// tries again rather than marking the ground in front of him.
+    #[test]
+    fn a_refusal_just_after_the_server_says_he_is_too_tired_is_about_his_stamina() {
+        for said in [TOO_FATIGUED_IN_WORDS, TOO_FATIGUED_AS_A_NUMBER] {
+            let mut inner = test_session();
+            let mut now = Instant::now();
+            walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
+            let step = step_onto_the_wire(&mut inner, &mut now);
+            ingest(&mut inner, &system_message(said));
+            assert_eq!(
+                refuse_step(&mut inner, step.sequence, REFUSED_FROM, now),
+                Refusal::Fatigued,
+                "{said:?} is the server saying he has no stamina left"
+            );
+            assert!(
+                inner.movement.blocked.tiles().is_empty(),
+                "nothing is in his way, so nothing is marked"
+            );
+            assert!(
+                !inner.movement.ready(now + FATIGUE_WAIT - ONE_TICK),
+                "and he rests before he asks again"
+            );
+        }
+    }
+
+    /// The server does not test mobiles for a player move at all: it turns the
+    /// step into a shove and refuses the shove unless stamina is full. So a
+    /// refusal at an occupied tile is a moment's business, and a character who
+    /// marks it walks the long way round every person he meets.
+    #[test]
+    fn a_refusal_at_an_occupied_tile_waits_for_the_person_to_move_on() {
+        let mut inner = test_session();
+        let mut now = Instant::now();
+        inner
+            .world
+            .write()
+            .mobiles
+            .insert(SOMEBODY_ELSE, standing_at(THE_HOUSE_WALL));
+        walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
+        let step = step_onto_the_wire(&mut inner, &mut now);
+        assert_eq!(
+            refuse_step(&mut inner, step.sequence, REFUSED_FROM, now),
+            Refusal::Waiting
+        );
+        assert!(
+            inner.movement.blocked.tiles().is_empty(),
+            "a person standing there is no wall"
+        );
+        assert!(
+            !inner.movement.ready(now + MOBILE_WAIT - ONE_TICK),
+            "he waits for the person to step off"
+        );
+    }
+
+    /// A person who has not moved in this many tries is not going to, so the
+    /// tile is treated as shut after all. The count starts again once it is,
+    /// and the count over the whole trip is what ends a trip that is going
+    /// nowhere.
+    #[test]
+    fn waiting_at_one_tile_long_enough_blocks_it_and_then_ends_the_trip() {
+        let mut inner = test_session();
+        let mut now = Instant::now();
+        inner
+            .world
+            .write()
+            .mobiles
+            .insert(SOMEBODY_ELSE, standing_at(THE_HOUSE_WALL));
+        let mut blocked_at = Vec::new();
+        let mut ended = None;
+        for wait in 1..=WAITS_GIVE_UP {
+            inner.movement.hold();
+            walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
+            let step = step_onto_the_wire(&mut inner, &mut now);
+            let what = refuse_step(&mut inner, step.sequence, REFUSED_FROM, now);
+            // He waits for the person to step off, and asks again once that
+            // wait and the pace of a person are both up.
+            now += MOBILE_WAIT + STEP_PACE;
+            match what {
+                Refusal::Waiting => {}
+                Refusal::WaitedOut => blocked_at.push(wait),
+                Refusal::GaveUp => {
+                    ended = Some(wait);
+                    break;
+                }
+                other => panic!("wait {wait} answered as {other:?}"),
+            }
+        }
+        assert_eq!(
+            blocked_at,
+            vec![WAITS_BLOCK_CELL],
+            "he blocks the tile once he has waited at it long enough"
+        );
+        assert_eq!(
+            inner.movement.blocked.tiles(),
+            vec![THE_HOUSE_WALL],
+            "and that is the tile he blocks"
+        );
+        assert_eq!(
+            ended,
+            Some(WAITS_GIVE_UP),
+            "and the whole trip ends once he has waited this often over it"
+        );
+        assert!(
+            inner
+                .world
+                .read()
+                .events
+                .iter()
+                .any(|ev| ev.kind == uoterm_world::EventKind::PathFailed),
+            "so the caller is told, and can choose somewhere else"
+        );
+    }
+
+    /// How far a tile beside him stands: one step.
+    const ONE_STEP_AWAY: u32 = 1;
+
+    /// A house is a dynamic item the server sent, and the client files give
+    /// every wall of it. So a refusal at one of those walls is already
+    /// explained: he plans around the building he can see rather than marking
+    /// its tiles one at a time, which is how one building drew 68 refusals.
+    #[test]
+    fn a_refusal_at_a_building_he_can_see_plans_around_it_and_marks_nothing() {
+        let Some(dir) = client_data_dir_from_env() else {
+            return;
+        };
+        let shapes = Arc::new(MultiData::open(&dir).expect("the client multi files"));
+        let wall = stone_house_wall(&shapes);
+        let into_the_wall = *wall
+            .iter()
+            .find(|tile| tile.chebyshev(REFUSED_FROM) == ONE_STEP_AWAY)
+            .expect("a wall of the house stands beside her");
+        let mut inner = test_session();
+        inner.multi_shapes = Some(shapes);
+        inner.world.write().self_state.location = REFUSED_FROM;
+        ingest(
+            &mut inner,
+            &world_item(STONE_HOUSE_SERIAL, STONE_HOUSE_GRAPHIC, STONE_HOUSE_AT),
+        );
+        let mut now = Instant::now();
+        walks_from(&mut inner, REFUSED_FROM, vec![into_the_wall]);
+        let step = step_onto_the_wire(&mut inner, &mut now);
+        assert_eq!(
+            refuse_step(&mut inner, step.sequence, REFUSED_FROM, now),
+            Refusal::Building,
+            "the house is on the wire already, so the refusal needs no mark to explain it"
+        );
+        assert!(
+            inner.movement.blocked.tiles().is_empty(),
+            "and nothing is marked"
+        );
+    }
+
+    /// A trip planned again this often is going nowhere, and it ends instead
+    /// of looping. Without the cap a character with no way through plans, is
+    /// refused, plans again and never arrives and never says why.
+    #[test]
+    fn a_trip_ends_once_its_route_has_been_planned_again_too_often() {
+        let mut inner = test_session();
+        inner.world.write().self_state.location = REFUSED_FROM;
+        inner.goal = Goal::Travel {
+            dest: PAST_THE_HOUSE,
+        };
+        queue_move(&mut inner, PAST_THE_HOUSE);
+        for replan in 1..=movement::REPLANS_MAX {
+            replan_the_route(&mut inner);
+            assert!(
+                inner.movement.goal.is_some(),
+                "replan {replan} is inside the cap"
+            );
+        }
+        replan_the_route(&mut inner);
+        assert!(
+            inner.movement.goal.is_none(),
+            "and one more ends the trip instead of looping"
+        );
+        assert!(
+            inner
+                .world
+                .read()
+                .events
+                .iter()
+                .any(|ev| ev.kind == uoterm_world::EventKind::PathFailed),
+            "so the caller is told the walk is going nowhere"
+        );
+    }
+
+    /// A new destination is a new journey. The tiles the server refused on the
+    /// way somewhere else say nothing about this way, and a minute is a long
+    /// time to plan around a mark made for a walk he is no longer making.
+    #[test]
+    fn a_new_destination_forgets_the_tiles_refused_on_the_way_to_the_old_one() {
+        let mut inner = test_session();
+        let now = Instant::now();
+        inner.world.write().self_state.location = REFUSED_FROM;
+        queue_move(&mut inner, PAST_THE_HOUSE);
+        inner.movement.blocked.refuse(THE_HOUSE_WALL, now);
+        ready_to_plan_again(&mut inner);
+
+        queue_move(&mut inner, PAST_THE_HOUSE);
+        assert_eq!(
+            inner.movement.blocked.tiles(),
+            vec![THE_HOUSE_WALL],
+            "the same destination is the same journey, so the mark is kept"
+        );
+        ready_to_plan_again(&mut inner);
+
+        queue_move(&mut inner, IN_THE_WAY);
+        assert!(
+            inner.movement.blocked.tiles().is_empty(),
+            "and a new destination drops it"
+        );
+    }
+
     /// A refusal says one thing about the world: that the tile the character
     /// was trying to enter would not take him. Blocking the tile he stands on
     /// instead would wall him in where he is.
     #[test]
     fn a_refusal_blocks_the_tile_he_tried_to_enter_and_not_the_one_he_stands_on() {
         let mut inner = test_session();
+        let mut now = Instant::now();
         walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
-        pump_movement(&mut inner, Instant::now());
-        ingest(&mut inner, &refusal_at(REFUSED_FROM));
+        let first = step_onto_the_wire(&mut inner, &mut now);
+        ingest(&mut inner, &refusal_at(first.sequence, REFUSED_FROM));
         assert_eq!(
             reported_at(&inner),
             REFUSED_FROM,
             "the refusal leaves her on the tile it carries"
         );
+        assert!(
+            inner.movement.blocked.tiles().is_empty(),
+            "the first refusal is worth a door and one more try, and marks nothing"
+        );
+        assert!(
+            inner.outbound.iter().any(|pkt| *pkt == encode::open_door()),
+            "so she asks for the door that may be standing in it"
+        );
+
+        // The leaf has had its time to swing and nothing has, so the same step
+        // goes out again and is refused again.
+        now += DOOR_RETRY_WAIT + STEP_PACE;
+        let second = step_onto_the_wire(&mut inner, &mut now);
+        assert_eq!(
+            second.arrives_at, THE_HOUSE_WALL,
+            "the same step, aimed at the same tile"
+        );
+        ingest(&mut inner, &refusal_at(second.sequence, REFUSED_FROM));
         assert_eq!(
             inner.movement.blocked.tiles(),
             vec![THE_HOUSE_WALL],
-            "and blocks the tile east of it, which is the one she asked for"
+            "and the second refusal blocks the tile east of her, which is the one she asked for"
         );
     }
 
@@ -2357,10 +2959,7 @@ mod relay_tests {
             inner.movement.path
         );
 
-        inner
-            .movement
-            .blocked
-            .refuse(THE_HOUSE_WALL, now, NO_DOOR_IN_SIGHT);
+        inner.movement.blocked.refuse(THE_HOUSE_WALL, now);
         ready_to_plan_again(&mut inner);
         assert!(queue_move(&mut inner, PAST_THE_HOUSE));
         assert!(
@@ -2389,10 +2988,7 @@ mod relay_tests {
     fn standing_on_a_refused_tile_forgets_it() {
         let mut inner = test_session();
         let now = Instant::now();
-        inner
-            .movement
-            .blocked
-            .refuse(THE_HOUSE_WALL, now, NO_DOOR_IN_SIGHT);
+        inner.movement.blocked.refuse(THE_HOUSE_WALL, now);
         walks_from(&mut inner, REFUSED_FROM, vec![THE_HOUSE_WALL]);
         pump_movement(&mut inner, now);
         assert_eq!(
@@ -2433,7 +3029,7 @@ mod relay_tests {
             // says where she really stands, and open ground confirms it.
             if in_the_house_wall(step.arrives_at) {
                 refused.push(step.arrives_at);
-                let refusal = refusal_at(reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner));
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
@@ -2447,34 +3043,47 @@ mod relay_tests {
             PAST_THE_HOUSE,
             "she walks around the house and arrives; refused at {refused:?}"
         );
-        let mut once = refused.clone();
-        once.sort_by_key(|tile| (tile.x, tile.y));
-        once.dedup_by_key(|tile| (tile.x, tile.y));
-        assert_eq!(
-            once.len(),
-            refused.len(),
-            "no tile is asked for twice: {refused:?}"
-        );
+        assert_cell_asked_at_most_twice(&refused);
         assert!(
-            refused.len() <= HOUSE_WALL_TILES,
+            refused.len() <= HOUSE_WALL_TILES * ASKS_PER_CELL,
             "and no more of the wall is met than it holds: {refused:?}"
         );
+    }
+
+    /// How often one cell may be asked for before it is proven shut: once to
+    /// try the door that may be standing in it, and once to prove there is
+    /// none. The second refusal is the one that marks the cell, and nothing
+    /// asks for it again after that.
+    const ASKS_PER_CELL: usize = 2;
+
+    /// Checks that no cell was asked for more often than that.
+    fn assert_cell_asked_at_most_twice(refused: &[Point3]) {
+        for cell in refused {
+            let asks = refused
+                .iter()
+                .filter(|other| other.x == cell.x && other.y == cell.y)
+                .count();
+            assert!(
+                asks <= ASKS_PER_CELL,
+                "{cell} was asked for {asks} times: {refused:?}"
+            );
+        }
     }
 
     /// The measured fault, driven as a walk. Beside the Britain bank one tile
     /// drew 68 refusals and 70 tiles were filed away, every refusal at the
     /// same building: she bumped a corner, remembered that one tile, planned
-    /// again, walked into the tile beside it, remembered that, and worked her
-    /// way down the wall one refusal at a time.
+    /// again, walked into the tile beside it, and worked her way down the wall
+    /// one refusal at a time.
     ///
-    /// The long wall here is what tells the two behaviours apart. Feeling
-    /// along it costs one refusal for every tile of it; knowing it is a wall
-    /// costs [`movement::WALL_REFUSALS`] and one route around the whole of it.
-    /// Against the code before this test, she asked for
-    /// [`LONG_WALL_TILES`] tiles of the wall in turn and this failed on the
-    /// count.
+    /// The cure is not to guess where the rest of the wall runs. It is to
+    /// stop asking for a crossing that has already failed: a refusal marks the
+    /// one cell it was really about, the crossing into it is remembered in the
+    /// one direction it failed, and every route after it plans around both. So
+    /// she meets some of a long wall, never the same cell more than
+    /// [`ASKS_PER_CELL`] times, and gets past it.
     #[test]
-    fn refusals_against_one_wall_send_her_around_it_and_not_along_it() {
+    fn refusals_against_one_wall_are_never_repeated_and_she_still_gets_past() {
         let mut inner = test_session();
         inner.world.write().self_state.location = REFUSED_FROM;
         inner.goal = Goal::Travel {
@@ -2488,9 +3097,9 @@ mod relay_tests {
             let Some(step) = inner.movement.in_flight.front().cloned() else {
                 continue;
             };
-            if in_the_long_wall(step.arrives_at) {
+            if in_the_long_wall(step.arrives_at) && !step.turn {
                 refused.push(step.arrives_at);
-                let refusal = refusal_at(reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner));
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
@@ -2504,16 +3113,17 @@ mod relay_tests {
             PAST_THE_LONG_WALL,
             "she gets past the wall; refused at {refused:?}"
         );
+        assert_cell_asked_at_most_twice(&refused);
         assert!(
-            refused.len() <= movement::WALL_REFUSALS,
-            "she meets the wall {} times and then plans around it, \
-             instead of asking for its tiles one after another: {refused:?}",
-            movement::WALL_REFUSALS
+            refused.len() < LONG_WALL_TILES * ASKS_PER_CELL,
+            "and she does not feel along every tile of it: {refused:?}"
         );
-        assert!(
-            refused.len() < LONG_WALL_TILES,
-            "and nothing like every tile of it: {refused:?}"
-        );
+        for held in inner.movement.blocked.tiles() {
+            assert!(
+                in_the_long_wall(held),
+                "{held} is open ground she was never refused at, so nothing may plan around it"
+            );
+        }
     }
 
     /// Ground truth measured on a live shard in the woodland, map index 0,
@@ -2595,16 +3205,18 @@ mod relay_tests {
             // really stands, and open ground confirms the step.
             if aimed_at(&step, WOODLAND_REFUSED) {
                 asked.push(step.arrives_at);
-                let refusal = refusal_at(reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner));
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
             }
         }
+        assert_cell_asked_at_most_twice(&asked);
         assert_eq!(
             asked.len(),
-            1,
-            "she asks the server for that tile once and takes the answer: {asked:?}"
+            ASKS_PER_CELL,
+            "she asks for that tile once to try a door and once to prove there is none, \
+             and then never again: {asked:?}"
         );
         assert_eq!(
             inner.movement.blocked.tiles(),
@@ -2656,7 +3268,7 @@ mod relay_tests {
     const STONE_HOUSE_ID: u16 = 0x0064;
     /// How the server puts that house on the wire: the multi bit on the
     /// graphic of an ordinary item.
-    const STONE_HOUSE_GRAPHIC: u16 = STONE_HOUSE_ID | crate::building::ITEM_GRAPHIC_MULTI;
+    const STONE_HOUSE_GRAPHIC: u16 = STONE_HOUSE_ID | ITEM_GRAPHIC_MULTI;
     const STONE_HOUSE_SERIAL: Serial = Serial(0x4000_0064);
     /// How far the wall of that house stands from the multi item itself.
     const STONE_HOUSE_HALF: u16 = 3;
@@ -2838,7 +3450,7 @@ mod relay_tests {
             &mut legacy,
             &world_item_as_a_shard_writes_it(
                 BOAT_SERIAL,
-                BOAT_ID | crate::building::ITEM_GRAPHIC_MULTI,
+                BOAT_ID | ITEM_GRAPHIC_MULTI,
                 PAST_THE_HOUSE,
                 BOAT_FACING,
                 BOAT_HUE,
@@ -2859,7 +3471,7 @@ mod relay_tests {
         ingest(
             &mut modern,
             &world_item_sa_as_a_shard_writes_it(
-                crate::building::WORLD_ITEM_SA_TYPE_MULTI,
+                WORLD_ITEM_SA_TYPE_MULTI,
                 STONE_HOUSE_SERIAL,
                 STONE_HOUSE_ID,
                 STONE_HOUSE_AT,
@@ -3008,7 +3620,7 @@ mod relay_tests {
                 .any(|tile| tile.x == step.arrives_at.x && tile.y == step.arrives_at.y);
             if into_the_wall {
                 refused.push(step.arrives_at);
-                let refusal = refusal_at(reported_at(&inner));
+                let refusal = refusal_at(step.sequence, reported_at(&inner));
                 ingest(&mut inner, &refusal);
             } else {
                 accept_move_ack(&mut inner, step.sequence);
@@ -3099,7 +3711,10 @@ mod relay_tests {
             Some(Direction::South),
             "the step she is about to be refused is the one into the doorway"
         );
-        ingest(&mut inner, &refusal_at(inn.in_front_of_the_door));
+        ingest(
+            &mut inner,
+            &refusal_at(movement::SEQ_FIRST, inn.in_front_of_the_door),
+        );
         assert!(
             inner.movement.blocked.tiles().is_empty(),
             "the doorway is a door to open, not a wall to remember"
@@ -3110,11 +3725,15 @@ mod relay_tests {
         );
         pump_doors(&mut inner);
         assert!(
-            inner
+            inner.outbound.iter().any(|pkt| *pkt == encode::open_door()),
+            "and she opens the door instead of walking around it"
+        );
+        assert!(
+            !inner
                 .outbound
                 .iter()
                 .any(|pkt| *pkt == encode::double_click(inn.door.serial)),
-            "and she opens the door instead of walking around it"
+            "with the macro that names no door, which cannot pick the wrong one of a pair"
         );
     }
 
@@ -3483,59 +4102,69 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
         );
         match parse_with_version(&pkt.bytes, inner.version) {
             Ok(msg) => {
-                match &msg {
-                    Inbound::MoveAck { sequence, .. } => {
-                        accept_move_ack(inner, *sequence);
-                    }
-                    Inbound::MoveReject { x, y, z, .. } => {
-                        let refused = inner.movement.refused_direction();
-                        inner.movement.reject();
-                        // The world model snaps the character to the tile the
-                        // refusal carries when it applies the packet below.
-                        let at = Point3::new(*x, *y, *z);
-                        tracing::debug!(at = %at, refused = ?refused, "the server refused a step");
-                        // The tile he was trying to enter, worked out from the
-                        // tile the server says he is on and the direction of
-                        // the step it would not allow.
-                        if let Some(blocked) = refused.and_then(|dir| at.neighbour(dir)) {
-                            remember_refused_tile(inner, blocked);
+                // One packet may be a bundle of several. Unpack it and treat
+                // each one as if it had arrived on its own, or every item
+                // inside it is silently dropped.
+                let bundled = match msg {
+                    Inbound::PacketList(entries) => entries,
+                    one => vec![one],
+                };
+                for msg in bundled {
+                    match &msg {
+                        Inbound::MoveAck { sequence, .. } => {
+                            accept_move_ack(inner, *sequence);
                         }
-                        inner.outbound.push_back(encode::resync());
+                        Inbound::MoveReject {
+                            sequence, x, y, z, ..
+                        } => {
+                            // The world model snaps the character to the tile the
+                            // refusal carries when it applies the packet below.
+                            refuse_step(inner, *sequence, Point3::new(*x, *y, *z), Instant::now());
+                        }
+                        Inbound::FastwalkKeys(keys) => {
+                            inner.movement.set_fastwalk(*keys);
+                        }
+                        Inbound::FastwalkKeyAdd(key) => {
+                            // This packet hands out one replacement key, unlike
+                            // the packet above which replaces the whole stack.
+                            // Without it the stack empties and never refills.
+                            inner.movement.push_fastwalk(*key);
+                        }
+                        Inbound::Speech(line) if says_too_fatigued(&line.text) => {
+                            inner.last_fatigued = Some(Instant::now());
+                        }
+                        Inbound::DrawPlayer { serial, .. } if *serial == self_serial => {
+                            inner.movement.clear_in_flight();
+                        }
+                        _ => {}
                     }
-                    Inbound::FastwalkKeys(keys) => {
-                        inner.movement.set_fastwalk(*keys);
+                    let stood_at = inner.world.read().self_state.location;
+                    {
+                        let mut world = inner.world.write();
+                        world.apply(&msg);
                     }
-                    Inbound::DrawPlayer { serial, .. } if *serial == self_serial => {
-                        inner.movement.clear_in_flight();
+                    // Only the server may move the character, so every move is
+                    // worth naming. Without this a wrong position has no author and
+                    // the fault can only be guessed at.
+                    let stands_at = inner.world.read().self_state.location;
+                    if stands_at != stood_at {
+                        tracing::debug!(
+                            packet = format!("{:#04x}", pkt.id),
+                            from = %stood_at,
+                            to = %stands_at,
+                            "a packet moved the character"
+                        );
                     }
-                    _ => {}
+                    if let Inbound::WorldItem(item) = &msg {
+                        note_door_item(inner, item);
+                        note_multi_item(inner, item);
+                    }
+                    harvest_new_events(inner);
+                    if matches!(&msg, Inbound::MapChange { .. }) {
+                        inner.ensure_facet();
+                    }
+                    out.push(msg);
                 }
-                let stood_at = inner.world.read().self_state.location;
-                {
-                    let mut world = inner.world.write();
-                    world.apply(&msg);
-                }
-                // Only the server may move the character, so every move is
-                // worth naming. Without this a wrong position has no author and
-                // the fault can only be guessed at.
-                let stands_at = inner.world.read().self_state.location;
-                if stands_at != stood_at {
-                    tracing::debug!(
-                        packet = format!("{:#04x}", pkt.id),
-                        from = %stood_at,
-                        to = %stands_at,
-                        "a packet moved the character"
-                    );
-                }
-                if let Inbound::WorldItem(item) = &msg {
-                    note_door_item(inner, item);
-                    note_multi_item(inner, pkt.id, &pkt.bytes, item);
-                }
-                harvest_new_events(inner);
-                if matches!(&msg, Inbound::MapChange { .. }) {
-                    inner.ensure_facet();
-                }
-                out.push(msg);
             }
             Err(e) => tracing::warn!(error = %e, id = pkt.id, "packet parse skipped"),
         }
@@ -3548,28 +4177,47 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
 /// This is the only way a walk moves him. Sending a step says nothing about
 /// where he is: until this answer comes back he stands where the server last
 /// put him, so every reader of his position reads fact and never a guess.
-/// Several steps may be waiting for their answers, and each answer takes him
+/// Several requests may be waiting for their answers, and each answer takes him
 /// one tile on, in the order the server sends them. A sequence that matches
-/// no step in flight moves nobody.
+/// no request in flight moves nobody.
+///
+/// The answer to a turn moves nobody either. The server answers a turn exactly
+/// as it answers a step, so the two can only be told apart by what the client
+/// asked for, and a turn asked for no tile: it carries the tile the requests
+/// before it leave him on, which is the tile he is already standing on. That
+/// is the whole of it. Crediting a turn a tile is what put this client one tile
+/// ahead of the truth, and one further ahead on every change of direction.
 fn accept_move_ack(inner: &mut Inner, sequence: u8) {
     let Some(step) = inner.movement.ack(sequence) else {
-        tracing::debug!(sequence, "an answer matched no step in flight");
+        tracing::debug!(sequence, "an answer matched no request in flight");
         return;
     };
-    tracing::debug!(sequence, to = %step.arrives_at, "the server confirmed a step");
+    tracing::debug!(
+        sequence,
+        to = %step.arrives_at,
+        turn = step.turn,
+        "the server confirmed a request"
+    );
     {
         let mut w = inner.world.write();
         w.self_state.location = step.arrives_at;
         w.self_state.direction = step.direction as u8;
     }
-    // The server has just put him on that tile, so whatever it refused him
-    // there before is over.
+    if step.turn {
+        return;
+    }
+    // The server has just walked him onto that tile, so whatever it refused
+    // him there before is over.
     forget_refused_tile(inner, step.arrives_at, FORGOT_HE_STANDS_ON_IT);
 }
 
-/// Remembers the tile the server would not let the character enter, and the
-/// wall it stands in once the same obstacle has refused him
-/// [`movement::WALL_REFUSALS`] times.
+/// Remembers the one tile the server would not let the character enter.
+///
+/// Exactly one cell, at radius nought, and never a line guessed at past it. A
+/// refusal is one fact about one crossing, and nothing in it says how far the
+/// thing in the way runs: a wall curves, a fence has a gate in it, and a queue
+/// of people is no wall at all. Tiles guessed at close the very gap he should
+/// walk through.
 ///
 /// The door is asked first, and a tile a door stands on is never remembered.
 /// A shut door is the commonest thing on a shard that refuses a step, and it
@@ -3579,7 +4227,7 @@ fn accept_move_ack(inner: &mut Inner, sequence: u8) {
 /// doorway he had just opened until the memory ran out. What is left is every
 /// refusal no door explains, which is the player house or the boat this
 /// memory is for.
-fn remember_refused_tile(inner: &mut Inner, at: Point3) {
+fn remember_refused_tile(inner: &mut Inner, at: Point3, now: Instant) {
     let doors = inner.doors_seen();
     if let Some(door) = movement::door_on_tile(&doors, at.x, at.y, at.z) {
         tracing::debug!(
@@ -3589,17 +4237,207 @@ fn remember_refused_tile(inner: &mut Inner, at: Point3) {
         );
         return;
     }
-    let refused = inner.movement.blocked.refuse(at, Instant::now(), &doors);
     tracing::debug!(at = %at, "a tile the server refused is remembered");
-    if !refused.assumed.is_empty() {
-        tracing::info!(
-            at = %at,
-            tiles = refused.assumed.len(),
-            "the same obstacle refused him again: the rest of its wall is planned around whole"
-        );
-    }
-    for dropped in refused.dropped {
+    if let Some(dropped) = inner.movement.blocked.refuse(at, now) {
         log_forgotten(dropped, FORGOT_MEMORY_FULL);
+    }
+}
+
+/// True when that line of speech is the server saying the character is too
+/// tired to move.
+///
+/// The shard writes it either way: as plain words, or as the number of the
+/// same line in the client string file, which reaches this client as
+/// `#`[`CLILOC_TOO_FATIGUED`]. Both are the same fact, and it is one the
+/// character must wait out rather than mark a tile for.
+fn says_too_fatigued(text: &str) -> bool {
+    text.to_ascii_lowercase().contains(FATIGUED_WORD)
+        || text.starts_with(&format!("{CLILOC_PREFIX}{CLILOC_TOO_FATIGUED}"))
+}
+
+/// What the character does about one refusal, and why. Each is one rung of
+/// [`refuse_step`], tried in this order and stopping at the first that fits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refusal {
+    /// The sequence is not one the character is waiting on: the echo of a
+    /// refusal already dealt with. Nothing is marked and nothing is planned.
+    StaleEcho,
+    /// The server has just said he is too tired to move.
+    Fatigued,
+    /// Somebody stands on the cell. The server does not test mobiles for a
+    /// player move at all: it turns the step into a shove, and a shove is
+    /// refused unless stamina is full. So the way is nearly always open again
+    /// in a moment.
+    Waiting,
+    /// He has waited at that one cell long enough to treat it as shut.
+    WaitedOut,
+    /// He has waited over the whole trip long enough to give it up.
+    GaveUp,
+    /// A building the server sent stands on the cell.
+    Building,
+    /// The first refusal of that crossing: worth a door and one more try.
+    TryTheDoor,
+    /// The second refusal of that crossing: the way is shut.
+    Shut,
+}
+
+/// What the character does about a step the server refused.
+///
+/// The ladder is tried in order and stops at the first rung that fits, because
+/// the reasons are not equally likely and only one of them is a wall. Going
+/// straight from a refusal to a blocked tile is what filed 68 refusals against
+/// one tile beside the Britain bank: the tile was marked over and over for
+/// reasons no mark could fix.
+///
+/// Waiting is right for a mobile in particular. The server does not test
+/// mobiles for a player move: it turns the step into a shove, and refuses the
+/// shove unless stamina is full. A refusal at an occupied tile is therefore
+/// nearly always a moment's business and not a wall, and a character who marks
+/// it walks the long way round every person he meets.
+fn refuse_step(inner: &mut Inner, sequence: u8, at: Point3, now: Instant) -> Refusal {
+    // The oldest request on the wire is the one being refused: the server
+    // answers in the order it was sent, so nothing sent after it can be
+    // answered first.
+    let Some(refused) = inner.movement.in_flight.front().cloned() else {
+        tracing::debug!(sequence, at = %at, "a refusal for a step that is not on the wire");
+        return Refusal::StaleEcho;
+    };
+    if !inner.movement.holds_sequence(sequence) {
+        tracing::debug!(
+            sequence,
+            at = %at,
+            "a refusal on a sequence he is not waiting on: the echo of one already dealt with"
+        );
+        return Refusal::StaleEcho;
+    }
+    // The tile he was trying to enter, at the height the step was aimed at,
+    // and the tile he was stepping from, which is the one the refusal carries.
+    let cell = Point3::new(refused.arrives_at.x, refused.arrives_at.y, at.z);
+    inner.movement.refused();
+    inner.outbound.push_back(encode::resync());
+    tracing::debug!(at = %at, cell = %cell, direction = ?refused.direction, "the server refused a step");
+
+    let what = judge_refusal(inner, at, cell, now);
+    match what {
+        // An echo is judged above, before anything is thrown away, so this
+        // rung is never reached from here and nothing is owed on it.
+        Refusal::StaleEcho => {}
+        Refusal::Fatigued => {
+            inner.movement.wait(now, FATIGUE_WAIT);
+            replan_the_route(inner);
+        }
+        Refusal::Waiting => {
+            inner.movement.wait(now, MOBILE_WAIT);
+            replan_the_route(inner);
+        }
+        Refusal::WaitedOut => {
+            inner.movement.stop_waiting();
+            remember_refused_tile(inner, cell, now);
+            inner.movement.wait(now, REPLAN_RESUME);
+            replan_the_route(inner);
+        }
+        Refusal::GaveUp => stop_the_trip(inner, cell, WAITED_TOO_LONG.into()),
+        Refusal::Building => {
+            inner.movement.wait(now, REPLAN_RESUME);
+            replan_the_route(inner);
+        }
+        Refusal::TryTheDoor => {
+            open_the_door_ahead(inner, at, refused.direction, now);
+            // The same step goes out again once the leaf has had time to
+            // swing: the refusal put it back at the head of the route.
+            // Nothing is marked, because one refusal at a doorway is the door.
+            inner.movement.wait(now, DOOR_RETRY_WAIT);
+        }
+        Refusal::Shut => {
+            remember_refused_tile(inner, cell, now);
+            let resume = rand::thread_rng().gen_range(SHUT_RESUME_MIN_MS..=SHUT_RESUME_MAX_MS);
+            inner.movement.wait(now, Duration::from_millis(resume));
+            replan_the_route(inner);
+        }
+    }
+    tracing::debug!(cell = %cell, ?what, "the refusal is answered");
+    what
+}
+
+/// Which rung of the ladder this refusal belongs on. Nothing here changes
+/// anything: [`refuse_step`] acts on the answer.
+fn judge_refusal(inner: &mut Inner, at: Point3, cell: Point3, now: Instant) -> Refusal {
+    if inner
+        .last_fatigued
+        .is_some_and(|when| now.saturating_duration_since(when) <= FATIGUE_WINDOW)
+    {
+        return Refusal::Fatigued;
+    }
+    if somebody_stands_on(inner, cell) {
+        let (waits, this_trip) = inner.movement.waited_at(cell);
+        if this_trip >= WAITS_GIVE_UP {
+            return Refusal::GaveUp;
+        }
+        if waits >= WAITS_BLOCK_CELL {
+            return Refusal::WaitedOut;
+        }
+        return Refusal::Waiting;
+    }
+    if inner
+        .building_walls()
+        .iter()
+        .any(|wall| wall.x == cell.x && wall.y == cell.y)
+    {
+        return Refusal::Building;
+    }
+    let refusals = inner.movement.refused_edges.refuse(at, cell, now);
+    if refusals <= EDGE_REFUSALS_FIRST {
+        Refusal::TryTheDoor
+    } else {
+        Refusal::Shut
+    }
+}
+
+/// True while another mobile stands on that cell on the character's own floor.
+///
+/// Every mobile counts, whatever the facet's rules say about who may walk
+/// through whom: the server has just refused the step, and the person standing
+/// there is the plainest reason for it.
+fn somebody_stands_on(inner: &Inner, cell: Point3) -> bool {
+    inner.world.read().mobiles.values().any(|mobile| {
+        mobile.location.x == cell.x
+            && mobile.location.y == cell.y
+            && (i16::from(mobile.location.z) - i16::from(cell.z)).abs() <= MOBILE_SAME_FLOOR_Z
+    })
+}
+
+/// Turns the character to the tile that refused him and asks the server to
+/// open whatever door stands in it.
+///
+/// The macro names no door. The server opens the door in the tile the
+/// character faces, so it cannot pick the wrong one and he needs no walk to
+/// the door item to send it. The turn is what aims it.
+fn open_the_door_ahead(inner: &mut Inner, at: Point3, toward: Direction, now: Instant) {
+    let facing = Direction::from_byte(inner.world.read().self_state.direction);
+    if let Some(turn) = inner.movement.build_turn(facing, toward, at, now) {
+        inner.outbound.push_back(turn);
+    }
+    inner.outbound.push_back(encode::open_door());
+}
+
+/// Ends a trip that is going nowhere, and tells the caller why so it can
+/// choose somewhere else.
+fn stop_the_trip(inner: &mut Inner, at: Point3, reason: String) {
+    inner.movement.hold();
+    inner.movement.end_trip();
+    inner.follow_state = FollowState::default();
+    note_path_failure(inner, at, reason);
+}
+
+/// Throws the queued route away and counts it against the trip's budget. A
+/// trip planned again [`movement::REPLANS_MAX`] times is one nothing is going
+/// to solve, and it ends instead of looping.
+fn replan_the_route(inner: &mut Inner) {
+    inner.movement.path.clear();
+    inner.follow_state = FollowState::default();
+    if !inner.movement.count_replan() {
+        let at = inner.world.read().self_state.location;
+        stop_the_trip(inner, at, REPLANNED_TOO_OFTEN.into());
     }
 }
 
@@ -3798,8 +4636,8 @@ fn note_door_item(inner: &mut Inner, item: &GroundItem) {
 /// A building that comes into view or sails to another tile invalidates every
 /// queued route, exactly as a door that swings does, because a route planned
 /// before it was known runs through it.
-fn note_multi_item(inner: &mut Inner, packet_id: u8, packet: &[u8], item: &GroundItem) {
-    let Some(multi_id) = multi_id(packet_id, packet, item.graphic) else {
+fn note_multi_item(inner: &mut Inner, item: &GroundItem) {
+    let Some(multi_id) = multi_id(item) else {
         inner.world.write().forget_multi(item.serial);
         return;
     };
@@ -3822,15 +4660,6 @@ fn note_multi_item(inner: &mut Inner, packet_id: u8, packet: &[u8], item: &Groun
     if !inner.doors.waiting() {
         replan_the_route(inner);
     }
-}
-
-/// Throws every queued route away so the next tick plans it again. What the
-/// route was planned around has moved: the leaf that just swung has left the
-/// tile the route stopped at, or a building now stands on tiles the route
-/// crosses.
-fn replan_the_route(inner: &mut Inner) {
-    inner.movement.path.clear();
-    inner.follow_state = FollowState::default();
 }
 
 /// What stands between the character and where he is going.
@@ -3893,8 +4722,14 @@ fn door_route(inner: &mut Inner, from: Point3, dest: Point3) -> DoorRoute {
 }
 
 /// Opens the door the character has walked up to. He turns to it first, the way
-/// a player does, and clicks it once: the second click is the one that shuts it
+/// a player does, and asks once: the second ask is the one that shuts it
 /// again.
+///
+/// What he sends is the macro that names no door: the server opens whatever
+/// door stands in the tile he faces. It cannot pick the wrong door of a pair,
+/// and it needs no serial, so it works on a door whose item packet this client
+/// never saw. Our own budget of attempts is kept, which is more careful than
+/// asking for ever.
 fn pump_doors(inner: &mut Inner) {
     if !inner.doors.waiting() {
         return;
@@ -3918,13 +4753,14 @@ fn pump_doors(inner: &mut Inner) {
     };
     // The turn goes to the server, and the server says which way he ends up
     // facing. Writing that facing here would be the same guess the walk used
-    // to make.
+    // to make. It is also what aims the macro below: the server opens the door
+    // in the tile he faces.
     if let Some(toward) = facing_toward(at, door.location) {
-        if let Some(turn) = inner.movement.build_turn(facing, toward, now) {
+        if let Some(turn) = inner.movement.build_turn(facing, toward, at, now) {
             inner.outbound.push_back(turn);
         }
     }
-    inner.outbound.push_back(encode::double_click(door.serial));
+    inner.outbound.push_back(encode::open_door());
 }
 
 fn reflex_tick(inner: &mut Inner) {
@@ -4032,6 +4868,12 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     // the route with itself.
     if inner.movement.goal == Some(dest) && inner.movement.walking() {
         return true;
+    }
+    // A new destination is a new journey, so the marks made on the way
+    // somewhere else are dropped. A minute is a long time to plan around a
+    // tile that was in the way of another walk.
+    for forgotten in inner.movement.begin_trip(dest) {
+        log_forgotten(forgotten, FORGOT_NEW_DESTINATION);
     }
     // The tile the steps already on the wire leave him on, which is the tile
     // the server last put him on whenever it owes him nothing. A route
@@ -4265,9 +5107,20 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
     for forgotten in inner.movement.blocked.expire(now) {
         log_forgotten(forgotten, FORGOT_TIME_UP);
     }
-    let from = inner.world.read().self_state.location;
-    let stam = inner.world.read().self_state.stam;
-    let stam_max = inner.world.read().self_state.stam_max;
+    inner.movement.refused_edges.expire(now);
+    let (from, stam, stam_max, mounted) = {
+        let world = inner.world.read();
+        (
+            world.self_state.location,
+            world.self_state.stam,
+            world.self_state.stam_max,
+            // The pace of a mount is not the pace of the person on it, and the
+            // item the server puts on the mount layer is the only word this
+            // client gets that he is riding.
+            movement::is_mounted(&world.self_state.equipment),
+        )
+    };
+    inner.movement.mounted = mounted;
     let travel = matches!(inner.goal, Goal::Travel { .. });
     let danger = matches!(inner.goal, Goal::Flee | Goal::Hunt);
     let running = inner
@@ -4310,10 +5163,31 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
     // The tile the route named, at the height the route worked out for it.
     // That height is what the world model records when the server confirms
     // the step, so it is taken from the route and never from the tile he
-    // leaves.
-    let Some(step) = inner.movement.pop_next_step(stepping_from) else {
+    // leaves. It stays on the route until it really goes out as a step.
+    let Some(step) = inner.movement.peek_next_step(stepping_from) else {
         return;
     };
+    // A move request in a direction the character does not face turns him and
+    // moves him nowhere: the server sets the new location to the old one and
+    // answers all the same. So the same direction goes out twice, once to turn
+    // and once to step, and the turn takes no tile out of the route. Sending
+    // the step alone left every change of direction crediting a tile he had
+    // never moved to, and the client's idea of where he stood ran a tile
+    // further ahead of the truth on every corner.
+    let facing = inner.movement.facing_after(Direction::from_byte(
+        inner.world.read().self_state.direction,
+    ));
+    if facing != step.direction {
+        if let Some(turn) = inner
+            .movement
+            .build_turn(facing, step.direction, stepping_from, now)
+        {
+            tracing::debug!(from = ?facing, to = ?step.direction, "turning before the step");
+            inner.outbound.push_back(turn);
+        }
+        return;
+    }
+    inner.movement.pop_next_step(stepping_from);
     let pkt = inner.movement.build_step(step, running, now);
     inner.outbound.push_back(pkt);
 }

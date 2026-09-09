@@ -9,8 +9,16 @@ pub const APP_NAME: &str = "uoterm";
 pub const DEFAULT_API_PORT: u16 = 7733;
 pub const DEFAULT_LOGIN_PORT: u16 = 2593;
 pub const DEFAULT_MAX_SESSIONS: usize = 32;
+/// How long one step on foot takes: a walking step and a running one.
 pub const STEP_WALK_MS: u64 = 400;
 pub const STEP_RUN_MS: u64 = 200;
+/// How long one step on a mount takes. A mount carries the character at twice
+/// the pace of his own legs at both a walk and a run, which three independent
+/// sources agree on.
+pub const STEP_MOUNT_WALK_MS: u64 = STEP_WALK_MS / MOUNT_PACE_SHARE;
+pub const STEP_MOUNT_RUN_MS: u64 = STEP_RUN_MS / MOUNT_PACE_SHARE;
+/// How many times faster a mount is than the person on it.
+const MOUNT_PACE_SHARE: u64 = 2;
 pub const JITTER_PCT: u32 = 15;
 pub const REFLEX_TICK_MS: u64 = 100;
 pub const PING_INTERVAL_MS: u64 = 30_000;

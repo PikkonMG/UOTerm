@@ -93,7 +93,12 @@ pub const PKT_FEATURES: u8 = 0xB9;
 pub const PKT_CLIENT_VERSION: u8 = 0xBD;
 pub const PKT_EXTENDED: u8 = 0xBF;
 pub const PKT_SEASON: u8 = 0xBC;
+/// `0xBF` sub-command that fills every slot of the fastwalk key stack.
 pub const EXT_FASTWALK: u16 = 0x0001;
+/// `0xBF` sub-command that appends one key to the fastwalk key stack. The
+/// reference client writes it to the first free slot and keeps the rest, so it
+/// adds a key where [`EXT_FASTWALK`] replaces them all.
+pub const EXT_FASTWALK_ADD: u16 = 0x0002;
 pub const EXT_MAP_CHANGE: u16 = 0x0008;
 /// `0xBF` sub-command that asks for the context menu of one object.
 pub const EXT_CONTEXT_MENU_REQUEST: u16 = 0x0013;
@@ -115,6 +120,42 @@ pub const PKT_BOOK_HEADER: u8 = 0xD4;
 pub const PKT_BUFF_DEBUFF: u8 = 0xDF;
 pub const PKT_SEED: u8 = 0xEF;
 pub const PKT_WORLD_ITEM_SA: u8 = 0xF3;
+
+/// ```text
+/// if (graphic >= 0x4000)
+/// {
+///     //graphic -= 0x4000;
+///     type = 2;
+/// }
+/// ```
+///
+/// The bit above this one, `0x8000`, has already been taken off four lines
+/// earlier, where it says that a graphic increment byte follows, so what is
+/// left is this bit and nothing else. Both server families write it: each sets
+/// the bit on the graphic of a multi and masks every other graphic down to
+/// `0x3FFF` on the legacy world item packet. An ordinary item is masked down
+/// past this bit, so no ordinary item can carry it.
+pub const ITEM_GRAPHIC_MULTI: u16 = 0x4000;
+/// What is left of the graphic once the multi bit is taken off, which is the
+/// index of the shape in the client multi files. The reference client masks the
+/// graphic of every multi the same way whichever packet carried it:
+///
+/// ```text
+/// item.Graphic = (ushort)(graphic & 0x3FFF);
+/// ```
+pub const MULTI_ID_MASK: u16 = 0x3FFF;
+/// The type byte of a house or a boat on that packet.
+///
+/// The reference client reads no bit off the graphic on this packet at all,
+/// and this byte is the only word it gets: its handler for this packet hands
+/// the byte straight to the game object update, which is where `type == 2`
+/// makes the item a multi. Both server families write it: one writes `type = 2`
+/// for a multi and leaves the graphic raw, and the other writes `0x02` in both
+/// its Stygian Abyss and its High Seas world item packet.
+pub const WORLD_ITEM_SA_TYPE_MULTI: u8 = 0x02;
+/// `0xF7`. A self-describing container that bundles whole `0xF3` packets, each
+/// one still carrying its own id byte.
+pub const PKT_PACKET_LIST: u8 = 0xF7;
 pub const PKT_CLIENT_TYPE: u8 = 0xE1;
 pub const PKT_CLIENT_INFO: u8 = 0xD9;
 pub const CLIENT_TYPE_CMD: u16 = 0x0001;
@@ -127,7 +168,12 @@ pub const CLIENT_INFO_CLIENTS_INSTALLED: u8 = 1;
 pub const LOGIN_CONFIRM_LEN: usize = 37;
 pub const MAP_DEFAULT_WIDTH: u16 = 7168;
 pub const MAP_DEFAULT_HEIGHT: u16 = 4096;
+/// `0xF3` on the wire from 7.0.9.0 up, where a trailing word closes it.
 pub const WORLD_ITEM_SA_LEN: usize = 26;
+/// `0xF3` on the wire below 7.0.9.0, which has no trailing word. A server
+/// writes this shorter form to a session it holds as Stygian Abyss but not
+/// High Seas.
+pub const WORLD_ITEM_SA_LEN_PRE_HIGH_SEAS: usize = 24;
 pub const WORLD_ITEM_SA_UNKNOWN: u16 = 0x0001;
 pub const WORLD_ITEM_SA_ITEM: u8 = 0x00;
 
@@ -254,6 +300,10 @@ pub const LAYER_BANK: u8 = 29;
 
 pub const FLAG_FROZEN: u8 = 0x01;
 pub const FLAG_POISONED: u8 = 0x04;
+/// The mobile cannot be harmed. A server sets this bit for a blessed mobile
+/// and for one wearing the yellow health bar. Every attack on such a target is
+/// refused, and the refusal is silent, so read this before swinging.
+pub const FLAG_BLESSED: u8 = 0x08;
 pub const FLAG_WAR: u8 = 0x40;
 pub const FLAG_HIDDEN: u8 = 0x80;
 
@@ -273,7 +323,23 @@ pub const HEALTH_BAR_POISON_LEVEL_BIAS: u8 = 1;
 pub const MUSIC_INDEX_STOP: u16 = 0x1FFF;
 
 pub const NOTO_INNOCENT: u8 = 1;
+pub const NOTO_FRIEND: u8 = 2;
 pub const NOTO_GREY: u8 = 3;
+pub const NOTO_CRIMINAL: u8 = 4;
+pub const NOTO_ENEMY: u8 = 5;
+pub const NOTO_MURDERER: u8 = 6;
+/// The target cannot be harmed at all. A server gives this to a blessed
+/// mobile, an invulnerable creature, a player vendor and a town crier.
+///
+/// It sorts ABOVE the attackable ranks, so a test of "grey or worse" lets it
+/// through. Every swing at such a target is then refused with the cliloc for
+/// "You cannot perform negative acts on your target", and the client is left
+/// swinging at something it can never hurt.
+pub const NOTO_INVULNERABLE: u8 = 7;
+
+/// The ranks a character may attack. Written out rather than tested as a
+/// range, so [`NOTO_INVULNERABLE`] can never creep back in.
+pub const NOTO_ATTACKABLE: [u8; 4] = [NOTO_GREY, NOTO_CRIMINAL, NOTO_ENEMY, NOTO_MURDERER];
 
 pub const SKILL_LUMBERJACKING: u16 = 44;
 
@@ -523,6 +589,19 @@ impl ClientVersion {
             major: 7,
             minor: 0,
             revision: 0,
+            patch: 0,
+        })
+    }
+
+    /// Clients from 7.0.9.0 up read the High Seas forms of the packets that
+    /// expansion grew, `0xF3` among them. A server keeps a flag for the same
+    /// boundary and writes the larger forms only to a session that has it, so
+    /// a session below 7.0.9.0 must frame the smaller ones.
+    pub fn has_high_seas(self) -> bool {
+        self.at_least(Self {
+            major: 7,
+            minor: 0,
+            revision: 9,
             patch: 0,
         })
     }

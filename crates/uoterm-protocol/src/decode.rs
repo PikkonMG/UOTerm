@@ -91,6 +91,14 @@ pub struct GroundItem {
     pub y: u16,
     pub z: i8,
     pub hue: u16,
+    /// The item is a building or a boat, not an ordinary object.
+    ///
+    /// The two world item packets say so in different places: the older one
+    /// sets a bit on the graphic, and the newer one carries a type byte. Only
+    /// the parser sees both, so it decides here. A reader that had to answer
+    /// this from the packet bytes could not answer it at all for an item that
+    /// arrived inside a bundle, because a bundle keeps no per-entry bytes.
+    pub multi: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -383,7 +391,14 @@ pub enum Inbound {
         text: String,
         flags: u8,
     },
+    /// `0xBF` `0x01`. The whole fastwalk key stack, which replaces every key
+    /// the session holds.
     FastwalkKeys([u32; FASTWALK_KEY_COUNT]),
+    /// `0xBF` `0x02`. One more fastwalk key, which the reference client puts
+    /// in the first free slot of the stack and leaves the other slots alone.
+    /// A consumer must append this key, not replace the stack with it, or the
+    /// session spends one key on every step and then walks with none.
+    FastwalkKeyAdd(u32),
     Damage {
         serial: Serial,
         amount: u16,
@@ -485,6 +500,10 @@ pub enum Inbound {
         sub: u16,
         payload: Vec<u8>,
     },
+    /// `0xF7`. Several packets that arrived bundled in one. Every entry is the
+    /// decoded form that embedded packet carries when it arrives on its own,
+    /// so a consumer handles the list by handling each entry in order.
+    PacketList(Vec<Inbound>),
     Unknown {
         id: u8,
         payload: Vec<u8>,
@@ -519,6 +538,7 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_MOBILE_INCOMING => parse_mobile_incoming(packet, version),
         PKT_WORLD_ITEM => parse_world_item(packet),
         PKT_WORLD_ITEM_SA => parse_world_item_sa(packet),
+        PKT_PACKET_LIST => parse_packet_list(packet, version),
         PKT_ADD_ITEM => parse_add_item(packet),
         PKT_OPEN_CONTAINER => parse_open_container(packet),
         PKT_CONTAINER_CONTENTS => parse_container_contents(packet),
@@ -844,6 +864,7 @@ fn parse_world_item(packet: &[u8]) -> Result<Inbound> {
         amount = r.u16().unwrap_or(1);
     }
     graphic &= 0x7FFF;
+    let multi = graphic & ITEM_GRAPHIC_MULTI != 0;
     let mut x = r.u16()?;
     let mut y = r.u16()?;
     if x & 0x8000 != 0 {
@@ -868,6 +889,7 @@ fn parse_world_item(packet: &[u8]) -> Result<Inbound> {
         y: y & 0x3FFF,
         z,
         hue,
+        multi,
     }))
 }
 
@@ -875,7 +897,7 @@ fn parse_world_item_sa(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     r.u16()?;
-    r.u8()?;
+    let kind = r.u8()?;
     let serial = r.serial()?;
     let graphic = r.u16()?;
     r.u8()?;
@@ -895,7 +917,45 @@ fn parse_world_item_sa(packet: &[u8]) -> Result<Inbound> {
         y,
         z,
         hue,
+        multi: kind == WORLD_ITEM_SA_TYPE_MULTI,
     }))
+}
+
+/// Width of one `0xF3` on the wire. High Seas closed the packet with a word
+/// that a client below 7.0.9.0 never gets, so the size follows the version.
+fn world_item_sa_len(version: ClientVersion) -> usize {
+    if version.has_high_seas() {
+        WORLD_ITEM_SA_LEN
+    } else {
+        WORLD_ITEM_SA_LEN_PRE_HIGH_SEAS
+    }
+}
+
+/// `0xF7`. A count, then that many whole packets one after the other, each
+/// still carrying its own id byte. Only `0xF3` is known to ride inside, and
+/// the reference client stops at any other id because nothing then says how
+/// wide that entry is. Every entry goes through [`parse_with_version`], so an
+/// item bundled here decodes exactly as one that arrives on its own.
+fn parse_packet_list(packet: &[u8], version: ClientVersion) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let count = r.u16()?;
+    let entry_len = world_item_sa_len(version);
+    let mut packets = Vec::new();
+    for _ in 0..count {
+        let head = r.rest().first().copied();
+        if head.is_some_and(|id| id != PKT_WORLD_ITEM_SA) {
+            return Ok(Inbound::Unknown {
+                id: PKT_PACKET_LIST,
+                payload: packet.to_vec(),
+            });
+        }
+        // An empty rest falls through, so a container that promises more
+        // entries than it carries reports the truncation it really is.
+        packets.push(parse_with_version(r.take(entry_len)?, version)?);
+    }
+    Ok(Inbound::PacketList(packets))
 }
 
 fn parse_add_item(packet: &[u8]) -> Result<Inbound> {
@@ -1271,6 +1331,7 @@ fn parse_extended(packet: &[u8]) -> Result<Inbound> {
             }
             Ok(Inbound::FastwalkKeys(keys))
         }
+        EXT_FASTWALK_ADD => Ok(Inbound::FastwalkKeyAdd(r.u32()?)),
         EXT_MAP_CHANGE => Ok(Inbound::MapChange { map: r.u8()? }),
         EXT_CONTEXT_MENU_DISPLAY => parse_context_menu(&mut r),
         _ => Ok(Inbound::Extended {
@@ -1929,6 +1990,243 @@ mod tests {
         pkt[1..3].copy_from_slice(&len.to_be_bytes());
         match parse(&pkt).unwrap() {
             Inbound::FastwalkKeys(keys) => assert_eq!(keys[5], 5),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Sub-command 2 adds one key to the stack sub-command 1 filled, so it
+    /// must decode to its own form and not to a whole new stack.
+    #[test]
+    fn fastwalk_key_add_is_a_single_key() {
+        const ADDED_KEY: u32 = 0xDEAD_BEEF;
+        let mut pkt = vec![PKT_EXTENDED, 0x00, 0x00];
+        pkt.extend_from_slice(&EXT_FASTWALK_ADD.to_be_bytes());
+        pkt.extend_from_slice(&ADDED_KEY.to_be_bytes());
+        let len = pkt.len() as u16;
+        pkt[1..3].copy_from_slice(&len.to_be_bytes());
+        match parse(&pkt).unwrap() {
+            Inbound::FastwalkKeyAdd(key) => assert_eq!(key, ADDED_KEY),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn world_item_sa_bytes(serial: u32, x: u16, y: u16, version: ClientVersion) -> Vec<u8> {
+        world_item_sa_of_kind(WORLD_ITEM_SA_ITEM, serial, x, y, version)
+    }
+
+    fn world_item_sa_of_kind(
+        kind: u8,
+        serial: u32,
+        x: u16,
+        y: u16,
+        version: ClientVersion,
+    ) -> Vec<u8> {
+        let mut w = crate::buf::PacketWriter::new(PKT_WORLD_ITEM_SA);
+        w.u16(WORLD_ITEM_SA_UNKNOWN)
+            .u8(kind)
+            .u32(serial)
+            .u16(0x0EED)
+            .u8(0)
+            .u16(1)
+            .u16(1)
+            .u16(x)
+            .u16(y)
+            .i8(0)
+            .u8(0)
+            .u16(0x0441)
+            .u8(0);
+        if version.has_high_seas() {
+            w.u16(0);
+        }
+        let pkt = w.finish();
+        assert_eq!(pkt.len(), world_item_sa_len(version));
+        pkt
+    }
+
+    fn packet_list_bytes(entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_PACKET_LIST);
+        w.u16(entries.len() as u16);
+        for entry in entries {
+            w.bytes(entry);
+        }
+        w.finish_variable().unwrap()
+    }
+
+    /// A bundled item must reach a caller as the same `WorldItem` it would be
+    /// had it arrived on its own.
+    /// One item on the older world item packet, at a fixed spot.
+    fn world_item_bytes(serial: u32, graphic: u16) -> Vec<u8> {
+        const AT_X: u16 = 1425;
+        const AT_Y: u16 = 1680;
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_WORLD_ITEM);
+        w.u32(serial).u16(graphic).u16(AT_X).u16(AT_Y).i8(0);
+        w.finish_variable().unwrap()
+    }
+
+    /// The type byte of a mobile and of a damageable item. One server family
+    /// writes 1 for a mobile, the other 3 for a damageable item. Neither is a
+    /// building.
+    const WORLD_ITEM_SA_TYPE_MOBILE: u8 = 0x01;
+    const WORLD_ITEM_SA_TYPE_DAMAGEABLE: u8 = 0x03;
+
+    /// The two world item packets say "this is a building" in different
+    /// places, and only the decoder sees both. The older one sets a bit on the
+    /// graphic. The newer one carries a type byte and reads no bit off the
+    /// graphic at all, so a graphic carrying that bit there is still an
+    /// ordinary item.
+    #[test]
+    fn each_world_item_packet_reads_its_own_building_rule() {
+        const HOUSE_ID: u16 = 0x0064;
+        const AT_X: u16 = 1425;
+        const AT_Y: u16 = 1680;
+        let version = ClientVersion::MODERN;
+
+        let legacy_multi = world_item_bytes(0x4000_0001, HOUSE_ID | ITEM_GRAPHIC_MULTI);
+        match parse(&legacy_multi).unwrap() {
+            Inbound::WorldItem(item) => assert!(item.multi, "the bit on the graphic says building"),
+            other => panic!("{other:?}"),
+        }
+
+        let legacy_plain = world_item_bytes(0x4000_0002, HOUSE_ID);
+        match parse(&legacy_plain).unwrap() {
+            Inbound::WorldItem(item) => assert!(!item.multi, "no bit, no building"),
+            other => panic!("{other:?}"),
+        }
+
+        let sa_multi =
+            world_item_sa_of_kind(WORLD_ITEM_SA_TYPE_MULTI, 0x4000_0003, AT_X, AT_Y, version);
+        match parse(&sa_multi).unwrap() {
+            Inbound::WorldItem(item) => assert!(item.multi, "the type byte says building"),
+            other => panic!("{other:?}"),
+        }
+
+        for kind in [
+            WORLD_ITEM_SA_ITEM,
+            WORLD_ITEM_SA_TYPE_MOBILE,
+            WORLD_ITEM_SA_TYPE_DAMAGEABLE,
+        ] {
+            let pkt = world_item_sa_of_kind(kind, 0x4000_0004, AT_X, AT_Y, version);
+            match parse(&pkt).unwrap() {
+                Inbound::WorldItem(item) => assert!(
+                    !item.multi,
+                    "only type {WORLD_ITEM_SA_TYPE_MULTI} is a building, never {kind}"
+                ),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// A building sent inside a bundle must still be known as one. Nothing
+    /// keeps the bytes of a bundled entry, so an answer worked out from the
+    /// packet bytes could not be given here at all.
+    #[test]
+    fn a_building_inside_a_bundle_is_still_a_building() {
+        let version = ClientVersion::MODERN;
+        let entries = vec![
+            world_item_sa_of_kind(WORLD_ITEM_SA_TYPE_MULTI, 0x4000_0001, 1425, 1680, version),
+            world_item_sa_bytes(0x4000_0002, 1426, 1681, version),
+        ];
+        match parse(&packet_list_bytes(&entries)).unwrap() {
+            Inbound::PacketList(items) => {
+                let flags: Vec<bool> = items
+                    .iter()
+                    .map(|entry| match entry {
+                        Inbound::WorldItem(ground) => ground.multi,
+                        other => panic!("{other:?}"),
+                    })
+                    .collect();
+                assert_eq!(flags, vec![true, false]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn packet_list_unpacks_every_world_item() {
+        let version = ClientVersion::MODERN;
+        let entries = vec![
+            world_item_sa_bytes(0x4000_0001, 1425, 1680, version),
+            world_item_sa_bytes(0x4000_0002, 1426, 1681, version),
+        ];
+        let pkt = packet_list_bytes(&entries);
+        match parse(&pkt).unwrap() {
+            Inbound::PacketList(items) => {
+                assert_eq!(items.len(), 2);
+                let serials: Vec<Serial> = items
+                    .iter()
+                    .map(|item| match item {
+                        Inbound::WorldItem(ground) => ground.serial,
+                        other => panic!("{other:?}"),
+                    })
+                    .collect();
+                assert_eq!(serials, vec![Serial(0x4000_0001), Serial(0x4000_0002)]);
+                match &items[1] {
+                    Inbound::WorldItem(ground) => {
+                        assert_eq!(ground.x, 1426);
+                        assert_eq!(ground.y, 1681);
+                        assert_eq!(ground.hue, 0x0441);
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The entries are two bytes narrower below 7.0.9.0, so the version has to
+    /// step the reader or the second entry is read from the wrong offset.
+    #[test]
+    fn packet_list_entry_width_follows_the_version() {
+        const VERSION_PRE_HIGH_SEAS: &str = "7.0.8.2";
+        let version: ClientVersion = VERSION_PRE_HIGH_SEAS.parse().unwrap();
+        let entries = vec![
+            world_item_sa_bytes(0x4000_0003, 100, 200, version),
+            world_item_sa_bytes(0x4000_0004, 101, 201, version),
+        ];
+        let pkt = packet_list_bytes(&entries);
+        match parse_with_version(&pkt, version).unwrap() {
+            Inbound::PacketList(items) => match (&items[0], &items[1]) {
+                (Inbound::WorldItem(first), Inbound::WorldItem(second)) => {
+                    assert_eq!(first.serial, Serial(0x4000_0003));
+                    assert_eq!(second.serial, Serial(0x4000_0004));
+                    assert_eq!(second.x, 101);
+                    assert_eq!(second.y, 201);
+                }
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Nothing says how wide an entry that is not `0xF3` would be, so the
+    /// container comes back whole and undecoded rather than half read.
+    #[test]
+    fn packet_list_with_an_unexpected_entry_stays_undecoded() {
+        let mut entry = world_item_sa_bytes(0x4000_0005, 1, 2, ClientVersion::MODERN);
+        entry[0] = PKT_ADD_ITEM;
+        let pkt = packet_list_bytes(&[entry]);
+        match parse(&pkt).unwrap() {
+            Inbound::Unknown { id, payload } => {
+                assert_eq!(id, PKT_PACKET_LIST);
+                assert_eq!(payload, pkt);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn packet_list_short_of_its_count_is_truncated() {
+        let entries = vec![world_item_sa_bytes(
+            0x4000_0006,
+            3,
+            4,
+            ClientVersion::MODERN,
+        )];
+        let mut pkt = packet_list_bytes(&entries);
+        // Claim two entries but carry one.
+        pkt[3..5].copy_from_slice(&2u16.to_be_bytes());
+        match parse(&pkt) {
+            Err(ProtocolError::Truncated { .. }) => {}
             other => panic!("{other:?}"),
         }
     }

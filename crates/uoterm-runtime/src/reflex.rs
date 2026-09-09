@@ -21,7 +21,7 @@ fn stat_pct(cur: u16, max: u16) -> u32 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ReflexAction {
     None,
     MoveTo { x: u16, y: u16, z: i8 },
@@ -97,7 +97,7 @@ fn hunt_action(world: &World) -> ReflexAction {
     let Some(f) = world
         .nearby_mobiles(HUNT_RANGE)
         .into_iter()
-        .find(|m| m.notoriety >= NOTO_GREY)
+        .find(|m| can_be_harmed(m.notoriety, m.flags))
     else {
         return ReflexAction::None;
     };
@@ -105,6 +105,19 @@ fn hunt_action(world: &World) -> ReflexAction {
         return ReflexAction::WarMode(true);
     }
     ReflexAction::Attack(f.serial)
+}
+
+/// True when a server will let us hurt this mobile.
+///
+/// Two separate marks say "you cannot touch this". Either one alone is enough
+/// to make every swing be refused, and the refusal is silent: no packet comes
+/// back and the client keeps swinging at nothing.
+///
+/// This is why an earlier build attacked a blessed target eight times and read
+/// the failure as a broken packet. It tested `notoriety >= NOTO_GREY`, and
+/// [`NOTO_INVULNERABLE`] sorts above every attackable rank.
+fn can_be_harmed(notoriety: u8, flags: u8) -> bool {
+    NOTO_ATTACKABLE.contains(&notoriety) && flags & FLAG_BLESSED == 0
 }
 
 fn gather_action(world: &World) -> ReflexAction {
@@ -142,6 +155,76 @@ mod tests {
     use super::*;
     use uoterm_protocol::Point3;
 
+    /// Serial of the only mobile standing next to us in the hunt tests.
+    const TARGET: Serial = Serial(0x0000_1234);
+
+    fn world_with_one_mobile(notoriety: u8, flags: u8) -> World {
+        let mut w = World::new();
+        w.logged_in = true;
+        w.self_state.war = true;
+        w.self_state.location = Point3::new(100, 100, 0);
+        w.mobiles.insert(
+            TARGET,
+            uoterm_world::Mobile {
+                serial: TARGET,
+                name: String::new(),
+                body: 3,
+                hue: 0,
+                location: Point3::new(101, 100, 0),
+                direction: 0,
+                running: false,
+                notoriety,
+                flags,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            },
+        );
+        w
+    }
+
+    #[test]
+    fn hunt_attacks_a_target_it_may_harm() {
+        for rank in NOTO_ATTACKABLE {
+            let w = world_with_one_mobile(rank, 0);
+            assert_eq!(
+                tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+                ReflexAction::Attack(TARGET),
+                "rank {rank} should be attacked"
+            );
+        }
+    }
+
+    /// The defect that cost this project days. An invulnerable mobile sorts
+    /// ABOVE every attackable rank, so the old test of `notoriety >= NOTO_GREY`
+    /// let it through. The character then swung at something no server would
+    /// ever let it hurt, and every refusal came back silent.
+    #[test]
+    fn hunt_never_picks_a_target_it_cannot_harm() {
+        let w = world_with_one_mobile(NOTO_INVULNERABLE, 0);
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            ReflexAction::None,
+            "an invulnerable mobile must not be attacked"
+        );
+
+        let w = world_with_one_mobile(NOTO_GREY, FLAG_BLESSED);
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            ReflexAction::None,
+            "a blessed mobile must not be attacked whatever its rank"
+        );
+
+        for rank in [NOTO_INNOCENT, NOTO_FRIEND] {
+            let w = world_with_one_mobile(rank, 0);
+            assert_eq!(
+                tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+                ReflexAction::None,
+                "rank {rank} is not an enemy"
+            );
+        }
+    }
+
     #[test]
     fn idle_does_nothing() {
         let w = World::new();
@@ -162,6 +245,7 @@ mod tests {
             y: 10,
             z: 0,
             hue: 0,
+            multi: false,
         }));
         w.items.insert(
             Serial(0x4000_0001),

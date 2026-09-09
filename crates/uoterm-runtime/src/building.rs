@@ -10,79 +10,20 @@
 use std::collections::HashMap;
 
 use uoterm_nav::{z_reachable, MultiData, MultiPiece, PERSON_HEIGHT, TILE_BRIDGE, TILE_DOOR};
-use uoterm_protocol::types::{Point3, PKT_WORLD_ITEM, PKT_WORLD_ITEM_SA};
+use uoterm_protocol::types::{Point3, MULTI_ID_MASK};
+use uoterm_protocol::GroundItem;
 use uoterm_world::{DoorItem, MultiItem};
 
 use crate::movement::door_on_tile;
 
-/// The bit the legacy world item packet, `0x1A`, sets on the graphic of a
-/// house or a boat.
+/// The multi shape the item names, or `None` when it is an ordinary object.
 ///
-/// This is the rule the reference client goes by, and it is the whole of the
-/// rule on that packet. Its `0x1A` item update handler reads:
-///
-/// ```text
-/// if (graphic >= 0x4000)
-/// {
-///     //graphic -= 0x4000;
-///     type = 2;
-/// }
-/// ```
-///
-/// The bit above this one, `0x8000`, has already been taken off four lines
-/// earlier, where it says that a graphic increment byte follows, so what is
-/// left is this bit and nothing else. Both server families write it: each sets
-/// the bit on the graphic of a multi and masks every other graphic down to
-/// `0x3FFF` on the legacy world item packet. An ordinary item is masked down
-/// past this bit, so no ordinary item can carry it.
-pub const ITEM_GRAPHIC_MULTI: u16 = 0x4000;
-/// What is left of the graphic once the multi bit is taken off, which is the
-/// index of the shape in the client multi files. The reference client masks the
-/// graphic of every multi the same way whichever packet carried it:
-///
-/// ```text
-/// item.Graphic = (ushort)(graphic & 0x3FFF);
-/// ```
-pub const MULTI_ID_MASK: u16 = 0x3FFF;
-/// Where the type byte sits in the Stygian Abyss world item packet, `0xF3`:
-/// after the packet id and the two byte command word.
-///
-/// The reference client reads it from there. Its reader starts one byte in for
-/// a fixed length packet, so the two bytes it skips are the command word and
-/// the byte it reads is the fourth of the packet:
-///
-/// ```text
-/// p.Skip(2);
-/// byte type = p.ReadUInt8();
-/// ```
-pub const WORLD_ITEM_SA_TYPE_INDEX: usize = 3;
-/// The type byte of a house or a boat on that packet.
-///
-/// The reference client reads no bit off the graphic on this packet at all,
-/// and this byte is the only word it gets: its handler for this packet hands
-/// the byte straight to the game object update, which is where `type == 2`
-/// makes the item a multi. Both server families write it: one writes `type = 2`
-/// for a multi and leaves the graphic raw, and the other writes `0x02` in both
-/// its Stygian Abyss and its High Seas world item packet.
-pub const WORLD_ITEM_SA_TYPE_MULTI: u8 = 0x02;
-
-/// The multi the item on this packet names, or `None` when the item is an
-/// ordinary one.
-///
-/// Both world item packets are read, because which of the two a shard sends
-/// depends on the client version the session logged in with, and each marks a
-/// building its own way. The two rules are not interchangeable, and the
-/// reference client keeps them apart the same way: a graphic with the multi
-/// bit set on the newer packet is no building, and a type byte on the older
-/// one is not a byte at all.
-pub fn multi_id(packet_id: u8, packet: &[u8], graphic: u16) -> Option<u16> {
-    match packet_id {
-        PKT_WORLD_ITEM => (graphic & ITEM_GRAPHIC_MULTI != 0).then_some(graphic & MULTI_ID_MASK),
-        PKT_WORLD_ITEM_SA => (packet.get(WORLD_ITEM_SA_TYPE_INDEX)
-            == Some(&WORLD_ITEM_SA_TYPE_MULTI))
-        .then_some(graphic & MULTI_ID_MASK),
-        _ => None,
-    }
+/// Which of the two world item packets carried the item, and how each one says
+/// "this is a building", is settled in the decoder. What arrives here is one
+/// flag, so all this does is take the multi bit off the graphic and leave the
+/// index of the shape in the client multi files.
+pub fn multi_id(item: &GroundItem) -> Option<u16> {
+    item.multi.then_some(item.graphic & MULTI_ID_MASK)
 }
 
 /// One piece of a building on one tile, at the height it really stands at.
@@ -368,106 +309,49 @@ mod tests {
     /// The graphic of a house on the wire, and the graphic of an ordinary
     /// item. A server sets the multi bit on the graphic of a house on the legacy
     /// world item packet and masks every other item below that bit.
-    const HOUSE_ON_THE_WIRE: u16 = STONE_HOUSE_ID | ITEM_GRAPHIC_MULTI;
+    const HOUSE_ON_THE_WIRE: u16 = STONE_HOUSE_ID | uoterm_protocol::types::ITEM_GRAPHIC_MULTI;
     /// A pile of logs, which is no building at all.
     const LOGS_ON_THE_WIRE: u16 = 0x1BDD;
-    /// A packet id that carries no item.
-    const PKT_NOT_AN_ITEM: u8 = 0x21;
-    /// A world item packet of the Stygian Abyss shape, up to and including the
-    /// type byte.
-    fn world_item_sa(kind: u8) -> Vec<u8> {
-        vec![PKT_WORLD_ITEM_SA, 0x00, 0x01, kind]
-    }
-
-    #[test]
-    fn a_multi_item_is_recognised_and_an_ordinary_item_is_not() {
-        let legacy = [PKT_WORLD_ITEM];
-        assert_eq!(
-            multi_id(PKT_WORLD_ITEM, &legacy, HOUSE_ON_THE_WIRE),
-            Some(STONE_HOUSE_ID),
-            "the multi bit on the legacy packet names the shape under it"
-        );
-        assert_eq!(
-            multi_id(PKT_WORLD_ITEM, &legacy, LOGS_ON_THE_WIRE),
-            None,
-            "an ordinary item carries no multi bit"
-        );
-        assert_eq!(
-            multi_id(
-                PKT_WORLD_ITEM_SA,
-                &world_item_sa(WORLD_ITEM_SA_TYPE_MULTI),
-                STONE_HOUSE_ID
-            ),
-            Some(STONE_HOUSE_ID),
-            "the Stygian Abyss packet names a building with its type byte"
-        );
-        assert_eq!(
-            multi_id(
-                PKT_WORLD_ITEM_SA,
-                &world_item_sa(uoterm_protocol::types::WORLD_ITEM_SA_ITEM),
-                LOGS_ON_THE_WIRE
-            ),
-            None,
-            "and an ordinary item with the same byte"
-        );
-        assert_eq!(
-            multi_id(PKT_NOT_AN_ITEM, &[PKT_NOT_AN_ITEM], HOUSE_ON_THE_WIRE),
-            None,
-            "no other packet carries an item at all"
-        );
-    }
-
-    /// The type byte of a mobile and of a damageable item on the Stygian
-    /// Abyss packet. One server family writes 1 for a mobile; the other writes 3
-    /// for a damageable item on the High Seas packet. Neither is a building,
-    /// and the reference client makes neither one: `type == 2` alone marks a
-    /// multi.
-    const WORLD_ITEM_SA_TYPE_MOBILE: u8 = 0x01;
-    const WORLD_ITEM_SA_TYPE_DAMAGEABLE: u8 = 0x03;
-
-    /// The two rules are not interchangeable, and this is the edge that says
-    /// so.
-    ///
-    /// The reference client reads the multi bit off the graphic on the legacy
-    /// packet only. On the Stygian Abyss packet it reads the type byte and
-    /// nothing else, so a graphic that carries the bit there is still an
-    /// ordinary item; and the legacy packet has no type byte, so the fourth
-    /// byte of it, which is the top half of the serial, must never be read as
-    /// one.
-    #[test]
-    fn each_packet_is_read_by_its_own_rule_and_not_the_other_one() {
-        assert_eq!(
-            multi_id(
-                PKT_WORLD_ITEM_SA,
-                &world_item_sa(uoterm_protocol::types::WORLD_ITEM_SA_ITEM),
-                HOUSE_ON_THE_WIRE
-            ),
-            None,
-            "the newer packet answers for the type byte, whatever the graphic carries"
-        );
-        for kind in [WORLD_ITEM_SA_TYPE_MOBILE, WORLD_ITEM_SA_TYPE_DAMAGEABLE] {
-            assert_eq!(
-                multi_id(PKT_WORLD_ITEM_SA, &world_item_sa(kind), STONE_HOUSE_ID),
-                None,
-                "and only type {WORLD_ITEM_SA_TYPE_MULTI} is a building, never {kind}"
-            );
+    /// One item as the decoder hands it over, with only the fields this
+    /// module reads.
+    fn item(graphic: u16, multi: bool) -> GroundItem {
+        GroundItem {
+            serial: uoterm_protocol::Serial(1),
+            graphic,
+            amount: 1,
+            x: 0,
+            y: 0,
+            z: 0,
+            hue: 0,
+            multi,
         }
-        // A legacy packet whose fourth byte is the multi type byte by
-        // accident: the serial 0x02xxxxxx puts it there. The rule for this
-        // packet is the graphic, so the byte says nothing.
-        let serial_looks_like_a_type = [
-            PKT_WORLD_ITEM,
-            0x00,
-            0x10,
-            WORLD_ITEM_SA_TYPE_MULTI,
-            0x11,
-            0x22,
-            0x33,
-        ];
+    }
+
+    /// Which packet carried the item, and how each one says "this is a
+    /// building", is settled in the decoder. By the time an item reaches this
+    /// module the answer is already one flag, so all this has to do is name
+    /// the shape under it.
+    #[test]
+    fn a_multi_item_names_its_shape_and_an_ordinary_item_names_none() {
         assert_eq!(
-            multi_id(PKT_WORLD_ITEM, &serial_looks_like_a_type, LOGS_ON_THE_WIRE),
+            multi_id(&item(HOUSE_ON_THE_WIRE, true)),
+            Some(STONE_HOUSE_ID),
+            "the multi bit is masked off, and what is left is the shape"
+        );
+        assert_eq!(
+            multi_id(&item(STONE_HOUSE_ID, true)),
+            Some(STONE_HOUSE_ID),
+            "a graphic that never carried the bit names the same shape"
+        );
+        assert_eq!(
+            multi_id(&item(LOGS_ON_THE_WIRE, false)),
             None,
-            "the older packet has no type byte, and its serial is not one"
+            "a pile of logs is no building"
+        );
+        assert_eq!(
+            multi_id(&item(HOUSE_ON_THE_WIRE, false)),
+            None,
+            "and the flag decides it, not the graphic"
         );
     }
 
@@ -594,6 +478,7 @@ mod tests {
             &Obstacles {
                 soft: &[],
                 hard: &shut,
+                moves: &[],
             },
         )
         .expect("a way round the house");

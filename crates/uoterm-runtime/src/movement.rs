@@ -1,10 +1,11 @@
-use crate::config::{JITTER_PCT, STEP_RUN_MS, STEP_WALK_MS};
+use crate::config::{JITTER_PCT, STEP_MOUNT_RUN_MS, STEP_MOUNT_WALK_MS, STEP_RUN_MS, STEP_WALK_MS};
 use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use uoterm_nav::{pathfind, Obstacles, TileQuery};
+use uoterm_nav::{pathfind, BlockedMove, Obstacles, TileQuery, SAME_MOVE_HEIGHT};
 use uoterm_protocol::encode;
 use uoterm_protocol::types::{Direction, Point3, Serial};
+use uoterm_protocol::EquipItem;
 use uoterm_world::DoorItem;
 
 pub const SEQ_MOD: u16 = 256;
@@ -19,32 +20,52 @@ const STEP_ACK_ROUND_TRIP_MS: u64 = 300;
 /// How much slower than the measured shard a shard may be before its round
 /// trip sets the pace again.
 const SLOW_SHARD_MARGIN: u64 = 2;
-/// How many steps the character lets the server owe him.
+/// How many requests the server keeps room for. It holds a ring of this many
+/// slots for the moves one client has not had an answer to, and expects no
+/// more than that on the wire at once.
+const SERVER_MOVE_RING_SLOTS: usize = 5;
+/// How many of those slots the character leaves the server, so a request that
+/// crosses an answer on the wire never fills the ring.
+const SERVER_RING_HEADROOM: usize = 1;
+/// How many requests the character lets the server owe him.
 ///
 /// One step at a time is a speed limit, not a safety rule. A running person
 /// steps every [`STEP_RUN_MS`], a confirmation takes
 /// [`STEP_ACK_ROUND_TRIP_MS`] to come back, and a character who waits for
 /// each answer therefore steps slower than the person he follows and loses
-/// ground on every step. The sequence byte is what lets more than one step be
-/// on the wire, and this is how many it takes to cover the round trip at
+/// ground on every step. The sequence byte is what lets more than one
+/// request be on the wire, and this is the number the reference client uses:
+/// the server's ring of [`SERVER_MOVE_RING_SLOTS`] less
+/// [`SERVER_RING_HEADROOM`]. It also covers the measured round trip at
 /// running pace on a shard [`SLOW_SHARD_MARGIN`] times slower than the
-/// measured one.
+/// measured one, which the assertions below hold it to.
 ///
 /// This changes nothing about where the character is. Only a confirmation
 /// moves him, so several steps on the wire mean the tile he is reported on
 /// trails the tile he is walking to by at most this many, and every route,
 /// scene and decision still reads a tile the server put him on.
 /// [`Movement::stepping_from`] is what the next step is aimed from.
-pub const IN_FLIGHT_MAX: usize =
-    (SLOW_SHARD_MARGIN * STEP_ACK_ROUND_TRIP_MS).div_ceil(STEP_RUN_MS) as usize;
+pub const IN_FLIGHT_MAX: usize = SERVER_MOVE_RING_SLOTS - SERVER_RING_HEADROOM;
+const _: () = assert!(
+    IN_FLIGHT_MAX as u64 * STEP_RUN_MS >= SLOW_SHARD_MARGIN * STEP_ACK_ROUND_TRIP_MS,
+    "the wire must hold enough running steps to cover a slow shard's round trip"
+);
 /// How long the character waits for the server to confirm a step before he
-/// treats it as lost. Three walking steps is longer than a round trip on any
-/// shard worth playing, and short enough that a step the server drops does not
-/// hold him still.
+/// treats it as lost. Longer than a round trip on any shard worth playing, and
+/// short enough that a step the server drops does not hold him still.
 pub const STEP_ACK_TIMEOUT: Duration = Duration::from_millis(STEP_WALK_MS * STEP_ACK_STEPS);
-/// How many walking steps' worth of time the server has to confirm a step.
-const STEP_ACK_STEPS: u64 = 3;
+/// How many walking steps' worth of time the server has to confirm a step: one
+/// for every request the wire holds.
+///
+/// It has to be at least that, or a character walking a straight line fills the
+/// wire more slowly than the server is given to answer the first of those
+/// requests, and gives up on a shard that is answering him. The assertion in
+/// the tests holds it to that, jitter and all.
+const STEP_ACK_STEPS: u64 = IN_FLIGHT_MAX as u64;
 pub const FASTWALK_SLOTS: usize = 6;
+/// An empty fastwalk slot, and the key a request carries when the stack is
+/// empty. A server that never sends a key reads nought as no key at all.
+pub const FASTWALK_KEY_EMPTY: u32 = 0;
 /// How many walking steps' worth of time a refused tile stays blocked.
 const REFUSED_TILE_STEPS: u64 = 150;
 /// How long the character remembers a tile the server refused him.
@@ -66,33 +87,42 @@ pub const REFUSED_TILE_MEMORY: Duration = Duration::from_millis(STEP_WALK_MS * R
 /// is the wall he keeps, and a session that runs for days cannot grow this
 /// without limit.
 pub const REFUSED_TILES_MAX: usize = 256;
-/// How far apart two refusals may be and still be the same thing in the way.
+/// How far apart two refusals of one directed edge may stand in height and
+/// still be the same edge: one step of a stair, so a step refused on a slope is
+/// recognised again however the ground under it is read.
 ///
-/// One tile: the tiles touch. That is the whole of how a person tells the wall
-/// he has just walked into from something else on the far side of the street.
-pub const OBSTACLE_TOUCHES: u32 = 1;
-/// How many refusals against one obstacle it takes before the character stops
-/// feeling along it and plans around the whole of it.
+/// It is the window the route finder matches a [`BlockedMove`] on, because this
+/// memory and that list must agree on what one crossing is.
+pub const EDGE_Z_TOLERANCE: i16 = SAME_MOVE_HEIGHT as i16;
+/// How many directed edges the character remembers at once. One for every tile
+/// the refused-tile memory holds, which is the most edges those tiles can be
+/// reached over before the oldest of them is forgotten.
+pub const REFUSED_EDGES_MAX: usize = REFUSED_TILES_MAX;
+/// How long a turn on the spot costs before the next request may go out.
 ///
-/// Three. One refusal is a bump, and a person who is bumped once steps around
-/// it: it may be a door somebody is holding, a mobile, or the one corner of a
-/// building. Two touching refusals say the thing has width but not which way
-/// it runs. Three say both, because three tiles one step apart lie on a line,
-/// and a line is what a wall is. Fewer than three would send him the long way
-/// round every mobile that stopped him twice.
-pub const WALL_REFUSALS: usize = 3;
-/// How far past each end of what he has met a wall is assumed to go on.
+/// Eighty milliseconds. A turn moves the character nowhere: the server sets
+/// the new location to the old one, charges the walk nothing and starts its
+/// own pace again from the turn. Charging a turn a whole walking step loses
+/// the character a tile of ground on every change of direction, which is
+/// ground a person he follows never gives back.
+pub const TURN_PACE: Duration = Duration::from_millis(TURN_PACE_MS);
+const TURN_PACE_MS: u64 = 80;
+/// The pace flag a turn carries on the wire: nobody runs where he stands.
+const TURN_RUN_FLAG: bool = false;
+/// How many times one trip may be planned again before it is given up.
 ///
-/// Eight tiles. The largest house in Ultima Online stands on 18 by 18 tiles,
-/// and the tiles the character has met are somewhere in the middle of one of
-/// its sides, so eight more at each end covers the longest wall on the shard
-/// in one route. Fewer would only shorten the crawl: this was measured, and a
-/// character beside the Britain bank drew 68 refusals and filed 70 tiles away
-/// walking down one building, because every refusal took one tile out of the
-/// route and the next route walked into the tile beside it.
-pub const WALL_ASSUMED_TILES: usize = 8;
-/// The pace of a turn on the spot: nobody runs where he stands.
-const WALKING_PACE: bool = false;
+/// A trip that has been planned again this often is one nothing is going to
+/// solve: the way is shut, and every new route walks into the same thing.
+/// Ending it hands the caller a failure it can act on, where looping hands it
+/// a character who never arrives and never says why.
+pub const REPLANS_MAX: u32 = 128;
+/// The layer a mount is worn on. It sits between [`LAYER_BACKPACK`] and
+/// [`LAYER_BANK`] in the same table, and an item on it is the only word the
+/// server gives that the character is riding.
+///
+/// [`LAYER_BACKPACK`]: uoterm_protocol::types::LAYER_BACKPACK
+/// [`LAYER_BANK`]: uoterm_protocol::types::LAYER_BANK
+pub const MOUNT_LAYER: u8 = 25;
 #[cfg(test)]
 const MOVE_REQ_SEQ_INDEX: usize = 2;
 
@@ -155,16 +185,118 @@ pub struct NextStep {
     pub direction: Direction,
 }
 
-/// A step the character has sent and the server has not answered yet.
+/// A request the character has sent and the server has not answered yet: a
+/// step, or a turn on the spot.
 #[derive(Clone, Debug)]
 pub struct PendingStep {
     pub sequence: u8,
     pub direction: Direction,
-    /// The tile the step was aimed at, at the height the map worked out for
-    /// it. The character stands there once the server confirms the step, and
-    /// not one moment before.
+    /// The tile the character stands on once the server confirms this
+    /// request, at the height the map worked out for it, and not one moment
+    /// before.
+    ///
+    /// A step carries the tile it was aimed at. A turn moves nobody, so it
+    /// carries the tile the requests before it leave him on, which is the tile
+    /// he is already standing on when its answer comes back.
     pub arrives_at: Point3,
     pub sent_at: Instant,
+    /// True when the request only turned him where he stands.
+    ///
+    /// A move request in a direction the character does not face turns him and
+    /// moves him nowhere: the server sets the new location to the old one and
+    /// answers all the same. So the same direction goes out twice, once to
+    /// turn and once to step, and only the second of them takes a tile out of
+    /// the route.
+    pub turn: bool,
+}
+
+/// One directed edge the server refused, and how often.
+#[derive(Clone, Copy, Debug)]
+struct RefusedEdge {
+    move_: BlockedMove,
+    refusals: u32,
+    forget_at: Instant,
+}
+
+/// The steps the server refused, each remembered as the directed pair of tiles
+/// it crossed: a [`BlockedMove`].
+///
+/// A tile is not always what a refusal is about. The doorway takes the
+/// character from the other side, a fence lets him through the gate one tile
+/// along, and the step of a stair is entered from the step below it and from
+/// nowhere else. So the crossing is what is counted, and the count is what
+/// tells the first refusal of one edge from the second: the first is worth a
+/// door and one more try at the same step, and the second is what proves the
+/// way shut.
+///
+/// Heights are matched within [`EDGE_Z_TOLERANCE`], because the same crossing
+/// on a slope is read at a slightly different height every time it is planned.
+#[derive(Debug, Default)]
+pub struct RefusedEdges {
+    edges: Vec<RefusedEdge>,
+}
+
+/// True while two spots are the two ends of one crossing: the same column, at
+/// heights no further apart than one step of a stair.
+fn same_edge(held: BlockedMove, from: Point3, to: Point3) -> bool {
+    same_edge_end(held.from, from) && same_edge_end(held.to, to)
+}
+
+fn same_edge_end(a: Point3, b: Point3) -> bool {
+    same_tile(a, b) && (i16::from(a.z) - i16::from(b.z)).abs() <= EDGE_Z_TOLERANCE
+}
+
+impl RefusedEdges {
+    /// Counts one refusal of the crossing from `from` to `to` and gives back
+    /// how many the character has now met on it.
+    pub fn refuse(&mut self, from: Point3, to: Point3, now: Instant) -> u32 {
+        let forget_at = now + REFUSED_TILE_MEMORY;
+        if let Some(edge) = self
+            .edges
+            .iter_mut()
+            .find(|edge| same_edge(edge.move_, from, to))
+        {
+            edge.refusals += 1;
+            edge.forget_at = forget_at;
+            return edge.refusals;
+        }
+        if self.edges.len() >= REFUSED_EDGES_MAX {
+            self.edges.remove(0);
+        }
+        self.edges.push(RefusedEdge {
+            move_: BlockedMove { from, to },
+            refusals: 1,
+            forget_at,
+        });
+        1
+    }
+
+    /// How many refusals the character remembers on that crossing.
+    pub fn refusals(&self, from: Point3, to: Point3) -> u32 {
+        self.edges
+            .iter()
+            .find(|edge| same_edge(edge.move_, from, to))
+            .map(|edge| edge.refusals)
+            .unwrap_or(0)
+    }
+
+    /// Every crossing proven shut, as the route finder reads them. A crossing
+    /// shuts the one way in that failed and leaves its tile open from every
+    /// other side, which is what a tile of a stair needs.
+    pub fn moves(&self) -> Vec<BlockedMove> {
+        self.edges.iter().map(|edge| edge.move_).collect()
+    }
+
+    /// Takes out every crossing whose time is up, so nothing is remembered for
+    /// ever: a door opens and a boat sails.
+    pub fn expire(&mut self, now: Instant) {
+        self.edges.retain(|edge| now < edge.forget_at);
+    }
+
+    /// Forgets every crossing at once, for a new journey.
+    pub fn clear(&mut self) {
+        self.edges.clear();
+    }
 }
 
 /// One tile the server refused, and when the character forgets it.
@@ -172,23 +304,6 @@ pub struct PendingStep {
 struct RefusedTile {
     at: Point3,
     forget_at: Instant,
-}
-
-/// The [`WALL_ASSUMED_TILES`] tiles that carry on from `from`, each one `step`
-/// further along than the last. A tile off the edge of the world ends the
-/// line.
-fn line_on(from: Point3, step: (i32, i32)) -> Vec<Point3> {
-    let mut line = Vec::with_capacity(WALL_ASSUMED_TILES);
-    let (mut x, mut y) = (i32::from(from.x), i32::from(from.y));
-    for _ in 0..WALL_ASSUMED_TILES {
-        x += step.0;
-        y += step.1;
-        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
-            break;
-        };
-        line.push(Point3::new(x, y, from.z));
-    }
-    line
 }
 
 /// The tiles the server refused the character, which every route goes around
@@ -206,142 +321,26 @@ fn line_on(from: Point3, step: (i32, i32)) -> Vec<Point3> {
 /// time, so the front of the queue is both the oldest tile and the first one
 /// due to be forgotten.
 ///
-/// One refusal on its own only ever takes one tile out of the next route, and
-/// the route after it walks into the tile beside that one. So the refusals
-/// that touch each other are kept together as one obstacle, and once
-/// [`WALL_REFUSALS`] of them lie on a line the line itself is remembered: see
-/// [`BlockedTiles::refuse`].
+/// One refusal blocks one tile and never a line. A refusal is one fact about
+/// one cell, and nothing in it says which way the thing in the way runs: a
+/// wall curves, a fence has a gate in it, and a queue of people is no wall at
+/// all. Tiles guessed at past the one that was really refused close the very
+/// gap the character should walk through.
 #[derive(Debug, Default)]
 pub struct BlockedTiles {
     tiles: VecDeque<RefusedTile>,
-    /// The refusals that touch one another, oldest first: one thing in the
-    /// way, as far as the character can tell.
-    run: Vec<Point3>,
-}
-
-/// What one refusal added to the memory.
-#[derive(Debug, Default)]
-pub struct Refused {
-    /// The oldest tiles dropped to make room, which the character has
-    /// forgotten.
-    pub dropped: Vec<Point3>,
-    /// The rest of the wall, which the character has not met yet and plans
-    /// around all the same.
-    pub assumed: Vec<Point3>,
 }
 
 impl BlockedTiles {
-    /// Records the tile the server would not let the character enter, and the
-    /// wall it stands in once the same obstacle has refused him
-    /// [`WALL_REFUSALS`] times.
+    /// Records the one tile the server would not let the character enter, and
+    /// gives back the tile dropped to make room for it once the memory is
+    /// full.
     ///
-    /// Two questions decide the second part. Is this the same obstacle? It is
-    /// when the tile touches one he has already met of it, within
-    /// [`OBSTACLE_TOUCHES`]; a refusal anywhere else is a different thing and
-    /// starts the count again. Which way does it run? The line every tile of
-    /// it lies on, one step apart and each step the same. Tiles that turn a
-    /// corner lie on no line and give no direction, which is right: a corner
-    /// is where a wall stops.
-    ///
-    /// The wall is then assumed to go on for [`WALL_ASSUMED_TILES`] tiles past
-    /// each end of what he has met, so the next route leaves it and goes
-    /// round, instead of stepping into the tile beside the one that has just
-    /// refused him. A tile a door stands on is never taken: the door logic
-    /// owns those, and a wall that swallowed a doorway would shut the
-    /// character out of a building he can walk into.
-    pub fn refuse(&mut self, at: Point3, now: Instant, doors: &[DoorItem]) -> Refused {
-        self.join_run(at);
-        let mut refused = Refused::default();
-        refused.dropped.extend(self.remember(at, now));
-        for tile in self.wall_ahead() {
-            if door_on_tile(doors, tile.x, tile.y, tile.z).is_some() {
-                continue;
-            }
-            refused.dropped.extend(self.remember(tile, now));
-            refused.assumed.push(tile);
-        }
-        refused
-    }
-
-    /// Adds the refusal to the obstacle the character is already up against,
-    /// or starts a new one when it touches nothing he has met.
-    ///
-    /// It touches any tile of that obstacle and not only the last of them,
-    /// because the route finder picks whichever side of a wall costs less and
-    /// changes its mind from one route to the next: a character shut out east
-    /// of a tile is as likely to be sent north of it next as south, and both
-    /// tries are the same wall.
-    fn join_run(&mut self, at: Point3) {
-        // The same tile twice over says nothing new about the shape of the
-        // thing in the way.
-        if self.run.iter().any(|held| same_tile(*held, at)) {
-            return;
-        }
-        if !self
-            .run
-            .iter()
-            .any(|held| held.chebyshev(at) <= OBSTACLE_TOUCHES)
-        {
-            self.run.clear();
-        }
-        self.run.push(at);
-    }
-
-    /// The two ends of the obstacle and the one step that carries the
-    /// character from each of its tiles to the next: the line its wall runs
-    /// on.
-    ///
-    /// `None` while he has met fewer than [`WALL_REFUSALS`] tiles of it, and
-    /// `None` while the tiles he has met do not lie on one line: a corner is
-    /// where a wall stops, and a handful of refusals in a doorway is no wall
-    /// at all.
-    fn wall_line(&self) -> Option<(Point3, Point3, (i32, i32))> {
-        if self.run.len() < WALL_REFUSALS {
-            return None;
-        }
-        let mut along_it = self.run.clone();
-        // In this order the tiles of a line read from one end of it to the
-        // other, whichever of the four ways the wall runs and whichever order
-        // the character met them in.
-        along_it.sort_by_key(|tile| (tile.x, tile.y));
-        let mut along: Option<(i32, i32)> = None;
-        for pair in along_it.windows(2) {
-            let step = (
-                i32::from(pair[1].x) - i32::from(pair[0].x),
-                i32::from(pair[1].y) - i32::from(pair[0].y),
-            );
-            if step.0.abs() > 1 || step.1.abs() > 1 || step == (0, 0) {
-                return None;
-            }
-            if *along.get_or_insert(step) != step {
-                return None;
-            }
-        }
-        Some((*along_it.first()?, *along_it.last()?, along?))
-    }
-
-    /// The rest of the wall: the tiles its line runs on past each end of what
-    /// the character has met. Empty while he has not met enough of one
-    /// obstacle to know that it is a wall.
-    ///
-    /// Both ends, because the tiles he has met are somewhere in the middle of
-    /// it and nothing says which way the rest of it lies.
-    fn wall_ahead(&self) -> Vec<Point3> {
-        let Some((first, last, (dx, dy))) = self.wall_line() else {
-            return Vec::new();
-        };
-        let mut wall = line_on(last, (dx, dy));
-        wall.extend(line_on(first, (-dx, -dy)));
-        wall
-    }
-
-    /// Remembers one tile the character must go around, and gives back the
-    /// tile dropped to make room for it once the memory is full.
-    ///
-    /// A tile refused again is fresh news: its time starts over and it goes to
-    /// the back of the queue, so the wall he keeps meeting outlives one he met
-    /// once and has walked away from.
-    fn remember(&mut self, at: Point3, now: Instant) -> Option<Point3> {
+    /// Exactly one cell, at the tile that was really refused. A tile refused
+    /// again is fresh news: its time starts over and it goes to the back of
+    /// the queue, so the wall he keeps meeting outlives one he met once and
+    /// has walked away from.
+    pub fn refuse(&mut self, at: Point3, now: Instant) -> Option<Point3> {
         self.tiles.retain(|held| !same_tile(held.at, at));
         self.tiles.push_back(RefusedTile {
             at,
@@ -353,6 +352,13 @@ impl BlockedTiles {
         None
     }
 
+    /// Forgets every tile at once, and gives them all back. A new destination
+    /// is a new journey: a minute is a long time to hold a mark that was made
+    /// on the way somewhere else.
+    pub fn clear(&mut self) -> Vec<Point3> {
+        self.tiles.drain(..).map(|held| held.at).collect()
+    }
+
     /// Takes out every tile whose time is up and gives them back, so nothing
     /// is remembered for ever. A door opens, a boat sails, and a shard refuses
     /// a step for a passing reason.
@@ -362,11 +368,7 @@ impl BlockedTiles {
             .iter()
             .take_while(|held| now >= held.forget_at)
             .count();
-        let forgotten: Vec<Point3> = self.tiles.drain(..due).map(|held| held.at).collect();
-        for tile in &forgotten {
-            self.leave_run(*tile);
-        }
-        forgotten
+        self.tiles.drain(..due).map(|held| held.at).collect()
     }
 
     /// Forgets one tile, and says whether one was there to forget. The server
@@ -375,15 +377,7 @@ impl BlockedTiles {
     pub fn forget(&mut self, at: Point3) -> bool {
         let held = self.tiles.len();
         self.tiles.retain(|tile| !same_tile(tile.at, at));
-        self.leave_run(at);
         self.tiles.len() != held
-    }
-
-    /// Takes a tile out of the obstacle the character is up against. A tile he
-    /// has been put on or has forgotten is no part of a wall, and counting it
-    /// would have him plan around a line that is not there.
-    fn leave_run(&mut self, at: Point3) {
-        self.run.retain(|held| !same_tile(*held, at));
     }
 
     /// Every tile still remembered, for the routes that must go around them.
@@ -401,11 +395,29 @@ pub struct Movement {
     pub path: VecDeque<Point3>,
     pub goal: Option<Point3>,
     pub fastwalk: [u32; FASTWALK_SLOTS],
-    pub fastwalk_i: usize,
     pub last_dir: Direction,
     pub run_override: Option<bool>,
+    /// True while the character rides. A mount has a pace of its own, and the
+    /// session sets this from the item the server puts on [`MOUNT_LAYER`].
+    pub mounted: bool,
     /// The tiles the server refused him, which every route goes around.
     pub blocked: BlockedTiles,
+    /// The crossings the server refused him, which say whether a refusal is
+    /// the first at that place or the second.
+    pub refused_edges: RefusedEdges,
+    /// The tile this trip is aimed at, which is what tells one journey from
+    /// the next.
+    trip_dest: Option<Point3>,
+    /// How many times the route of this trip has been planned again.
+    replans: u32,
+    /// The cell the character is waiting at for somebody to move off it, and
+    /// how often he has waited there.
+    wait_cell: Option<Point3>,
+    /// Waits at [`Movement::wait_cell`] since the last one that blocked it.
+    waits: u32,
+    /// Waits at [`Movement::wait_cell`] over the whole trip, which nothing but
+    /// a new trip resets.
+    waits_this_trip: u32,
 }
 
 impl Default for Movement {
@@ -416,11 +428,17 @@ impl Default for Movement {
             next_step_due: None,
             path: VecDeque::new(),
             goal: None,
-            fastwalk: [0; FASTWALK_SLOTS],
-            fastwalk_i: 0,
+            fastwalk: [FASTWALK_KEY_EMPTY; FASTWALK_SLOTS],
             last_dir: Direction::North,
             run_override: None,
+            mounted: false,
             blocked: BlockedTiles::default(),
+            refused_edges: RefusedEdges::default(),
+            trip_dest: None,
+            replans: 0,
+            wait_cell: None,
+            waits: 0,
+            waits_this_trip: 0,
         }
     }
 }
@@ -429,8 +447,16 @@ impl Movement {
     /// How long one step of a person takes, give or take: nobody walks to a
     /// metronome, so every step is worth a little more or a little less than
     /// the pace.
+    ///
+    /// A mount has a pace of its own, twice the pace of the person on it at
+    /// both a walk and a run.
     pub fn next_interval(&self, running: bool) -> Duration {
-        let base = if running { STEP_RUN_MS } else { STEP_WALK_MS };
+        let base = match (self.mounted, running) {
+            (true, true) => STEP_MOUNT_RUN_MS,
+            (true, false) => STEP_MOUNT_WALK_MS,
+            (false, true) => STEP_RUN_MS,
+            (false, false) => STEP_WALK_MS,
+        };
         let jitter = (base as u32 * JITTER_PCT) / 100;
         let lo = base.saturating_sub(jitter as u64);
         let hi = base + jitter as u64;
@@ -499,10 +525,40 @@ impl Movement {
     /// Every request the client sends, a step or a turn on the spot, takes the
     /// next pair.
     fn next_ticket(&mut self) -> (u8, u32) {
-        let sequence = self.next_sequence();
-        let key = self.fastwalk[self.fastwalk_i % FASTWALK_SLOTS];
-        self.fastwalk_i = (self.fastwalk_i + 1) % FASTWALK_SLOTS;
-        (sequence, key)
+        (self.next_sequence(), self.take_fastwalk())
+    }
+
+    /// Takes one fastwalk key off the stack and leaves the slot empty.
+    ///
+    /// A key is spent once. The stack is read from the front, the slot it came
+    /// from is emptied, and [`FASTWALK_KEY_EMPTY`] comes back when nothing is
+    /// left: a key sent twice is what a shard reads as a client walking
+    /// faster than a person can.
+    fn take_fastwalk(&mut self) -> u32 {
+        for slot in self.fastwalk.iter_mut() {
+            if *slot != FASTWALK_KEY_EMPTY {
+                return std::mem::replace(slot, FASTWALK_KEY_EMPTY);
+            }
+        }
+        FASTWALK_KEY_EMPTY
+    }
+
+    /// Puts one new key on the stack, and says whether there was room for it.
+    ///
+    /// This is what the packet that refills the stack one key at a time calls.
+    /// A full stack takes no more: the server sends a key for a request the
+    /// character has made, so it cannot owe him more keys than the stack
+    /// holds.
+    pub fn push_fastwalk(&mut self, key: u32) -> bool {
+        let Some(slot) = self
+            .fastwalk
+            .iter_mut()
+            .find(|slot| **slot == FASTWALK_KEY_EMPTY)
+        else {
+            return false;
+        };
+        *slot = key;
+        true
     }
 
     /// The tile the next step is aimed from: the tile the last step still
@@ -539,33 +595,69 @@ impl Movement {
             direction: step.direction,
             arrives_at: step.arrives_at,
             sent_at: now,
+            turn: false,
         });
         self.schedule_next(now, self.next_interval(running));
         self.last_dir = step.direction;
         encode::move_request(step.direction, running, sequence, key)
     }
 
-    /// Turns the character to face `direction`, the way a player turns before
-    /// he uses a thing. A move request in a direction the character does not
-    /// face turns it where it stands and moves it nowhere, so the turn waits
-    /// on no answer and takes no tile. `None` comes back when the character
-    /// already faces that way and no packet is needed.
+    /// Turns the character to face `direction` where he stands, and holds that
+    /// turn until the server answers it. `None` comes back when he already
+    /// faces that way and no packet is needed.
     ///
-    /// A turn still costs the moment a walking step costs, because a person
-    /// who turns to open a door does not step the same instant he turns.
+    /// A move request in a direction the character does not face turns him and
+    /// moves him nowhere: the server sets the new location to the old one and
+    /// answers all the same. So the turn is a request like any other. It takes
+    /// a sequence number, it fills a slot on the wire, and it is answered; what
+    /// it never does is take a tile, which is why `standing_on` is the tile the
+    /// requests before it leave him on and not a new one.
+    ///
+    /// A turn costs [`TURN_PACE`] and not a step of the pace he walks at. The
+    /// server charges a turn nothing at all and starts its own pace again from
+    /// it, so charging a whole walking step here loses a tile of ground on
+    /// every change of direction.
     pub fn build_turn(
         &mut self,
         facing: Direction,
         direction: Direction,
+        standing_on: Point3,
         now: Instant,
     ) -> Option<Vec<u8>> {
         if facing == direction {
             return None;
         }
         let (sequence, key) = self.next_ticket();
+        self.in_flight.push_back(PendingStep {
+            sequence,
+            direction,
+            arrives_at: standing_on,
+            sent_at: now,
+            turn: true,
+        });
         self.last_dir = direction;
-        self.schedule_next(now, self.next_interval(WALKING_PACE));
-        Some(encode::move_request(direction, WALKING_PACE, sequence, key))
+        self.schedule_next(now, TURN_PACE);
+        Some(encode::move_request(
+            direction,
+            TURN_RUN_FLAG,
+            sequence,
+            key,
+        ))
+    }
+
+    /// The way the character faces once every request already sent has been
+    /// answered: the direction of the last of them, and `reported` when the
+    /// server owes him nothing.
+    ///
+    /// This is what the facing of the next step is tested against.
+    /// `reported` alone is the facing of some tile behind him whenever a
+    /// request is still out, and a step tested against that turns him a second
+    /// time in a direction he has already asked to face.
+    pub fn facing_after(&self, reported: Direction) -> Direction {
+        self.in_flight
+            .back()
+            .map(|pending| pending.direction)
+            .unwrap_or(reported)
     }
 
     /// The direction of the step the server is refusing: the oldest step still
@@ -595,19 +687,121 @@ impl Movement {
         self.in_flight.pop_front()
     }
 
-    /// Throws away everything one refusal ends: every step still waiting for
-    /// an answer, the route they were part of, and the sequence they counted
-    /// on. The server drops every request that reached it after the one it
-    /// refused, so not one of them is ever going to be answered.
-    pub fn reject(&mut self) {
-        self.in_flight.clear();
-        self.path.clear();
+    /// True while one of the requests still waiting for an answer carries that
+    /// sequence number.
+    ///
+    /// A refusal on a sequence no request carries is the echo of a refusal
+    /// already dealt with: the server drops every request it had after the one
+    /// it refused, and answers some of them with a refusal of their own. Acting
+    /// on the echo blocks a second tile for a step that was never really
+    /// refused.
+    pub fn holds_sequence(&self, sequence: u8) -> bool {
+        self.in_flight
+            .iter()
+            .any(|pending| pending.sequence == sequence)
+    }
+
+    /// Throws away what one refusal ends on the wire: every request still
+    /// waiting for an answer, and the sequence they counted on. The server
+    /// drops every request that reached it after the one it refused, so not one
+    /// of them is ever going to be answered.
+    ///
+    /// The tiles those steps were aimed at go back at the head of the route,
+    /// oldest first, because not one of those steps happened: they were taken
+    /// out of a route the character still has to walk. A turn puts nothing
+    /// back, having taken nothing out.
+    ///
+    /// What becomes of that route is the refusal ladder's to decide: one
+    /// refusal is worth a second try at the same step, and another is worth a
+    /// new route.
+    pub fn refused(&mut self) {
+        for request in self.in_flight.drain(..).rev() {
+            if !request.turn {
+                self.path.push_front(request.arrives_at);
+            }
+        }
         self.reset_sequence();
+    }
+
+    /// Throws away everything one refusal ends: the requests on the wire, the
+    /// route they were part of, and the sequence they counted on.
+    pub fn reject(&mut self) {
+        self.refused();
+        self.path.clear();
+    }
+
+    /// Holds the walk still for `pause`, so nothing is sent until whatever is
+    /// in the way has had time to move.
+    pub fn wait(&mut self, now: Instant, pause: Duration) {
+        self.next_step_due = Some(now + pause);
+    }
+
+    /// Starts the trip to `dest`, and gives back the refused tiles forgotten
+    /// because of it.
+    ///
+    /// A new destination is a new journey. The tiles and crossings the server
+    /// refused on the way somewhere else say nothing about this way, and a
+    /// minute is a long time to hold a mark made for another walk. Nothing is
+    /// forgotten while the destination is the one the trip is already aimed at,
+    /// or a walk planned again on every tick would remember nothing at all.
+    pub fn begin_trip(&mut self, dest: Point3) -> Vec<Point3> {
+        if self.trip_dest.map(|held| same_tile(held, dest)) == Some(true) {
+            return Vec::new();
+        }
+        self.trip_dest = Some(dest);
+        self.replans = 0;
+        self.clear_waits();
+        self.refused_edges.clear();
+        self.blocked.clear()
+    }
+
+    /// Counts one more route for this trip, and says whether the character may
+    /// go on. A trip planned again [`REPLANS_MAX`] times is one nothing is
+    /// going to solve, and it ends instead of looping.
+    pub fn count_replan(&mut self) -> bool {
+        self.replans += 1;
+        self.replans <= REPLANS_MAX
+    }
+
+    /// Ends the trip: nothing of it is carried into the next one.
+    pub fn end_trip(&mut self) {
+        self.trip_dest = None;
+        self.replans = 0;
+        self.clear_waits();
+    }
+
+    /// Counts one wait for somebody to move off `cell`, and gives back how
+    /// many the character has waited there since the last one that blocked it,
+    /// and how many over the whole trip.
+    ///
+    /// The first count is what says he has waited long enough to treat the cell
+    /// as shut, and it starts again once he has. The second is what says the
+    /// whole trip is going nowhere, and only a new trip resets it. Waiting at
+    /// another cell starts the first count again: he has moved on.
+    pub fn waited_at(&mut self, cell: Point3) -> (u32, u32) {
+        if self.wait_cell.map(|held| same_tile(held, cell)) != Some(true) {
+            self.wait_cell = Some(cell);
+            self.waits = 0;
+        }
+        self.waits += 1;
+        self.waits_this_trip += 1;
+        (self.waits, self.waits_this_trip)
+    }
+
+    /// Forgets the waits at one cell, which the character has stopped waiting
+    /// at because he has just blocked it.
+    pub fn stop_waiting(&mut self) {
+        self.wait_cell = None;
+        self.waits = 0;
+    }
+
+    fn clear_waits(&mut self) {
+        self.stop_waiting();
+        self.waits_this_trip = 0;
     }
 
     pub fn set_fastwalk(&mut self, keys: [u32; FASTWALK_SLOTS]) {
         self.fastwalk = keys;
-        self.fastwalk_i = 0;
     }
 
     pub fn clear_in_flight(&mut self) {
@@ -662,6 +856,7 @@ impl Movement {
     pub fn clear(&mut self) {
         self.hold();
         self.run_override = None;
+        self.end_trip();
     }
 
     pub fn set_path(&mut self, steps: Vec<Point3>, goal: Point3) {
@@ -669,7 +864,8 @@ impl Movement {
         self.goal = Some(goal);
     }
 
-    /// The next step of the queued route, aimed from `from`.
+    /// The next step of the queued route, aimed from `from` and left on the
+    /// route.
     ///
     /// Every tile of the route carries the height the route worked out for
     /// it, which is the height the character reaches by stepping onto it, and
@@ -680,14 +876,17 @@ impl Movement {
     /// A tile the character already stands on, and one too far away to reach
     /// in one step, are both dropped: the route has run on past him, or it was
     /// built for a tile he is no longer on.
-    pub fn pop_next_step(&mut self, from: Point3) -> Option<NextStep> {
-        while let Some(next) = self.path.pop_front() {
-            if same_tile(next, from) {
-                continue;
-            }
+    ///
+    /// The step stays on the route because the direction of it decides what
+    /// goes on the wire: a step in a direction he does not face turns him and
+    /// moves him nowhere, and the route must still hold that step for the
+    /// request after the turn.
+    pub fn peek_next_step(&mut self, from: Point3) -> Option<NextStep> {
+        while let Some(next) = self.path.front().copied() {
             let dx = next.x as i32 - from.x as i32;
             let dy = next.y as i32 - from.y as i32;
-            if dx.abs() > 1 || dy.abs() > 1 {
+            if same_tile(next, from) || dx.abs() > 1 || dy.abs() > 1 {
+                self.path.pop_front();
                 continue;
             }
             return Some(NextStep {
@@ -696,6 +895,15 @@ impl Movement {
             });
         }
         None
+    }
+
+    /// The next step of the queued route, taken off it. Call this only for a
+    /// step that really goes out as a step: a turn takes no tile out of a
+    /// route.
+    pub fn pop_next_step(&mut self, from: Point3) -> Option<NextStep> {
+        let step = self.peek_next_step(from)?;
+        self.path.pop_front();
+        Some(step)
     }
 
     /// True when the character stands on the tile he was walking to and no
@@ -715,6 +923,16 @@ pub fn can_run(stam: u16, stam_max: u16) -> bool {
     stam_max == 0 || u32::from(stam) * RUN_STAMINA_SHARE >= u32::from(stam_max)
 }
 
+/// True while the character rides.
+///
+/// The item the server puts on [`MOUNT_LAYER`] is the only word this client
+/// gets that he is on a mount: no packet says so in words, and the body he
+/// wears does not change. A mount steps twice as fast as the person on it, so
+/// this is what [`Movement::next_interval`] is set from.
+pub fn is_mounted(equipment: &[EquipItem]) -> bool {
+    equipment.iter().any(|worn| worn.layer == MOUNT_LAYER)
+}
+
 pub fn should_run(in_town: bool, danger: bool, late: bool, stam: u16, stam_max: u16) -> bool {
     if !can_run(stam, stam_max) {
         return false;
@@ -725,10 +943,16 @@ pub fn should_run(in_town: bool, danger: bool, late: bool, stam: u16, stam_max: 
     !in_town
 }
 
-/// The two floors of the New Haven inn stand 20 height units apart. Half of
-/// that keeps a door on the character's own floor and rejects the one over his
-/// head, which he can neither reach nor walk through.
-pub const DOOR_MAX_Z_GAP: i16 = 10;
+/// The column a body fills, in height units.
+///
+/// This is the window a door has to stand in to be one the character can reach:
+/// the higher of the two grounds, his own and the door's, and one body height
+/// up from there. It is the same window the reference client uses. A tighter
+/// one misses a door at the top of a stair, where the tile in front of the door
+/// stands a course or two below the door's own tile; the two floors of the New
+/// Haven inn stand 20 apart, which is still outside it, so a door over his head
+/// is still one he can neither reach nor walk through.
+pub const DOOR_BODY_COLUMN: i16 = 16;
 /// How many clicks on one door the server may leave unanswered before the
 /// character treats it as locked. More than this only makes him stand in the
 /// doorway.
@@ -768,9 +992,11 @@ pub struct DoorApproach {
     pub steps: Vec<Point3>,
 }
 
-/// True while two heights are near enough to be the same floor of a building.
+/// True while two heights stand in one body column: measured from the higher
+/// of the two, the lower is still inside [`DOOR_BODY_COLUMN`] of it. That is
+/// what makes them the same floor of a building.
 fn on_same_floor(a: i8, b: i8) -> bool {
-    (i16::from(a) - i16::from(b)).abs() <= DOOR_MAX_Z_GAP
+    (i16::from(a) - i16::from(b)).abs() < DOOR_BODY_COLUMN
 }
 
 /// The door standing on one tile of the floor a person at `from_z` is on. A
@@ -842,6 +1068,7 @@ pub fn door_in_the_way<M: TileQuery + ?Sized>(
     let blocked = Obstacles {
         soft: &soft,
         hard: avoid.hard,
+        moves: avoid.moves,
     };
     let (stand_on, steps) = ORTHOGONAL_DIRS
         .iter()
@@ -1190,6 +1417,9 @@ pub(crate) mod tests {
     const GAP_Y: u16 = 2;
     /// The move request packet id.
     const MOVE_REQ_ID: u8 = 0x02;
+    /// The two paces a request goes out at.
+    const WALKING: bool = false;
+    const RUNNING: bool = true;
     /// The slowest a walking step can be, jitter and all. Wait this long for
     /// each step and the pace of a person never holds the next one back.
     const SLOWEST_WALK: Duration =
@@ -1202,6 +1432,7 @@ pub(crate) mod tests {
         Obstacles {
             soft: mobiles,
             hard: &[],
+            moves: &[],
         }
     }
 
@@ -1250,6 +1481,23 @@ pub(crate) mod tests {
         );
         assert_eq!(m.ack(sent.sequence).unwrap().arrives_at.x, 11);
         assert!(m.in_flight.is_empty());
+    }
+
+    /// How many requests the wire holds. The server keeps a ring of five slots
+    /// for the moves one client has not had an answer to, and the reference
+    /// client puts four on the wire: one slot of headroom, so a request that
+    /// crosses an answer never fills the ring.
+    ///
+    /// Three, which this client used before, is one step short of the wire the
+    /// reference keeps and one step of ground given away on a long run.
+    #[test]
+    fn the_wire_holds_one_request_fewer_than_the_server_ring() {
+        assert_eq!(IN_FLIGHT_MAX, 4);
+        assert_eq!(
+            IN_FLIGHT_MAX + SERVER_RING_HEADROOM,
+            SERVER_MOVE_RING_SLOTS,
+            "and it leaves the server its slot of headroom"
+        );
     }
 
     /// The rule this client walks by: the character asks, and only the answer
@@ -1534,18 +1782,110 @@ pub(crate) mod tests {
         );
     }
 
+    /// The fastwalk keys of a full stack, in the order the server sends them.
+    const FASTWALK_STACK: [u32; FASTWALK_SLOTS] = [1, 2, 3, 4, 5, 6];
+    /// Where the fastwalk key sits in a move request.
+    const MOVE_REQ_KEY_INDEX: usize = 3;
+
+    /// The key one move request carries.
+    fn fastwalk_key_of(pkt: &[u8]) -> u32 {
+        u32::from_be_bytes([
+            pkt[MOVE_REQ_KEY_INDEX],
+            pkt[MOVE_REQ_KEY_INDEX + 1],
+            pkt[MOVE_REQ_KEY_INDEX + 2],
+            pkt[MOVE_REQ_KEY_INDEX + 3],
+        ])
+    }
+
+    /// A key is spent once and never sent again. Reading the stack round and
+    /// round put key one back on the wire on the seventh move, which is what a
+    /// shard reads as a client walking faster than a person can.
     #[test]
-    fn fastwalk_keys_rotate() {
+    fn a_fastwalk_key_is_spent_once_and_the_stack_empties() {
         let mut m = Movement::default();
-        m.set_fastwalk([1, 2, 3, 4, 5, 6]);
+        m.set_fastwalk(FASTWALK_STACK);
         let now = Instant::now();
+        let mut at = Point3::new(0, 0, 0);
+        let mut sent = Vec::new();
+        for _ in 0..FASTWALK_SLOTS {
+            let pkt = m.build_step(step_across_level_ground(at, Direction::East), false, now);
+            at = at.neighbour(Direction::East).expect("the tile beside him");
+            sent.push(fastwalk_key_of(&pkt));
+            m.in_flight.clear();
+        }
+        assert_eq!(sent, FASTWALK_STACK.to_vec(), "each key once, in order");
+        let empty = m.build_step(step_across_level_ground(at, Direction::East), false, now);
+        assert_eq!(
+            fastwalk_key_of(&empty),
+            FASTWALK_KEY_EMPTY,
+            "and an empty stack sends no key at all, never key one again"
+        );
+    }
+
+    /// The packet that refills the stack sends one key at a time, and this is
+    /// the way in for it.
+    #[test]
+    fn one_new_fastwalk_key_goes_on_the_stack() {
+        const ONE_MORE_KEY: u32 = 77;
+        let mut m = Movement::default();
+        let now = Instant::now();
+        assert!(m.push_fastwalk(ONE_MORE_KEY), "an empty stack has room");
         let pkt = m.build_step(
             step_across_level_ground(Point3::new(0, 0, 0), Direction::East),
             false,
             now,
         );
-        let key = u32::from_be_bytes([pkt[3], pkt[4], pkt[5], pkt[6]]);
-        assert_eq!(key, 1);
+        assert_eq!(fastwalk_key_of(&pkt), ONE_MORE_KEY);
+        m.set_fastwalk(FASTWALK_STACK);
+        assert!(
+            !m.push_fastwalk(ONE_MORE_KEY),
+            "a full stack takes no more: the server cannot owe him more than it holds"
+        );
+    }
+
+    /// A mount steps twice as fast as the person on it, at a walk and at a run
+    /// alike. Without the branch a rider walked at the pace of his own legs and
+    /// lost half a tile on every step.
+    #[test]
+    fn a_mount_steps_at_the_pace_of_a_mount() {
+        let mut m = Movement::default();
+        let slowest = |base: u64| Duration::from_millis(base + (base * JITTER_PCT as u64) / 100);
+        assert!(m.next_interval(RUNNING) <= slowest(STEP_RUN_MS));
+        assert!(m.next_interval(WALKING) <= slowest(STEP_WALK_MS));
+        m.mounted = true;
+        assert!(
+            m.next_interval(RUNNING) <= slowest(STEP_MOUNT_RUN_MS),
+            "a mount at a run is faster than a person at a run"
+        );
+        assert!(
+            m.next_interval(WALKING) <= slowest(STEP_MOUNT_WALK_MS),
+            "and a mount at a walk is faster than a person at a walk"
+        );
+        assert!(
+            m.next_interval(WALKING)
+                >= Duration::from_millis(
+                    STEP_MOUNT_WALK_MS - (STEP_MOUNT_WALK_MS * JITTER_PCT as u64) / 100
+                )
+        );
+    }
+
+    /// The item on the mount layer is the only word the server gives that the
+    /// character rides.
+    #[test]
+    fn a_rider_is_known_by_the_item_on_the_mount_layer() {
+        const A_HORSE: u16 = 0x3E9F;
+        let worn = |layer: u8| EquipItem {
+            serial: INN_DOOR_SERIAL,
+            graphic: A_HORSE,
+            layer,
+            hue: 0,
+        };
+        assert!(!is_mounted(&[]));
+        assert!(!is_mounted(&[worn(uoterm_protocol::types::LAYER_BACKPACK)]));
+        assert!(is_mounted(&[
+            worn(uoterm_protocol::types::LAYER_ONE_HANDED),
+            worn(MOUNT_LAYER)
+        ]));
     }
 
     #[test]
@@ -1723,7 +2063,7 @@ pub(crate) mod tests {
         let mut blocked = BlockedTiles::default();
         let now = Instant::now();
         assert_eq!(
-            blocked.remember(REFUSED_35_TIMES, now),
+            blocked.refuse(REFUSED_35_TIMES, now),
             None,
             "nothing is dropped while there is room"
         );
@@ -1754,10 +2094,10 @@ pub(crate) mod tests {
     fn a_tile_refused_again_is_remembered_from_the_second_refusal() {
         let mut blocked = BlockedTiles::default();
         let now = Instant::now();
-        blocked.remember(REFUSED_35_TIMES, now);
-        blocked.remember(REFUSED_23_TIMES, now);
+        blocked.refuse(REFUSED_35_TIMES, now);
+        blocked.refuse(REFUSED_23_TIMES, now);
         let later = now + REFUSED_TILE_MEMORY;
-        blocked.remember(REFUSED_35_TIMES, later);
+        blocked.refuse(REFUSED_35_TIMES, later);
         assert_eq!(
             blocked.expire(later),
             vec![REFUSED_23_TIMES],
@@ -1790,7 +2130,7 @@ pub(crate) mod tests {
         let now = Instant::now();
         for i in 0..REFUSED_TILES_MAX {
             assert_eq!(
-                blocked.remember(wall_tile(i), now),
+                blocked.refuse(wall_tile(i), now),
                 None,
                 "tile {i} is inside the cap"
             );
@@ -1798,7 +2138,7 @@ pub(crate) mod tests {
         assert_eq!(blocked.tiles().len(), REFUSED_TILES_MAX);
         let one_too_many = wall_tile(REFUSED_TILES_MAX);
         assert_eq!(
-            blocked.remember(one_too_many, now),
+            blocked.refuse(one_too_many, now),
             Some(wall_tile(0)),
             "the oldest tile is the one that makes room"
         );
@@ -1827,142 +2167,154 @@ pub(crate) mod tests {
         )
     }
 
-    /// A refusal with no door anywhere near it.
-    const NO_DOORS: &[DoorItem] = &[];
-
-    /// The measured fault: one refusal takes one tile out of the next route,
-    /// and the route after it walks into the tile beside that one. The
-    /// character must meet the obstacle, learn which way it runs, and plan
-    /// around the whole of it.
+    /// The measured fault this rule replaces. An earlier version of this
+    /// client guessed that three refusals in a line meant a wall running eight
+    /// more tiles past each end, and stamped sixteen tiles it had never met.
+    /// No real client does that, and on a wall that curves, a fence with a gate
+    /// in it, or a queue of people, those guessed tiles close the very gap the
+    /// character should walk through.
+    ///
+    /// One refusal blocks one cell, at radius nought, however many refusals
+    /// come before it and whatever line they lie on.
     #[test]
-    fn refusals_against_one_obstacle_become_the_wall_it_stands_in() {
+    fn one_refusal_blocks_one_cell_and_never_a_line() {
+        const REFUSALS_IN_A_LINE: i32 = 4;
         let mut blocked = BlockedTiles::default();
         let now = Instant::now();
-        for met in 0..WALL_REFUSALS as i32 - 1 {
-            assert!(
-                blocked
-                    .refuse(wall_north_south(met), now, NO_DOORS)
-                    .assumed
-                    .is_empty(),
-                "{} refusals do not say which way a thing in the way runs",
-                met + 1
-            );
-        }
-        let wall = blocked
-            .refuse(wall_north_south(WALL_REFUSALS as i32 - 1), now, NO_DOORS)
-            .assumed;
-        assert_eq!(
-            wall.len(),
-            WALL_ASSUMED_TILES * 2,
-            "the line runs on past both ends of what he has met: {wall:?}"
-        );
-        for tile in &wall {
+        for met in 0..REFUSALS_IN_A_LINE {
             assert_eq!(
-                tile.x, REFUSED_35_TIMES.x,
-                "every tile of it stands in the same line: {wall:?}"
+                blocked.refuse(wall_north_south(met), now),
+                None,
+                "nothing is dropped while there is room"
+            );
+            assert_eq!(
+                blocked.tiles().len(),
+                met as usize + 1,
+                "refusal {met} blocks one cell and no more"
             );
         }
-        let blocked_now = blocked.tiles();
-        for step in 1..=WALL_ASSUMED_TILES as i32 {
-            for tile in [
-                wall_north_south(WALL_REFUSALS as i32 - 1 + step),
-                wall_north_south(-step),
-            ] {
-                assert!(
-                    blocked_now.iter().any(|held| same_tile(*held, tile)),
-                    "the route goes around {tile}, which he has not met yet"
-                );
-            }
+        for held in blocked.tiles() {
+            assert!(
+                (0..REFUSALS_IN_A_LINE).any(|met| same_tile(wall_north_south(met), held)),
+                "{held} was never refused, so nothing may plan around it"
+            );
         }
-    }
-
-    /// A refusal that touches nothing he has just met is a different thing in
-    /// the way, and the count starts again. Without this a character who is
-    /// stopped once here and once there would take the long way round the open
-    /// street between them.
-    #[test]
-    fn a_refusal_away_from_the_obstacle_starts_the_count_again() {
-        let mut blocked = BlockedTiles::default();
-        let now = Instant::now();
-        blocked.refuse(wall_north_south(0), now, NO_DOORS);
-        blocked.refuse(wall_north_south(1), now, NO_DOORS);
-        assert!(
-            blocked
-                .refuse(REFUSED_23_TIMES, now, NO_DOORS)
-                .assumed
-                .is_empty(),
-            "a refusal streets away is no part of that wall"
-        );
-        assert!(
-            blocked
-                .refuse(wall_north_south(2), now, NO_DOORS)
-                .assumed
-                .is_empty(),
-            "and the wall is met from the start again"
-        );
-    }
-
-    /// Three refusals that do not lie on a line are a corner, and a corner is
-    /// where a wall stops. Assuming a line through one would shut the
-    /// character out of open ground he can walk on.
-    #[test]
-    fn refusals_that_turn_a_corner_are_no_wall() {
-        let mut blocked = BlockedTiles::default();
-        let now = Instant::now();
-        let corner = wall_north_south(0);
-        let along = wall_north_south(1);
-        let round_it = Point3::new(corner.x + 1, along.y, corner.z);
-        blocked.refuse(corner, now, NO_DOORS);
-        blocked.refuse(along, now, NO_DOORS);
-        assert!(
-            blocked.refuse(round_it, now, NO_DOORS).assumed.is_empty(),
-            "the three tiles turn a corner and lie on no one line"
-        );
-        assert_eq!(
-            blocked.tiles().len(),
-            WALL_REFUSALS,
-            "so the three tiles he has met are all he plans around"
-        );
-    }
-
-    /// A doorway is a gap in a wall, and the door logic owns it. A wall that
-    /// swallowed one would shut the character out of a building he can walk
-    /// into.
-    #[test]
-    fn an_assumed_wall_never_takes_the_tile_a_door_stands_on() {
-        let mut blocked = BlockedTiles::default();
-        let now = Instant::now();
-        let doorway = wall_north_south(WALL_REFUSALS as i32);
-        let door = [DoorItem {
-            serial: INN_DOOR_SERIAL,
-            graphic: INN_DOOR_SHUT_GRAPHIC,
-            location: doorway,
-        }];
-        for met in 0..WALL_REFUSALS as i32 {
-            blocked.refuse(wall_north_south(met), now, &door);
+        for beyond in [
+            wall_north_south(REFUSALS_IN_A_LINE),
+            wall_north_south(-1),
+            Point3::new(
+                REFUSED_35_TIMES.x + 1,
+                REFUSED_35_TIMES.y,
+                REFUSED_35_TIMES.z,
+            ),
+        ] {
+            assert!(
+                !blocked.tiles().iter().any(|held| same_tile(*held, beyond)),
+                "{beyond} is open ground he has never been refused at"
+            );
         }
-        assert!(
-            !blocked.tiles().iter().any(|held| same_tile(*held, doorway)),
-            "the doorway stays open to him"
-        );
     }
 
     /// The server putting the character on a tile is proof that it takes him,
-    /// so that tile is no part of any wall and cannot go on holding a line
-    /// through open ground.
+    /// so that tile stops being one any route goes around.
     #[test]
-    fn a_tile_he_is_put_on_leaves_the_obstacle() {
+    fn a_tile_he_is_put_on_is_forgotten() {
         let mut blocked = BlockedTiles::default();
         let now = Instant::now();
-        blocked.refuse(wall_north_south(0), now, NO_DOORS);
-        blocked.refuse(wall_north_south(1), now, NO_DOORS);
+        blocked.refuse(wall_north_south(0), now);
+        blocked.refuse(wall_north_south(1), now);
         assert!(blocked.forget(wall_north_south(1)), "the server took him");
         assert!(
-            blocked
-                .refuse(wall_north_south(2), now, NO_DOORS)
-                .assumed
-                .is_empty(),
-            "two tiles are left of that obstacle, which is no wall yet"
+            !blocked.forget(wall_north_south(1)),
+            "and there is nothing left there to forget"
+        );
+        assert_eq!(blocked.tiles(), vec![wall_north_south(0)]);
+    }
+
+    /// A new destination is a new journey, and the marks made on the way
+    /// somewhere else say nothing about this way.
+    #[test]
+    fn a_new_destination_forgets_every_refused_tile() {
+        const MET_ON_THE_WAY: usize = 3;
+        let mut m = Movement::default();
+        let now = Instant::now();
+        assert!(
+            m.begin_trip(REFUSED_35_TIMES).is_empty(),
+            "the first trip starts with nothing to forget"
+        );
+        for met in 0..MET_ON_THE_WAY as i32 {
+            m.blocked.refuse(wall_north_south(met), now);
+        }
+        m.refused_edges
+            .refuse(wall_north_south(0), wall_north_south(1), now);
+        assert!(
+            m.begin_trip(REFUSED_35_TIMES).is_empty(),
+            "the same destination is the same trip, so nothing is forgotten"
+        );
+        assert_eq!(m.blocked.tiles().len(), MET_ON_THE_WAY);
+        let forgotten = m.begin_trip(REFUSED_23_TIMES);
+        assert_eq!(
+            forgotten.len(),
+            MET_ON_THE_WAY,
+            "every mark goes with the old journey"
+        );
+        assert!(m.blocked.tiles().is_empty());
+        assert!(m.refused_edges.moves().is_empty());
+    }
+
+    /// A trip that has been planned again this often is going nowhere, and it
+    /// ends instead of looping.
+    #[test]
+    fn a_trip_is_given_up_after_the_cap_on_replans() {
+        let mut m = Movement::default();
+        m.begin_trip(REFUSED_35_TIMES);
+        for replan in 1..=REPLANS_MAX {
+            assert!(m.count_replan(), "replan {replan} is inside the cap");
+        }
+        assert!(!m.count_replan(), "and one more ends the trip");
+        m.begin_trip(REFUSED_23_TIMES);
+        assert!(m.count_replan(), "a new trip starts the count again");
+    }
+
+    /// A crossing is not a tile. The step of a stair is entered from the step
+    /// below it and from nowhere else, so a refusal is counted on the pair of
+    /// tiles it crossed and in the one direction it crossed them.
+    #[test]
+    fn a_refused_crossing_is_counted_in_the_one_direction_it_failed() {
+        let mut edges = RefusedEdges::default();
+        let now = Instant::now();
+        let from = wall_north_south(0);
+        let to = wall_north_south(1);
+        assert_eq!(edges.refusals(from, to), 0, "nothing is remembered yet");
+        assert_eq!(edges.refuse(from, to, now), 1, "the first refusal of it");
+        assert_eq!(
+            edges.refuse(to, from, now),
+            1,
+            "the other way over the same pair is another crossing"
+        );
+        assert_eq!(edges.refuse(from, to, now), 2, "the second refusal of it");
+        let higher = Point3::new(to.x, to.y, to.z + EDGE_Z_TOLERANCE as i8);
+        assert_eq!(
+            edges.refuse(from, higher, now),
+            3,
+            "the same crossing read one step of a stair higher is the same crossing"
+        );
+        let another_floor = Point3::new(to.x, to.y, to.z + EDGE_Z_TOLERANCE as i8 + 1);
+        assert_eq!(
+            edges.refuse(from, another_floor, now),
+            1,
+            "and one further up than that is a crossing of its own"
+        );
+        assert_eq!(
+            edges.moves().len(),
+            3,
+            "each is one shut move the route finder plans around: {:?}",
+            edges.moves()
+        );
+        edges.expire(now + REFUSED_TILE_MEMORY);
+        assert!(
+            edges.moves().is_empty(),
+            "and none of them is remembered for ever"
         );
     }
 
@@ -2163,20 +2515,61 @@ pub(crate) mod tests {
         let mut m = Movement::default();
         let now = Instant::now();
         assert_eq!(
-            m.build_turn(Direction::South, Direction::South, now),
+            m.build_turn(
+                Direction::South,
+                Direction::South,
+                IN_FRONT_OF_THE_INN_DOOR,
+                now
+            ),
             None,
             "a character that already faces the door sends nothing"
         );
         let turn = m
-            .build_turn(Direction::North, Direction::South, now)
+            .build_turn(
+                Direction::North,
+                Direction::South,
+                IN_FRONT_OF_THE_INN_DOOR,
+                now,
+            )
             .expect("a character that faces away turns first");
         assert_eq!(
             turn,
-            encode::move_request(Direction::South, false, SEQ_FIRST, 0)
+            encode::move_request(Direction::South, WALKING, SEQ_FIRST, FASTWALK_KEY_EMPTY)
+        );
+        let waiting = in_flight(&m);
+        assert!(waiting.turn, "a turn is a request the server answers");
+        assert_eq!(
+            waiting.arrives_at, IN_FRONT_OF_THE_INN_DOOR,
+            "and it carries the tile he is already standing on, never a new one"
+        );
+    }
+
+    /// A turn on the spot costs [`TURN_PACE`] and not a step of the pace he
+    /// walks at. The server charges a turn nothing and starts its own pace
+    /// again from it, so a turn charged as a walking step gives away a whole
+    /// tile of ground on every change of direction.
+    #[test]
+    fn a_turn_costs_far_less_than_a_step() {
+        assert!(
+            TURN_PACE < Duration::from_millis(STEP_MOUNT_RUN_MS),
+            "a turn must cost less than the fastest step there is, and it costs {TURN_PACE:?}"
+        );
+        let mut m = Movement::default();
+        let now = Instant::now();
+        m.build_turn(
+            Direction::North,
+            Direction::South,
+            AT_THE_INN_DOOR_CORNER,
+            now,
+        )
+        .expect("he faces away, so he turns");
+        assert!(
+            !m.ready(now + TURN_PACE - ONE_MILLISECOND),
+            "the turn is worth its own pace"
         );
         assert!(
-            m.in_flight.is_empty(),
-            "a turn moves nothing, so it predicts no new tile"
+            m.ready(now + TURN_PACE),
+            "and the step after it goes out that soon, not a walking step later"
         );
     }
 
@@ -2451,6 +2844,47 @@ pub(crate) mod tests {
         );
     }
 
+    /// The window a door has to stand in is the whole body column, and not
+    /// half of it.
+    ///
+    /// A person opens a door from the tile in front of it, and on a stair that
+    /// tile stands a course or two below the door's own tile. This client used
+    /// ten, which is the tightest window of any source and hid every door
+    /// between eleven and fifteen courses up. [`DOOR_BODY_COLUMN`] is the
+    /// window the reference client uses: the higher of the two grounds, and
+    /// one body height up from there.
+    #[test]
+    fn a_door_up_a_course_or_two_is_still_a_door_on_his_own_floor() {
+        /// The height of the tile a person opens the door from: his own feet.
+        const AT_HIS_FEET: i8 = 0;
+        /// A door standing this far above him, which is more than the window
+        /// this client used before and less than a whole body. Every source
+        /// but this one calls it a door on his own floor.
+        const A_COURSE_OR_TWO_UP: i8 = 12;
+        /// A door a whole body above him, which is the floor over his head.
+        const A_WHOLE_BODY_UP: i8 = DOOR_BODY_COLUMN as i8;
+        const {
+            assert!(
+                A_COURSE_OR_TWO_UP < A_WHOLE_BODY_UP,
+                "the two cases must lie either side of the window, or this proves nothing"
+            )
+        };
+        let door_at = |z: i8| wall_door(Point3::new(DOORWAY.x, DOORWAY.y, z));
+
+        let up_a_stair = door_at(A_COURSE_OR_TWO_UP);
+        assert_eq!(
+            door_on_tile(&[up_a_stair], DOORWAY.x, DOORWAY.y, AT_HIS_FEET),
+            Some(up_a_stair),
+            "a door at the top of a stair is one he can reach and walk through"
+        );
+        let overhead = door_at(A_WHOLE_BODY_UP);
+        assert_eq!(
+            door_on_tile(&[overhead], DOORWAY.x, DOORWAY.y, AT_HIS_FEET),
+            None,
+            "and a door a whole body above him is on the floor over his head"
+        );
+    }
+
     #[test]
     fn a_door_on_the_floor_above_is_not_the_one_in_the_way() {
         let map = walled_map();
@@ -2591,6 +3025,7 @@ pub(crate) mod tests {
             &Obstacles {
                 soft: &person,
                 hard: &refused,
+                moves: &[],
             },
         )
         .expect("another tile beside the target");
@@ -2910,6 +3345,7 @@ pub(crate) mod tests {
             &Obstacles {
                 soft: &person,
                 hard: &memory,
+                moves: &[],
             },
         )
         .expect("a tile beside the person at the foot of the slope");

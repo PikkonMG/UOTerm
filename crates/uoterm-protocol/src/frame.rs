@@ -369,6 +369,43 @@ mod tests {
         );
     }
 
+    /// A shard that speaks to a Stygian Abyss session below 7.0.9.0 writes
+    /// `0xF3` two bytes shorter. Framing that stream with the High Seas size
+    /// leaves two bytes of the first packet in the buffer, and every packet
+    /// after it is then read from the wrong offset.
+    #[test]
+    fn pre_high_seas_world_items_frame_whole() {
+        const VERSION_PRE_HIGH_SEAS: &str = "7.0.8.2";
+        const WORLD_ITEM_PRE_HIGH_SEAS_LEN: usize = 24;
+        let version: ClientVersion = VERSION_PRE_HIGH_SEAS.parse().unwrap();
+        let table = PacketTable::for_version(crate::types::Era::Modern, version);
+        let mut stream = Vec::new();
+        for serial in 0u32..3 {
+            let mut pkt = vec![0u8; WORLD_ITEM_PRE_HIGH_SEAS_LEN];
+            pkt[0] = crate::types::PKT_WORLD_ITEM_SA;
+            pkt[4..8].copy_from_slice(&serial.to_be_bytes());
+            stream.extend_from_slice(&pkt);
+        }
+        stream.extend_from_slice(&[0x73, 0x01]);
+
+        let mut d = FrameDecoder::with_version(table, version);
+        let pkts = d.push(&stream).unwrap();
+        let ids: Vec<u8> = pkts.iter().map(|p| p.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::types::PKT_WORLD_ITEM_SA,
+                crate::types::PKT_WORLD_ITEM_SA,
+                crate::types::PKT_WORLD_ITEM_SA,
+                0x73
+            ]
+        );
+        for (index, pkt) in pkts.iter().take(3).enumerate() {
+            assert_eq!(pkt.bytes.len(), WORLD_ITEM_PRE_HIGH_SEAS_LEN);
+            assert_eq!(pkt.bytes[4..8], (index as u32).to_be_bytes());
+        }
+    }
+
     #[test]
     fn unknown_variable_waits_for_full_length() {
         let mut d = FrameDecoder::new(PacketTable::t2a());
