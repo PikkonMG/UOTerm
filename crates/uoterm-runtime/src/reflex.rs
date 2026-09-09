@@ -2,7 +2,7 @@
 
 use crate::persona::Persona;
 use crate::tools::{Goal, BANK_X, BANK_Y, BANK_Z};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uoterm_protocol::types::*;
 use uoterm_world::World;
 
@@ -24,6 +24,11 @@ const BANDAGE_SELF_DEX_STEP: f64 = 0.5;
 const BANDAGE_SELF_DEX_CAP: f64 = 120.0;
 const BANDAGE_SELF_DEX_DIV: f64 = 10.0;
 const MS_PER_SECOND: f64 = 1000.0;
+/// How long the character answers an attacker for after the last harm it did
+/// him. Long enough to cover the gap between two swings of a slow weapon, and
+/// short enough that he stops when the thing is dead or has walked away.
+const FIGHT_BACK_MEMORY: Duration = Duration::from_secs(FIGHT_BACK_MEMORY_SECS);
+const FIGHT_BACK_MEMORY_SECS: u64 = 30;
 
 fn stat_pct(cur: u16, max: u16) -> u32 {
     if max == 0 {
@@ -70,6 +75,15 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
             z: loc.z,
         };
     }
+    // Bandages, potions and an answer to whoever is hitting her come before
+    // the goal, because none of them is a goal. A wound goes on working while
+    // she stands still, and so does the thing that made it.
+    if let Some(care) = self_care(world) {
+        return care;
+    }
+    if let Some(answer) = fight_back(world) {
+        return answer;
+    }
     match goal {
         Goal::Idle => ReflexAction::None,
         Goal::Social => ReflexAction::Say(SAY_SOCIAL),
@@ -99,32 +113,70 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
     }
 }
 
-fn hunt_action(world: &World) -> ReflexAction {
-    if world.self_state.hits_max > 0
-        && stat_pct(world.self_state.hits, world.self_state.hits_max) < BANDAGE_HP_PCT
-        && world.find_item_graphic(GRAPHIC_BANDAGE).is_some()
-    {
-        return ReflexAction::BandageSelf;
+/// The care a character takes of himself, whatever else he is doing.
+///
+/// Poison and a wound are not a hunting matter: both go on working while he
+/// stands still, and the bandage and the potion are the same two answers
+/// whatever he was told to do.
+fn self_care(world: &World) -> Option<ReflexAction> {
+    let hurt = world.self_state.hits_max > 0
+        && stat_pct(world.self_state.hits, world.self_state.hits_max) < BANDAGE_HP_PCT;
+    if hurt && world.find_item_graphic(GRAPHIC_BANDAGE).is_some() {
+        return Some(ReflexAction::BandageSelf);
     }
     if world.self_state.poisoned {
         if let Some(serial) = drinkable_potion(world, GRAPHIC_POTION_CURE, None) {
-            return ReflexAction::Use(serial);
+            return Some(ReflexAction::Use(serial));
         }
     }
-    if world.self_state.hits_max > 0
-        && stat_pct(world.self_state.hits, world.self_state.hits_max) < BANDAGE_HP_PCT
-    {
+    if hurt {
         if let Some(serial) = drinkable_potion(world, GRAPHIC_POTION_HEAL, None) {
-            return ReflexAction::Use(serial);
+            return Some(ReflexAction::Use(serial));
         }
     }
     if world.self_state.stam_max > 0
         && stat_pct(world.self_state.stam, world.self_state.stam_max) < POTION_STAM_PCT
     {
         if let Some(serial) = drinkable_potion(world, GRAPHIC_POTION_REFRESH, None) {
-            return ReflexAction::Use(serial);
+            return Some(ReflexAction::Use(serial));
         }
     }
+    None
+}
+
+/// Answers whoever is hitting the character, whatever the goal is.
+///
+/// Nothing else does. A fight was only ever started by the hunt goal, so a
+/// character standing idle was beaten from full health down to a tenth of it
+/// without striking back once, and an operator had to make her invulnerable to
+/// stop it. Being beaten to death while idle is not a goal.
+///
+/// A fight the server already holds is left alone: that is a fight already,
+/// and the goal drives it. Only a target the server will let her hurt is
+/// answered, by the one test that decides that anywhere.
+fn fight_back(world: &World) -> Option<ReflexAction> {
+    if world.fighting() {
+        return None;
+    }
+    let serial = world.recent_attacker(Instant::now(), FIGHT_BACK_MEMORY)?;
+    let attacker = world.mobiles.get(&serial)?;
+    if !can_be_harmed(attacker.notoriety, attacker.flags) {
+        return None;
+    }
+    if !world.self_state.war {
+        return Some(ReflexAction::WarMode(true));
+    }
+    if world.self_state.location.chebyshev(attacker.location) > u32::from(world.attack_range()) {
+        return Some(ReflexAction::MoveTo {
+            x: attacker.location.x,
+            y: attacker.location.y,
+            z: attacker.location.z,
+        });
+    }
+    Some(ReflexAction::Attack(serial))
+}
+
+fn hunt_action(world: &World) -> ReflexAction {
     let Some(f) = locked_or_pick(world) else {
         return ReflexAction::None;
     };
@@ -267,6 +319,10 @@ mod tests {
 
     /// Serial of the only mobile standing next to us in the hunt tests.
     const TARGET: Serial = Serial(0x0000_1234);
+    /// The character's own serial, told apart from every mobile around her.
+    const SELF: Serial = Serial(0x0000_00AB);
+    /// One second past whatever it is added to.
+    const ONE_SECOND: Duration = Duration::from_secs(1);
 
     fn world_with_one_mobile(notoriety: u8, flags: u8) -> World {
         let mut w = World::new();
@@ -340,6 +396,106 @@ mod tests {
         let w = World::new();
         let p = Persona::lumberjack_yew();
         assert!(matches!(tick(&w, &p, &Goal::Idle), ReflexAction::None));
+    }
+
+    /// Somebody swings at her while she stands idle. Measured on a live shard:
+    /// something took her from full health to a tenth of it and she never
+    /// struck back once, because a fight was only ever started by the hunt
+    /// goal. An operator had to make her invulnerable to stop it.
+    #[test]
+    fn she_answers_whoever_hits_her_whatever_the_goal_is() {
+        for goal in [Goal::Idle, Goal::Gather, Goal::Bank] {
+            let mut w = world_with_one_mobile(NOTO_GREY, 0);
+            w.self_state.serial = SELF;
+            w.harmed_by = Some(uoterm_world::Harm {
+                by: TARGET,
+                at: Instant::now(),
+            });
+            assert_eq!(
+                tick(&w, &Persona::lumberjack_yew(), &goal),
+                ReflexAction::Attack(TARGET),
+                "she must answer her attacker while the goal is {}",
+                goal.name()
+            );
+        }
+    }
+
+    /// The memory ends. Nothing on the wire says a fight is over, so a
+    /// character who answers for ever answers a corpse.
+    #[test]
+    fn an_old_attacker_is_forgotten() {
+        let mut w = world_with_one_mobile(NOTO_GREY, 0);
+        w.self_state.serial = SELF;
+        w.harmed_by = Some(uoterm_world::Harm {
+            by: TARGET,
+            at: Instant::now() - FIGHT_BACK_MEMORY - ONE_SECOND,
+        });
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Idle),
+            ReflexAction::None
+        );
+    }
+
+    /// The one test of what may be hurt decides this too. Swinging at a thing
+    /// no server will let her hurt is refused in silence, for ever.
+    #[test]
+    fn she_does_not_answer_an_attacker_she_cannot_harm() {
+        let mut w = world_with_one_mobile(NOTO_INVULNERABLE, 0);
+        w.self_state.serial = SELF;
+        w.harmed_by = Some(uoterm_world::Harm {
+            by: TARGET,
+            at: Instant::now(),
+        });
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Idle),
+            ReflexAction::None
+        );
+    }
+
+    /// The fight the server already holds is a fight already: the goal drives
+    /// it, and a second attack packet on the same serial says nothing new.
+    #[test]
+    fn she_does_not_answer_again_while_the_server_holds_the_fight() {
+        let mut w = world_with_one_mobile(NOTO_GREY, 0);
+        w.self_state.serial = SELF;
+        w.combatant = Some(TARGET);
+        w.harmed_by = Some(uoterm_world::Harm {
+            by: TARGET,
+            at: Instant::now(),
+        });
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Idle),
+            ReflexAction::None
+        );
+    }
+
+    /// A wound is not a hunting matter. She bandages herself whatever she was
+    /// told to do, because the wound goes on working while she stands still.
+    #[test]
+    fn she_bandages_herself_whatever_the_goal_is() {
+        const BANDAGES: Serial = Serial(0x4000_0401);
+        let mut w = World::new();
+        w.logged_in = true;
+        w.self_state.hits = 50;
+        w.self_state.hits_max = 100;
+        w.items.insert(
+            BANDAGES,
+            uoterm_world::Item {
+                serial: BANDAGES,
+                graphic: GRAPHIC_BANDAGE,
+                amount: 1,
+                hue: 0,
+                location: Point3::new(0, 0, 0),
+                parent: Some(Serial(0x4000_0002)),
+                layer: None,
+                grid: 0,
+                name: "bandages".into(),
+            },
+        );
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Idle),
+            ReflexAction::BandageSelf
+        );
     }
 
     #[test]

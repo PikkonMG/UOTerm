@@ -34,6 +34,7 @@ pub const TOOL_LOOT: &str = "loot";
 pub const TOOL_TRADE_OFFER: &str = "trade_offer";
 pub const TOOL_VENDOR_SELL: &str = "vendor_sell";
 pub const TOOL_VENDOR_BUY: &str = "vendor_buy";
+pub const TOOL_CONTEXT_MENU: &str = "context_menu";
 pub const TOOL_GUMP_RESPOND: &str = "gump_respond";
 pub const TOOL_GUMP_CLOSE: &str = "gump_close";
 pub const TOOL_SET_GOAL: &str = "set_goal";
@@ -250,6 +251,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "vendor serial, shop item serial, and amount",
     ),
     (
+        TOOL_CONTEXT_MENU,
+        "Request an object's context menu and select its enabled entry by cliloc.",
+        "object serial and entry cliloc",
+    ),
+    (
         TOOL_GUMP_RESPOND,
         "Click a gump button. button 0 closes.",
         "open gump",
@@ -287,6 +293,7 @@ pub fn mcp_tool_list() -> Value {
                         "direction": {"type": "string"},
                         "running": {"type": "boolean"},
                         "hold_ms": {"type": "integer"},
+                        "force": {"type": "boolean"},
                         "radius": {"type": "integer"},
                         "name": {"type": "string"},
                         "graphic": {"type": "integer"},
@@ -295,7 +302,9 @@ pub fn mcp_tool_list() -> Value {
                         "vendor_name": {"type": "string"},
                         "vendor": {"type": "string"},
                         "item": {"type": "string"},
-                        "amount": {"type": "integer"}
+                        "amount": {"type": "integer"},
+                        "cliloc": {"type": "integer"},
+                        "switches": {"type": "array", "items": {"type": "integer"}}
                     }
                 }
             })

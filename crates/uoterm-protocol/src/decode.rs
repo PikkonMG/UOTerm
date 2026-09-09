@@ -1279,6 +1279,19 @@ fn parse_compressed_gump(r: &mut PacketReader<'_>) -> Result<Inbound> {
     let layout = String::from_utf8_lossy(&layout_bytes).into_owned();
     let _lines = r.u32()?;
     let text_packed = r.u32()? as usize;
+    // ModernUO writes a single zero length word when a compressed gump has no
+    // text strings. There is no following uncompressed-length word in that
+    // representation.
+    if text_packed == 0 {
+        return Ok(Inbound::Gump(OpenGump {
+            serial,
+            gump_id,
+            x,
+            y,
+            layout,
+            text: Vec::new(),
+        }));
+    }
     let text_plain = r.u32()? as usize;
     let text_src_len = text_packed.saturating_sub(COMPRESSED_LEN_HEADER);
     let text_src = r.take(text_src_len)?;
@@ -2652,6 +2665,38 @@ mod tests {
             Inbound::Gump(g) => {
                 assert_eq!(g.layout, "{page 0}");
                 assert_eq!(g.text, vec!["A".to_string()]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn compressed_gump_accepts_modernuo_empty_text_block() {
+        fn z(bytes: &[u8]) -> Vec<u8> {
+            use flate2::write::ZlibEncoder;
+            use flate2::Compression;
+            use std::io::Write;
+            let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+            enc.write_all(bytes).unwrap();
+            enc.finish().unwrap()
+        }
+
+        let layout_z = z(b"{page 0}");
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_COMPRESSED_GUMP);
+        w.u32(1)
+            .u32(9)
+            .u32(0)
+            .u32(0)
+            .u32((layout_z.len() + COMPRESSED_LEN_HEADER) as u32)
+            .u32(8)
+            .bytes(&layout_z)
+            .u32(0)
+            .u32(0);
+
+        match parse(&w.finish_variable().unwrap()).unwrap() {
+            Inbound::Gump(g) => {
+                assert_eq!(g.layout, "{page 0}");
+                assert!(g.text.is_empty());
             }
             other => panic!("{other:?}"),
         }

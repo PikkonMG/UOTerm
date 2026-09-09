@@ -1176,17 +1176,30 @@ impl DoorOpener {
         DoorPlan::Approach(approach)
     }
 
-    /// The door to face and click now. A person opens a door from the tile in
-    /// front of it, so nothing is due until the character stands there, and
-    /// one attempt sends one click.
-    pub fn due(&mut self, at: Point3, now: Instant) -> Option<DoorItem> {
-        let pending = self.pending.as_mut()?;
+    /// The door the character is due to click, without spending the attempt on
+    /// it. The caller reads this to aim: the macro he sends names no door, so
+    /// he must face the door tile before it goes out, and the turn that aims
+    /// him takes a tick of its own.
+    pub fn due_at(&self, at: Point3) -> Option<DoorItem> {
+        let pending = self.pending?;
         if pending.clicked || !same_tile(pending.stand_on, at) {
             return None;
         }
+        Some(pending.door)
+    }
+
+    /// The door to face and click now. A person opens a door from the tile in
+    /// front of it, so nothing is due until the character stands there, and
+    /// one attempt sends one click.
+    ///
+    /// This spends the attempt, so it belongs where the click really leaves
+    /// and nowhere earlier: an attempt spent on a click still waiting to be
+    /// aimed is an attempt the character never made.
+    pub fn due(&mut self, at: Point3, now: Instant) -> Option<DoorItem> {
+        let door = self.due_at(at)?;
+        let pending = self.pending.as_mut()?;
         pending.clicked = true;
         pending.deadline = now + DOOR_ANSWER_TIMEOUT;
-        let door = pending.door;
         self.clicked.insert(door.serial, door);
         Some(door)
     }
