@@ -5854,6 +5854,7 @@ fn walk_hold(inner: &mut Inner, args: &Value) -> ToolResult {
         .and_then(|v| v.as_u64())
         .unwrap_or(HOLD_MS_NONE);
     let asked_for = hold_step_count(hold_ms, running);
+    let force_one = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     // The walk carries on from the end of the steps already on the wire, so a
     // walk ordered in the middle of one does not double back over them.
     let from = inner
@@ -5862,7 +5863,16 @@ fn walk_hold(inner: &mut Inner, args: &Value) -> ToolResult {
     // The map is what says how high each of these steps lands, so the facet
     // is opened before it is asked.
     inner.ensure_facet();
-    let points = hold_path(inner.tiles(), from, dir, asked_for);
+    let mut points = hold_path(inner.tiles(), from, dir, asked_for);
+    // A shard may place the character on a boat, teleporter landing, or other
+    // server-supported surface absent from the static client map. Permit an
+    // explicitly forced single step so the server can authoritatively accept
+    // or reject that recovery move. Never force a held movement stream.
+    if points.is_empty() && force_one && asked_for == WALK_STEPS_ONE {
+        if let Some(next) = from.neighbour(dir) {
+            points.push(next);
+        }
+    }
     let Some(dest) = points.last().copied() else {
         return ToolResult::err("cannot step that way");
     };
