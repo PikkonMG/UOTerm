@@ -386,6 +386,16 @@ pub enum Inbound {
         attacker: Serial,
         defender: Serial,
     },
+    /// `0xAA`. A live serial is the mobile the server has us fighting. All
+    /// zeroes means the fight ended.
+    CombatantChanged {
+        serial: Serial,
+    },
+    /// `0x27`. The server refused a lift. `reason` is one of the
+    /// `LIFT_REJECT_*` values.
+    LiftRejected {
+        reason: u8,
+    },
     Paperdoll {
         serial: Serial,
         text: String,
@@ -556,6 +566,8 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_CLIENT_VERSION => Ok(Inbound::VersionRequest),
         PKT_EQUIPPED => parse_equipped(packet),
         PKT_SWING => parse_swing(packet),
+        PKT_COMBATANT => parse_combatant(packet),
+        PKT_LIFT_REJECT => parse_lift_reject(packet),
         PKT_PAPERDOLL => parse_paperdoll(packet),
         PKT_EXTENDED => parse_extended(packet),
         PKT_BATCH_QUERY_PROPERTIES => parse_object_property_list(packet),
@@ -1681,6 +1693,20 @@ fn parse_swing(packet: &[u8]) -> Result<Inbound> {
     })
 }
 
+fn parse_combatant(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::CombatantChanged {
+        serial: r.serial()?,
+    })
+}
+
+fn parse_lift_reject(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::LiftRejected { reason: r.u8()? })
+}
+
 fn parse_paperdoll(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -2257,6 +2283,56 @@ mod tests {
             Inbound::Unknown { id, payload } => {
                 assert_eq!(id, 0xEE);
                 assert_eq!(payload.len(), 4);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn combatant_changed_reads_a_live_serial() {
+        const FIGHTING: Serial = Serial(0x0000_1234);
+        let mut w = crate::buf::PacketWriter::new(PKT_COMBATANT);
+        w.serial(FIGHTING);
+        let packet = w.finish();
+        assert_eq!(packet.len(), 5);
+        match parse(&packet).unwrap() {
+            Inbound::CombatantChanged { serial } => assert_eq!(serial, FIGHTING),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn combatant_changed_all_zeroes_means_the_fight_ended() {
+        let mut w = crate::buf::PacketWriter::new(PKT_COMBATANT);
+        w.serial(Serial::INVALID);
+        match parse(&w.finish()).unwrap() {
+            Inbound::CombatantChanged { serial } => assert_eq!(serial, Serial::INVALID),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn lift_reject_reads_the_reason() {
+        match parse(&[PKT_LIFT_REJECT, LIFT_REJECT_RANGE]).unwrap() {
+            Inbound::LiftRejected { reason } => assert_eq!(reason, LIFT_REJECT_RANGE),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn swing_reads_attacker_then_defender() {
+        const ATTACKER: Serial = Serial(0x0000_00AB);
+        const DEFENDER: Serial = Serial(0x0000_1234);
+        let mut w = crate::buf::PacketWriter::new(PKT_SWING);
+        w.u8(0).serial(ATTACKER).serial(DEFENDER);
+        let packet = w.finish();
+        assert_eq!(packet.len(), 10);
+        match parse(&packet).unwrap() {
+            Inbound::Swing {
+                attacker, defender, ..
+            } => {
+                assert_eq!(attacker, ATTACKER);
+                assert_eq!(defender, DEFENDER);
             }
             other => panic!("{other:?}"),
         }

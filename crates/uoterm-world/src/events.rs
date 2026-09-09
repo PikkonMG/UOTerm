@@ -22,6 +22,8 @@ pub enum EventKind {
     PkFlag,
     PartyInvite,
     Disconnected,
+    CombatantChanged,
+    LiftRejected,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

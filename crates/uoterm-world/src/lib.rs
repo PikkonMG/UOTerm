@@ -580,6 +580,87 @@ mod tests {
         assert!(w.events.iter().any(|e| e.kind == EventKind::Resurrected));
     }
 
+    /// The server sends `0x2F` only to the attacker. Checking the defender
+    /// side never fires, so our own swings were discarded.
+    #[test]
+    fn a_swing_is_recorded_when_we_are_the_attacker() {
+        const ENEMY: Serial = Serial(0x0000_1234);
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::Swing {
+            flag: 0,
+            attacker: ENEMY,
+            defender: w.self_state.serial,
+        });
+        assert!(w.last_swing.is_none(), "a swing at us is not our swing");
+        w.apply(&Inbound::Swing {
+            flag: 0,
+            attacker: w.self_state.serial,
+            defender: ENEMY,
+        });
+        assert!(
+            w.last_swing.is_some(),
+            "the server sent this swing to us as the attacker"
+        );
+    }
+
+    #[test]
+    fn combatant_changed_tracks_the_fight_and_its_end() {
+        const ENEMY: Serial = Serial(0x0000_1234);
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::CombatantChanged { serial: ENEMY });
+        assert_eq!(w.combatant, Some(ENEMY));
+        assert!(w.fighting());
+        assert!(w
+            .events
+            .iter()
+            .any(|e| e.kind == EventKind::CombatantChanged && e.serial == Some(ENEMY)));
+        w.apply(&Inbound::Swing {
+            flag: 0,
+            attacker: w.self_state.serial,
+            defender: ENEMY,
+        });
+        assert!(w.last_swing.is_some());
+        w.apply(&Inbound::CombatantChanged {
+            serial: Serial::INVALID,
+        });
+        assert_eq!(w.combatant, None);
+        assert!(!w.fighting());
+        assert!(
+            w.last_swing.is_none(),
+            "the fight ended, so the last swing is no longer live"
+        );
+    }
+
+    #[test]
+    fn lift_rejected_clears_holding() {
+        const GOLD: Serial = Serial(0x4000_0201);
+        let mut w = World::new();
+        w.holding = Some(GOLD);
+        w.apply(&Inbound::LiftRejected {
+            reason: uoterm_protocol::LIFT_REJECT_RANGE,
+        });
+        assert!(w.holding.is_none());
+        assert!(w.events.iter().any(|e| e.kind == EventKind::LiftRejected));
+    }
+
+    #[test]
+    fn an_item_arriving_in_a_container_clears_holding() {
+        const GOLD: Serial = Serial(0x4000_0201);
+        const PACK: Serial = Serial(0x4000_0100);
+        let mut w = World::new();
+        w.holding = Some(GOLD);
+        w.apply(&Inbound::AddItem(in_container(
+            PACK,
+            GOLD,
+            GRAPHIC_GOLD,
+            GOLD_AMOUNT,
+        )));
+        assert!(w.holding.is_none());
+        assert_eq!(w.items[&GOLD].parent, Some(PACK));
+    }
+
     /// The sequence number of the first step of a walk.
     const FIRST_STEP_SEQUENCE: u8 = 0;
     /// Where the server puts the character when it moves her itself: through a

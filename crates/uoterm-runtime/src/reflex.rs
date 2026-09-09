@@ -2,16 +2,28 @@
 
 use crate::persona::Persona;
 use crate::tools::{Goal, BANK_X, BANK_Y, BANK_Z};
+use std::time::Instant;
 use uoterm_protocol::types::*;
 use uoterm_world::World;
 
 pub const BANDAGE_HP_PCT: u32 = 70;
-const HUNT_RANGE: u16 = 8;
+const HUNT_RANGE: u16 = 16;
 const SHOP_RANGE: u16 = 8;
 const FLEE_HP_STEPS: u16 = 8;
 const FLEE_XY_STEPS: u16 = 12;
 const SAY_SOCIAL: &str = "yo";
 const SAY_DEAD: &str = "i am dead";
+const POTION_STAM_PCT: u32 = 30;
+const POTION_LESSER: &str = "lesser";
+const POTION_GREATER: &str = "greater";
+const HEAL_POTION_LESSER_MS: u64 = 3_000;
+const HEAL_POTION_MS: u64 = 8_000;
+const HEAL_POTION_GREATER_MS: u64 = 10_000;
+const BANDAGE_SELF_BASE: f64 = 5.0;
+const BANDAGE_SELF_DEX_STEP: f64 = 0.5;
+const BANDAGE_SELF_DEX_CAP: f64 = 120.0;
+const BANDAGE_SELF_DEX_DIV: f64 = 10.0;
+const MS_PER_SECOND: f64 = 1000.0;
 
 fn stat_pct(cur: u16, max: u16) -> u32 {
     if max == 0 {
@@ -94,17 +106,115 @@ fn hunt_action(world: &World) -> ReflexAction {
     {
         return ReflexAction::BandageSelf;
     }
-    let Some(f) = world
-        .nearby_mobiles(HUNT_RANGE)
-        .into_iter()
-        .find(|m| can_be_harmed(m.notoriety, m.flags))
-    else {
+    if world.self_state.poisoned {
+        if let Some(serial) = drinkable_potion(world, GRAPHIC_POTION_CURE, None) {
+            return ReflexAction::Use(serial);
+        }
+    }
+    if world.self_state.hits_max > 0
+        && stat_pct(world.self_state.hits, world.self_state.hits_max) < BANDAGE_HP_PCT
+    {
+        if let Some(serial) = drinkable_potion(world, GRAPHIC_POTION_HEAL, None) {
+            return ReflexAction::Use(serial);
+        }
+    }
+    if world.self_state.stam_max > 0
+        && stat_pct(world.self_state.stam, world.self_state.stam_max) < POTION_STAM_PCT
+    {
+        if let Some(serial) = drinkable_potion(world, GRAPHIC_POTION_REFRESH, None) {
+            return ReflexAction::Use(serial);
+        }
+    }
+    let Some(f) = locked_or_pick(world) else {
         return ReflexAction::None;
     };
     if !world.self_state.war {
         return ReflexAction::WarMode(true);
     }
+    let dist = world.self_state.location.chebyshev(f.location);
+    let range = world.attack_range();
+    if dist > u32::from(range) || world.swing_is_late(Instant::now()) {
+        return ReflexAction::MoveTo {
+            x: f.location.x,
+            y: f.location.y,
+            z: f.location.z,
+        };
+    }
+    if world.combatant == Some(f.serial) {
+        return ReflexAction::None;
+    }
     ReflexAction::Attack(f.serial)
+}
+
+/// Keep the serial the server already accepted. When none is live, pick the
+/// lowest serial so a hash walk cannot change target every tick.
+fn locked_or_pick(world: &World) -> Option<&uoterm_world::Mobile> {
+    if let Some(serial) = world.combatant {
+        if let Some(mobile) = world.mobiles.get(&serial) {
+            if can_be_harmed(mobile.notoriety, mobile.flags) {
+                return Some(mobile);
+            }
+        }
+    }
+    let mut found: Vec<&uoterm_world::Mobile> = world
+        .nearby_mobiles(HUNT_RANGE)
+        .into_iter()
+        .filter(|m| can_be_harmed(m.notoriety, m.flags))
+        .collect();
+    found.sort_by_key(|m| m.serial.0);
+    found.into_iter().next()
+}
+
+fn drinkable_potion(world: &World, graphic: u16, name_part: Option<&str>) -> Option<Serial> {
+    if !has_free_hand(world) {
+        return None;
+    }
+    world.items.values().find_map(|item| {
+        if item.graphic != graphic {
+            return None;
+        }
+        if let Some(part) = name_part {
+            if !item.name.to_ascii_lowercase().contains(part) {
+                return None;
+            }
+        }
+        Some(item.serial)
+    })
+}
+
+fn has_free_hand(world: &World) -> bool {
+    let one = world
+        .self_state
+        .equipment
+        .iter()
+        .any(|eq| eq.layer == LAYER_ONE_HANDED);
+    let two = world
+        .self_state
+        .equipment
+        .iter()
+        .find(|eq| eq.layer == LAYER_TWO_HANDED);
+    if two.is_some_and(|eq| is_ranged_weapon(eq.graphic)) {
+        return false;
+    }
+    !one || two.is_none()
+}
+
+/// Self-heal time in milliseconds: `5.0 + 0.5 * ((120 - dex) / 10)`.
+pub fn bandage_self_ms(dex: u16) -> u64 {
+    let seconds = BANDAGE_SELF_BASE
+        + BANDAGE_SELF_DEX_STEP * ((BANDAGE_SELF_DEX_CAP - f64::from(dex)) / BANDAGE_SELF_DEX_DIV);
+    (seconds * MS_PER_SECOND).max(0.0) as u64
+}
+
+pub fn heal_potion_lock_ms(name: &str) -> u64 {
+    let n = name.to_ascii_lowercase();
+    if n.contains(POTION_GREATER) {
+        HEAL_POTION_GREATER_MS
+    } else if n.contains(POTION_LESSER) {
+        HEAL_POTION_LESSER_MS
+    } else {
+        HEAL_POTION_MS
+    }
 }
 
 /// True when a server will let us hurt this mobile.
@@ -304,5 +414,112 @@ mod tests {
             tick(&dead, &p, &Goal::Ress),
             ReflexAction::MoveTo { .. }
         ));
+    }
+
+    #[test]
+    fn hunt_walks_when_the_target_is_out_of_range() {
+        let mut w = world_with_one_mobile(NOTO_GREY, 0);
+        w.mobiles.get_mut(&TARGET).unwrap().location = Point3::new(110, 100, 0);
+        match tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt) {
+            ReflexAction::MoveTo { x, y, .. } => {
+                assert_eq!(x, 110);
+                assert_eq!(y, 100);
+            }
+            other => panic!("expected walk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hunt_does_not_resend_attack_while_the_server_holds_the_fight() {
+        let mut w = world_with_one_mobile(NOTO_GREY, 0);
+        w.combatant = Some(TARGET);
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            ReflexAction::None
+        );
+    }
+
+    #[test]
+    fn hunt_locks_onto_one_serial() {
+        const OTHER: Serial = Serial(0x0000_9999);
+        let mut w = world_with_one_mobile(NOTO_GREY, 0);
+        w.mobiles.insert(
+            OTHER,
+            uoterm_world::Mobile {
+                serial: OTHER,
+                name: String::new(),
+                body: 3,
+                hue: 0,
+                location: Point3::new(101, 101, 0),
+                direction: 0,
+                running: false,
+                notoriety: NOTO_ENEMY,
+                flags: 0,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            },
+        );
+        w.combatant = Some(OTHER);
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            ReflexAction::None,
+            "the locked serial is already the fight"
+        );
+        w.combatant = None;
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            ReflexAction::Attack(TARGET),
+            "with no fight, the lowest serial is picked every tick"
+        );
+    }
+
+    #[test]
+    fn hunt_never_asks_to_leave_war_mode() {
+        let w = world_with_one_mobile(NOTO_GREY, 0);
+        assert_ne!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            ReflexAction::WarMode(false)
+        );
+    }
+
+    #[test]
+    fn bandage_self_time_follows_dexterity() {
+        assert_eq!(bandage_self_ms(120), 5_000);
+        assert_eq!(bandage_self_ms(100), 6_000);
+        assert_eq!(bandage_self_ms(80), 7_000);
+        assert_ne!(bandage_self_ms(80), 8_000);
+    }
+
+    #[test]
+    fn heal_potion_tiers_share_a_lock_told_apart_by_name() {
+        assert_eq!(heal_potion_lock_ms("a lesser heal potion"), 3_000);
+        assert_eq!(heal_potion_lock_ms("a heal potion"), 8_000);
+        assert_eq!(heal_potion_lock_ms("a greater heal potion"), 10_000);
+    }
+
+    #[test]
+    fn hunt_drinks_a_cure_potion_when_poisoned() {
+        const CURE: Serial = Serial(0x4000_0F07);
+        let mut w = world_with_one_mobile(NOTO_GREY, 0);
+        w.self_state.poisoned = true;
+        w.items.insert(
+            CURE,
+            uoterm_world::Item {
+                serial: CURE,
+                graphic: GRAPHIC_POTION_CURE,
+                amount: 1,
+                hue: 0,
+                location: Point3::new(0, 0, 0),
+                parent: Some(Serial(0x4000_0002)),
+                layer: None,
+                grid: 0,
+                name: "a lesser cure potion".into(),
+            },
+        );
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            ReflexAction::Use(CURE)
+        );
     }
 }

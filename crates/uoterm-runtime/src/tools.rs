@@ -231,7 +231,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "must have a target cursor",
     ),
     (TOOL_OPEN_CONTAINER, "Open container serial.", "item serial"),
-    (TOOL_LOOT, "Open corpse.", "corpse serial"),
+    (
+        TOOL_LOOT,
+        "Walk to a corpse, open it, lift each stack and drop it in the pack.",
+        "corpse serial",
+    ),
     (TOOL_TRADE_OFFER, "Secure trade offer.", "mobile serial"),
     (
         TOOL_GUMP_RESPOND,

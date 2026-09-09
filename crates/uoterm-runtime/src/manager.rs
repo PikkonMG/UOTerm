@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use uoterm_nav::{MulMap, MultiData};
+use uoterm_nav::{ClilocData, MulMap, MultiData};
 
 /// A cache that has opened nothing yet.
 const OPENS_NONE: u64 = 0;
@@ -120,6 +120,8 @@ pub struct Runtime {
     /// The shapes of every house and boat the client files describe, shared
     /// with every session on the same client directory.
     multi_shapes: Arc<FacetCache<MultiData>>,
+    /// The client text database, shared by every session of one directory.
+    clilocs: Arc<FacetCache<ClilocData>>,
     next: Arc<AtomicU64>,
     max: usize,
 }
@@ -130,6 +132,7 @@ impl Runtime {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             facets: Arc::new(FacetCache::default()),
             multi_shapes: Arc::new(FacetCache::default()),
+            clilocs: Arc::new(FacetCache::default()),
             next: Arc::new(AtomicU64::new(FIRST_SESSION_NUMBER)),
             max: if max == 0 { DEFAULT_MAX_SESSIONS } else { max },
         }
@@ -145,6 +148,7 @@ impl Runtime {
             opts,
             self.facets.clone(),
             self.multi_shapes.clone(),
+            self.clilocs.clone(),
         )
         .await?;
         self.sessions.write().insert(id, handle.clone());

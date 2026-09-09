@@ -40,6 +40,8 @@ pub const PKT_MOVE_REJECT: u8 = 0x21;
 pub const PKT_MOVE_ACK: u8 = 0x22;
 pub const PKT_OPEN_CONTAINER: u8 = 0x24;
 pub const PKT_ADD_ITEM: u8 = 0x25;
+/// `0x27`. The server refused a lift. The second byte is why.
+pub const PKT_LIFT_REJECT: u8 = 0x27;
 pub const PKT_DEATH_MENU: u8 = 0x2C;
 pub const PKT_EQUIPPED: u8 = 0x2E;
 pub const PKT_SWING: u8 = 0x2F;
@@ -84,6 +86,9 @@ pub const PKT_UPDATE_MANA: u8 = 0xA2;
 pub const PKT_UPDATE_STAM: u8 = 0xA3;
 pub const PKT_SERVER_LIST: u8 = 0xA8;
 pub const PKT_CHARACTER_LIST: u8 = 0xA9;
+/// `0xAA`. The serial the server has us fighting, or all zeroes when the
+/// fight has ended.
+pub const PKT_COMBATANT: u8 = 0xAA;
 pub const PKT_UNICODE_SPEECH: u8 = 0xAD;
 pub const PKT_UNICODE_MESSAGE: u8 = 0xAE;
 pub const PKT_DEATH: u8 = 0xAF;
@@ -106,6 +111,10 @@ pub const EXT_CONTEXT_MENU_REQUEST: u16 = 0x0013;
 pub const EXT_CONTEXT_MENU_DISPLAY: u16 = 0x0014;
 /// `0xBF` sub-command that picks one entry of a context menu.
 pub const EXT_CONTEXT_MENU_RESPONSE: u16 = 0x0015;
+/// `0xBF` sub-command that uses a bandage on a target with no cursor.
+pub const EXT_BANDAGE_TARGET: u16 = 0x002C;
+/// Bytes of that bandage command: id, length, sub, bandage serial, target serial.
+pub const BANDAGE_TARGET_LEN: usize = 13;
 pub const FASTWALK_KEY_COUNT: usize = 6;
 pub const PKT_POPUP_MESSAGE: u8 = 0x53;
 pub const POPUP_CHAR_IN_WORLD: u8 = 0x05;
@@ -295,8 +304,20 @@ pub const TARGET_FLAG_NONE: u8 = 0;
 pub const TARGET_FLAG_CANCEL: u8 = 3;
 
 pub const LAYER_ONE_HANDED: u8 = 1;
+pub const LAYER_TWO_HANDED: u8 = 2;
 pub const LAYER_BACKPACK: u8 = 21;
 pub const LAYER_BANK: u8 = 29;
+
+/// `x` and `y` that take the auto-place branch of a drop into a container.
+pub const DROP_CONTAINER_XY: u16 = 0xFFFF;
+
+/// Why a `0x27` refused a lift, in the order the server writes them.
+pub const LIFT_REJECT_CANNOT: u8 = 0;
+pub const LIFT_REJECT_RANGE: u8 = 1;
+pub const LIFT_REJECT_SIGHT: u8 = 2;
+pub const LIFT_REJECT_STEAL: u8 = 3;
+pub const LIFT_REJECT_HOLDING: u8 = 4;
+pub const LIFT_REJECT_UNSPECIFIED: u8 = 5;
 
 pub const FLAG_FROZEN: u8 = 0x01;
 pub const FLAG_POISONED: u8 = 0x04;
@@ -347,6 +368,52 @@ pub const GRAPHIC_HATCHET: u16 = 0x0F43;
 pub const GRAPHIC_LOGS: u16 = 0x1BDD;
 pub const GRAPHIC_BANDAGE: u16 = 0x0E21;
 pub const GRAPHIC_BACKPACK: u16 = 0x0E75;
+pub const GRAPHIC_POTION_HEAL: u16 = 0x0F0C;
+pub const GRAPHIC_POTION_CURE: u16 = 0x0F07;
+pub const GRAPHIC_POTION_REFRESH: u16 = 0x0F0B;
+pub const GRAPHIC_BOW: u16 = 0x13B2;
+pub const GRAPHIC_BOW_FLIPPED: u16 = 0x13B1;
+pub const GRAPHIC_COMPOSITE_BOW: u16 = 0x26C2;
+pub const GRAPHIC_COMPOSITE_BOW_FLIPPED: u16 = 0x26CC;
+pub const GRAPHIC_CROSSBOW: u16 = 0x0F50;
+pub const GRAPHIC_CROSSBOW_FLIPPED: u16 = 0x0F4F;
+pub const GRAPHIC_HEAVY_CROSSBOW: u16 = 0x13FD;
+pub const GRAPHIC_HEAVY_CROSSBOW_FLIPPED: u16 = 0x13FC;
+pub const GRAPHIC_REPEATING_CROSSBOW: u16 = 0x26C3;
+pub const GRAPHIC_REPEATING_CROSSBOW_FLIPPED: u16 = 0x26CD;
+
+/// Melee reach, in tiles. Height is ignored. The box is square.
+pub const RANGE_MELEE: u16 = 1;
+pub const RANGE_BOW: u16 = 10;
+pub const RANGE_CROSSBOW: u16 = 8;
+pub const RANGE_REPEATING_CROSSBOW: u16 = 7;
+/// How close a corpse must be before a lift is granted.
+pub const RANGE_LOOT: u16 = 2;
+/// How close a bandage must be.
+pub const RANGE_BANDAGE: u16 = 2;
+/// A shot is skipped unless this many milliseconds have passed since a move.
+pub const ARCHER_MOVE_LOCK_MS: u64 = 250;
+
+/// Reach of the weapon whose graphic this is. Anything not a bow or a
+/// crossbow is melee.
+pub fn weapon_range(graphic: u16) -> u16 {
+    match graphic {
+        GRAPHIC_BOW
+        | GRAPHIC_BOW_FLIPPED
+        | GRAPHIC_COMPOSITE_BOW
+        | GRAPHIC_COMPOSITE_BOW_FLIPPED => RANGE_BOW,
+        GRAPHIC_CROSSBOW
+        | GRAPHIC_CROSSBOW_FLIPPED
+        | GRAPHIC_HEAVY_CROSSBOW
+        | GRAPHIC_HEAVY_CROSSBOW_FLIPPED => RANGE_CROSSBOW,
+        GRAPHIC_REPEATING_CROSSBOW | GRAPHIC_REPEATING_CROSSBOW_FLIPPED => RANGE_REPEATING_CROSSBOW,
+        _ => RANGE_MELEE,
+    }
+}
+
+pub fn is_ranged_weapon(graphic: u16) -> bool {
+    weapon_range(graphic) > RANGE_MELEE
+}
 
 pub const TREE_GRAPHIC_MIN: u16 = 0x0C95;
 pub const TREE_GRAPHIC_MAX: u16 = 0x0CE8;
@@ -784,5 +851,31 @@ mod tests {
         assert!(v.has_container_grid());
         assert!(v.has_feature_uint32());
         assert!(!ClientVersion::T2A.has_prefixed_mobile_incoming());
+    }
+
+    #[test]
+    fn weapon_range_is_the_square_the_server_uses() {
+        assert_eq!(weapon_range(GRAPHIC_HATCHET), RANGE_MELEE);
+        assert_eq!(weapon_range(GRAPHIC_BOW), RANGE_BOW);
+        assert_eq!(weapon_range(GRAPHIC_BOW_FLIPPED), RANGE_BOW);
+        assert_eq!(weapon_range(GRAPHIC_COMPOSITE_BOW), RANGE_BOW);
+        assert_eq!(weapon_range(GRAPHIC_CROSSBOW), RANGE_CROSSBOW);
+        assert_eq!(weapon_range(GRAPHIC_HEAVY_CROSSBOW), RANGE_CROSSBOW);
+        assert_eq!(
+            weapon_range(GRAPHIC_REPEATING_CROSSBOW),
+            RANGE_REPEATING_CROSSBOW
+        );
+        assert!(is_ranged_weapon(GRAPHIC_BOW));
+        assert!(!is_ranged_weapon(GRAPHIC_HATCHET));
+    }
+
+    #[test]
+    fn lift_reject_reasons_hold_the_server_values() {
+        assert_eq!(LIFT_REJECT_CANNOT, 0);
+        assert_eq!(LIFT_REJECT_RANGE, 1);
+        assert_eq!(LIFT_REJECT_SIGHT, 2);
+        assert_eq!(LIFT_REJECT_STEAL, 3);
+        assert_eq!(LIFT_REJECT_HOLDING, 4);
+        assert_eq!(LIFT_REJECT_UNSPECIFIED, 5);
     }
 }

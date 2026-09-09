@@ -7,13 +7,14 @@ use crate::config::{
 };
 use crate::error::{Result, RuntimeError};
 use crate::harvest;
+use crate::loot::{LootJob, LootStep};
 use crate::manager::{shared_multi_shapes, FacetCache};
 use crate::movement::{
     self, door_in_the_way, facing_toward, follow_plan, DoorOpener, DoorPlan, FollowDecision,
     FollowState, Movement,
 };
 use crate::persona::{Persona, SpeechPolicy};
-use crate::reflex::{self, ReflexAction};
+use crate::reflex::{self, bandage_self_ms, heal_potion_lock_ms, ReflexAction};
 use crate::scene;
 use crate::tools::{
     Goal, ToolCall, ToolResult, TOOL_ATTACK, TOOL_CANCEL_GOAL, TOOL_CAN_WALK, TOOL_CAST, TOOL_DROP,
@@ -36,8 +37,8 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, interval_at, MissedTickBehavior};
 use uoterm_nav::{
-    pathfind, pathfind_flat, BlockedMove, MapError, MockMap, MulMap, MultiData, Obstacles,
-    TileQuery,
+    pathfind, pathfind_flat, BlockedMove, ClilocData, MapError, MockMap, MulMap, MultiData,
+    Obstacles, TileQuery,
 };
 use uoterm_protocol::crypto::{for_mode, IdentityCipher, StreamCipher};
 use uoterm_protocol::encode;
@@ -55,9 +56,14 @@ const LOGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_WORLD_DRAIN: Duration = Duration::from_millis(100);
 const LOGIN_CHAR_IN_WORLD: &str = "character already in world";
 const LOGIN_INCOMPLETE: &str = "login did not complete";
-const GATHER_COOLDOWN: Duration = Duration::from_millis(2500);
-const ACTION_COOLDOWN: Duration = Duration::from_millis(2500);
-const BANDAGE_COOLDOWN: Duration = Duration::from_millis(8000);
+/// One shared budget covering use, lift and the bandage command.
+const ACTION_BUDGET: Duration = Duration::from_millis(1000);
+const CLILOC_ACTION_TOO_SOON: u32 = 500_119;
+const ACTION_TOO_SOON_WORDS: &str = "wait to perform another action";
+const CLILOC_BANDAGE_START: u32 = 500_956;
+const BANDAGE_STARTED_WORDS: &str = "begin applying the bandages";
+/// The facet index the text database is cached under. It is not a map.
+const CLILOC_CACHE_INDEX: u8 = 0;
 const OUTBOUND_CAP: usize = 256;
 /// Ask again for names the server never answered, so nothing stays nameless.
 const NAME_RETRY: Duration = Duration::from_secs(20);
@@ -205,6 +211,7 @@ pub async fn start(
     opts: ConnectOptions,
     facets: Arc<FacetCache<MulMap>>,
     multi_shapes: Arc<FacetCache<MultiData>>,
+    clilocs: Arc<FacetCache<ClilocData>>,
 ) -> Result<SessionHandle> {
     let world = Arc::new(RwLock::new(World::new()));
     let (tx, rx) = mpsc::channel(CMD_QUEUE_CAP);
@@ -215,7 +222,9 @@ pub async fn start(
         inner: Arc::new(HandleInner { tx }),
     };
     tokio::spawn(async move {
-        if let Err(e) = run_session(id, opts, facets, multi_shapes, world, rx, login_tx).await {
+        if let Err(e) =
+            run_session(id, opts, facets, multi_shapes, clilocs, world, rx, login_tx).await
+        {
             tracing::error!(error = %e, "session ended");
         }
     });
@@ -254,11 +263,14 @@ struct Inner {
     version: ClientVersion,
     follow: Option<Serial>,
     follow_state: FollowState,
-    last_gather: Instant,
-    last_attack: Instant,
-    last_war: Instant,
-    last_skill: Instant,
-    last_bandage: Instant,
+    cliloc: Option<Arc<ClilocData>>,
+    next_action_at: Instant,
+    next_bandage_at: Instant,
+    next_heal_potion_at: Instant,
+    attack_sent: Option<Serial>,
+    target_intent: Option<Serial>,
+    loot: Option<LootJob>,
+    sent_drop: Option<Serial>,
     last_event_seq: u64,
     last_name_retry: Instant,
     last_path_fail: Option<(Point3, Instant)>,
@@ -435,11 +447,23 @@ fn shared_facet(
     })
 }
 
+fn shared_cliloc(
+    clilocs: &FacetCache<ClilocData>,
+    uopath: &Path,
+) -> std::result::Result<Arc<ClilocData>, MapError> {
+    clilocs.get_or_load(uopath, CLILOC_CACHE_INDEX, || {
+        tracing::info!(path = %uopath.display(), "opening the client text database");
+        ClilocData::open(uopath)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     id: String,
     opts: ConnectOptions,
     facets: Arc<FacetCache<MulMap>>,
     multi_shapes: Arc<FacetCache<MultiData>>,
+    clilocs: Arc<FacetCache<ClilocData>>,
     world: Arc<RwLock<World>>,
     mut rx: mpsc::Receiver<SessionCmd>,
     login_tx: oneshot::Sender<Result<()>>,
@@ -485,6 +509,24 @@ async fn run_session(
                     None
                 }
             });
+    let cliloc = opts
+        .uopath
+        .as_deref()
+        .and_then(|path| match shared_cliloc(&clilocs, path) {
+            Ok(text) => {
+                tracing::info!(
+                    messages = text.message_count(),
+                    opens = clilocs.opens(),
+                    live = clilocs.live(),
+                    "text database ready"
+                );
+                Some(text)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read the client text database");
+                None
+            }
+        });
     let mut inner = Inner {
         id,
         world,
@@ -507,11 +549,14 @@ async fn run_session(
         version: opts.version,
         follow: None,
         follow_state: FollowState::default(),
-        last_gather: Instant::now() - GATHER_COOLDOWN,
-        last_attack: Instant::now() - ACTION_COOLDOWN,
-        last_war: Instant::now() - ACTION_COOLDOWN,
-        last_skill: Instant::now() - ACTION_COOLDOWN,
-        last_bandage: Instant::now() - BANDAGE_COOLDOWN,
+        cliloc,
+        next_action_at: Instant::now() - ACTION_BUDGET,
+        next_bandage_at: Instant::now() - ACTION_BUDGET,
+        next_heal_potion_at: Instant::now() - ACTION_BUDGET,
+        attack_sent: None,
+        target_intent: None,
+        loot: None,
+        sent_drop: None,
         last_path_fail: None,
         last_fatigued: None,
         last_event_seq: 0,
@@ -1274,11 +1319,14 @@ mod relay_tests {
             version: ClientVersion::MODERN,
             follow: None,
             follow_state: FollowState::default(),
-            last_gather: now,
-            last_attack: now,
-            last_war: now,
-            last_skill: now,
-            last_bandage: now,
+            cliloc: None,
+            next_action_at: now - ACTION_BUDGET,
+            next_bandage_at: now - ACTION_BUDGET,
+            next_heal_potion_at: now - ACTION_BUDGET,
+            attack_sent: None,
+            target_intent: None,
+            loot: None,
+            sent_drop: None,
             last_path_fail: None,
             last_fatigued: None,
             last_event_seq: 0,
@@ -4075,6 +4123,127 @@ mod relay_tests {
         assert_eq!(facets.opens(), NO_OPENS);
         assert_eq!(facets.live(), NO_LIVE_FACETS);
     }
+
+    #[test]
+    fn a_numbered_speech_line_becomes_english_in_the_journal() {
+        const REFUSAL: u32 = 1_001_018;
+        const SENTENCE: &str = "You cannot perform negative acts on your target.";
+        let mut inner = test_session();
+        inner.cliloc = Some(Arc::new(ClilocData::from_entries(
+            [(REFUSAL, SENTENCE.to_string())].into_iter().collect(),
+        )));
+        let mut w = uoterm_protocol::buf::PacketWriter::with_variable(PKT_CLILOC);
+        w.u32(1)
+            .u16(0)
+            .u8(0)
+            .u16(0)
+            .u16(3)
+            .u32(REFUSAL)
+            .ascii_fixed("System", 30)
+            .u16(0);
+        let bytes = w.finish_variable().unwrap();
+        ingest(&mut inner, &bytes);
+        let line = inner.world.read().journal.last_lines(1)[0].text.clone();
+        assert_eq!(line, SENTENCE);
+    }
+
+    #[test]
+    fn attack_is_sent_once_until_the_fight_ends() {
+        const ENEMY: Serial = Serial(0x0000_1234);
+        let mut inner = test_session();
+        {
+            let mut world = inner.world.write();
+            world.logged_in = true;
+            world.self_state.war = true;
+        }
+        send_attack(&mut inner, ENEMY);
+        send_attack(&mut inner, ENEMY);
+        let attacks = inner
+            .outbound
+            .iter()
+            .filter(|p| p.first() == Some(&PKT_ATTACK))
+            .count();
+        assert_eq!(attacks, 1);
+        inner.attack_sent = None;
+        inner.world.write().combatant = None;
+        let mut ended = uoterm_protocol::buf::PacketWriter::new(PKT_COMBATANT);
+        ended.serial(Serial::INVALID);
+        ingest(&mut inner, &ended.finish());
+        assert!(inner.attack_sent.is_none());
+        send_attack(&mut inner, ENEMY);
+        let attacks = inner
+            .outbound
+            .iter()
+            .filter(|p| p.first() == Some(&PKT_ATTACK))
+            .count();
+        assert_eq!(attacks, 2);
+    }
+
+    #[test]
+    fn war_mode_stays_on_during_a_fight() {
+        let mut inner = test_session();
+        inner.world.write().combatant = Some(Serial(0x0000_1234));
+        send_war_mode(&mut inner, false);
+        assert!(
+            inner.outbound.is_empty(),
+            "turning war off would clear the fight"
+        );
+    }
+
+    #[test]
+    fn a_target_intent_is_answered_when_the_cursor_arrives() {
+        const TREE: Serial = Serial(0x4000_0010);
+        const CURSOR_ID: u32 = 9;
+        let mut inner = test_session();
+        inner.target_intent = Some(TREE);
+        let mut w = uoterm_protocol::buf::PacketWriter::new(PKT_TARGET);
+        w.u8(0)
+            .u32(CURSOR_ID)
+            .u8(0)
+            .u32(0)
+            .u16(0)
+            .u16(0)
+            .u8(0)
+            .i8(0)
+            .u16(0);
+        ingest(&mut inner, &w.finish());
+        assert!(inner.target_intent.is_none());
+        assert!(inner.world.read().pending_target.is_none());
+        assert!(
+            inner
+                .outbound
+                .iter()
+                .any(|p| p.first() == Some(&PKT_TARGET)),
+            "the cursor must be answered in the packet handler"
+        );
+    }
+
+    #[test]
+    fn drop_into_the_pack_uses_auto_place_coordinates() {
+        const ITEM: Serial = Serial(0x4000_0001);
+        const PACK: Serial = Serial(0x4000_0002);
+        let p = encode::drop_into_container(ITEM, PACK, Some(0));
+        assert_eq!(&p[5..9], &[0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn bandage_command_has_no_cursor() {
+        const BANDAGE: Serial = Serial(0x4000_0101);
+        const SELF: Serial = Serial(0x0000_00AB);
+        let p = encode::bandage_target(BANDAGE, SELF);
+        assert_eq!(p.len(), BANDAGE_TARGET_LEN);
+        assert_eq!(p[0], PKT_EXTENDED);
+        assert_eq!(&p[3..5], &EXT_BANDAGE_TARGET.to_be_bytes());
+    }
+
+    #[test]
+    fn action_budget_is_one_thousand_milliseconds() {
+        assert_eq!(ACTION_BUDGET, Duration::from_millis(1000));
+        let mut inner = test_session();
+        assert!(action_ready(&inner));
+        mark_action(&mut inner);
+        assert!(!action_ready(&inner));
+    }
 }
 
 fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
@@ -4109,7 +4278,12 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     Inbound::PacketList(entries) => entries,
                     one => vec![one],
                 };
-                for msg in bundled {
+                for mut msg in bundled {
+                    if let Inbound::Speech(line) = &mut msg {
+                        if let Some(cliloc) = &inner.cliloc {
+                            line.text = cliloc.render_line(&line.text);
+                        }
+                    }
                     match &msg {
                         Inbound::MoveAck { sequence, .. } => {
                             accept_move_ack(inner, *sequence);
@@ -4133,8 +4307,14 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         Inbound::Speech(line) if says_too_fatigued(&line.text) => {
                             inner.last_fatigued = Some(Instant::now());
                         }
+                        Inbound::Speech(line) if says_action_too_soon(&line.text) => {
+                            inner.next_action_at = Instant::now() + ACTION_BUDGET;
+                        }
                         Inbound::DrawPlayer { serial, .. } if *serial == self_serial => {
                             inner.movement.clear_in_flight();
+                        }
+                        Inbound::CombatantChanged { serial } if !serial.is_valid() => {
+                            inner.attack_sent = None;
                         }
                         _ => {}
                     }
@@ -4142,6 +4322,24 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     {
                         let mut world = inner.world.write();
                         world.apply(&msg);
+                    }
+                    if let Inbound::Target(cursor) = &msg {
+                        if let Some(serial) = inner.target_intent.take() {
+                            inner
+                                .outbound
+                                .push_back(encode::target_object(cursor.id, serial, 0, 0, 0, 0));
+                            inner.world.write().clear_target();
+                        }
+                    }
+                    if let Inbound::LiftRejected { .. } = &msg {
+                        inner.world.write().holding = None;
+                    }
+                    if let Inbound::Speech(line) = &msg {
+                        if says_bandage_started(&line.text) {
+                            let dex = inner.world.read().self_state.dex;
+                            inner.next_bandage_at =
+                                Instant::now() + Duration::from_millis(bandage_self_ms(dex));
+                        }
                     }
                     // Only the server may move the character, so every move is
                     // worth naming. Without this a wrong position has no author and
@@ -4253,6 +4451,16 @@ fn remember_refused_tile(inner: &mut Inner, at: Point3, now: Instant) {
 fn says_too_fatigued(text: &str) -> bool {
     text.to_ascii_lowercase().contains(FATIGUED_WORD)
         || text.starts_with(&format!("{CLILOC_PREFIX}{CLILOC_TOO_FATIGUED}"))
+}
+
+fn says_action_too_soon(text: &str) -> bool {
+    text.to_ascii_lowercase().contains(ACTION_TOO_SOON_WORDS)
+        || text.starts_with(&format!("{CLILOC_PREFIX}{CLILOC_ACTION_TOO_SOON}"))
+}
+
+fn says_bandage_started(text: &str) -> bool {
+    text.to_ascii_lowercase().contains(BANDAGE_STARTED_WORDS)
+        || text.starts_with(&format!("{CLILOC_PREFIX}{CLILOC_BANDAGE_START}"))
 }
 
 /// What the character does about one refusal, and why. Each is one rung of
@@ -4763,9 +4971,123 @@ fn pump_doors(inner: &mut Inner) {
     inner.outbound.push_back(encode::open_door());
 }
 
+fn action_ready(inner: &Inner) -> bool {
+    Instant::now() >= inner.next_action_at
+}
+
+fn mark_action(inner: &mut Inner) {
+    inner.next_action_at = Instant::now() + ACTION_BUDGET;
+}
+
+fn backpack_serial(world: &uoterm_world::World) -> Option<Serial> {
+    world
+        .self_state
+        .equipment
+        .iter()
+        .find(|eq| eq.layer == LAYER_BACKPACK)
+        .map(|eq| eq.serial)
+}
+
+fn send_war_mode(inner: &mut Inner, on: bool) {
+    if !on && inner.world.read().fighting() {
+        return;
+    }
+    inner.outbound.push_back(encode::war_mode(on));
+}
+
+fn archer_move_locked(inner: &Inner) -> bool {
+    let graphic = inner.world.read().equipped_weapon_graphic();
+    if !graphic.is_some_and(is_ranged_weapon) {
+        return false;
+    }
+    let Some(last) = inner.movement.in_flight.back() else {
+        return false;
+    };
+    Instant::now().saturating_duration_since(last.sent_at)
+        < Duration::from_millis(ARCHER_MOVE_LOCK_MS)
+}
+
+fn send_attack(inner: &mut Inner, serial: Serial) {
+    if inner.attack_sent == Some(serial) {
+        return;
+    }
+    if inner.world.read().combatant == Some(serial) {
+        return;
+    }
+    inner.attack_sent = Some(serial);
+    inner.outbound.push_back(encode::attack(serial));
+}
+
+fn store_or_answer_target(inner: &mut Inner, serial: Serial) {
+    let cursor = inner.world.read().pending_target.clone();
+    if let Some(cursor) = cursor {
+        inner
+            .outbound
+            .push_back(encode::target_object(cursor.id, serial, 0, 0, 0, 0));
+        inner.world.write().clear_target();
+        inner.target_intent = None;
+    } else {
+        inner.target_intent = Some(serial);
+    }
+}
+
+fn pump_loot(inner: &mut Inner) {
+    let Some(job) = inner.loot.clone() else {
+        return;
+    };
+    let world = inner.world.read().clone();
+    match job.step(&world, action_ready(inner)) {
+        LootStep::Walk { x, y, z } => {
+            let _ = queue_move(inner, Point3::new(x, y, z));
+        }
+        LootStep::Open(serial) => {
+            inner.outbound.push_back(encode::double_click(serial));
+            mark_action(inner);
+        }
+        LootStep::Lift { serial, amount } => {
+            inner.outbound.push_back(encode::lift(serial, amount));
+            inner.world.write().holding = Some(serial);
+            inner.sent_drop = None;
+        }
+        LootStep::Drop { serial, dest } => {
+            if inner.sent_drop != Some(serial) {
+                inner.outbound.push_back(encode::drop_into_container(
+                    serial,
+                    dest,
+                    drop_grid(inner),
+                ));
+                inner.sent_drop = Some(serial);
+            }
+        }
+        LootStep::Wait => {}
+        LootStep::Done | LootStep::Fail(_) => {
+            inner.loot = None;
+        }
+    }
+}
+
+fn send_bandage_self(inner: &mut Inner, world: &uoterm_world::World) {
+    if Instant::now() < inner.next_bandage_at || !action_ready(inner) {
+        return;
+    }
+    let Some(item) = world.find_item_graphic(GRAPHIC_BANDAGE) else {
+        return;
+    };
+    inner
+        .outbound
+        .push_back(encode::bandage_target(item.serial, world.self_state.serial));
+    mark_action(inner);
+    inner.next_bandage_at =
+        Instant::now() + Duration::from_millis(bandage_self_ms(world.self_state.dex));
+}
+
 fn reflex_tick(inner: &mut Inner) {
     let world = inner.world.read().clone();
     if !world.logged_in {
+        return;
+    }
+    if inner.loot.is_some() {
+        pump_loot(inner);
         return;
     }
     if let Some(serial) = inner.follow {
@@ -4775,7 +5097,11 @@ fn reflex_tick(inner: &mut Inner) {
         }
     }
     match reflex::tick(&world, &inner.persona, &inner.goal) {
-        ReflexAction::None => {}
+        ReflexAction::None => {
+            if inner.world.read().fighting() {
+                inner.movement.hold();
+            }
+        }
         ReflexAction::Say(text) => {
             let _ = queue_speech(inner, text, SPEECH_REGULAR);
         }
@@ -4783,60 +5109,45 @@ fn reflex_tick(inner: &mut Inner) {
             let _ = queue_move(inner, Point3::new(x, y, z));
         }
         ReflexAction::Attack(serial) => {
-            if inner.last_attack.elapsed() >= ACTION_COOLDOWN {
-                inner.last_attack = Instant::now();
-                inner.outbound.push_back(encode::attack(serial));
+            inner.movement.hold();
+            if archer_move_locked(inner) {
+                return;
             }
+            send_attack(inner, serial);
         }
-        ReflexAction::WarMode(on) => {
-            if inner.last_war.elapsed() >= ACTION_COOLDOWN {
-                inner.last_war = Instant::now();
-                inner.outbound.push_back(encode::war_mode(on));
-            }
-        }
+        ReflexAction::WarMode(on) => send_war_mode(inner, on),
         ReflexAction::Use(serial) => {
-            if matches!(inner.goal, Goal::Gather | Goal::Bank)
-                && inner.last_gather.elapsed() < GATHER_COOLDOWN
-            {
-            } else {
-                inner.last_gather = Instant::now();
-                inner.outbound.push_back(encode::double_click(serial));
+            if let Some(item) = world.items.get(&serial) {
+                if item.graphic == GRAPHIC_POTION_HEAL && Instant::now() < inner.next_heal_potion_at
+                {
+                    return;
+                }
             }
-        }
-        ReflexAction::UseSkill(id) => {
-            if inner.last_skill.elapsed() >= ACTION_COOLDOWN {
-                inner.last_skill = Instant::now();
-                inner.outbound.push_back(encode::use_skill(id));
+            if !action_ready(inner) {
+                return;
             }
-        }
-        ReflexAction::Target(serial) => {
-            let cursor = inner.world.read().pending_target.clone();
-            if let Some(cursor) = cursor {
-                inner
-                    .outbound
-                    .push_back(encode::target_object(cursor.id, serial, 0, 0, 0, 0));
-                inner.world.write().clear_target();
-            }
-        }
-        ReflexAction::BandageSelf => {
-            if let Some(cursor) = world.pending_target.clone() {
-                inner.outbound.push_back(encode::target_object(
-                    cursor.id,
-                    world.self_state.serial,
-                    0,
-                    0,
-                    0,
-                    0,
-                ));
-                inner.world.write().clear_target();
-                inner.last_bandage = Instant::now();
-            } else if inner.last_bandage.elapsed() >= BANDAGE_COOLDOWN {
-                if let Some(item) = world.find_items(Some(GRAPHIC_BANDAGE), None, None).first() {
-                    inner.outbound.push_back(encode::double_click(item.serial));
-                    inner.last_bandage = Instant::now();
+            inner.outbound.push_back(encode::double_click(serial));
+            mark_action(inner);
+            if let Some(item) = world.items.get(&serial) {
+                if item.graphic == GRAPHIC_POTION_HEAL {
+                    inner.next_heal_potion_at =
+                        Instant::now() + Duration::from_millis(heal_potion_lock_ms(&item.name));
+                }
+                if item.graphic == GRAPHIC_HATCHET {
+                    if let Some(tree) = world.find_items(None, None, None).into_iter().find(|i| {
+                        i.parent.is_none()
+                            && (TREE_GRAPHIC_MIN..=TREE_GRAPHIC_MAX).contains(&i.graphic)
+                    }) {
+                        inner.target_intent = Some(tree.serial);
+                    }
                 }
             }
         }
+        ReflexAction::UseSkill(id) => {
+            inner.outbound.push_back(encode::use_skill(id));
+        }
+        ReflexAction::Target(serial) => store_or_answer_target(inner, serial),
+        ReflexAction::BandageSelf => send_bandage_self(inner, &world),
     }
 }
 
@@ -5318,11 +5629,25 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             inner.world.write().goal = Goal::Idle.name().into();
             ToolResult::ok(json!(Goal::Idle.name()))
         }
-        TOOL_USE | TOOL_OPEN_CONTAINER | TOOL_LOOT => {
+        TOOL_USE | TOOL_OPEN_CONTAINER => {
+            if !action_ready(inner) {
+                return ToolResult::err("must wait to perform another action");
+            }
             inner
                 .outbound
                 .push_back(encode::double_click(arg_serial(args, "serial")));
+            mark_action(inner);
             ToolResult::action(TOOL_USE)
+        }
+        TOOL_LOOT => {
+            let serial = arg_serial(args, "serial");
+            let Some(pack) = backpack_serial(&inner.world.read()) else {
+                return ToolResult::err("no backpack");
+            };
+            inner.loot = Some(LootJob::new(serial, pack));
+            inner.sent_drop = None;
+            pump_loot(inner);
+            ToolResult::action(TOOL_LOOT)
         }
         TOOL_SINGLE_CLICK => {
             inner
@@ -5331,40 +5656,49 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_SINGLE_CLICK)
         }
         TOOL_ATTACK => {
-            inner
-                .outbound
-                .push_back(encode::attack(arg_serial(args, "serial")));
+            send_attack(inner, arg_serial(args, "serial"));
             ToolResult::action(TOOL_ATTACK)
         }
         TOOL_WAR_MODE => {
-            inner.outbound.push_back(encode::war_mode(
-                args.get("on").and_then(|v| v.as_bool()).unwrap_or(true),
-            ));
+            let on = args.get("on").and_then(|v| v.as_bool()).unwrap_or(true);
+            if !on && inner.world.read().fighting() {
+                return ToolResult::err("war mode stays on during a fight");
+            }
+            send_war_mode(inner, on);
             ToolResult::action(TOOL_WAR_MODE)
         }
         TOOL_LIFT => {
-            inner.outbound.push_back(encode::lift(
-                arg_serial(args, "serial"),
-                args.get("amount").and_then(|v| v.as_u64()).unwrap_or(1) as u16,
-            ));
+            if !action_ready(inner) {
+                return ToolResult::err("must wait to perform another action");
+            }
+            let serial = arg_serial(args, "serial");
+            let amount = args
+                .get("amount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .max(1) as u16;
+            inner.outbound.push_back(encode::lift(serial, amount));
+            inner.world.write().holding = Some(serial);
             ToolResult::action(TOOL_LIFT)
         }
         TOOL_DROP => {
-            let loc = inner.world.read().self_state.location;
             let dest = args
                 .get("dest")
                 .and_then(|v| v.as_u64())
                 .map(|n| Serial(n as u32))
                 .unwrap_or(Serial::WORLD);
             let grid = drop_grid(inner);
-            inner.outbound.push_back(encode::drop(
-                arg_serial(args, "serial"),
-                loc.x,
-                loc.y,
-                loc.z,
-                dest,
-                grid,
-            ));
+            let serial = arg_serial(args, "serial");
+            if dest.is_item() {
+                inner
+                    .outbound
+                    .push_back(encode::drop_into_container(serial, dest, grid));
+            } else {
+                let loc = inner.world.read().self_state.location;
+                inner
+                    .outbound
+                    .push_back(encode::drop(serial, loc.x, loc.y, loc.z, dest, grid));
+            }
             ToolResult::action(TOOL_DROP)
         }
         TOOL_EQUIP => {
@@ -5391,23 +5725,16 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_USE_SKILL)
         }
         TOOL_TARGET => {
-            let cursor = inner.world.read().pending_target.clone();
-            if let Some(cursor) = cursor {
-                if args.get("serial").is_some() {
-                    inner.outbound.push_back(encode::target_object(
-                        cursor.id,
-                        arg_serial(args, "serial"),
-                        0,
-                        0,
-                        0,
-                        0,
-                    ));
-                } else {
-                    inner.outbound.push_back(encode::cancel_target(cursor.id));
-                }
+            if args.get("serial").is_some() {
+                store_or_answer_target(inner, arg_serial(args, "serial"));
+                ToolResult::action(TOOL_TARGET)
+            } else if let Some(cursor) = inner.world.read().pending_target.clone() {
+                inner.outbound.push_back(encode::cancel_target(cursor.id));
                 inner.world.write().clear_target();
+                inner.target_intent = None;
                 ToolResult::action(TOOL_TARGET)
             } else {
+                inner.target_intent = None;
                 ToolResult::err("must have a target cursor")
             }
         }
@@ -5481,7 +5808,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             if layer == 0 || layer == LAYER_BACKPACK || layer > LAYER_BANK {
                 return ToolResult::err("invalid layer");
             }
-            let (item, pack, loc) = {
+            let (item, pack) = {
                 let w = inner.world.read();
                 let item = w
                     .self_state
@@ -5496,14 +5823,14 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     .find(|e| e.layer == LAYER_BACKPACK)
                     .map(|e| e.serial)
                     .unwrap_or(w.self_state.serial);
-                (item, pack, w.self_state.location)
+                (item, pack)
             };
             match item {
                 Some(eq) => {
                     let grid = drop_grid(inner);
                     inner
                         .outbound
-                        .push_back(encode::drop(eq.serial, loc.x, loc.y, loc.z, pack, grid));
+                        .push_back(encode::drop_into_container(eq.serial, pack, grid));
                     ToolResult::action(TOOL_UNEQUIP)
                 }
                 None => ToolResult::err("layer empty"),

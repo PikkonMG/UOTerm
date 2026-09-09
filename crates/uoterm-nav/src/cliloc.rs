@@ -90,6 +90,11 @@ impl ClilocData {
         })
     }
 
+    /// Builds a database from the messages already in memory.
+    pub fn from_entries(entries: HashMap<u32, String>) -> Self {
+        Self { entries }
+    }
+
     /// The sentence for one message number, as the client files write it.
     /// Blanks are left as they stand; [`Self::render`] fills them.
     pub fn text(&self, number: u32) -> Option<&str> {
@@ -130,6 +135,23 @@ impl ClilocData {
         }
         out.push_str(rest);
         Some(out)
+    }
+
+    /// Turns a journal line of the form `#number` or `#number arguments` into
+    /// the English sentence, or leaves the line as it arrived when the number
+    /// is not in the files.
+    pub fn render_line(&self, text: &str) -> String {
+        let Some(rest) = text.strip_prefix(NESTED_NUMBER_MARK) else {
+            return text.to_string();
+        };
+        let (number, arguments) = match rest.split_once(' ') {
+            Some((number, arguments)) => (number, arguments),
+            None => (rest, ""),
+        };
+        match message_number(number).and_then(|n| self.render(n, arguments)) {
+            Some(sentence) => sentence,
+            None => text.to_string(),
+        }
     }
 
     /// How many messages the client files describe.

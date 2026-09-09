@@ -126,6 +126,7 @@ pub struct Observe {
     pub pending_target: bool,
     pub open_gumps: usize,
     pub holding: Option<String>,
+    pub combatant: Option<String>,
     pub goal: String,
     pub facts: Vec<String>,
 }
@@ -205,6 +206,7 @@ impl Observe {
             pending_target: world.pending_target.is_some(),
             open_gumps: world.gumps.len(),
             holding: world.holding.map(|serial| serial.to_string()),
+            combatant: world.combatant.map(|serial| serial.to_string()),
             goal: world.goal.clone(),
             facts,
         }

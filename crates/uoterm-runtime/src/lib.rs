@@ -3,6 +3,7 @@ pub mod building;
 pub mod config;
 pub mod error;
 pub mod harvest;
+pub mod loot;
 pub mod manager;
 pub mod mcp;
 pub mod mock;

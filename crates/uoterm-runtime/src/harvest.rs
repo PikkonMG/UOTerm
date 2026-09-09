@@ -54,5 +54,13 @@ mod tests {
             serde_json::to_value(EventKind::PathFailed).unwrap(),
             json!("path_failed")
         );
+        assert_eq!(
+            serde_json::to_value(EventKind::CombatantChanged).unwrap(),
+            json!("combatant_changed")
+        );
+        assert_eq!(
+            serde_json::to_value(EventKind::LiftRejected).unwrap(),
+            json!("lift_rejected")
+        );
     }
 }

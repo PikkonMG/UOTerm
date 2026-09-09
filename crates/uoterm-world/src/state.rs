@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
-    ContainerItem, EquipItem, GroundItem, Inbound, MobileView, ObjectProperty, OpenGump, Point3,
-    Serial, TargetCursor, DIR_RUNNING, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR,
+    weapon_range, ContainerItem, EquipItem, GroundItem, Inbound, MobileView, ObjectProperty,
+    OpenGump, Point3, Serial, TargetCursor, DIR_RUNNING, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED,
+    FLAG_WAR, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE,
 };
 
 use crate::events::{Event, EventKind, EVENT_LOG_CAP};
@@ -264,6 +266,14 @@ pub struct World {
     pub pending_target: Option<TargetCursor>,
     pub gumps: Vec<OpenGump>,
     pub holding: Option<Serial>,
+    /// The serial the server has us fighting, or none when the fight has ended.
+    pub combatant: Option<Serial>,
+    /// When the server last sent a swing that named us as the attacker.
+    #[serde(skip)]
+    pub last_swing: Option<Instant>,
+    /// The gap between the last two of those swings.
+    #[serde(skip)]
+    pub last_swing_gap: Option<Duration>,
     pub logged_in: bool,
     pub goal: String,
     pub nav_goal: Option<Point3>,
@@ -428,6 +438,9 @@ impl World {
             }
             Inbound::AddItem(item) => {
                 self.upsert_container_item(item);
+                if self.holding == Some(item.serial) {
+                    self.holding = None;
+                }
                 self.push_event(Event::new(
                     EventKind::ItemAdded,
                     Some(item.serial),
@@ -586,10 +599,38 @@ impl World {
                     mob.flags = *flags;
                 }
             }
-            Inbound::Swing {
-                defender, attacker, ..
-            } if *defender == self.self_state.serial => {
-                self.push_event(Event::new(EventKind::Damaged, Some(*attacker), "swing"));
+            Inbound::Swing { attacker, .. } if *attacker == self.self_state.serial => {
+                let now = Instant::now();
+                if let Some(prev) = self.last_swing {
+                    self.last_swing_gap = Some(now.saturating_duration_since(prev));
+                }
+                self.last_swing = Some(now);
+            }
+            Inbound::CombatantChanged { serial } => {
+                if serial.is_valid() {
+                    self.combatant = Some(*serial);
+                } else {
+                    self.combatant = None;
+                    self.last_swing = None;
+                    self.last_swing_gap = None;
+                }
+                self.push_event(Event::new(
+                    EventKind::CombatantChanged,
+                    self.combatant,
+                    if serial.is_valid() {
+                        format!("{serial}")
+                    } else {
+                        "ended".into()
+                    },
+                ));
+            }
+            Inbound::LiftRejected { reason } => {
+                self.holding = None;
+                self.push_event(Event::new(
+                    EventKind::LiftRejected,
+                    None,
+                    format!("{reason}"),
+                ));
             }
             Inbound::OplInfo { serial, hash } => {
                 self.names.note_revision(*serial, *hash);
@@ -926,6 +967,37 @@ impl World {
 
     pub fn nearby_mobiles(&self, dist: u16) -> Vec<&Mobile> {
         self.find_mobiles(None, None, Some(dist))
+    }
+
+    pub fn equipped_weapon_graphic(&self) -> Option<u16> {
+        self.self_state.equipment.iter().find_map(|eq| {
+            if eq.layer == LAYER_ONE_HANDED || eq.layer == LAYER_TWO_HANDED {
+                Some(eq.graphic)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn attack_range(&self) -> u16 {
+        self.equipped_weapon_graphic()
+            .map(weapon_range)
+            .unwrap_or(RANGE_MELEE)
+    }
+
+    pub fn fighting(&self) -> bool {
+        self.combatant.is_some_and(Serial::is_valid)
+    }
+
+    /// True when a swing is overdue given the last gap the server gave us.
+    pub fn swing_is_late(&self, now: Instant) -> bool {
+        let Some(last) = self.last_swing else {
+            return false;
+        };
+        let Some(gap) = self.last_swing_gap else {
+            return false;
+        };
+        now.saturating_duration_since(last) > gap
     }
 
     pub fn nearby_items(&self, dist: u16) -> Vec<&Item> {

@@ -288,10 +288,11 @@ mod tests {
     use super::*;
     use crate::types::{
         PKT_BATCH_QUERY_PROPERTIES, PKT_BOOK_CONTENT, PKT_BOOK_HEADER, PKT_BOOK_HEADER_OLD,
-        PKT_BUFF_DEBUFF, PKT_CHARACTER_ANIMATION, PKT_EXTENDED, PKT_HEALTH_BAR_STATUS,
-        PKT_MENU_RESPONSE, PKT_MUSIC, PKT_OPEN_MENU, PKT_OPL_INFO, PKT_SECURE_TRADE,
-        PKT_SINGLE_CLICK, PKT_SKILLS, PKT_SOUND_EFFECT, PKT_UPDATE_STAM, PKT_VENDOR_BUY,
-        PKT_VENDOR_BUY_LIST, PKT_VENDOR_SELL, PKT_VENDOR_SELL_LIST,
+        PKT_BUFF_DEBUFF, PKT_CHARACTER_ANIMATION, PKT_COMBATANT, PKT_EXTENDED,
+        PKT_HEALTH_BAR_STATUS, PKT_LIFT_REJECT, PKT_MENU_RESPONSE, PKT_MUSIC, PKT_OPEN_MENU,
+        PKT_OPL_INFO, PKT_SECURE_TRADE, PKT_SINGLE_CLICK, PKT_SKILLS, PKT_SOUND_EFFECT, PKT_SWING,
+        PKT_UPDATE_STAM, PKT_VENDOR_BUY, PKT_VENDOR_BUY_LIST, PKT_VENDOR_SELL,
+        PKT_VENDOR_SELL_LIST,
     };
 
     #[test]
@@ -387,6 +388,27 @@ mod tests {
         assert_eq!(t.fixed_len(0xE2), Some(LEN_NEW_ANIMATION));
         assert_eq!(t.fixed_len(0xF5), Some(LEN_NEW_MAP));
         assert_eq!(t.fixed_len(0xF8), Some(LEN_CREATE_CHAR_70160));
+    }
+
+    #[test]
+    fn combat_and_lift_packets_use_named_ids() {
+        const LEN_COMBATANT: u16 = 5;
+        const LEN_LIFT_REJECT: u16 = 2;
+        const LEN_SWING: u16 = 10;
+        for table in [PacketTable::t2a(), PacketTable::modern()] {
+            let era = table.era();
+            assert_eq!(
+                table.fixed_len(PKT_COMBATANT),
+                Some(LEN_COMBATANT),
+                "0xAA {era}"
+            );
+            assert_eq!(
+                table.fixed_len(PKT_LIFT_REJECT),
+                Some(LEN_LIFT_REJECT),
+                "0x27 {era}"
+            );
+            assert_eq!(table.fixed_len(PKT_SWING), Some(LEN_SWING), "0x2F {era}");
+        }
     }
 
     #[test]

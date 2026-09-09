@@ -255,6 +255,11 @@ pub fn drop(serial: Serial, x: u16, y: u16, z: i8, dest: Serial, grid: Option<u8
     w.finish()
 }
 
+/// Drop into a container so the server auto-places and stacks.
+pub fn drop_into_container(serial: Serial, dest: Serial, grid: Option<u8>) -> Vec<u8> {
+    drop(serial, DROP_CONTAINER_XY, DROP_CONTAINER_XY, 0, dest, grid)
+}
+
 pub fn equip(item: Serial, layer: u8, mobile: Serial) -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_EQUIP);
     w.serial(item).u8(layer).serial(mobile);
@@ -450,6 +455,14 @@ pub fn context_menu_request(serial: Serial) -> Vec<u8> {
 pub fn context_menu_response(serial: Serial, index: u16) -> Vec<u8> {
     let mut w = PacketWriter::with_variable(PKT_EXTENDED);
     w.u16(EXT_CONTEXT_MENU_RESPONSE).serial(serial).u16(index);
+    var_bytes(w)
+}
+
+/// Use a bandage on `target` with no cursor. Pass the character's own serial
+/// to heal yourself.
+pub fn bandage_target(bandage: Serial, target: Serial) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_BANDAGE_TARGET).serial(bandage).serial(target);
     var_bytes(w)
 }
 
@@ -887,6 +900,43 @@ mod tests {
     fn drop_with_grid_is_15_bytes() {
         let p = drop(Serial(0x4000_0001), 1, 2, 0, Serial::WORLD, Some(0));
         assert_eq!(p.len(), 15);
+    }
+
+    #[test]
+    fn drop_into_a_container_uses_auto_place_coordinates() {
+        const ITEM: Serial = Serial(0x4000_0001);
+        const PACK: Serial = Serial(0x4000_0002);
+        let p = drop_into_container(ITEM, PACK, Some(0));
+        assert_eq!(p.len(), 15);
+        assert_eq!(p[0], PKT_DROP);
+        assert_eq!(u16::from_be_bytes([p[5], p[6]]), DROP_CONTAINER_XY);
+        assert_eq!(u16::from_be_bytes([p[7], p[8]]), DROP_CONTAINER_XY);
+        let dest = u32::from_be_bytes([p[11], p[12], p[13], p[14]]);
+        assert_eq!(dest, PACK.0);
+    }
+
+    #[test]
+    fn bandage_target_is_thirteen_bytes() {
+        const BANDAGE: Serial = Serial(0x4000_0101);
+        const SELF: Serial = Serial(0x0000_00AB);
+        const PACKET: [u8; BANDAGE_TARGET_LEN] = [
+            PKT_EXTENDED,
+            0x00,
+            0x0D,
+            0x00,
+            0x2C,
+            0x40,
+            0x00,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0xAB,
+        ];
+        let packet = bandage_target(BANDAGE, SELF);
+        assert_eq!(packet, PACKET);
+        assert_eq!(packet.len(), BANDAGE_TARGET_LEN);
     }
 
     #[test]

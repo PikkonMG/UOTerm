@@ -2949,6 +2949,25 @@ mod tests {
     }
 
     #[test]
+    fn a_numbered_journal_line_becomes_the_english_sentence() {
+        let text = ClilocData::from_entries(
+            [(REFUSAL_NUMBER, REFUSAL_TEXT.to_string())]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            text.render_line(&format!("#{REFUSAL_NUMBER}")),
+            REFUSAL_TEXT
+        );
+        assert_eq!(text.render_line("hello"), "hello");
+        assert_eq!(
+            text.render_line("#1"),
+            "#1",
+            "a number the files do not hold stays as the shard wrote it"
+        );
+    }
+
+    #[test]
     fn a_written_text_database_pins_the_record_layout() {
         let dir = scratch("cliloc-layout");
         let text = fixture_cliloc(&dir);
