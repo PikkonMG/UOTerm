@@ -32,6 +32,7 @@ pub const TOOL_TARGET: &str = "target";
 pub const TOOL_OPEN_CONTAINER: &str = "open_container";
 pub const TOOL_LOOT: &str = "loot";
 pub const TOOL_TRADE_OFFER: &str = "trade_offer";
+pub const TOOL_CONTEXT_MENU: &str = "context_menu";
 pub const TOOL_GUMP_RESPOND: &str = "gump_respond";
 pub const TOOL_GUMP_CLOSE: &str = "gump_close";
 pub const TOOL_SET_GOAL: &str = "set_goal";
@@ -238,6 +239,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (TOOL_TRADE_OFFER, "Secure trade offer.", "mobile serial"),
     (
+        TOOL_CONTEXT_MENU,
+        "Request an object's context menu and select its enabled entry by cliloc.",
+        "object serial and entry cliloc",
+    ),
+    (
         TOOL_GUMP_RESPOND,
         "Click a gump button. button 0 closes.",
         "open gump",
@@ -279,7 +285,8 @@ pub fn mcp_tool_list() -> Value {
                         "name": {"type": "string"},
                         "graphic": {"type": "integer"},
                         "container": {"type": "string"},
-                        "distance": {"type": "integer"}
+                        "distance": {"type": "integer"},
+                        "cliloc": {"type": "integer"}
                     }
                 }
             })

@@ -17,12 +17,13 @@ use crate::persona::{Persona, SpeechPolicy};
 use crate::reflex::{self, bandage_self_ms, heal_potion_lock_ms, ReflexAction};
 use crate::scene;
 use crate::tools::{
-    Goal, ToolCall, ToolResult, TOOL_ATTACK, TOOL_CANCEL_GOAL, TOOL_CAN_WALK, TOOL_CAST, TOOL_DROP,
-    TOOL_EMOTE, TOOL_EQUIP, TOOL_FIND_ITEMS, TOOL_FIND_MOBILES, TOOL_FOLLOW, TOOL_GUMP_CLOSE,
-    TOOL_GUMP_RESPOND, TOOL_JOURNAL_SEARCH, TOOL_LIFT, TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE,
-    TOOL_MOVE_TO, TOOL_OBSERVE, TOOL_OPEN_CONTAINER, TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL,
-    TOOL_SET_PERSONA, TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_TARGET, TOOL_TRADE_OFFER, TOOL_UNEQUIP,
-    TOOL_USE, TOOL_USE_SKILL, TOOL_WAIT_TARGET, TOOL_WALK, TOOL_WAR_MODE, TOOL_WHISPER,
+    Goal, ToolCall, ToolResult, TOOL_ATTACK, TOOL_CANCEL_GOAL, TOOL_CAN_WALK, TOOL_CAST,
+    TOOL_CONTEXT_MENU, TOOL_DROP, TOOL_EMOTE, TOOL_EQUIP, TOOL_FIND_ITEMS, TOOL_FIND_MOBILES,
+    TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_JOURNAL_SEARCH, TOOL_LIFT,
+    TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE, TOOL_MOVE_TO, TOOL_OBSERVE, TOOL_OPEN_CONTAINER,
+    TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL, TOOL_SET_PERSONA, TOOL_SINGLE_CLICK, TOOL_STOP,
+    TOOL_TARGET, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WAIT_TARGET,
+    TOOL_WALK, TOOL_WAR_MODE, TOOL_WHISPER,
 };
 use parking_lot::RwLock;
 use rand::Rng;
@@ -271,6 +272,9 @@ struct Inner {
     target_intent: Option<Serial>,
     loot: Option<LootJob>,
     sent_drop: Option<Serial>,
+    /// One requested context-menu choice, answered only when the matching
+    /// server-authored menu arrives.
+    pending_context_menu: Option<(Serial, u32)>,
     last_event_seq: u64,
     last_name_retry: Instant,
     last_path_fail: Option<(Point3, Instant)>,
@@ -557,6 +561,7 @@ async fn run_session(
         target_intent: None,
         loot: None,
         sent_drop: None,
+        pending_context_menu: None,
         last_path_fail: None,
         last_fatigued: None,
         last_event_seq: 0,
@@ -1327,6 +1332,7 @@ mod relay_tests {
             target_intent: None,
             loot: None,
             sent_drop: None,
+            pending_context_menu: None,
             last_path_fail: None,
             last_fatigued: None,
             last_event_seq: 0,
@@ -4384,6 +4390,21 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     if let Inbound::LiftRejected { .. } = &msg {
                         inner.world.write().holding = None;
                     }
+                    if let Inbound::ContextMenu { serial, entries } = &msg {
+                        if let Some((expected_serial, cliloc)) = inner.pending_context_menu.take() {
+                            if *serial == expected_serial {
+                                if let Some(entry) = entries
+                                    .iter()
+                                    .find(|entry| entry.cliloc == cliloc && entry.enabled())
+                                {
+                                    inner.outbound.push_back(encode::context_menu_response(
+                                        *serial,
+                                        entry.index,
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     if let Inbound::Speech(line) = &msg {
                         if says_bandage_started(&line.text) {
                             let dex = inner.world.read().self_state.dex;
@@ -5934,6 +5955,18 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let serial = arg_serial(args, "serial");
             inner.outbound.push_back(encode::trade_start(serial));
             ToolResult::action(TOOL_TRADE_OFFER)
+        }
+        TOOL_CONTEXT_MENU => {
+            let serial = arg_serial(args, "serial");
+            let cliloc = arg_u32(args, "cliloc", 0);
+            if serial == Serial(0) || cliloc == 0 {
+                return ToolResult::err("context_menu needs serial and cliloc");
+            }
+            inner.pending_context_menu = Some((serial, cliloc));
+            inner
+                .outbound
+                .push_back(encode::context_menu_request(serial));
+            ToolResult::action(TOOL_CONTEXT_MENU)
         }
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
