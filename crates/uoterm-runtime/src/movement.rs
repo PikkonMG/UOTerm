@@ -845,6 +845,7 @@ impl Movement {
     /// Stops queuing new steps, and keeps the steps already on the wire so
     /// their answers still land and still move the character.
     pub fn hold(&mut self) {
+        self.run_override = None;
         self.goal = None;
         self.path.clear();
     }

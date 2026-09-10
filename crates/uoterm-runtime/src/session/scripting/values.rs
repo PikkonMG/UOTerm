@@ -154,6 +154,10 @@ pub(super) fn read(game: &mut Game, call: &Call, ctx: &mut Ctx) -> Read {
             let serial = game.serial(need(call, 0, "a mobile")?, ctx)?;
             Ok(ScriptValue::Bool(game.world().party.contains(&serial)))
         }
+        "findalias" => {
+            let name = &need(call, 0, "a name")?.text;
+            Ok(ScriptValue::Bool(game.system_alias(name).is_some()))
+        }
         "infriendlist" => {
             let serial = game.serial(need(call, 0, "a mobile")?, ctx)?;
             let world = game.world().clone();

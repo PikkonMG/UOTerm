@@ -10,6 +10,9 @@ use super::*;
 const CORPSE_GRAPHIC: u16 = 0x2006;
 /// Free weight, in stones, under which the loot and scavenge agents stop.
 const MIN_FREE_WEIGHT: u16 = 5;
+/// The most times a job moves one item. The shard may refuse a move, for
+/// example when it comes too soon after another action.
+pub(super) const MAX_JOB_MOVES: u8 = 3;
 /// How far a blade reaches: corpses and bones next to the character.
 const BLADE_REACH: u32 = 1;
 /// How far the bandage agent looks for a friend when its range is unset.
@@ -142,6 +145,15 @@ pub(super) fn remount(inner: &mut Inner, now: Instant) -> bool {
     let Some(mount) = r.mount.filter(|_| r.enabled) else {
         return false;
     };
+    // A mount not in sight cannot be clicked; asking again each second only
+    // spams the shard.
+    let seen = {
+        let w = inner.world.read();
+        w.mobiles.contains_key(&mount) || w.items.contains_key(&mount)
+    };
+    if !seen {
+        return false;
+    }
     let (mounted, body) = {
         let w = inner.world.read();
         (w.worn(LAYER_MOUNT).is_some(), w.self_state.body)
@@ -236,13 +248,16 @@ pub(super) fn job(inner: &mut Inner, now: Instant) -> bool {
         return false;
     };
     let step = match &job {
-        Job::Organize { list, done } => organize(inner, list, done.clone(), now),
+        Job::Organize { list } => organize(inner, list, now),
         Job::Restock { list } => restock(inner, list, now),
         Job::Dress { list } => dress(inner, list, now),
         Job::Undress { list } => undress(inner, list.as_deref(), now),
         Job::LootOnce => {
             if autoloot(inner, now, true) {
                 JobStep::Acted
+            } else if !action_ready(inner) || now < inner.next_double_click_at {
+                // Pacing held a double-click back: the job is not done.
+                JobStep::Waiting
             } else {
                 JobStep::Finished
             }
@@ -250,10 +265,9 @@ pub(super) fn job(inner: &mut Inner, now: Instant) -> bool {
     };
     match step {
         JobStep::Acted => true,
-        JobStep::ActedOn(serial) => {
-            if let Some(Job::Organize { done, .. }) = inner.agents.job.as_mut() {
-                done.insert(serial);
-            }
+        JobStep::Waiting => false,
+        JobStep::Moved(serial) => {
+            *inner.agents.job_moves.entry(serial).or_default() += 1;
             true
         }
         JobStep::Finished => {
@@ -271,15 +285,23 @@ pub(super) fn job(inner: &mut Inner, now: Instant) -> bool {
 
 enum JobStep {
     Acted,
-    /// Acted on this item; the job remembers it.
-    ActedOn(Serial),
+    /// Nothing sent now; the job goes on at a later tick.
+    Waiting,
+    /// Moved this item; the job counts the move.
+    Moved(Serial),
     Finished,
     Failed(String),
 }
 
+/// True while a job may still move this item. An item the shard refuses
+/// to move stays put; after a few tries the job leaves it.
+fn may_move(inner: &Inner, item: Serial) -> bool {
+    inner.agents.job_moves.get(&item).map_or(true, |&n| n < MAX_JOB_MOVES)
+}
+
 /// Moves each listed item from the source bag to the destination, split to
 /// its amount when the rule names one.
-fn organize(inner: &mut Inner, name: &str, done: HashSet<Serial>, now: Instant) -> JobStep {
+fn organize(inner: &mut Inner, name: &str, now: Instant) -> JobStep {
     let Some(list) = inner.agents.config.organizer.get(name).cloned() else {
         return JobStep::Failed(format!("no organizer list '{name}'"));
     };
@@ -291,7 +313,7 @@ fn organize(inner: &mut Inner, name: &str, done: HashSet<Serial>, now: Instant) 
         let w = inner.world.read();
         w.items_inside(source, false)
             .into_iter()
-            .filter(|i| !done.contains(&i.serial))
+            .filter(|i| may_move(inner, i.serial))
             .find_map(|i| {
                 let rule = rule_for(&list.items, i.graphic, i.hue)?;
                 let amount = rule
@@ -303,7 +325,7 @@ fn organize(inner: &mut Inner, name: &str, done: HashSet<Serial>, now: Instant) 
     match next {
         Some((item, amount)) => {
             move_now(inner, item, amount.max(1), dest, delay(list.delay_ms), now);
-            JobStep::ActedOn(item)
+            JobStep::Moved(item)
         }
         None => JobStep::Finished,
     }
@@ -340,6 +362,7 @@ fn restock(inner: &mut Inner, name: &str, now: Instant) -> JobStep {
             let short = limit.checked_sub(have).filter(|&s| s > 0)?;
             w.items_inside(source, true)
                 .into_iter()
+                .filter(|i| may_move(inner, i.serial))
                 .find(|i| rule.matches(i.graphic, i.hue))
                 .map(|i| (i.serial, short.min(u32::from(i.amount)) as u16))
         })
@@ -347,7 +370,7 @@ fn restock(inner: &mut Inner, name: &str, now: Instant) -> JobStep {
     match next {
         Some((item, amount)) => {
             move_now(inner, item, amount.max(1), dest, delay(list.delay_ms), now);
-            JobStep::Acted
+            JobStep::Moved(item)
         }
         None => JobStep::Finished,
     }
@@ -369,7 +392,7 @@ fn dress(inner: &mut Inner, name: &str, now: Instant) -> JobStep {
         };
         match worn {
             Some(on) if on == entry.serial => continue,
-            Some(other) if list.replace_worn => {
+            Some(other) if list.replace_worn && may_move(inner, other) => {
                 move_now(
                     inner,
                     other,
@@ -378,13 +401,13 @@ fn dress(inner: &mut Inner, name: &str, now: Instant) -> JobStep {
                     delay(list.delay_ms),
                     now,
                 );
-                return JobStep::Acted;
+                return JobStep::Moved(other);
             }
             Some(_) => continue,
-            None if exists => {
+            None if exists && may_move(inner, entry.serial) => {
                 lift_and_wear(inner, entry.serial, entry.layer);
                 inner.agents.next_move_at = now + delay(list.delay_ms);
-                return JobStep::Acted;
+                return JobStep::Moved(entry.serial);
             }
             None => continue,
         }
@@ -408,13 +431,14 @@ fn undress(inner: &mut Inner, name: Option<&str>, now: Instant) -> JobStep {
             .equipment
             .iter()
             .filter(|e| !NOT_DRESSED.contains(&e.layer))
+            .filter(|e| may_move(inner, e.serial))
             .find(|e| name.is_none() || list.items.iter().any(|d| d.serial == e.serial))
             .map(|e| e.serial)
     };
     match next {
         Some(item) => {
             move_now(inner, item, ONE_WORN_ITEM, bag, delay(list.delay_ms), now);
-            JobStep::Acted
+            JobStep::Moved(item)
         }
         None => JobStep::Finished,
     }

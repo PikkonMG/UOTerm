@@ -569,7 +569,8 @@ fn free_a_hand(game: &mut Game) -> bool {
     if !ready(game) {
         return true;
     }
-    let pack = backpack_serial(&game.world()).unwrap_or_else(|| game.me());
+    let me = game.me();
+    let pack = backpack_serial(&game.world()).unwrap_or(me);
     lift_and_drop(game.inner, left, ONE_WORN_ITEM, DropAt::Into(pack));
     game.inner.agents.rearm_later(left, LAYER_TWO_HANDED);
     true
@@ -928,6 +929,7 @@ fn walk(
 /// Waits for a walk the line started, up to [`WALK_LIMIT`].
 fn walk_on(game: &mut Game, call: &Call, ctx: &mut Ctx) -> Step {
     if !game.inner.movement.walking() {
+        game.inner.movement.run_override = None;
         return Step::Done;
     }
     if ctx.waited() >= WALK_LIMIT {
@@ -1104,7 +1106,8 @@ fn put_away(game: &mut Game, hand: usize, item: Serial) -> Step {
     if !ready(game) {
         return Step::Wait;
     }
-    let pack = backpack_serial(&game.world()).unwrap_or_else(|| game.me());
+    let me = game.me();
+    let pack = backpack_serial(&game.world()).unwrap_or(me);
     lift_and_drop(game.inner, item, ONE_WORN_ITEM, DropAt::Into(pack));
     game.inner.scripting.hands[hand] = Some(item);
     game.inner.last_weapon = Some(item);
@@ -1134,18 +1137,29 @@ fn toggle_hands(game: &mut Game, call: &Call) -> std::result::Result<Step, Strin
 }
 
 /// Puts the hands' items away, one hand a tick.
+/// Puts the named hands' items into the pack, both in one move.
 fn clear_hands(game: &mut Game, call: &Call) -> std::result::Result<Step, String> {
-    for hand in hands(call.args.first())? {
-        let worn = game.world().worn(HANDS[hand].1).map(|e| e.serial);
-        if let Some(item) = worn {
-            return Ok(match put_away(game, hand, item) {
-                // The other hand goes on the next tick.
-                Step::Acted => Step::Wait,
-                other => other,
-            });
-        }
+    let full: Vec<(usize, Serial)> = {
+        let w = game.world();
+        hands(call.args.first())?
+            .into_iter()
+            .filter_map(|hand| w.worn(HANDS[hand].1).map(|e| (hand, e.serial)))
+            .collect()
+    };
+    if full.is_empty() {
+        return Ok(Step::Done);
     }
-    Ok(Step::Done)
+    if !ready(game) {
+        return Ok(Step::Wait);
+    }
+    let me = game.me();
+    let pack = backpack_serial(&game.world()).unwrap_or(me);
+    for (hand, item) in full {
+        lift_and_drop(game.inner, item, ONE_WORN_ITEM, DropAt::Into(pack));
+        game.inner.scripting.hands[hand] = Some(item);
+        game.inner.last_weapon = Some(item);
+    }
+    Ok(Step::Acted)
 }
 
 fn equip_item(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Step, String> {
@@ -1285,10 +1299,7 @@ fn agent_job(
     start_job(
         game,
         match kind {
-            AgentJob::Organize => agents::Job::Organize {
-                list: name,
-                done: HashSet::new(),
-            },
+            AgentJob::Organize => agents::Job::Organize { list: name },
             AgentJob::Restock => agents::Job::Restock { list: name },
         },
     )
@@ -1653,7 +1664,7 @@ fn wait_for_properties(
         game.inner
             .outbound
             .push_back(encode::batch_query_properties(&[serial]));
-        return Ok(Step::Acted);
+        return Ok(Step::Wait);
     }
     let came = game.world().properties.contains_key(&serial);
     wait_until(call, ctx, 1, "no properties came", came)
@@ -1674,13 +1685,15 @@ fn wait_for_contents(
     ctx: &mut Ctx,
 ) -> std::result::Result<Step, String> {
     let serial = game.serial(need(call, 0, "a container")?, ctx)?;
-    if first_run(ctx) && !game.world().containers.contains_key(&serial) {
+    let open = game.world().containers.contains_key(&serial);
+    // The double-click goes again until it is sent: pacing can hold the
+    // first one back.
+    if !open && game.inner.last_object != Some(serial) {
         return Ok(match double_click(game, serial) {
-            Step::Acted => Step::Wait,
-            other => other,
+            Step::Fail(e) => Step::Fail(e),
+            _ => Step::Wait,
         });
     }
-    let open = game.world().containers.contains_key(&serial);
     wait_until(call, ctx, 1, "the container did not open", open)
 }
 

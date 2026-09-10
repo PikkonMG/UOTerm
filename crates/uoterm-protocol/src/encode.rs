@@ -217,6 +217,19 @@ pub fn double_click(serial: Serial) -> Vec<u8> {
     w.finish()
 }
 
+/// The mobile query (`0x34`) asks for the skill list.
+const QUERY_SKILLS: u8 = 5;
+/// The fixed word the query carries before its kind.
+const QUERY_PATTERN: u32 = 0xEDED_EDED;
+
+/// The Classic Client mobile query (`0x34`) for the character's skills. The
+/// shard answers with the full skill list (`0x3A`).
+pub fn query_skills(me: Serial) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_QUERY);
+    w.u32(QUERY_PATTERN).u8(QUERY_SKILLS).serial(me);
+    w.finish()
+}
+
 pub fn single_click(serial: Serial) -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_SINGLE_CLICK);
     w.serial(serial);
@@ -1338,6 +1351,14 @@ mod tests {
         let packet = single_click(Serial(0x4000_00AB));
         assert_eq!(packet.len(), SINGLE_CLICK_LEN);
         assert_eq!(packet, vec![PKT_SINGLE_CLICK, 0x40, 0x00, 0x00, 0xAB]);
+    }
+
+    #[test]
+    fn query_skills_matches_the_client_layout() {
+        assert_eq!(
+            query_skills(Serial(0x0000_1234)),
+            vec![PKT_QUERY, 0xED, 0xED, 0xED, 0xED, 5, 0x00, 0x00, 0x12, 0x34]
+        );
     }
 
     #[test]

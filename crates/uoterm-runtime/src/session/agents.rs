@@ -47,7 +47,6 @@ const SWITCHED: [&str; 9] = [
 pub(super) enum Job {
     Organize {
         list: String,
-        done: HashSet<Serial>,
     },
     Restock {
         list: String,
@@ -93,6 +92,9 @@ pub(super) struct Agents {
     opened: HashSet<Serial>,
     carved: HashSet<Serial>,
     tried: HashSet<Serial>,
+    /// How many times the job has moved each item. A move the shard
+    /// refuses leaves the item where it was, so the job tries it again.
+    job_moves: HashMap<Serial, u8>,
     /// Items whose property list was asked for.
     asked_properties: HashSet<Serial>,
     /// No agent moves an item before this.
@@ -138,6 +140,7 @@ impl Agents {
             opened: HashSet::new(),
             carved: HashSet::new(),
             tried: HashSet::new(),
+            job_moves: HashMap::new(),
             asked_properties: HashSet::new(),
             next_move_at: Instant::now(),
             unmounted_since: None,
@@ -219,6 +222,7 @@ impl Agents {
             return Err(format!("there is no {} list by that name", job.name()));
         }
         tracing::info!(job = job.name(), "agent job starts");
+        self.job_moves.clear();
         self.job = Some(job);
         Ok(())
     }
@@ -524,10 +528,7 @@ pub(super) fn agent_run(inner: &mut Inner, args: &Value) -> ToolResult {
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let job = match (agent.as_str(), list) {
-        ("organizer", Some(list)) => Job::Organize {
-            list,
-            done: HashSet::new(),
-        },
+        ("organizer", Some(list)) => Job::Organize { list },
         ("restock", Some(list)) => Job::Restock { list },
         ("dress", list) => Job::Dress {
             list: list.unwrap_or_else(|| TEMP_DRESS_LIST.into()),
@@ -849,7 +850,6 @@ mod tests {
             .agents
             .start(Job::Organize {
                 list: "gold".into(),
-                done: HashSet::new(),
             })
             .expect("a list");
         tick(&mut inner);
@@ -858,9 +858,40 @@ mod tests {
             &inner,
             &encode::drop_into_container(LOOT, BAG, drop_grid(&inner))
         ));
+        item(&mut inner, LOOT, GOLD, Some(BAG), Point3::new(0, 0, 0));
         tick(&mut inner);
         assert!(inner.agents.job.is_none(), "nothing more to move");
         assert!(!lifted(&inner, OTHER));
+    }
+
+    #[test]
+    fn a_job_tries_a_refused_move_again_then_leaves_the_item() {
+        let mut inner = player();
+        item(&mut inner, LOOT, GOLD, Some(PACK), Point3::new(0, 0, 0));
+        inner.agents.config.organizer.insert(
+            "gold".into(),
+            MoveList {
+                destination: Some(BAG),
+                items: vec![gold_rule()],
+                ..MoveList::default()
+            },
+        );
+        inner
+            .agents
+            .start(Job::Organize {
+                list: "gold".into(),
+            })
+            .expect("a list");
+        // The shard refuses each move, so the gold stays in the pack.
+        for _ in 0..work::MAX_JOB_MOVES {
+            inner.outbound.clear();
+            tick(&mut inner);
+            assert!(lifted(&inner, LOOT), "the refused move is tried again");
+        }
+        inner.outbound.clear();
+        tick(&mut inner);
+        assert!(!lifted(&inner, LOOT));
+        assert!(inner.agents.job.is_none(), "the job gives up on the item");
     }
 
     #[test]
@@ -929,6 +960,7 @@ mod tests {
         inner.agents.config.remount.enabled = true;
         inner.agents.config.remount.mount = Some(MOUNT);
         inner.agents.config.remount.delay_ms = 0;
+        mobile(&mut inner, MOUNT, 101, NOTO_INNOCENT, None);
         tick(&mut inner);
         tick(&mut inner);
         assert!(sent(&inner, &encode::double_click(MOUNT)));

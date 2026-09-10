@@ -82,6 +82,10 @@ const LOGIN_INCOMPLETE: &str = "login did not complete";
 /// what makes a character send an action that is thrown away.
 const ACTION_BUDGET: Duration = Duration::from_millis(ACTION_BUDGET_MS);
 const ACTION_BUDGET_MS: u64 = 500;
+/// Extra wait after a lift, for the time the packet takes to reach the
+/// shard.
+const LIFT_ARRIVAL_MARGIN: Duration = Duration::from_millis(LIFT_ARRIVAL_MARGIN_MS);
+const LIFT_ARRIVAL_MARGIN_MS: u64 = 150;
 /// The shortest gap between two double-clicks. The action budget alone lets
 /// two through in one second, and a working client sends one.
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(DOUBLE_CLICK_INTERVAL_MS);
@@ -1096,6 +1100,9 @@ async fn login(
         if packets.iter().any(inbound_enters_world) || inner.world.read().logged_in {
             inner.world.write().logged_in = true;
             drain_login_world(inner, &mut reader, &mut buf).await?;
+            // The shard sends skills only when asked.
+            let me = inner.world.read().self_state.serial;
+            inner.outbound.push_back(encode::query_skills(me));
             return Ok((reader, writer));
         }
     }
@@ -5890,6 +5897,14 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     // dropped coins into a balance and deletes them, so no
                     // add ever follows. The hold ends there. A delete before
                     // the drop is the lift itself and keeps the hold.
+                    // A drop on the ground comes back as the item on the map.
+                    if let Inbound::WorldItem(item) = &msg {
+                        if inner.sent_drop == Some(item.serial)
+                            && inner.world.read().holding == Some(item.serial)
+                        {
+                            inner.world.write().holding = None;
+                        }
+                    }
                     if let Inbound::Delete(serial) = &msg {
                         if inner.sent_drop == Some(*serial)
                             && inner.world.read().holding == Some(*serial)
@@ -6722,6 +6737,13 @@ fn mark_action(inner: &mut Inner) {
     inner.next_action_at = Instant::now() + ACTION_BUDGET;
 }
 
+/// Sends a lift. The shard counts its action delay from when the lift
+/// arrives, so the next action waits a little longer than the budget.
+fn send_lift(inner: &mut Inner, item: Serial, amount: u16) {
+    inner.outbound.push_back(encode::lift(item, amount));
+    inner.next_action_at = Instant::now() + ACTION_BUDGET + LIFT_ARRIVAL_MARGIN;
+}
+
 /// Sends one double-click and charges what it costs, or sends nothing and says
 /// so.
 ///
@@ -6795,7 +6817,7 @@ enum DropAt {
 /// Lifts an item and drops it. A shard moves only the item on the cursor,
 /// so the lift always goes first, and both go in the same tick.
 fn lift_and_drop(inner: &mut Inner, item: Serial, amount: u16, at: DropAt) {
-    inner.outbound.push_back(encode::lift(item, amount));
+    send_lift(inner, item, amount);
     let grid = drop_grid(inner);
     let drop = match at {
         DropAt::Into(container) => encode::drop_into_container(item, container, grid),
@@ -6804,16 +6826,14 @@ fn lift_and_drop(inner: &mut Inner, item: Serial, amount: u16, at: DropAt) {
     inner.outbound.push_back(drop);
     inner.world.write().holding = Some(item);
     inner.sent_drop = Some(item);
-    mark_action(inner);
 }
 
 /// Lifts an item and wears it on a layer. A wear request with nothing
 /// lifted does nothing.
 fn lift_and_wear(inner: &mut Inner, item: Serial, layer: u8) {
     let me = inner.world.read().self_state.serial;
-    inner.outbound.push_back(encode::lift(item, ONE_WORN_ITEM));
+    send_lift(inner, item, ONE_WORN_ITEM);
     inner.outbound.push_back(encode::equip(item, layer, me));
-    mark_action(inner);
 }
 
 fn backpack_serial(world: &uoterm_world::World) -> Option<Serial> {
@@ -7123,8 +7143,7 @@ fn pump_loot(inner: &mut Inner) {
             send_double_click(inner, serial);
         }
         LootStep::Lift { serial, amount } => {
-            inner.outbound.push_back(encode::lift(serial, amount));
-            mark_action(inner);
+            send_lift(inner, serial, amount);
             inner.world.write().holding = Some(serial);
             inner.sent_drop = None;
         }
@@ -7158,8 +7177,7 @@ fn pump_deposit(inner: &mut Inner) {
             send_double_click(inner, serial);
         }
         DepositStep::Lift { serial, amount } => {
-            inner.outbound.push_back(encode::lift(serial, amount));
-            mark_action(inner);
+            send_lift(inner, serial, amount);
             inner.world.write().holding = Some(serial);
             inner.sent_drop = None;
         }
@@ -7847,8 +7865,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(1)
                 .max(1) as u16;
-            inner.outbound.push_back(encode::lift(serial, amount));
-            mark_action(inner);
+            send_lift(inner, serial, amount);
             inner.world.write().holding = Some(serial);
             ToolResult::action(TOOL_LIFT)
         }
@@ -7906,6 +7923,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let Some(spell) = arg_number(args, ARG_SPELL) else {
                 return ToolResult::err(NEEDS_SPELL);
             };
+            if !action_ready(inner) {
+                return ToolResult::err(MUST_WAIT);
+            }
             clear_hands_for_cast(inner, spell as u16);
             inner.outbound.push_back(encode::cast_spell(spell as u16));
             note_cast(inner, spell as u16);
@@ -7956,7 +7976,12 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 ));
                 inner.world.write().clear_target();
                 ToolResult::action(TOOL_TARGET)
-            } else if let Some(cursor) = inner.world.read().pending_target.clone() {
+            } else if let Some(cursor) = {
+                // Bound first: a read guard alive in the body would deadlock
+                // the write below.
+                let open = inner.world.read().pending_target.clone();
+                open
+            } {
                 inner.outbound.push_back(encode::cancel_target(cursor.id));
                 inner.world.write().clear_target();
                 inner.target_intent = None;

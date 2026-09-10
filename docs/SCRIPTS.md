@@ -292,7 +292,7 @@ yourself when you give none.
 | `targetexists ['harmful']` | True when a target cursor is open: any, harmful, beneficial or neutral. |
 | `waitingfortarget` | True when a target waits for a cursor. |
 | `inparty 'friend'`, `infriendlist 'friend'` | Party and friends list. |
-| `findalias 'pet'`, `listexists 'fruit'`, `list 'fruit' > 2`, `inlist 'fruit' 'apple'` | Aliases and lists. |
+| `findalias 'pet'`, `listexists 'fruit'`, `list 'fruit' > 2`, `inlist 'fruit' 'apple'` | Aliases and lists. `findalias` also knows the game's own names, such as `'bank'` once the bank box is open. |
 | `timer 'band' > 10000`, `timerexists 'band'` | Timers. |
 | `organizing`, `restocking`, `dressing` | True while that agent job runs. |
 | `usetype`, `useobject`, `useonce`, `moveitem`, `movetype`, `clearhands` | These commands also work as checks: true when they found what they look for and did it. |

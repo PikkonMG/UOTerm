@@ -206,7 +206,12 @@ pub(super) fn run_script(inner: &mut Inner, args: &Value) -> ToolResult {
         .get(ARG_LOOP)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    start_script(inner, name, &source, looping)
+    let started = start_script(inner, name, &source, looping);
+    if started.ok {
+        // The status reports this script's lines, not those of the last one.
+        inner.scripting.output.clear();
+    }
+    started
 }
 
 fn start_script(inner: &mut Inner, name: String, source: &str, looping: bool) -> ToolResult {
@@ -336,6 +341,17 @@ pub(super) fn pump_script(inner: &mut Inner, now: Instant) {
     let lines = running.script.take_output();
     inner.scripting.keep_output(lines);
     match inner.scripting.next.take() {
+        // Starting itself again is a looping macro.
+        Some(Next::Run(name))
+            if name.eq_ignore_ascii_case(&running.name)
+                && !shard_allows(inner, AssistFeature::LoopedMacros) =>
+        {
+            running.script.stop();
+            finish(inner, running);
+            inner
+                .scripting
+                .keep_output(vec![forbidden(AssistFeature::LoopedMacros)]);
+        }
         Some(Next::Run(name)) => {
             running.script.stop();
             finish(inner, running);
@@ -439,12 +455,16 @@ impl Game<'_> {
     }
 
     fn system_alias(&self, name: &str) -> Option<Serial> {
+        let key = name.to_ascii_lowercase();
+        // Read with no guard held: it takes the lock itself.
+        if key == "last" || key == "lasttarget" {
+            return last_target_for_cursor(self.inner);
+        }
         let world = self.world();
-        match name.to_ascii_lowercase().as_str() {
+        match key.as_str() {
             "self" => Some(world.self_state.serial),
             "backpack" => backpack_serial(&world),
             "bank" => world.bank_box(),
-            "last" | "lasttarget" => last_target_for_cursor(self.inner),
             "lastobject" => self.inner.last_object,
             "lefthand" => world.worn(LAYER_TWO_HANDED).map(|e| e.serial),
             "righthand" => world.worn(LAYER_ONE_HANDED).map(|e| e.serial),
@@ -748,6 +768,22 @@ mod tests {
     }
 
     #[test]
+    fn findalias_knows_the_game_aliases() {
+        let mut inner = player();
+        start(
+            &mut inner,
+            "if findalias 'backpack'\n  msg 'pack'\nendif\nif findalias 'bank'\n  msg 'bank'\nendif",
+        );
+        tick(&mut inner, 4);
+        let said = inner
+            .outbound
+            .iter()
+            .filter(|p| p.first() == Some(&PKT_UNICODE_SPEECH))
+            .count();
+        assert_eq!(said, 1, "a pack is worn, no bank box is open");
+    }
+
+    #[test]
     fn findtype_sets_found_for_the_next_line() {
         let mut inner = player();
         put_in_pack(&mut inner, POTION, GRAPHIC_POTION_HEAL);
@@ -944,6 +980,16 @@ mod tests {
                 assert!(!message.starts_with("unknown word"), "{word}: {message}");
             }
         }
+    }
+
+    #[test]
+    fn a_new_script_starts_with_no_output() {
+        let mut inner = player();
+        start(&mut inner, "sysmsg 'old'");
+        tick(&mut inner, 1);
+        start(&mut inner, "sysmsg 'new'");
+        tick(&mut inner, 1);
+        assert_eq!(status(&inner)["output"], json!(["new"]));
     }
 
     #[test]

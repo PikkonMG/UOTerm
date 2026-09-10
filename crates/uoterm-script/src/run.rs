@@ -569,7 +569,12 @@ fn builtin_value(call: &Call, ctx: &Ctx) -> Option<Result<Value, String>> {
             .ok_or_else(|| format!("{} needs a name", call.name))
     };
     let value = match call.name.as_str() {
-        "findalias" => name(0).map(|n| Value::Bool(ctx.vars.alias(&n).is_some())),
+        // A name the script did not set may be one the game knows, such as
+        // 'bank' or 'lefthand': the host answers for those.
+        "findalias" => match name(0) {
+            Ok(n) if ctx.vars.alias(&n).is_none() => return None,
+            other => other.map(|_| Value::Bool(true)),
+        },
         "listexists" => name(0).map(|n| Value::Bool(ctx.vars.list(&n).is_some())),
         "list" => name(0).map(|n| Value::Number(ctx.vars.list(&n).map_or(0, Vec::len) as f64)),
         "inlist" => name(0).and_then(|n| {
