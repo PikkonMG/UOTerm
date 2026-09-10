@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uoterm_protocol::Direction;
 
+use crate::addressed::SpokenTo;
+use crate::events::unix_now_ms;
 use crate::radar::legend;
 use crate::state::{Item, Mobile, SelfState, World};
 
@@ -144,6 +146,9 @@ pub struct Observe {
     pub prompt: bool,
     /// The question of an open one-field text dialog.
     pub text_entry: Option<String>,
+    /// Lines other characters said to this one by name in the last minute,
+    /// oldest first. Empty when the `answer_when_named` switch is off.
+    pub spoken_to: Vec<SpokenTo>,
 }
 
 impl Observe {
@@ -235,6 +240,7 @@ impl Observe {
             party_invite: world.party_invite.map(|leader| world.name_of(leader)),
             prompt: world.prompt.is_some(),
             text_entry: world.text_entry.as_ref().map(|d| d.description.clone()),
+            spoken_to: world.spoken_to.fresh(unix_now_ms()),
         }
     }
 }

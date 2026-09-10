@@ -2,6 +2,17 @@
 
 Tools return immediately with `action_id`. Completion is an event (`arrived`, `target_requested`, `speech`, and others).
 
+## Spoken to by name
+
+When another character says your character's name, the session sends a `spoken_to` event. Each tool result then carries these lines in `unanswered`, whatever the tool, so an agent that is busy still sees them. The list clears when your character speaks (`say`, `whisper`, `emote`, or a party line), and a line drops off after one minute. `observe` lists the lines of the last minute in `spoken_to`, answered or not. Each line has the speaker's `serial` and `name`, the `text`, and `asks_if_bot`. The name counts only as a whole word: "Tamara" does not name "Mara". System lines, spell words and your own lines never count. The `answer_when_named` setting turns this off.
+
+Answer with `say` the way a player would:
+
+- Keep it short and plain. One line is enough; no long talk.
+- Stay in character as a player. Never bring up AI, bots, programs or "a game" on your own.
+- When `asks_if_bot` is true, laugh it off ("lol, you're funny"), dodge ("too busy chopping to chat"), or just keep working. Never flatly say "I am a real person" or "I am not a bot".
+- Never say the same line twice. Change the words each time. The session refuses a line said a short time before.
+
 Start `uoterm connect` or `uoterm populate` first. Then drive the session with CLI, HTTP, or `uoterm mcp`.
 
 ## Perception

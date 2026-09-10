@@ -24,6 +24,8 @@ pub enum EventKind {
     Disconnected,
     CombatantChanged,
     LiftRejected,
+    /// Another character said this one's name.
+    SpokenTo,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,12 +37,17 @@ pub struct Event {
     pub text: String,
 }
 
+/// Milliseconds since 1970, or 0 when the clock is before it.
+pub fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl Event {
     pub fn new(kind: EventKind, serial: Option<Serial>, text: impl Into<String>) -> Self {
-        let unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let unix_ms = unix_now_ms();
         Self {
             seq: 0,
             kind,

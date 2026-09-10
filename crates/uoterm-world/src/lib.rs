@@ -1,5 +1,6 @@
 //! Per-session world model. Packets and local map data are the only writers.
 
+mod addressed;
 mod assist;
 mod events;
 mod journal;
@@ -8,8 +9,11 @@ mod observe;
 mod radar;
 mod state;
 
+pub use addressed::{
+    asks_if_bot, names_character, SpokenTo, SpokenToLog, SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
+};
 pub use assist::{AssistFeature, AssistRules};
-pub use events::{Event, EventKind, EVENT_LOG_CAP};
+pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
 };
@@ -1418,5 +1422,92 @@ mod tests {
             w.blocking_mobile_tiles().is_empty(),
             "and on Trammel the same player is not"
         );
+    }
+
+    const TALKER: Serial = Serial(0x0000_0E01);
+    const ME_TALKING: Serial = Serial(0x0000_0E02);
+
+    /// A world where the character is Mara and Ann stands in sight.
+    fn mara_and_ann(answer: bool) -> World {
+        let mut w = World::new();
+        w.answer_when_named = answer;
+        w.self_state.serial = ME_TALKING;
+        w.self_state.name = "Mara".into();
+        w.apply(&Inbound::MobileIncoming(MobileView {
+            serial: TALKER,
+            body: 0x191,
+            x: 1,
+            y: 1,
+            z: 0,
+            direction: 0,
+            hue: 0,
+            flags: 0,
+            notoriety: NOTO_INNOCENT,
+            hits: None,
+            hits_max: None,
+            equipment: Vec::new(),
+        }));
+        w
+    }
+
+    fn say(w: &mut World, serial: Serial, kind: u8, text: &str) {
+        w.apply(&Inbound::Speech(SpeechLine {
+            serial,
+            graphic: 0x191,
+            kind,
+            hue: 0,
+            name: "Ann".into(),
+            text: text.into(),
+        }));
+    }
+
+    fn spoken_to_events(w: &World) -> usize {
+        w.events
+            .iter()
+            .filter(|e| e.kind == EventKind::SpokenTo)
+            .count()
+    }
+
+    #[test]
+    fn a_line_with_the_characters_name_tells_the_agent() {
+        let mut w = mara_and_ann(true);
+        say(&mut w, TALKER, 0, "hey Mara, are you a bot?");
+        assert_eq!(spoken_to_events(&w), 1);
+        let obs = w.observe_default();
+        assert_eq!(obs.spoken_to.len(), 1);
+        assert_eq!(obs.spoken_to[0].name, "Ann");
+        assert!(obs.spoken_to[0].asks_if_bot);
+    }
+
+    #[test]
+    fn other_lines_do_not_count_as_spoken_to() {
+        const NOBODY: Serial = Serial(0x0000_0E03);
+        let mut w = mara_and_ann(true);
+        say(&mut w, TALKER, 0, "Tamara went north");
+        say(&mut w, ME_TALKING, 0, "Mara here");
+        say(
+            &mut w,
+            TALKER,
+            uoterm_protocol::SPEECH_SYSTEM,
+            "Mara has logged in",
+        );
+        say(&mut w, NOBODY, 0, "Mara, your shop is open");
+        assert_eq!(spoken_to_events(&w), 0);
+        assert!(w.observe_default().spoken_to.is_empty());
+    }
+
+    #[test]
+    fn a_party_line_with_the_name_counts() {
+        let mut w = mara_and_ann(true);
+        say(&mut w, TALKER, SPEECH_KIND_PARTY, "mara heal me");
+        assert_eq!(spoken_to_events(&w), 1);
+    }
+
+    #[test]
+    fn the_switch_off_tells_the_agent_nothing() {
+        let mut w = mara_and_ann(false);
+        say(&mut w, TALKER, 0, "hey Mara");
+        assert_eq!(spoken_to_events(&w), 0);
+        assert!(w.observe_default().spoken_to.is_empty());
     }
 }

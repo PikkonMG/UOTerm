@@ -4,14 +4,16 @@ use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
     weapon_range, BuffEntry, ContainerItem, EquipItem, GroundItem, HealthBarStatus, Inbound,
-    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, Serial, StatusExtra,
-    TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN,
-    FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED,
-    LAYER_TWO_HANDED, RANGE_MELEE,
+    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, Serial, SpeechLine,
+    StatusExtra, TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN,
+    FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK,
+    LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ENCODED, SPEECH_REGULAR,
+    SPEECH_WHISPER, SPEECH_YELL,
 };
 
+use crate::addressed::{asks_if_bot, names_character, SpokenTo, SpokenToLog};
 use crate::assist::AssistRules;
-use crate::events::{Event, EventKind, EVENT_LOG_CAP};
+use crate::events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 use crate::journal::{Journal, JournalEntry};
 use crate::names::{display_name, NameBook};
 use crate::observe::Observe;
@@ -388,6 +390,11 @@ pub struct World {
     /// The assistant features the shard forbids, when the user lets the
     /// shard decide. The session fills it in.
     pub assist: AssistRules,
+    /// Notes the lines where another character says this one's name. The
+    /// session sets it from the `answer_when_named` switch.
+    pub answer_when_named: bool,
+    /// The lines other characters said to this one by name.
+    pub spoken_to: SpokenToLog,
 }
 
 impl World {
@@ -526,6 +533,7 @@ impl World {
                     Some(line.serial),
                     format!("{}: {}", line.name, line.text),
                 ));
+                self.note_spoken_to(line);
             }
             Inbound::Delete(serial) => {
                 self.detach(*serial);
@@ -835,6 +843,38 @@ impl World {
     }
 
     /// The name the world knows a mobile by, or its serial when it has none.
+    /// Notes a line when another character in sight says this one's name,
+    /// and tells the agent with a [`EventKind::SpokenTo`] event. System
+    /// lines, spell words and lines with no mobile behind them never count.
+    fn note_spoken_to(&mut self, line: &SpeechLine) {
+        let party = [SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE].contains(&line.kind);
+        let said =
+            [SPEECH_REGULAR, SPEECH_WHISPER, SPEECH_YELL].contains(&(line.kind & !SPEECH_ENCODED));
+        let spoken = party || said;
+        let from_other =
+            line.serial != self.self_state.serial && self.mobiles.contains_key(&line.serial);
+        if !self.answer_when_named
+            || !spoken
+            || !from_other
+            || !names_character(&line.text, &self.self_state.name)
+        {
+            return;
+        }
+        let spoken_to = SpokenTo {
+            serial: line.serial,
+            name: line.name.clone(),
+            text: line.text.clone(),
+            asks_if_bot: asks_if_bot(&line.text),
+            unix_ms: unix_now_ms(),
+        };
+        self.push_event(Event::new(
+            EventKind::SpokenTo,
+            Some(line.serial),
+            format!("{}: {}", line.name, line.text),
+        ));
+        self.spoken_to.push(spoken_to);
+    }
+
     pub fn name_of(&self, serial: Serial) -> String {
         if serial == self.self_state.serial {
             return self.self_state.name.clone();

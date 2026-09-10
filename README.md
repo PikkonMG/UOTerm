@@ -91,6 +91,8 @@ Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `conne
 
 `obey_shard_rules` (default `true`): some shards send a list of assistant features they forbid, such as auto-open doors, auto-bandage, and auto-potions. With `true`, the character does not use those features by itself on that shard. With `false`, it ignores the list. The client answers the shard in both cases. A session made with `POST /v1/sessions` takes the same `obey_shard_rules` field.
 
+`answer_when_named` (default `true`): when another character says your character's name, the agent gets a `spoken_to` event, an `unanswered` list on every tool result until your character speaks, and a `spoken_to` list in `observe`, so it can answer. With `false`, the agent is told nothing. `POST /v1/sessions` takes the same field. See `docs/AGENT_API.md` for how the agent should answer.
+
 Account profile: copy `profiles/example.toml`. Extra `profiles/*.toml` files are gitignored. `--profile` supplies account, character, password env, and shard.
 
 Persona files live in `personas/`. See `docs/PERSONAS.md`. Attach a persona with `connect --persona`. `agent run --persona` loads the persona into the session, then maps `class` to `set_goal`.

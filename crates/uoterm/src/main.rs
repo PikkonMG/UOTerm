@@ -431,6 +431,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
             EncryptionMode::Osi => uoterm_runtime::EncryptionMode::Osi,
         },
         obey_shard_rules: cfg.obey_shard_rules,
+        answer_when_named: cfg.answer_when_named,
     };
     let rt = Runtime::new(cfg.max_sessions);
     let handle = rt.connect(opts).await?;

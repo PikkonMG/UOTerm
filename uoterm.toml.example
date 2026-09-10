@@ -10,4 +10,9 @@ stay_on_socket = true
 # true  = obey the list (default).
 # false = ignore the list and use every feature on every shard.
 obey_shard_rules = true
+# When another character says this character's name, the agent gets a
+# spoken_to event so it can answer.
+# true  = tell the agent (default).
+# false = tell the agent nothing.
+answer_when_named = true
 # uopath = "/path/to/uo"

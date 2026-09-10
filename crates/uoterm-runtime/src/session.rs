@@ -269,6 +269,7 @@ pub async fn start(
 ) -> Result<SessionHandle> {
     let world = Arc::new(RwLock::new(World {
         flags_mean_flying: opts.version.reads_flying_flag(),
+        answer_when_named: opts.answer_when_named,
         ..World::new()
     }));
     let (tx, rx) = mpsc::channel(CMD_QUEUE_CAP);
@@ -831,12 +832,7 @@ async fn run_session(
                         } else if call.name == TOOL_WAIT_JOURNAL {
                             wait_for_journal(&mut inner, &call.args, reply, Instant::now());
                         } else {
-                            let copy = inner.recording.is_some().then(|| call.clone());
-                            let result = handle_tool(&mut inner, call);
-                            if let Some(call) = copy {
-                                recorder::tool_call(&mut inner, &call, &result);
-                            }
-                            let _ = reply.send(result);
+                            let _ = reply.send(answer_agent(&mut inner, call));
                         }
                     }
                 }
@@ -4437,6 +4433,7 @@ mod relay_tests {
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
+            answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
         }
     }
 
@@ -4708,6 +4705,73 @@ mod relay_tests {
         }));
         assert!(inbound_enters_world(&Inbound::LoginComplete));
         assert!(!inbound_enters_world(&Inbound::VersionRequest));
+    }
+
+    /// A busy agent hears of a line said to its character by name in the
+    /// next tool result, whatever the tool, until the character speaks.
+    #[test]
+    fn a_named_line_rides_on_each_tool_result_until_answered() {
+        const ANN: Serial = Serial(0x0000_0E11);
+        let mut inner = armed_session();
+        {
+            let mut w = inner.world.write();
+            w.logged_in = true;
+            w.answer_when_named = true;
+            w.self_state.name = "Mara".into();
+            w.apply(&Inbound::MobileIncoming(uoterm_protocol::MobileView {
+                serial: ANN,
+                body: 0x191,
+                x: 1,
+                y: 1,
+                z: 0,
+                direction: 0,
+                hue: 0,
+                flags: 0,
+                notoriety: 1,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            }));
+            w.apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                serial: ANN,
+                graphic: 0x191,
+                kind: SPEECH_REGULAR,
+                hue: 0,
+                name: "Ann".into(),
+                text: "hey Mara, are you a bot?".into(),
+            }));
+        }
+        let call = |name: &str, args: Value| ToolCall {
+            name: name.into(),
+            args,
+        };
+        let seen = answer_agent(&mut inner, call(TOOL_OBSERVE, json!({})));
+        assert_eq!(seen.unanswered.len(), 1);
+        assert!(seen.unanswered[0].asks_if_bot);
+        let said = answer_agent(
+            &mut inner,
+            call(TOOL_SAY, json!({ "text": "lol you're funny" })),
+        );
+        assert!(said.ok, "{:?}", said.error);
+        assert!(said.unanswered.is_empty(), "speaking answers it");
+        inner
+            .world
+            .write()
+            .apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                serial: ANN,
+                graphic: 0x191,
+                kind: SPEECH_REGULAR,
+                hue: 0,
+                name: "Ann".into(),
+                text: "mara, where to?".into(),
+            }));
+        with_speech_table(&mut inner);
+        let shop_word = answer_agent(&mut inner, call(TOOL_SAY, json!({ "text": PHRASE_BANK })));
+        assert!(shop_word.ok, "{:?}", shop_word.error);
+        assert!(
+            shop_word.unanswered.is_empty(),
+            "a line with a shop word answers too"
+        );
     }
 
     #[test]
@@ -8335,7 +8399,33 @@ fn speech_allowed(
     Ok(t)
 }
 
+/// Runs an agent's tool call. The macro recorder sees it, and the result
+/// carries the lines said to the character that it has not answered.
+fn answer_agent(inner: &mut Inner, call: ToolCall) -> ToolResult {
+    let copy = inner.recording.is_some().then(|| call.clone());
+    let mut result = handle_tool(inner, call);
+    if let Some(call) = copy {
+        recorder::tool_call(inner, &call, &result);
+    }
+    result.unanswered = inner
+        .world
+        .read()
+        .spoken_to
+        .unanswered(uoterm_world::unix_now_ms());
+    result
+}
+
+/// Sends a line of speech. Any line the character says answers the lines
+/// said to it by name, whichever way the line goes out.
 fn queue_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
+    let sent = send_speech(inner, text, kind);
+    if sent.is_ok() {
+        inner.world.write().spoken_to.mark_answered();
+    }
+    sent
+}
+
+fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
     if kind == SPEECH_REGULAR {
         let keywords = inner
             .speech_data

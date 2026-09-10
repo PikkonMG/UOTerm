@@ -22,7 +22,6 @@ const PAPERDOLL_REQUEST_BIT: u32 = 0x8000_0000;
 const RESOURCES: [&str; 5] = ["ore", "sand", "wood", "graves", "red mushrooms"];
 /// The virtues a player can invoke, by number.
 const VIRTUES: [(&str, u8); 3] = [("honor", 1), ("sacrifice", 2), ("valor", 3)];
-const SPEECH_YELL: u8 = 9;
 const SPEECH_GUILD: u8 = 13;
 const SPEECH_ALLIANCE: u8 = 14;
 /// Spell numbers the heal commands cast.
@@ -1577,6 +1576,7 @@ fn party_message(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result
     game.inner
         .outbound
         .push_back(encode::party_message(to, text));
+    game.inner.world.write().spoken_to.mark_answered();
     Ok(Step::Acted)
 }
 

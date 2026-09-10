@@ -337,6 +337,7 @@ pub const SPEECH_REGULAR: u8 = 0;
 pub const SPEECH_SYSTEM: u8 = 1;
 pub const SPEECH_EMOTE: u8 = 2;
 pub const SPEECH_WHISPER: u8 = 8;
+pub const SPEECH_YELL: u8 = 9;
 
 /// Set on the speech kind of a `0xAD` whose body carries the numbered keyword
 /// block. The reference client calls this the encoded message kind, and a

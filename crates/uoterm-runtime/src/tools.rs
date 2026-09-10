@@ -79,6 +79,10 @@ pub struct ToolResult {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action_id: Option<String>,
+    /// Lines other characters said to this one by name, not answered yet.
+    /// Every tool result carries them, so a busy agent still sees them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unanswered: Vec<uoterm_world::SpokenTo>,
 }
 
 impl ToolResult {
@@ -88,6 +92,7 @@ impl ToolResult {
             result,
             error: None,
             action_id: Some(new_action_id()),
+            unanswered: Vec::new(),
         }
     }
 
@@ -97,6 +102,7 @@ impl ToolResult {
             result: Value::Null,
             error: Some(msg.into()),
             action_id: None,
+            unanswered: Vec::new(),
         }
     }
 
@@ -107,6 +113,7 @@ impl ToolResult {
             result: json!({ "action_id": id }),
             error: None,
             action_id: Some(id),
+            unanswered: Vec::new(),
         }
     }
 }

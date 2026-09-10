@@ -35,6 +35,14 @@ pub const OBEY_SHARD_RULES_DEFAULT: bool = true;
 pub fn obey_shard_rules_default() -> bool {
     OBEY_SHARD_RULES_DEFAULT
 }
+/// When another character says this one's name, the agent hears of it so
+/// it can answer. A user can switch this off.
+pub const ANSWER_WHEN_NAMED_DEFAULT: bool = true;
+
+/// For serde: a config file without the setting tells the agent.
+pub fn answer_when_named_default() -> bool {
+    ANSWER_WHEN_NAMED_DEFAULT
+}
 
 pub fn parse_encryption_mode(s: &str) -> crate::error::Result<EncryptionMode> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -58,6 +66,8 @@ pub struct AppConfig {
     pub stay_on_socket: bool,
     #[serde(default = "obey_shard_rules_default")]
     pub obey_shard_rules: bool,
+    #[serde(default = "answer_when_named_default")]
+    pub answer_when_named: bool,
 }
 
 impl Default for AppConfig {
@@ -72,6 +82,7 @@ impl Default for AppConfig {
             max_sessions: DEFAULT_MAX_SESSIONS,
             stay_on_socket: true,
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
+            answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
         }
     }
 }
@@ -103,6 +114,8 @@ pub struct ConnectOptions {
     pub encryption: EncryptionMode,
     /// Obey the shard's list of forbidden assistant features.
     pub obey_shard_rules: bool,
+    /// Tell the agent when another character says this one's name.
+    pub answer_when_named: bool,
 }
 
 impl Default for ConnectOptions {
@@ -122,6 +135,7 @@ impl Default for ConnectOptions {
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
+            answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
         }
     }
 }
@@ -267,6 +281,26 @@ obey_shard_rules = false
 "#;
         let cfg: AppConfig = toml::from_str(IGNORING).expect("the config loads");
         assert!(!cfg.obey_shard_rules);
+    }
+
+    /// Telling the agent when someone says the character's name is on
+    /// unless the file switches it off.
+    #[test]
+    fn answer_when_named_is_on_until_switched_off() {
+        const OFF: &str = r#"
+host = "127.0.0.1"
+port = 2593
+era = "t2a"
+log_level = "info"
+api_bind = "127.0.0.1:7733"
+max_sessions = 32
+stay_on_socket = true
+answer_when_named = false
+"#;
+        assert!(AppConfig::default().answer_when_named);
+        assert!(ConnectOptions::default().answer_when_named);
+        let cfg: AppConfig = toml::from_str(OFF).expect("the config loads");
+        assert!(!cfg.answer_when_named);
     }
 
     #[test]
