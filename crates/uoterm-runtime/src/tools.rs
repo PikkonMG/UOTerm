@@ -230,7 +230,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_WHISPER, "Whisper.", "in world"),
     (
         TOOL_REPLY,
-        "Answer the newest line said to the character by name, in the channel it came in: say, whisper, party, private party, guild or alliance.",
+        "Answer a line said to the character by name, in the channel it came in: say, whisper, party, private party, guild or alliance. `to` (a name or serial) picks the speaker; without it, the newest line.",
         "a line waits in unanswered",
     ),
     (
@@ -395,6 +395,7 @@ pub fn mcp_tool_list() -> Value {
                     "properties": {
                         "session_id": {"type": "string"},
                         "text": {"type": "string"},
+                        "to": {"type": "string"},
                         "serial": {"type": "string"},
                         "x": {"type": "integer"},
                         "y": {"type": "integer"},

@@ -1580,7 +1580,7 @@ fn party_message(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result
     game.inner
         .outbound
         .push_back(encode::party_message(to, text));
-    game.inner.world.write().spoken_to.mark_answered();
+    answer_group(game.inner, uoterm_world::ChannelGroup::Party);
     Ok(Step::Acted)
 }
 

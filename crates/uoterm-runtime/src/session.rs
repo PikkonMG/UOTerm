@@ -4894,6 +4894,71 @@ mod relay_tests {
         assert_eq!(nothing.error.as_deref(), Some(NOTHING_TO_ANSWER));
     }
 
+    /// A player's party line, then a greeting from someone in the square:
+    /// the reply picked by name goes to the party, and the greeting still
+    /// waits for its own answer.
+    #[test]
+    fn a_reply_to_one_speaker_leaves_the_others_waiting() {
+        const OLIN: Serial = Serial(0x0000_0E12);
+        let mut inner = named_by_ann(false, "hey Mara");
+        inner.persona.typo_rate = 0.0;
+        {
+            let mut w = inner.world.write();
+            w.spoken_to = uoterm_world::SpokenToLog::default();
+            w.apply(&Inbound::Party(uoterm_protocol::PartyEvent::Message {
+                from: ANN,
+                text: "mara, heal?".into(),
+                private: false,
+            }));
+            w.apply(&Inbound::MobileIncoming(uoterm_protocol::MobileView {
+                serial: OLIN,
+                body: 0x190,
+                x: 2,
+                y: 2,
+                z: 0,
+                direction: 0,
+                hue: 0,
+                flags: 0,
+                notoriety: 1,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            }));
+            w.apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                serial: OLIN,
+                graphic: 0x190,
+                kind: SPEECH_REGULAR,
+                hue: 0,
+                name: "Olin".into(),
+                text: "Evening, Mara.".into(),
+            }));
+        }
+        let to_ann = answer_agent(
+            &mut inner,
+            call(TOOL_REPLY, json!({ "text": "on it", "to": "ann" })),
+        );
+        assert!(to_ann.ok, "{:?}", to_ann.error);
+        assert!(inner
+            .outbound
+            .contains(&encode::party_message(None, "on it")));
+        assert_eq!(to_ann.unanswered.len(), 1);
+        assert_eq!(to_ann.unanswered[0].name, "Olin", "Olin still waits");
+
+        inner.speech.last_reply = None;
+        let nobody = answer_agent(
+            &mut inner,
+            call(TOOL_REPLY, json!({ "text": "hm", "to": "Seward" })),
+        );
+        assert_eq!(nobody.error.as_deref(), Some(NO_LINE_FROM_THEM));
+        let to_olin = answer_agent(
+            &mut inner,
+            call(TOOL_REPLY, json!({ "text": "evening Olin", "to": OLIN.0 })),
+        );
+        assert!(to_olin.ok, "{:?}", to_olin.error);
+        assert!(inner.outbound.contains(&encode::say("evening Olin", false)));
+        assert!(to_olin.unanswered.is_empty());
+    }
+
     /// In the basic mode the character answers but says no to plans: it
     /// neither follows nor joins the party of a player who asked in chat.
     #[test]
@@ -8728,14 +8793,31 @@ fn check_play_along(inner: &mut Inner) {
 const PLAY_ALONG_TIME_UP: &str = "the persona's time to play along is up";
 const PLAY_ALONG_HURT: &str = "hurt past the persona's play-along risk";
 
-/// Sends a line of speech. Any line the character says answers the lines
-/// said to it by name, whichever way the line goes out.
+/// Sends a line of speech to everyone who hears it. It answers the lines
+/// said to the character by name in that channel group, whichever way the
+/// line goes out.
 fn queue_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
-    let sent = send_speech(inner, text, kind);
-    if sent.is_ok() {
-        inner.world.write().spoken_to.mark_answered();
+    send_speech(inner, text, kind)?;
+    answer_group(inner, speech_group(kind));
+    Ok(())
+}
+
+/// The channel group a line of this speech kind reaches.
+fn speech_group(kind: u8) -> uoterm_world::ChannelGroup {
+    match kind {
+        SPEECH_GUILD => uoterm_world::ChannelGroup::Guild,
+        SPEECH_ALLIANCE => uoterm_world::ChannelGroup::Alliance,
+        _ => uoterm_world::ChannelGroup::Nearby,
     }
-    sent
+}
+
+/// Marks as answered the lines said to the character in this group.
+fn answer_group(inner: &Inner, group: uoterm_world::ChannelGroup) {
+    inner
+        .world
+        .write()
+        .spoken_to
+        .mark_answered(|line| line.channel.group() == group);
 }
 
 fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
@@ -8794,30 +8876,52 @@ fn queue_command_speech(
 /// it came in. A yell is answered in a normal voice.
 fn reply(inner: &mut Inner, args: &Value) -> ToolResult {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    let newest = inner
+    let to = args.get(ARG_TO).and_then(|v| v.as_str()).map(str::trim);
+    let to_serial = arg_number(args, ARG_TO).map(Serial);
+    let waiting = inner
         .world
         .read()
         .spoken_to
-        .unanswered(uoterm_world::unix_now_ms())
-        .pop();
-    let Some(line) = newest else {
-        return ToolResult::err(NOTHING_TO_ANSWER);
+        .unanswered(uoterm_world::unix_now_ms());
+    // With `to`, the newest line from that speaker, by name or serial;
+    // without it, the newest line of all.
+    let named = to.is_some() || to_serial.is_some();
+    let chosen = waiting.into_iter().rev().find(|l| {
+        !named || to_serial == Some(l.serial) || to.is_some_and(|n| l.name.eq_ignore_ascii_case(n))
+    });
+    let Some(line) = chosen else {
+        return ToolResult::err(if named {
+            NO_LINE_FROM_THEM
+        } else {
+            NOTHING_TO_ANSWER
+        });
     };
     let sent = match line.channel {
         uoterm_world::Channel::Say | uoterm_world::Channel::Yell => {
-            queue_speech(inner, text, SPEECH_REGULAR)
+            send_speech(inner, text, SPEECH_REGULAR)
         }
-        uoterm_world::Channel::Whisper => queue_speech(inner, text, SPEECH_WHISPER),
-        uoterm_world::Channel::Guild => queue_speech(inner, text, SPEECH_GUILD),
-        uoterm_world::Channel::Alliance => queue_speech(inner, text, SPEECH_ALLIANCE),
+        uoterm_world::Channel::Whisper => send_speech(inner, text, SPEECH_WHISPER),
+        uoterm_world::Channel::Guild => send_speech(inner, text, SPEECH_GUILD),
+        uoterm_world::Channel::Alliance => send_speech(inner, text, SPEECH_ALLIANCE),
         uoterm_world::Channel::Party => send_party_line(inner, None, text),
         uoterm_world::Channel::PartyPrivate => send_party_line(inner, Some(line.serial), text),
     };
     match sent {
-        Ok(()) => ToolResult::ok(json!({ "channel": line.channel, "to": line.name })),
+        Ok(()) => {
+            // The reply answers this speaker only; others still wait.
+            inner
+                .world
+                .write()
+                .spoken_to
+                .mark_answered(|l| l.serial == line.serial);
+            ToolResult::ok(json!({ "channel": line.channel, "to": line.name }))
+        }
         Err(e) => ToolResult::err(e),
     }
 }
+
+const ARG_TO: &str = "to";
+const NO_LINE_FROM_THEM: &str = "no line from them waits for an answer";
 
 /// Says a line to the party, or to one member, under the same speech rules
 /// as any answer.
@@ -8835,7 +8939,6 @@ fn send_party_line(
     )?;
     let t = inner.persona.maybe_typo(&t, &mut rand::thread_rng());
     inner.outbound.push_back(encode::party_message(to, &t));
-    inner.world.write().spoken_to.mark_answered();
     Ok(())
 }
 

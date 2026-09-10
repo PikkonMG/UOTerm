@@ -10,7 +10,7 @@ mod radar;
 mod state;
 
 pub use addressed::{
-    asks_if_bot, names_character, Channel, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
+    asks_if_bot, names_character, Channel, ChannelGroup, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
     CHAT_MODE_PLAY_ALONG, SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
 };
 pub use assist::{AssistFeature, AssistRules};

@@ -45,7 +45,26 @@ pub enum Channel {
     Alliance,
 }
 
+/// Who hears a line in a channel: the square, the party, the guild or the
+/// alliance. A line said in one group answers the lines of that group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelGroup {
+    Nearby,
+    Party,
+    Guild,
+    Alliance,
+}
+
 impl Channel {
+    pub fn group(self) -> ChannelGroup {
+        match self {
+            Self::Say | Self::Whisper | Self::Yell => ChannelGroup::Nearby,
+            Self::Party | Self::PartyPrivate => ChannelGroup::Party,
+            Self::Guild => ChannelGroup::Guild,
+            Self::Alliance => ChannelGroup::Alliance,
+        }
+    }
+
     /// True for the channels that reach the character from anywhere, so
     /// the speaker need not be in sight.
     pub fn reaches_far(self) -> bool {
@@ -71,18 +90,13 @@ pub struct SpokenTo {
 /// The lines spoken to the character, newest last.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SpokenToLog {
-    lines: VecDeque<SpokenTo>,
-    /// How many lines were ever pushed, and how many of those the
-    /// character has answered. A count, not a time: two lines can share a
-    /// millisecond.
-    pushed: u64,
-    answered: u64,
+    /// Each line, and whether the character has answered it.
+    lines: VecDeque<(SpokenTo, bool)>,
 }
 
 impl SpokenToLog {
     pub fn push(&mut self, line: SpokenTo) {
-        self.lines.push_back(line);
-        self.pushed += 1;
+        self.lines.push_back((line, false));
         while self.lines.len() > SPOKEN_TO_KEEP {
             self.lines.pop_front();
         }
@@ -90,22 +104,21 @@ impl SpokenToLog {
 
     /// The lines said in the last [`SPOKEN_TO_FRESH_MS`] before `now_ms`.
     pub fn fresh(&self, now_ms: u64) -> Vec<SpokenTo> {
-        self.lines
-            .iter()
-            .filter(|l| now_ms.saturating_sub(l.unix_ms) < SPOKEN_TO_FRESH_MS)
-            .cloned()
-            .collect()
+        self.fresh_where(now_ms, |_| true)
     }
 
     /// The fresh lines the character has not answered yet.
     pub fn unanswered(&self, now_ms: u64) -> Vec<SpokenTo> {
-        let first = self.pushed - self.lines.len() as u64;
-        let skip = self.answered.saturating_sub(first) as usize;
+        self.fresh_where(now_ms, |answered| !answered)
+    }
+
+    fn fresh_where(&self, now_ms: u64, keep: impl Fn(bool) -> bool) -> Vec<SpokenTo> {
         self.lines
             .iter()
-            .skip(skip)
-            .filter(|l| now_ms.saturating_sub(l.unix_ms) < SPOKEN_TO_FRESH_MS)
-            .cloned()
+            .filter(|(l, answered)| {
+                keep(*answered) && now_ms.saturating_sub(l.unix_ms) < SPOKEN_TO_FRESH_MS
+            })
+            .map(|(l, _)| l.clone())
             .collect()
     }
 
@@ -115,9 +128,14 @@ impl SpokenToLog {
         self.fresh(now_ms).iter().any(|l| l.serial == serial)
     }
 
-    /// The character spoke: every line so far counts as answered.
-    pub fn mark_answered(&mut self) {
-        self.answered = self.pushed;
+    /// Marks the lines an answer covers: those of one speaker for a reply,
+    /// those of one channel group for a line said to everyone there.
+    pub fn mark_answered(&mut self, covers: impl Fn(&SpokenTo) -> bool) {
+        for (line, answered) in &mut self.lines {
+            if covers(line) {
+                *answered = true;
+            }
+        }
     }
 }
 
@@ -208,6 +226,30 @@ mod tests {
             .is_empty());
     }
 
+    /// Answering one person, or one channel, leaves the others waiting.
+    #[test]
+    fn an_answer_clears_only_the_lines_it_answers() {
+        const NOW: u64 = 10;
+        let line = |serial: u32, channel: Channel| SpokenTo {
+            serial: Serial(serial),
+            name: String::new(),
+            text: "mara?".into(),
+            channel,
+            asks_if_bot: false,
+            unix_ms: 1,
+        };
+        let mut log = SpokenToLog::default();
+        log.push(line(1, Channel::Party));
+        log.push(line(2, Channel::Say));
+        log.push(line(3, Channel::Whisper));
+        log.mark_answered(|l| l.serial == Serial(2));
+        let left: Vec<u32> = log.unanswered(NOW).iter().map(|l| l.serial.0).collect();
+        assert_eq!(left, vec![1, 3]);
+        log.mark_answered(|l| l.channel.group() == Channel::Say.group());
+        let left: Vec<u32> = log.unanswered(NOW).iter().map(|l| l.serial.0).collect();
+        assert_eq!(left, vec![1], "a line in the square answers the square");
+    }
+
     #[test]
     fn a_reply_answers_every_line_so_far() {
         const NOW: u64 = 10;
@@ -223,7 +265,7 @@ mod tests {
         log.push(line("mara?", 1));
         log.push(line("mara, hello", 2));
         assert_eq!(log.unanswered(NOW).len(), 2);
-        log.mark_answered();
+        log.mark_answered(|_| true);
         assert!(log.unanswered(NOW).is_empty());
         assert_eq!(log.fresh(NOW).len(), 2, "observe still shows them");
         log.push(line("mara, again", 2));
