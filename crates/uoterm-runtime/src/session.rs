@@ -18,12 +18,14 @@ use crate::persona::{Persona, SpeechPolicy};
 use crate::reflex::{self, bandage_self_ms, heal_potion_lock_ms, ReflexAction};
 use crate::scene;
 use crate::tools::{
-    Goal, ToolCall, ToolResult, TOOL_ATTACK, TOOL_CANCEL_GOAL, TOOL_CAN_WALK, TOOL_CAST,
-    TOOL_CONTEXT_MENU, TOOL_DEPOSIT, TOOL_DROP, TOOL_EMOTE, TOOL_EQUIP, TOOL_FIND_ITEMS,
-    TOOL_FIND_MOBILES, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_JOURNAL_SEARCH,
-    TOOL_LIFT, TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE, TOOL_MOVE_TO, TOOL_OBSERVE,
-    TOOL_OPEN_CONTAINER, TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL, TOOL_SET_PERSONA,
-    TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_TARGET, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE,
+    Goal, ToolCall, ToolResult, TOOL_AGENTS, TOOL_AGENT_ON, TOOL_AGENT_RUN, TOOL_AGENT_SET,
+    TOOL_AGENT_STOP, TOOL_ATTACK, TOOL_CANCEL_GOAL, TOOL_CAN_WALK, TOOL_CAST, TOOL_CONTEXT_MENU,
+    TOOL_DAMAGE_METER, TOOL_DEPOSIT, TOOL_DROP, TOOL_EMOTE, TOOL_EQUIP, TOOL_FIND_ITEMS,
+    TOOL_FIND_MOBILES, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_HOTKEY, TOOL_HOTKEYS,
+    TOOL_JOURNAL_SEARCH, TOOL_LIFT, TOOL_LIST_SCRIPTS, TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE,
+    TOOL_MOVE_TO, TOOL_OBSERVE, TOOL_OPEN_CONTAINER, TOOL_OPEN_DOOR, TOOL_RUN_SCRIPT, TOOL_SAY,
+    TOOL_SCRIPT_STATUS, TOOL_SET_GOAL, TOOL_SET_PERSONA, TOOL_SINGLE_CLICK, TOOL_STOP,
+    TOOL_STOP_SCRIPT, TOOL_TARGET, TOOL_TARGET_FILTER, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE,
     TOOL_USE_SKILL, TOOL_VENDOR_BUY, TOOL_VENDOR_SELL, TOOL_WAIT_JOURNAL, TOOL_WAIT_TARGET,
     TOOL_WALK, TOOL_WAR_MODE, TOOL_WHISPER,
 };
@@ -50,6 +52,12 @@ use uoterm_protocol::lengths::PacketTable;
 use uoterm_protocol::types::*;
 use uoterm_protocol::{parse_with_version, GroundItem, Inbound};
 use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World};
+
+mod agents;
+mod hotkeys;
+mod scripting;
+use agents::Agents;
+use scripting::Scripting;
 
 const CMD_QUEUE_CAP: usize = 64;
 const READ_BUF_LEN: usize = 8192;
@@ -332,6 +340,10 @@ struct Inner {
     /// Keep the shard's list of forbidden assistant features, or ignore it.
     /// See [`crate::config::OBEY_SHARD_RULES_DEFAULT`].
     obey_shard_rules: bool,
+    /// Scripts: the one running, and what scripts keep between runs.
+    scripting: Scripting,
+    /// The agents' settings and what they are doing.
+    agents: Agents,
     attack_sent: Option<Serial>,
     /// The object the next target cursor is answered with, until it runs out.
     target_intent: Option<TargetIntent>,
@@ -355,7 +367,7 @@ struct Inner {
     pending_vendor_sell_graphic: Option<u16>,
     /// One requested context-menu choice, answered only when the matching
     /// server-authored menu arrives.
-    pending_context_menu: Option<(Serial, u32)>,
+    pending_context_menu: Option<(Serial, MenuChoice)>,
     last_event_seq: u64,
     last_name_retry: Instant,
     last_path_fail: Option<(Point3, Instant)>,
@@ -370,8 +382,46 @@ struct Inner {
 /// from something else would take the wrong target.
 #[derive(Clone, Copy, Debug)]
 struct TargetIntent {
-    serial: Serial,
+    aim: Aim,
     until: Instant,
+}
+
+/// What a target cursor is answered with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Aim {
+    Object(Serial),
+    /// A tile, with the graphic of a static on it or none.
+    Ground {
+        at: Point3,
+        graphic: u16,
+    },
+}
+
+/// Which entry of a context menu to pick.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MenuChoice {
+    /// The entry with this client text number.
+    Cliloc(u32),
+    /// The entry at this place in the menu, as the shard numbered it.
+    Index(u16),
+    /// The entry whose words hold this text, in any case.
+    Text(String),
+}
+
+impl MenuChoice {
+    fn picks(
+        &self,
+        entry: &uoterm_protocol::ContextMenuEntry,
+        cliloc: Option<&ClilocData>,
+    ) -> bool {
+        match self {
+            Self::Cliloc(number) => entry.cliloc == *number,
+            Self::Index(index) => entry.index == *index,
+            Self::Text(words) => cliloc
+                .and_then(|table| table.text(entry.cliloc))
+                .is_some_and(|text| text.to_lowercase().contains(&words.to_lowercase())),
+        }
+    }
 }
 
 /// How long a queued target waits for its cursor.
@@ -379,10 +429,28 @@ const TARGET_QUEUE_LIFETIME: Duration = Duration::from_secs(5);
 
 /// Queues `serial` for the next target cursor, for [`TARGET_QUEUE_LIFETIME`].
 fn queue_target(inner: &mut Inner, serial: Serial, now: Instant) {
+    queue_aim(inner, Aim::Object(serial), TARGET_QUEUE_LIFETIME, now);
+}
+
+/// Queues an answer for the next target cursor, for `lifetime`.
+fn queue_aim(inner: &mut Inner, aim: Aim, lifetime: Duration, now: Instant) {
     inner.target_intent = Some(TargetIntent {
-        serial,
-        until: now + TARGET_QUEUE_LIFETIME,
+        aim,
+        until: now + lifetime,
     });
+}
+
+/// Answers the cursor with an object or a tile.
+fn answer_cursor(inner: &mut Inner, cursor_id: u32, aim: Aim) {
+    match aim {
+        Aim::Object(serial) => answer_cursor_with(inner, cursor_id, serial),
+        Aim::Ground { at, graphic } => {
+            inner
+                .outbound
+                .push_back(encode::target_ground(cursor_id, at.x, at.y, at.z, graphic));
+            inner.world.write().clear_target();
+        }
+    }
 }
 
 /// Drops a queued target whose time has run out.
@@ -698,6 +766,8 @@ async fn run_session(
         next_bandage_at: Instant::now() - ACTION_BUDGET,
         next_heal_potion_at: Instant::now() - ACTION_BUDGET,
         obey_shard_rules: opts.obey_shard_rules,
+        scripting: Scripting::new(opts.uopath.as_deref()),
+        agents: Agents::load(&opts.character),
         attack_sent: None,
         target_intent: None,
         target_waiters: Vec::new(),
@@ -775,6 +845,8 @@ async fn run_session(
                 harvest_new_events(&mut inner);
                 expire_target_waiters(&mut inner, Instant::now());
                 expire_target_intent(&mut inner, Instant::now());
+                agents::pump_agents(&mut inner, Instant::now());
+                scripting::pump_script(&mut inner, Instant::now());
                 answer_journal_waiters(&mut inner, Instant::now());
             }
         }
@@ -1455,7 +1527,7 @@ mod relay_tests {
     /// A session with no socket: everything the movement pump reads, and
     /// nothing it does not. It is handed the time, so a test walks a route
     /// without waiting for one.
-    fn test_session() -> Inner {
+    pub(super) fn test_session() -> Inner {
         let now = Instant::now();
         Inner {
             id: "movement-test".into(),
@@ -1490,6 +1562,8 @@ mod relay_tests {
             next_bandage_at: now - ACTION_BUDGET,
             next_heal_potion_at: now - ACTION_BUDGET,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
+            scripting: Scripting::new(None),
+            agents: Agents::load(""),
             attack_sent: None,
             target_intent: None,
             target_waiters: Vec::new(),
@@ -4730,7 +4804,7 @@ mod relay_tests {
     }
 
     /// A target cursor as the shard sends it, asking for an object.
-    fn target_cursor(cursor_id: u32) -> Vec<u8> {
+    pub(super) fn target_cursor(cursor_id: u32) -> Vec<u8> {
         let mut w = uoterm_protocol::buf::PacketWriter::new(PKT_TARGET);
         w.u8(0)
             .u32(cursor_id)
@@ -4744,7 +4818,7 @@ mod relay_tests {
         w.finish()
     }
 
-    const A_CURSOR: u32 = 9;
+    pub(super) const A_CURSOR: u32 = 9;
     const A_SHORT_WAIT_MS: u64 = 300;
 
     fn wait_args(ms: u64) -> Value {
@@ -4884,13 +4958,13 @@ mod relay_tests {
         assert_eq!(answer.result["last_seq"], seen + 1);
     }
 
-    const PACK: Serial = Serial(0x4000_0B01);
+    pub(super) const PACK: Serial = Serial(0x4000_0B01);
     const SWORD: Serial = Serial(0x4000_0B02);
     const GRAPHIC_SWORD: u16 = 0x13FF;
     const SOMETHING_TO_USE: Serial = Serial(0x4000_0B03);
 
     /// A character wearing a pack and holding a sword.
-    fn armed_session() -> Inner {
+    pub(super) fn armed_session() -> Inner {
         let mut inner = test_session();
         {
             let mut world = inner.world.write();
@@ -4911,7 +4985,7 @@ mod relay_tests {
         inner
     }
 
-    fn ready_to_act(inner: &mut Inner) {
+    pub(super) fn ready_to_act(inner: &mut Inner) {
         let now = Instant::now();
         inner.next_action_at = now - ACTION_BUDGET;
         inner.next_double_click_at = now - DOUBLE_CLICK_INTERVAL;
@@ -5423,7 +5497,7 @@ mod relay_tests {
     #[test]
     fn a_context_menu_answers_the_entry_with_the_asked_words() {
         let mut inner = test_session();
-        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        inner.pending_context_menu = Some((THE_CHEST, MenuChoice::Cliloc(CLILOC_ASKED_FOR)));
         ingest(
             &mut inner,
             &context_menu(
@@ -5452,7 +5526,7 @@ mod relay_tests {
     #[test]
     fn a_context_menu_steps_over_a_greyed_out_entry() {
         let mut inner = test_session();
-        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        inner.pending_context_menu = Some((THE_CHEST, MenuChoice::Cliloc(CLILOC_ASKED_FOR)));
         ingest(
             &mut inner,
             &context_menu(
@@ -5480,7 +5554,7 @@ mod relay_tests {
     #[test]
     fn a_context_menu_of_another_object_is_not_answered() {
         let mut inner = test_session();
-        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        inner.pending_context_menu = Some((THE_CHEST, MenuChoice::Cliloc(CLILOC_ASKED_FOR)));
         ingest(
             &mut inner,
             &context_menu(
@@ -5501,7 +5575,7 @@ mod relay_tests {
     #[test]
     fn a_menu_from_another_object_does_not_lose_the_request() {
         let mut inner = test_session();
-        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        inner.pending_context_menu = Some((THE_CHEST, MenuChoice::Cliloc(CLILOC_ASKED_FOR)));
         ingest(
             &mut inner,
             &context_menu(
@@ -5511,7 +5585,7 @@ mod relay_tests {
         );
         assert_eq!(
             inner.pending_context_menu,
-            Some((THE_CHEST, CLILOC_ASKED_FOR)),
+            Some((THE_CHEST, MenuChoice::Cliloc(CLILOC_ASKED_FOR))),
             "the request still waits for the object it named"
         );
         ingest(
@@ -5755,6 +5829,11 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         Inbound::AssistantFeatures { disallowed } => {
                             take_assistant_rules(inner, *disallowed);
                         }
+                        Inbound::DyeRequest { serial, .. } => {
+                            if let Some(hue) = inner.scripting.dye_hue.take() {
+                                inner.outbound.push_back(encode::dye_response(*serial, hue));
+                            }
+                        }
                         _ => {}
                     }
                     let stood_at = inner.world.read().self_state.location;
@@ -5765,7 +5844,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     if let Inbound::Target(cursor) = &msg {
                         expire_target_intent(inner, Instant::now());
                         if let Some(intent) = inner.target_intent.take() {
-                            answer_cursor_with(inner, cursor.id, intent.serial);
+                            answer_cursor(inner, cursor.id, intent.aim);
                         }
                     }
                     if let Inbound::LiftRejected { .. } = &msg {
@@ -5786,7 +5865,22 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                             inner.world.write().holding = None;
                         }
                     }
+                    if let Inbound::ContainerContents { items } = &msg {
+                        inner.agents.note_contents(items);
+                    }
+                    if let Inbound::VendorBuyList { container, entries } = &msg {
+                        agents::on_buy_list(inner, *container, entries);
+                    }
+                    if let Inbound::Damage { serial, amount } = &msg {
+                        inner.agents.note_damage(self_serial, *serial, *amount);
+                    }
+                    if let Inbound::Party(uoterm_protocol::PartyEvent::Invite { leader }) = &msg {
+                        agents::on_party_invite(inner, *leader);
+                    }
                     if let Inbound::VendorSellList { vendor, entries } = &msg {
+                        if inner.pending_vendor_sell_graphic.is_none() {
+                            agents::on_sell_list(inner, *vendor, entries);
+                        }
                         if let Some(graphic) = inner.pending_vendor_sell_graphic.take() {
                             let items: Vec<(Serial, u16)> = entries
                                 .iter()
@@ -5805,13 +5899,15 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         // named. A menu for anything else is not ours to
                         // answer, and taking the request on it would leave the
                         // tool waiting for an answer that never goes out.
-                        if let Some((expected_serial, cliloc)) = inner.pending_context_menu {
-                            if *serial == expected_serial {
-                                inner.pending_context_menu = None;
-                                if let Some(entry) = entries
-                                    .iter()
-                                    .find(|entry| entry.cliloc == cliloc && entry.enabled())
-                                {
+                        let asked_for = inner
+                            .pending_context_menu
+                            .as_ref()
+                            .is_some_and(|(expected, _)| expected == serial);
+                        if asked_for {
+                            if let Some((_, choice)) = inner.pending_context_menu.take() {
+                                if let Some(entry) = entries.iter().find(|entry| {
+                                    choice.picks(entry, inner.cliloc.as_deref()) && entry.enabled()
+                                }) {
                                     inner.outbound.push_back(encode::context_menu_response(
                                         *serial,
                                         entry.index,
@@ -6606,6 +6702,70 @@ fn send_double_click(inner: &mut Inner, serial: Serial) -> bool {
     true
 }
 
+/// The layer a mount rides on.
+const LAYER_MOUNT: u8 = 25;
+
+/// The words of an object's property list, one line each. Without the
+/// client text files a line is its text number and arguments.
+fn property_lines(inner: &Inner, serial: Serial) -> Vec<String> {
+    let w = inner.world.read();
+    let Some(props) = w.properties.get(&serial) else {
+        return Vec::new();
+    };
+    props
+        .iter()
+        .map(|p| {
+            inner
+                .cliloc
+                .as_ref()
+                .and_then(|table| table.render(p.cliloc, &p.arguments))
+                .unwrap_or_else(|| format!("#{} {}", p.cliloc, p.arguments))
+        })
+        .collect()
+}
+
+/// The first number in a line of text, such as the 3 of "Faster Casting 3".
+fn first_number(line: &str) -> Option<f64> {
+    let start = line.find(|c: char| c.is_ascii_digit())?;
+    let digits: String = line[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// Where a moved item goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropAt {
+    /// Into a container, or onto a mobile to give it.
+    Into(Serial),
+    Ground(Point3),
+}
+
+/// Lifts an item and drops it. A shard moves only the item on the cursor,
+/// so the lift always goes first, and both go in the same tick.
+fn lift_and_drop(inner: &mut Inner, item: Serial, amount: u16, at: DropAt) {
+    inner.outbound.push_back(encode::lift(item, amount));
+    let grid = drop_grid(inner);
+    let drop = match at {
+        DropAt::Into(container) => encode::drop_into_container(item, container, grid),
+        DropAt::Ground(p) => encode::drop(item, p.x, p.y, p.z, Serial::WORLD, grid),
+    };
+    inner.outbound.push_back(drop);
+    inner.world.write().holding = Some(item);
+    inner.sent_drop = Some(item);
+    mark_action(inner);
+}
+
+/// Lifts an item and wears it on a layer. A wear request with nothing
+/// lifted does nothing.
+fn lift_and_wear(inner: &mut Inner, item: Serial, layer: u8) {
+    let me = inner.world.read().self_state.serial;
+    inner.outbound.push_back(encode::lift(item, ONE_WORN_ITEM));
+    inner.outbound.push_back(encode::equip(item, layer, me));
+    mark_action(inner);
+}
+
 fn backpack_serial(world: &uoterm_world::World) -> Option<Serial> {
     world
         .self_state
@@ -6636,6 +6796,11 @@ fn archer_move_locked(inner: &Inner) -> bool {
 
 fn send_attack(inner: &mut Inner, serial: Serial) {
     if inner.attack_sent == Some(serial) {
+        return;
+    }
+    let world = inner.world.read().clone();
+    if inner.agents.config.friends.prevent_attack && inner.agents.is_friend(&world, serial) {
+        tracing::info!(%serial, "the friends list keeps the character from attacking a friend");
         return;
     }
     if inner.world.read().combatant == Some(serial) {
@@ -7556,12 +7721,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .get("layer")
                 .and_then(|v| v.as_u64())
                 .map_or(LAYER_ONE_HANDED, |layer| layer as u8);
-            let me = inner.world.read().self_state.serial;
-            // A shard wears the item in the character's hand, so it is lifted
-            // first: a wear request with nothing lifted does nothing.
-            inner.outbound.push_back(encode::lift(item, ONE_WORN_ITEM));
-            inner.outbound.push_back(encode::equip(item, layer, me));
-            mark_action(inner);
+            lift_and_wear(inner, item, layer);
             ToolResult::action(TOOL_EQUIP)
         }
         TOOL_CAST => {
@@ -7729,14 +7889,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             // A drop moves the item in the character's hand, so it is lifted
             // first: a drop with nothing lifted does nothing. Measured live, a
             // weapon stayed in the hand after a bare drop.
-            let grid = drop_grid(inner);
-            inner
-                .outbound
-                .push_back(encode::lift(eq.serial, ONE_WORN_ITEM));
-            inner
-                .outbound
-                .push_back(encode::drop_into_container(eq.serial, pack, grid));
-            mark_action(inner);
+            lift_and_drop(inner, eq.serial, ONE_WORN_ITEM, DropAt::Into(pack));
             if layer == LAYER_ONE_HANDED || layer == LAYER_TWO_HANDED {
                 inner.last_weapon = Some(eq.serial);
             }
@@ -7795,12 +7948,25 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             if serial == Serial(0) || cliloc == 0 {
                 return ToolResult::err("context_menu needs serial and cliloc");
             }
-            inner.pending_context_menu = Some((serial, cliloc));
+            inner.pending_context_menu = Some((serial, MenuChoice::Cliloc(cliloc)));
             inner
                 .outbound
                 .push_back(encode::context_menu_request(serial));
             ToolResult::action(TOOL_CONTEXT_MENU)
         }
+        TOOL_HOTKEYS => hotkeys::list(inner, args),
+        TOOL_HOTKEY => hotkeys::press(inner, args),
+        TOOL_AGENTS => agents::agents_status(inner),
+        TOOL_AGENT_SET => agents::agent_set(inner, args),
+        TOOL_AGENT_ON => agents::agent_on(inner, args),
+        TOOL_AGENT_RUN => agents::agent_run(inner, args),
+        TOOL_AGENT_STOP => agents::agent_stop(inner),
+        TOOL_DAMAGE_METER => agents::damage_meter(inner, args),
+        TOOL_TARGET_FILTER => agents::target_filter(inner, args),
+        TOOL_RUN_SCRIPT => scripting::run_script(inner, args),
+        TOOL_STOP_SCRIPT => scripting::stop_script(inner),
+        TOOL_SCRIPT_STATUS => scripting::script_status(inner),
+        TOOL_LIST_SCRIPTS => scripting::list_scripts(),
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
                 p.clamp_rates();
@@ -7831,6 +7997,7 @@ fn observe_value(inner: &Inner) -> Value {
         None => radar_from_floor(&w, &inner.map, loc.z),
     };
     drop(w);
+    obs.buffs = scripting::buff_names(inner);
     let mut doors: Vec<uoterm_world::NearbyDoor> = Vec::new();
     if let Some(mul) = inner.maps.get(&idx) {
         for d in mul.doors_near(loc.x, loc.y, uoterm_world::OBSERVE_DOOR_RADIUS) {

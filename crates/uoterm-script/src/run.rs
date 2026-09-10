@@ -261,6 +261,9 @@ impl Script {
                 Flow::Next => self.pc += 1,
                 Flow::NextTick => {
                     self.pc += 1;
+                    if self.pc >= self.program.ops.len() {
+                        self.status = Status::Done;
+                    }
                     return;
                 }
                 Flow::Goto(target) => self.pc = target,
@@ -497,7 +500,13 @@ fn run_builtin(call: &Call, ctx: &mut Ctx) -> Option<Step> {
             Step::Done
         }),
         "pushlist" => need(0, "a list name").and_then(|name| {
-            let value = need(1, "a value")?.text.clone();
+            // An alias goes in as the serial it holds now, so a later change
+            // to the alias does not change the list.
+            let raw = need(1, "a value")?;
+            let value = match ctx.vars.alias(&raw.text) {
+                Some(serial) if raw.number().is_none() => serial.to_string(),
+                _ => raw.text.clone(),
+            };
             let front = arg(2).is_some_and(|a| a.is(LIST_FRONT));
             let list = ctx.vars.list_mut(&name.text);
             if call.force && list.iter().any(|v| v.eq_ignore_ascii_case(&value)) {
@@ -660,6 +669,16 @@ mod tests {
     }
 
     #[test]
+    fn a_script_whose_last_line_acts_is_done_at_once() {
+        let mut host = Fake::default();
+        host.steps.insert("say", Step::Acted);
+        let mut vars = Vars::default();
+        let mut s = script("say 'bye'");
+        s.tick(&mut host, &mut vars, Instant::now());
+        assert_eq!(*s.status(), Status::Done);
+    }
+
+    #[test]
     fn a_pause_waits_its_time_then_goes_on() {
         let mut host = Fake::default();
         let mut vars = Vars::default();
@@ -775,6 +794,13 @@ mod tests {
         assert_eq!(vars.alias("PET"), Some(0x1234));
         assert_eq!(vars.list("l"), Some(&vec!["b".to_string()]));
         assert!(vars.timer("t", Instant::now()).is_some());
+        let mut s = script("pushlist 'l' 'pet'\ncreatelist 'l'");
+        run(&mut s, &mut host, &mut vars, 2);
+        assert_eq!(
+            vars.list("l").and_then(|l| l.last()).map(String::as_str),
+            Some("4660"),
+            "the alias went in as its serial, and createlist kept the list"
+        );
     }
 
     #[test]

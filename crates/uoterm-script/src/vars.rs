@@ -35,9 +35,9 @@ impl Vars {
         self.lists.get(&key(name))
     }
 
-    /// Makes an empty list, or empties the one with that name.
+    /// Makes an empty list. A list that exists already is kept as it is.
     pub fn create_list(&mut self, name: &str) {
-        self.lists.insert(key(name), Vec::new());
+        self.lists.entry(key(name)).or_default();
     }
 
     pub fn remove_list(&mut self, name: &str) {

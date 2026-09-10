@@ -1744,8 +1744,10 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "uoterm-assist",
  "uoterm-nav",
  "uoterm-protocol",
+ "uoterm-script",
  "uoterm-world",
  "uuid",
 ]

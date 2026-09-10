@@ -5,6 +5,7 @@
 //! The runtime and the script engine look names up here.
 
 pub mod abilities;
+pub mod buffs;
 pub mod items;
 pub mod mobiles;
 mod name;

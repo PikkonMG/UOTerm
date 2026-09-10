@@ -82,6 +82,10 @@ impl SkillBook {
         }
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &Skill> {
+        self.skills.iter()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }

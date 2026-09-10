@@ -212,8 +212,11 @@ impl Program {
         let mut ops: Vec<Op> = Vec::new();
         let mut blocks: Vec<Block> = Vec::new();
         let mut loops = 0usize;
-        for (index, line) in source.lines().enumerate() {
-            let line_no = index + 1;
+        let statements = source
+            .lines()
+            .enumerate()
+            .flat_map(|(index, line)| statements(line).into_iter().map(move |s| (index + 1, s)));
+        for (line_no, line) in statements {
             let tokens = tokenize(line, line_no)?;
             let Some(Token::Word(head)) = tokens.first() else {
                 if tokens.is_empty() {
@@ -377,6 +380,35 @@ impl Program {
         Ok(Self { ops, loops })
     }
 }
+
+/// The statements of one line: `;` puts more than one on a line. A `;` in
+/// quotes is text, and a note ends the line.
+fn statements(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut start = 0;
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if line[i..].starts_with(crate::token::COMMENT) => {
+                out.push(&line[start..i]);
+                return out;
+            }
+            None if c == STATEMENT_BREAK => {
+                out.push(&line[start..i]);
+                start = i + 1;
+            }
+            None => {}
+        }
+    }
+    out.push(&line[start..]);
+    out
+}
+
+/// Puts a second statement on the same line.
+const STATEMENT_BREAK: char = ';';
 
 fn elseif(
     ops: &mut Vec<Op>,
@@ -701,6 +733,17 @@ endfor",
         assert!(
             matches!(&count.compare, Some((Compare::Greater, Operand::Value(v))) if v.number() == Some(10))
         );
+    }
+
+    #[test]
+    fn a_semicolon_puts_two_statements_on_one_line() {
+        let p = program("msg 'a;b'; pause 100 // note; not a statement");
+        assert_eq!(p.ops.len(), 2);
+        let Op::Command(first) = &p.ops[0] else {
+            panic!("a command");
+        };
+        assert_eq!(first.args[0].text, "a;b");
+        assert_eq!(cmd(&p.ops[1]), "pause");
     }
 
     #[test]

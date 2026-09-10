@@ -42,6 +42,19 @@ pub const TOOL_GUMP_CLOSE: &str = "gump_close";
 pub const TOOL_SET_GOAL: &str = "set_goal";
 pub const TOOL_CANCEL_GOAL: &str = "cancel_goal";
 pub const TOOL_SET_PERSONA: &str = "set_persona";
+pub const TOOL_RUN_SCRIPT: &str = "run_script";
+pub const TOOL_STOP_SCRIPT: &str = "stop_script";
+pub const TOOL_SCRIPT_STATUS: &str = "script_status";
+pub const TOOL_LIST_SCRIPTS: &str = "list_scripts";
+pub const TOOL_AGENTS: &str = "agents";
+pub const TOOL_AGENT_SET: &str = "agent_set";
+pub const TOOL_AGENT_ON: &str = "agent_on";
+pub const TOOL_AGENT_RUN: &str = "agent_run";
+pub const TOOL_AGENT_STOP: &str = "agent_stop";
+pub const TOOL_DAMAGE_METER: &str = "damage_meter";
+pub const TOOL_TARGET_FILTER: &str = "target_filter";
+pub const TOOL_HOTKEYS: &str = "hotkeys";
+pub const TOOL_HOTKEY: &str = "hotkey";
 
 pub const BANK_X: u16 = 1425;
 pub const BANK_Y: u16 = 1695;
@@ -283,6 +296,59 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Set goal idle and stop movement.",
         "session exists",
     ),
+    (
+        TOOL_RUN_SCRIPT,
+        "Run a script: name (a file in the scripts folder) or text (the script itself). One script runs at a time.",
+        "no script running",
+    ),
+    (TOOL_STOP_SCRIPT, "Stop the running script.", "a script is running"),
+    (
+        TOOL_SCRIPT_STATUS,
+        "The running or last script: status (running, done, stopped, failed), line, error, and its output lines.",
+        "session exists",
+    ),
+    (TOOL_LIST_SCRIPTS, "The scripts in the scripts folder.", "session exists"),
+    (
+        TOOL_AGENTS,
+        "Every agent's settings, which agents are on, and the job running.",
+        "session exists",
+    ),
+    (
+        TOOL_AGENT_SET,
+        "Replace an agent's settings (agent, settings), or one named list (agent, list, settings). Agents: autoloot, scavenger, organizer, restock, dress, buy, sell, bandage, friends, remount, bone_cutter, carver, open_corpses, targets. Saved per character.",
+        "session exists",
+    ),
+    (
+        TOOL_AGENT_ON,
+        "Switch an agent on or off (agent, on). A list name picks the list autoloot, scavenger, buy or sell uses.",
+        "session exists",
+    ),
+    (
+        TOOL_AGENT_RUN,
+        "Run a job once: organizer or restock (with list), dress or undress (list optional), or autoloot on the corpses in range.",
+        "in world",
+    ),
+    (TOOL_AGENT_STOP, "Stop the running agent job.", "session exists"),
+    (
+        TOOL_DAMAGE_METER,
+        "Damage dealt per mobile: action start, pause, resume, stop, or report.",
+        "session exists",
+    ),
+    (
+        TOOL_TARGET_FILTER,
+        "Pick a mobile with a named target filter and make it the last target.",
+        "in world",
+    ),
+    (
+        TOOL_HOTKEYS,
+        "The hotkeys by group: general, actions, pets, agents, combat, potions, items, wands, skills, spells, virtues, targets, scripts. Give group for one group.",
+        "session exists",
+    ),
+    (
+        TOOL_HOTKEY,
+        "Press a hotkey by name, such as 'Bandage Self', 'Cast Greater Heal', 'Potion Cure' or 'Attack Nearest Enemy'.",
+        "in world",
+    ),
 ];
 
 pub fn mcp_tool_list() -> Value {
@@ -320,7 +386,13 @@ pub fn mcp_tool_list() -> Value {
                         "who": {"type": "string"},
                         "q": {"type": "string"},
                         "since": {"type": "integer"},
-                        "switches": {"type": "array", "items": {"type": "integer"}}
+                        "switches": {"type": "array", "items": {"type": "integer"}},
+                        "agent": {"type": "string"},
+                        "list": {"type": "string"},
+                        "on": {"type": "boolean"},
+                        "action": {"type": "string"},
+                        "settings": {"type": "object"},
+                        "group": {"type": "string"}
                     }
                 }
             })
