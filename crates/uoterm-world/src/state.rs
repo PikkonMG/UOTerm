@@ -441,9 +441,10 @@ impl World {
                 self.doors.remove(serial);
                 self.multis.remove(serial);
                 self.self_state.equipment.retain(|e| e.serial != *serial);
-                if self.holding == Some(*serial) {
-                    self.holding = None;
-                }
+                // The held item is left held. Lifting takes an item off the
+                // map and the shard reports that with a delete, so a delete of
+                // the item on the cursor is the lift itself. The hold ends when
+                // the item lands (an add into a container, or a lift refused).
             }
             Inbound::MobileMoving(view) | Inbound::MobileIncoming(view) => {
                 self.apply_mobile_view(view);

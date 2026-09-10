@@ -368,6 +368,35 @@ mod tests {
         );
     }
 
+    /// Lifting an item takes it off the map, and the shard says so with a
+    /// delete. That delete is the lift working, not the item being lost: the
+    /// item is on the character's cursor until he drops it. Forgetting it
+    /// there left 1063 gold stuck on the cursor on a live shard, because the
+    /// drop that should have followed was never sent.
+    #[test]
+    fn a_lifted_item_stays_held_when_the_shard_takes_it_off_the_map() {
+        let mut w = World::new();
+        let item = in_container(CORPSE, GOLD, GRAPHIC_GOLD, ONE_OF_IT);
+        w.apply(&Inbound::AddItem(item));
+        w.holding = Some(GOLD);
+        w.apply(&Inbound::Delete(GOLD));
+        assert_eq!(w.holding, Some(GOLD), "the gold is still on the cursor");
+    }
+
+    /// The hold ends when the item lands: the shard puts it in a container.
+    #[test]
+    fn a_held_item_is_let_go_when_it_lands_in_a_container() {
+        let mut w = World::new();
+        w.holding = Some(GOLD);
+        w.apply(&Inbound::AddItem(in_container(
+            CORPSE,
+            GOLD,
+            GRAPHIC_GOLD,
+            ONE_OF_IT,
+        )));
+        assert_eq!(w.holding, None);
+    }
+
     #[test]
     fn container_does_not_duplicate_serial() {
         let mut w = World::new();
