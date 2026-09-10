@@ -281,6 +281,9 @@ pub enum MultiUpdate {
 /// Journal kinds for party lines. Party chat comes in its own packet, not as
 /// speech, so these numbers never come from the wire; they sit above every
 /// speech kind a shard sends.
+/// The most names of mobiles out of sight the world keeps. When it is full
+/// it starts again: a name comes back the next time its mobile is seen.
+const GONE_NAMES_KEEP: usize = 1024;
 pub const SPEECH_KIND_PARTY: u8 = 0xF0;
 pub const SPEECH_KIND_PARTY_PRIVATE: u8 = 0xF1;
 /// The hue party lines are filed with. The shard sends none.
@@ -402,6 +405,9 @@ pub struct World {
     pub play_along: bool,
     /// The lines other characters said to this one by name.
     pub spoken_to: SpokenToLog,
+    /// The names of mobiles that went out of sight. A party or guild line
+    /// can come from far away, and it names its speaker by serial only.
+    pub gone_names: HashMap<Serial, String>,
 }
 
 /// The channel of a speech line that can name the character. System lines,
@@ -560,7 +566,14 @@ impl World {
             Inbound::Delete(serial) => {
                 self.detach(*serial);
                 self.names.forget(*serial);
-                self.mobiles.remove(serial);
+                if let Some(mobile) = self.mobiles.remove(serial) {
+                    if !mobile.name.is_empty() {
+                        if self.gone_names.len() >= GONE_NAMES_KEEP {
+                            self.gone_names.clear();
+                        }
+                        self.gone_names.insert(*serial, mobile.name);
+                    }
+                }
                 self.items.remove(serial);
                 self.containers.remove(serial);
                 self.doors.remove(serial);
@@ -921,6 +934,7 @@ impl World {
             .get(&serial)
             .map(|m| m.name.clone())
             .filter(|name| !name.is_empty())
+            .or_else(|| self.gone_names.get(&serial).cloned())
             .unwrap_or_else(|| serial.to_string())
     }
 

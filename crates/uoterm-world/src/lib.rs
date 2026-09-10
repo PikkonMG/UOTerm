@@ -1542,6 +1542,22 @@ mod tests {
         );
     }
 
+    /// A party member who walks out of sight keeps the name the character
+    /// learned, so a party line from far away still names the speaker.
+    #[test]
+    fn a_name_learned_stays_known_out_of_sight() {
+        let mut w = mara_and_ann(true);
+        say(&mut w, TALKER, 0, "hello all");
+        w.apply(&Inbound::Delete(TALKER));
+        assert_eq!(w.name_of(TALKER), "Ann");
+        w.apply(&Inbound::Party(PartyEvent::Message {
+            from: TALKER,
+            text: "mara, where are you?".into(),
+            private: false,
+        }));
+        assert_eq!(w.observe_default().spoken_to[0].name, "Ann");
+    }
+
     #[test]
     fn the_switch_off_tells_the_agent_nothing() {
         let mut w = mara_and_ann(false);
