@@ -8,6 +8,7 @@ use uoterm_protocol::{
     FLAG_WAR, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE,
 };
 
+use crate::assist::AssistRules;
 use crate::events::{Event, EventKind, EVENT_LOG_CAP};
 use crate::journal::{Journal, JournalEntry};
 use crate::names::{display_name, NameBook};
@@ -296,6 +297,8 @@ pub struct World {
     pub map_height: u16,
     pub season: u8,
     pub names: NameBook,
+    /// The assistant features the shard forbids.
+    pub assist: AssistRules,
 }
 
 impl World {
@@ -668,6 +671,9 @@ impl World {
                 properties,
             } => {
                 self.accept_properties(*serial, *hash, properties);
+            }
+            Inbound::AssistantFeatures { disallowed } => {
+                self.assist = AssistRules::from_bits(*disallowed);
             }
             Inbound::Unknown { id, .. } => {
                 tracing::debug!(packet = format!("{id:#04x}"), "unhandled inbound packet");

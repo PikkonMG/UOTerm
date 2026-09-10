@@ -1,5 +1,6 @@
 //! Per-session world model. Packets and local map data are the only writers.
 
+mod assist;
 mod events;
 mod journal;
 mod names;
@@ -7,6 +8,7 @@ mod observe;
 mod radar;
 mod state;
 
+pub use assist::{AssistFeature, AssistRules};
 pub use events::{Event, EventKind, EVENT_LOG_CAP};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
@@ -36,6 +38,18 @@ mod tests {
         Point3, Serial, SpeechLine, TargetCursor, FLAG_FROZEN, FLAG_HIDDEN, FLAG_WAR,
         GRAPHIC_BACKPACK, LAYER_BACKPACK, LAYER_BANK, NOTO_INNOCENT,
     };
+
+    #[test]
+    fn the_shard_list_of_forbidden_features_is_kept() {
+        const AUTO_OPEN_DOORS_BIT: u64 = 1 << 4;
+        let mut w = World::new();
+        assert!(w.assist.allows(AssistFeature::AutoOpenDoors));
+        w.apply(&Inbound::AssistantFeatures {
+            disallowed: AUTO_OPEN_DOORS_BIT,
+        });
+        assert!(!w.assist.allows(AssistFeature::AutoOpenDoors));
+        assert_eq!(w.observe_default().forbidden, vec!["auto_open_doors"]);
+    }
 
     /// The cliloc a shard uses for a name that has a prefix and a suffix field.
     const CLILOC_NAME_WITH_AFFIX: u32 = 1050045;

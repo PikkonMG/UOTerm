@@ -158,7 +158,7 @@ impl Goal {
 const TOOLS: &[(&str, &str, &str)] = &[
     (
         TOOL_OBSERVE,
-        "Compact world snapshot, ASCII radar, recent journal.",
+        "Compact world snapshot, ASCII radar, recent journal, and the assistant features the shard forbids.",
         "session exists",
     ),
     (

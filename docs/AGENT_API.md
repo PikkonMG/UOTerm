@@ -8,7 +8,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 
 | Tool | Precondition | Result |
 | --- | --- | --- |
-| `observe` | session exists | self, radar, journal, mobiles, items, target, gumps, doors |
+| `observe` | session exists | self, radar, journal, mobiles, items, target, gumps, doors, forbidden (assistant features the shard forbids) |
 | `find_mobiles` | in world | filter name / graphic / distance |
 | `find_items` | in world | filter graphic / container / name |
 | `journal_search` | session exists | matching lines |

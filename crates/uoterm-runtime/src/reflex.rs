@@ -4,7 +4,7 @@ use crate::persona::Persona;
 use crate::tools::{Goal, BANK_X, BANK_Y, BANK_Z};
 use std::time::{Duration, Instant};
 use uoterm_protocol::types::*;
-use uoterm_world::World;
+use uoterm_world::{AssistFeature, World};
 
 pub const BANDAGE_HP_PCT: u32 = 70;
 const HUNT_RANGE: u16 = 16;
@@ -117,12 +117,19 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
 ///
 /// Poison and a wound are not a hunting matter: both go on working while he
 /// stands still, and the bandage and the potion are the same two answers
-/// whatever he was told to do.
+/// whatever he was told to do. A shard can forbid either one done by itself,
+/// and then it is left to the agent.
 fn self_care(world: &World) -> Option<ReflexAction> {
     let hurt = world.self_state.hits_max > 0
         && stat_pct(world.self_state.hits, world.self_state.hits_max) < BANDAGE_HP_PCT;
-    if hurt && world.find_item_graphic(GRAPHIC_BANDAGE).is_some() {
+    if hurt
+        && world.assist.allows(AssistFeature::AutoBandage)
+        && world.find_item_graphic(GRAPHIC_BANDAGE).is_some()
+    {
         return Some(ReflexAction::BandageSelf);
+    }
+    if !world.assist.allows(AssistFeature::PotionHotkeys) {
+        return None;
     }
     if world.self_state.poisoned {
         if let Some(serial) = drinkable_potion(world, GRAPHIC_POTION_CURE, None) {
@@ -471,8 +478,13 @@ mod tests {
 
     /// A wound is not a hunting matter. She bandages herself whatever she was
     /// told to do, because the wound goes on working while she stands still.
-    #[test]
-    fn she_bandages_herself_whatever_the_goal_is() {
+    /// A shard list that forbids one assistant feature.
+    fn forbidding(feature: AssistFeature) -> uoterm_world::AssistRules {
+        uoterm_world::AssistRules::from_bits(1 << feature as u32)
+    }
+
+    /// Half her hits gone, and bandages in her pack.
+    fn hurt_with_bandages() -> World {
         const BANDAGES: Serial = Serial(0x4000_0401);
         let mut w = World::new();
         w.logged_in = true;
@@ -492,9 +504,30 @@ mod tests {
                 name: "bandages".into(),
             },
         );
+        w
+    }
+
+    #[test]
+    fn she_bandages_herself_whatever_the_goal_is() {
+        assert_eq!(
+            tick(
+                &hurt_with_bandages(),
+                &Persona::lumberjack_yew(),
+                &Goal::Idle
+            ),
+            ReflexAction::BandageSelf
+        );
+    }
+
+    /// A shard that forbids bandaging by itself leaves the bandage to the
+    /// agent.
+    #[test]
+    fn she_does_not_bandage_by_herself_where_the_shard_forbids_it() {
+        let mut w = hurt_with_bandages();
+        w.assist = forbidding(AssistFeature::AutoBandage);
         assert_eq!(
             tick(&w, &Persona::lumberjack_yew(), &Goal::Idle),
-            ReflexAction::BandageSelf
+            ReflexAction::None
         );
     }
 
@@ -654,9 +687,10 @@ mod tests {
         assert_eq!(heal_potion_lock_ms("a greater heal potion"), 10_000);
     }
 
-    #[test]
-    fn hunt_drinks_a_cure_potion_when_poisoned() {
-        const CURE: Serial = Serial(0x4000_0F07);
+    const CURE: Serial = Serial(0x4000_0F07);
+
+    /// Poisoned, with a cure potion in her pack and a grey beside her.
+    fn poisoned_with_a_cure() -> World {
         let mut w = world_with_one_mobile(NOTO_GREY, 0);
         w.self_state.poisoned = true;
         w.items.insert(
@@ -673,9 +707,29 @@ mod tests {
                 name: "a lesser cure potion".into(),
             },
         );
+        w
+    }
+
+    #[test]
+    fn hunt_drinks_a_cure_potion_when_poisoned() {
         assert_eq!(
-            tick(&w, &Persona::lumberjack_yew(), &Goal::Hunt),
+            tick(
+                &poisoned_with_a_cure(),
+                &Persona::lumberjack_yew(),
+                &Goal::Hunt
+            ),
             ReflexAction::Use(CURE)
+        );
+    }
+
+    /// A shard that forbids drinking potions by key leaves them to the agent.
+    #[test]
+    fn she_does_not_drink_by_herself_where_the_shard_forbids_it() {
+        let mut w = poisoned_with_a_cure();
+        w.assist = forbidding(AssistFeature::PotionHotkeys);
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Idle),
+            ReflexAction::None
         );
     }
 }

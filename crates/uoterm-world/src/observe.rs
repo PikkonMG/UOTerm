@@ -129,6 +129,9 @@ pub struct Observe {
     pub combatant: Option<String>,
     pub goal: String,
     pub facts: Vec<String>,
+    /// The assistant features the shard forbids. The character does not use
+    /// them by itself.
+    pub forbidden: Vec<String>,
 }
 
 impl Observe {
@@ -209,6 +212,12 @@ impl Observe {
             combatant: world.combatant.map(|serial| serial.to_string()),
             goal: world.goal.clone(),
             facts,
+            forbidden: world
+                .assist
+                .forbidden()
+                .into_iter()
+                .map(String::from)
+                .collect(),
         }
     }
 }

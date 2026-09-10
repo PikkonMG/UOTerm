@@ -49,7 +49,7 @@ use uoterm_protocol::frame::GameDecoder;
 use uoterm_protocol::lengths::PacketTable;
 use uoterm_protocol::types::*;
 use uoterm_protocol::{parse_with_version, GroundItem, Inbound};
-use uoterm_world::{DoorUpdate, MultiUpdate, World};
+use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World};
 
 const CMD_QUEUE_CAP: usize = 64;
 const READ_BUF_LEN: usize = 8192;
@@ -104,6 +104,13 @@ const DOOR_LOCKED: &str = "door will not open";
 /// What the log says when the leaf the character opened stands on the tile he
 /// still has to cross. Clicking it again would only shut it.
 const DOOR_STILL_BLOCKS: &str = "open door still blocks the way";
+/// What the log says when a shut door is in the way and the shard forbids
+/// opening doors by themselves. The agent opens it with the door tool.
+const DOOR_NOT_OPENED_BY_ITSELF: &str =
+    "shut door in the way; this shard does not let doors open by themselves, use open_door beside it";
+/// The name the client gives when the shard asks which assistant runs. It has
+/// a space, so the shard keeps it as it is.
+const ASSISTANT_NAME: &str = concat!("UOTerm ", env!("CARGO_PKG_VERSION"));
 /// Why a refused tile is forgotten: it has been remembered its full
 /// [`movement::REFUSED_TILE_MEMORY`].
 const FORGOT_TIME_UP: &str = "its time is up";
@@ -3545,6 +3552,89 @@ mod relay_tests {
         assert_eq!(inner.world.read().holding, None);
     }
 
+    /// The shard's list with one feature forbidden, as it comes on the wire.
+    fn assistant_rules(forbidden: AssistFeature) -> Vec<u8> {
+        let disallowed: u64 = 1 << forbidden as u32;
+        let mut w = uoterm_protocol::buf::PacketWriter::with_variable(PKT_ASSISTANT);
+        w.u8(ASSIST_CMD_FEATURES)
+            .u32((disallowed >> u32::BITS) as u32)
+            .u32(disallowed as u32);
+        w.finish_variable().expect("an assistant rules packet")
+    }
+
+    fn forbid(inner: &mut Inner, feature: AssistFeature) {
+        inner.world.write().assist = uoterm_world::AssistRules::from_bits(1 << feature as u32);
+    }
+
+    /// A shard that asks and hears nothing back warns the player and then
+    /// disconnects. The client says it has the list, and keeps it.
+    #[test]
+    fn the_shard_hears_back_on_its_assistant_rules() {
+        let mut inner = test_session();
+        ingest(&mut inner, &assistant_rules(AssistFeature::AutoOpenDoors));
+        assert!(inner.outbound.contains(&encode::assistant_ack()));
+        assert!(!inner
+            .world
+            .read()
+            .assist
+            .allows(AssistFeature::AutoOpenDoors));
+    }
+
+    /// The client gives its own name, with a space in it, when the shard asks.
+    #[test]
+    fn the_shard_hears_the_assistant_name() {
+        const ASKED_FOR_THE_VERSION: u8 = 0x03;
+        let mut inner = test_session();
+        let mut w = uoterm_protocol::buf::PacketWriter::with_variable(PKT_ASSIST_VERSION);
+        w.u8(ASKED_FOR_THE_VERSION);
+        ingest(&mut inner, &w.finish_variable().expect("a version request"));
+        assert!(ASSISTANT_NAME.contains(' '));
+        assert!(inner
+            .outbound
+            .contains(&encode::assistant_version(ASSISTANT_NAME)));
+    }
+
+    /// Where the shard forbids doors opening by themselves, a walk stops at
+    /// the shut door in its way and says why. It never walks up to click it.
+    #[test]
+    fn a_walk_does_not_open_a_door_the_shard_says_to_leave() {
+        let inn = movement::tests::inn_corridor();
+        let mut inner = test_session();
+        inner.map = inn.map;
+        {
+            let mut world = inner.world.write();
+            world.self_state.location = inn.character;
+            world.note_door(inn.door.serial, inn.door.graphic, inn.door.location);
+            world
+                .mobiles
+                .insert(SOMEBODY_ELSE, standing_at(inn.somebody_in_the_way));
+        }
+        forbid(&mut inner, AssistFeature::AutoOpenDoors);
+        assert!(!queue_move(&mut inner, inn.outside));
+        assert!(inner.movement.path.is_empty(), "{:?}", inner.movement.path);
+        assert!(!inner.doors.waiting(), "no door attempt starts");
+        assert!(inner.world.read().events.iter().any(|ev| {
+            ev.kind == uoterm_world::EventKind::PathFailed
+                && ev.text.starts_with(DOOR_NOT_OPENED_BY_ITSELF)
+        }));
+    }
+
+    /// Where the shard forbids doors opening by themselves, a refused step
+    /// is tried again, but no door macro goes out for it.
+    #[test]
+    fn a_refused_step_asks_for_no_door_the_shard_says_to_leave() {
+        let mut inner = test_session();
+        let mut now = Instant::now();
+        forbid(&mut inner, AssistFeature::AutoOpenDoors);
+        walks_from(&mut inner, REFUSED_FROM, route_east(REFUSED_FROM, 1));
+        let step = step_onto_the_wire(&mut inner, &mut now);
+        assert_eq!(
+            refuse_step(&mut inner, step.sequence, REFUSED_FROM, step.direction, now),
+            Refusal::TryTheDoor
+        );
+        assert!(inner.door_macro.is_none());
+    }
+
     /// The bit a shard sets on the serial of the legacy world item packet to
     /// say that an amount follows the graphic. Every multi carries an amount
     /// of one, so every house on that packet has it set. Both server families
@@ -5551,6 +5641,18 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         Inbound::CombatantChanged { serial } if !serial.is_valid() => {
                             inner.attack_sent = None;
                         }
+                        Inbound::AssistantVersionRequest => {
+                            inner
+                                .outbound
+                                .push_back(encode::assistant_version(ASSISTANT_NAME));
+                        }
+                        Inbound::AssistantFeatures { disallowed } => {
+                            inner.outbound.push_back(encode::assistant_ack());
+                            tracing::info!(
+                                forbidden = ?uoterm_world::AssistRules::from_bits(*disallowed).forbidden(),
+                                "the shard's assistant rules"
+                            );
+                        }
                         _ => {}
                     }
                     let stood_at = inner.world.read().self_state.location;
@@ -5849,8 +5951,12 @@ fn refuse_step(
         Refusal::TryTheDoor => {
             // The tile that refused him is the door itself, and the macro
             // opens whatever door stands in the tile he faces. It goes out
-            // once he faces that tile and nothing is left on the wire.
-            want_door_macro(inner, at, cell, now);
+            // once he faces that tile and nothing is left on the wire. A
+            // shard that forbids doors opening by themselves gets no macro:
+            // the step is tried once more, and a second refusal shuts it.
+            if doors_open_by_themselves(inner) {
+                want_door_macro(inner, at, cell, now);
+            }
             // The same step goes out again once the leaf has had time to
             // swing: the refusal put it back at the head of the route.
             // Nothing is marked, because one refusal at a doorway is the door.
@@ -6208,6 +6314,14 @@ fn door_route(inner: &mut Inner, from: Point3, dest: Point3) -> DoorRoute {
     let Some(way) = door_in_the_way(inner.tiles(), from, dest, &avoid.obstacles(), &doors) else {
         return DoorRoute::None;
     };
+    if !doors_open_by_themselves(inner) {
+        note_path_failure(
+            inner,
+            dest,
+            format!("{DOOR_NOT_OPENED_BY_ITSELF} at {}", way.door.location),
+        );
+        return DoorRoute::Blocked;
+    }
     match inner.doors.plan(way, Instant::now()) {
         DoorPlan::Approach(way) => {
             tracing::info!(
@@ -6233,6 +6347,16 @@ fn door_route(inner: &mut Inner, from: Point3, dest: Point3) -> DoorRoute {
             DoorRoute::Blocked
         }
     }
+}
+
+/// True unless the shard forbids a walk from opening the doors in its way. The
+/// door tool is a player's own key press, and the list does not stop it.
+fn doors_open_by_themselves(inner: &Inner) -> bool {
+    inner
+        .world
+        .read()
+        .assist
+        .allows(AssistFeature::AutoOpenDoors)
 }
 
 /// Asks for the door the character has walked up to, once: the second ask is
