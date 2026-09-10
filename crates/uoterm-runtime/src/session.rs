@@ -3470,6 +3470,32 @@ mod relay_tests {
         w.finish()
     }
 
+    /// The coins a character holds, in tests of the hold.
+    const HELD_COINS: Serial = Serial(0x4003_3E27);
+
+    /// The delete that follows a lift is the lift itself: the coins are on
+    /// the cursor and the drop still has to go out.
+    #[test]
+    fn a_delete_before_the_drop_keeps_the_coins_held() {
+        let mut inner = test_session();
+        inner.world.write().holding = Some(HELD_COINS);
+        inner.sent_drop = None;
+        ingest(&mut inner, &delete_item(HELD_COINS));
+        assert_eq!(inner.world.read().holding, Some(HELD_COINS));
+    }
+
+    /// Measured live: a bank that keeps account gold deleted 1063 dropped
+    /// coins and credited the balance, with no add after. Held for ever, the
+    /// deposit job never finished and kept every reflex waiting behind it.
+    #[test]
+    fn a_delete_after_the_drop_lets_the_coins_go() {
+        let mut inner = test_session();
+        inner.world.write().holding = Some(HELD_COINS);
+        inner.sent_drop = Some(HELD_COINS);
+        ingest(&mut inner, &delete_item(HELD_COINS));
+        assert_eq!(inner.world.read().holding, None);
+    }
+
     /// The bit a shard sets on the serial of the legacy world item packet to
     /// say that an amount follows the graphic. Every multi carries an amount
     /// of one, so every house on that packet has it set. Both server families
@@ -5117,6 +5143,18 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     }
                     if let Inbound::LiftRejected { .. } = &msg {
                         inner.world.write().holding = None;
+                    }
+                    // A held item deleted after its drop went out has landed
+                    // and been used up: a bank that keeps account gold turns
+                    // dropped coins into a balance and deletes them, so no
+                    // add ever follows. The hold ends there. A delete before
+                    // the drop is the lift itself and keeps the hold.
+                    if let Inbound::Delete(serial) = &msg {
+                        if inner.sent_drop == Some(*serial)
+                            && inner.world.read().holding == Some(*serial)
+                        {
+                            inner.world.write().holding = None;
+                        }
                     }
                     if let Inbound::VendorSellList { vendor, entries } = &msg {
                         if let Some(graphic) = inner.pending_vendor_sell_graphic.take() {
