@@ -26,6 +26,11 @@ use super::*;
 pub(super) const SCRIPTS_DIR: &str = "scripts";
 /// How many lines of script output the status keeps.
 const OUTPUT_KEPT: usize = 50;
+/// The shortest gap after a tick in which the script sent packets. Speech,
+/// clicks and requests do not use the action budget, and a loop of them
+/// must not go faster than a person types or clicks.
+pub(super) const SCRIPT_SEND_GAP: Duration = Duration::from_millis(SCRIPT_SEND_GAP_MS);
+const SCRIPT_SEND_GAP_MS: u64 = 250;
 
 /// A script's argument names for the script tools.
 const ARG_NAME: &str = "name";
@@ -45,6 +50,8 @@ pub(super) struct Scripting {
     last: Option<Report>,
     /// Lines scripts showed their user, newest last.
     output: VecDeque<String>,
+    /// The script sends nothing before this.
+    pub(super) resume_at: Instant,
     pub(super) spells: SpellBook,
     pub(super) skills: SkillBook,
     /// Items `useonce` has used, so each is used one time.
@@ -114,6 +121,7 @@ impl Scripting {
             running: None,
             last: None,
             output: VecDeque::new(),
+            resume_at: Instant::now(),
             spells: SpellBook::standard(),
             skills,
             used_once: HashSet::new(),
@@ -322,6 +330,9 @@ fn finish(inner: &mut Inner, mut running: Running) {
 /// Runs the script a tick's worth. Death and a lost login end it.
 pub(super) fn pump_script(inner: &mut Inner, now: Instant) {
     show_due_lines(inner, now);
+    if now < inner.scripting.resume_at {
+        return;
+    }
     let Some(mut running) = inner.scripting.running.take() else {
         return;
     };
@@ -336,8 +347,12 @@ pub(super) fn pump_script(inner: &mut Inner, now: Instant) {
     }
     let mut vars = std::mem::take(&mut inner.scripting.vars);
     inner.scripting.current = Some(running.name.clone());
+    let sent_before = inner.outbound.len();
     running.script.tick(&mut Game { inner }, &mut vars, now);
     inner.scripting.vars = vars;
+    if inner.outbound.len() > sent_before {
+        inner.scripting.resume_at = now + SCRIPT_SEND_GAP;
+    }
     let lines = running.script.take_output();
     inner.scripting.keep_output(lines);
     match inner.scripting.next.take() {
@@ -765,6 +780,52 @@ mod tests {
             .filter(|p| p.first() == Some(&PKT_UNICODE_SPEECH))
             .count();
         assert_eq!(said, 2);
+    }
+
+    #[test]
+    fn a_number_off_the_map_stops_the_script() {
+        for line in [
+            "pathfindto -1 100",
+            "targettile 100 100 300",
+            "targettileoffset 70000 0 0",
+            "replygump 'any' -1",
+        ] {
+            let mut inner = player();
+            start(&mut inner, line);
+            tick(&mut inner, 1);
+            assert_eq!(status(&inner)["status"], "failed", "{line}");
+        }
+    }
+
+    #[test]
+    fn a_party_line_goes_to_the_member_named_after_its_colour() {
+        const MEMBER: Serial = Serial(0x0000_0042);
+        let mut inner = player();
+        start(&mut inner, "partymsg 'heal me' 0 0x42\npartymsg 'all of you' 33");
+        tick(&mut inner, 1);
+        assert!(sent(&inner, &encode::party_message(Some(MEMBER), "heal me")));
+        ready_to_act(&mut inner);
+        tick(&mut inner, 1);
+        assert!(sent(&inner, &encode::party_message(None, "all of you")));
+    }
+
+    #[test]
+    fn a_sending_loop_goes_no_faster_than_a_person() {
+        let mut inner = player();
+        start(&mut inner, "while true\n  msg 'hi'\nendwhile");
+        let now = Instant::now();
+        pump_script(&mut inner, now);
+        pump_script(&mut inner, now + SCRIPT_SEND_GAP / 2);
+        let said = |inner: &Inner| {
+            inner
+                .outbound
+                .iter()
+                .filter(|p| p.first() == Some(&PKT_UNICODE_SPEECH))
+                .count()
+        };
+        assert_eq!(said(&inner), 1, "the second tick is too soon");
+        pump_script(&mut inner, now + SCRIPT_SEND_GAP);
+        assert_eq!(said(&inner), 2);
     }
 
     #[test]

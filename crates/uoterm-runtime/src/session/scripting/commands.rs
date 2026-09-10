@@ -124,7 +124,7 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
         "rename" => rename(game, call, ctx),
         "shownames" => show_names(game, call),
         "togglehands" => toggle_hands(game, call),
-        "clearhands" => clear_hands(game, call),
+        "clearhands" => clear_hands(game, call, ctx),
         "equipitem" => equip_item(game, call, ctx),
         "togglemounted" => toggle_mounted(game, ctx),
         "equipwand" => equip_wand(game, call, ctx),
@@ -532,7 +532,7 @@ fn drink_potion(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Res
         )
         .first()
         .copied();
-    if found.is_some() && free_a_hand(game) {
+    if found.is_some() && free_a_hand(game, ctx) {
         return Ok(Step::Wait);
     }
     match found {
@@ -547,9 +547,13 @@ fn drink_potion(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Res
 /// Puts the left-hand item away so a hand is free to drink, when the
 /// option says to, and has the agents take it out again after. True while
 /// the hand is being freed, so the drink waits a tick.
-fn free_a_hand(game: &mut Game) -> bool {
+fn free_a_hand(game: &mut Game, ctx: &Ctx) -> bool {
     let options = &game.inner.agents.config.options;
     if !options.free_hand_for_potions || !shard_allows(game.inner, AssistFeature::AutoPotionEquip) {
+        return false;
+    }
+    if ctx.waited() >= HAND_FREE_WAIT {
+        // The shard kept the item in the hand: drink with it there.
         return false;
     }
     let (free, left) = {
@@ -575,6 +579,10 @@ fn free_a_hand(game: &mut Game) -> bool {
     game.inner.agents.rearm_later(left, LAYER_TWO_HANDED);
     true
 }
+
+/// How long a line waits for a hand to come free.
+const HAND_FREE_WAIT: Duration = Duration::from_secs(3);
+const HAND_STAYS_FULL: &str = "the shard kept the item in the hand";
 
 /// The most characters a line of speech or party chat may have.
 const TEXT_MAX: usize = 512;
@@ -863,12 +871,8 @@ fn move_one(
     };
     let destination = if dest.is(SOURCE_GROUND) {
         let at = match (place, offset) {
-            (Some((x, y, z)), true) => Point3::new(
-                (i64::from(here.x) + x) as u16,
-                (i64::from(here.y) + y) as u16,
-                (i64::from(here.z) + z) as i8,
-            ),
-            (Some((x, y, z)), false) => Point3::new(x as u16, y as u16, z as i8),
+            (Some((x, y, z)), true) => offset_point(here, x, y, z)?,
+            (Some((x, y, z)), false) => map_point(x, y, z)?,
             (None, _) => here,
         };
         DropAt::Ground(at)
@@ -979,10 +983,10 @@ fn path_find_to(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Res
     let z = match call.args.get(2) {
         Some(a) => a
             .number()
-            .ok_or_else(|| format!("'{}' is not a z", a.text))? as i8,
-        None => game.world().self_state.location.z,
+            .ok_or_else(|| format!("'{}' is not a z", a.text))?,
+        None => i64::from(game.world().self_state.location.z),
     };
-    let dest = Point3::new(x as u16, y as u16, z);
+    let dest = map_point(x, y, z)?;
     if !queue_move(game.inner, dest) {
         Game::note(call, ctx, "no path there");
         return Ok(Step::Done);
@@ -1033,6 +1037,7 @@ fn feed(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<Step
     }
     let color = Game::color(call.args.get(2))?;
     let amount = call.args.get(3).and_then(Arg::number).unwrap_or(1).max(1);
+    let amount = u16::try_from(amount).map_err(|_| format!("{amount} is too many to feed"))?;
     let item = graphics.iter().find_map(|&g| {
         game.find_items(g, color, Source::Backpack, DEFAULT_RANGE)
             .first()
@@ -1047,7 +1052,7 @@ fn feed(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<Step
         item,
         &Arg::word(mobile.0.to_string()),
         None,
-        Some(amount as u16),
+        Some(amount),
         false,
         ctx,
     )
@@ -1138,7 +1143,7 @@ fn toggle_hands(game: &mut Game, call: &Call) -> std::result::Result<Step, Strin
 
 /// Puts the hands' items away, one hand a tick.
 /// Puts the named hands' items into the pack, both in one move.
-fn clear_hands(game: &mut Game, call: &Call) -> std::result::Result<Step, String> {
+fn clear_hands(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Step, String> {
     let full: Vec<(usize, Serial)> = {
         let w = game.world();
         hands(call.args.first())?
@@ -1149,17 +1154,21 @@ fn clear_hands(game: &mut Game, call: &Call) -> std::result::Result<Step, String
     if full.is_empty() {
         return Ok(Step::Done);
     }
+    if ctx.waited() >= HAND_FREE_WAIT {
+        return Err(HAND_STAYS_FULL.into());
+    }
     if !ready(game) {
         return Ok(Step::Wait);
     }
+    // The shard takes one lift per action: one hand now, the other at the
+    // next action.
     let me = game.me();
     let pack = backpack_serial(&game.world()).unwrap_or(me);
-    for (hand, item) in full {
-        lift_and_drop(game.inner, item, ONE_WORN_ITEM, DropAt::Into(pack));
-        game.inner.scripting.hands[hand] = Some(item);
-        game.inner.last_weapon = Some(item);
-    }
-    Ok(Step::Acted)
+    let (hand, item) = full[0];
+    lift_and_drop(game.inner, item, ONE_WORN_ITEM, DropAt::Into(pack));
+    game.inner.scripting.hands[hand] = Some(item);
+    game.inner.last_weapon = Some(item);
+    Ok(if full.len() == 1 { Step::Acted } else { Step::Wait })
 }
 
 fn equip_item(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Step, String> {
@@ -1376,6 +1385,7 @@ fn wait_for_gump(game: &Game, call: &Call, ctx: &mut Ctx) -> std::result::Result
 fn reply_gump(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<Step, String> {
     let id = need(call, 0, "a gump id or any")?;
     let button = need_number(call, 1, "a button")?;
+    let button = u32::try_from(button).map_err(|_| format!("{button} is not a button"))?;
     let switches: Vec<u32> = call.args[2..]
         .iter()
         .map(|a| {
@@ -1391,7 +1401,7 @@ fn reply_gump(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Resul
     game.inner.outbound.push_back(encode::gump_response(
         gump.serial,
         gump.gump_id,
-        button as u32,
+        button,
         &switches,
     ));
     game.inner.world.write().close_gump(gump.gump_id);
@@ -1547,9 +1557,12 @@ fn say(game: &mut Game, call: &Call, kind: u8) -> std::result::Result<Step, Stri
 
 fn party_message(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Step, String> {
     let text = text_arg(call, 0, TEXT_MAX)?;
-    // A serial after the text makes it a private line to that member.
-    let to = match call.args.get(1) {
-        Some(a) if a.number().is_some_and(|n| n > i64::from(u16::MAX)) || a.number().is_none() => {
+    // `partymsg text [color] [serial]`: a serial makes it a private line
+    // to that member. A lone small number after the text is a colour,
+    // which party lines do not carry.
+    let to = match (call.args.get(1), call.args.get(2)) {
+        (_, Some(a)) => Some(game.serial(a, ctx)?),
+        (Some(a), None) if a.number().map_or(true, |n| n > i64::from(u16::MAX)) => {
             Some(game.serial(a, ctx)?)
         }
         _ => None,
@@ -1678,6 +1691,24 @@ fn auto_color_pick(game: &mut Game, call: &Call) -> std::result::Result<Step, St
     Ok(Step::Done)
 }
 
+/// A map tile from script numbers, refused when a number is off the map.
+fn map_point(x: i64, y: i64, z: i64) -> std::result::Result<Point3, String> {
+    match (u16::try_from(x), u16::try_from(y), i8::try_from(z)) {
+        (Ok(x), Ok(y), Ok(z)) => Ok(Point3::new(x, y, z)),
+        _ => Err(format!("{x} {y} {z} is not a tile on the map")),
+    }
+}
+
+/// The tile these steps away from a place.
+fn offset_point(from: Point3, dx: i64, dy: i64, dz: i64) -> std::result::Result<Point3, String> {
+    let add = |a: i64, b: i64| a.checked_add(b).ok_or_else(|| "the offset is too far".to_string());
+    map_point(
+        add(i64::from(from.x), dx)?,
+        add(i64::from(from.y), dy)?,
+        add(i64::from(from.z), dz)?,
+    )
+}
+
 /// Opens a container once, then waits for what is in it.
 fn wait_for_contents(
     game: &mut Game,
@@ -1727,7 +1758,10 @@ fn send_cast(game: &mut Game, spell: u16, target: Option<Serial>, now: Instant) 
     if !ready(game) {
         return Step::Wait;
     }
-    clear_hands_for_cast(game.inner, spell);
+    if !clear_hands_for_cast(game.inner, spell) {
+        // The other hand goes at the next action; the cast waits for it.
+        return Step::Wait;
+    }
     game.inner.outbound.push_back(encode::cast_spell(spell));
     note_cast(game.inner, spell);
     game.inner.scripting.last_spell = Some(spell);
@@ -1905,13 +1939,16 @@ fn target_tile(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Resu
     } else if first.is("current") {
         (game.world().self_state.location, 1)
     } else {
-        let x = need_number(call, 0, "an x")?;
-        let y = need_number(call, 1, "a y")?;
+        let at = map_point(
+            need_number(call, 0, "an x")?,
+            need_number(call, 1, "a y")?,
+            0,
+        )?;
         let z = match call.args.get(2).and_then(Arg::number) {
-            Some(z) => z as i8,
-            None => ground_z(game, x as u16, y as u16),
+            Some(z) => map_point(i64::from(at.x), i64::from(at.y), z)?.z,
+            None => ground_z(game, at.x, at.y),
         };
-        (Point3::new(x as u16, y as u16, z), 3)
+        (Point3::new(at.x, at.y, z), 3)
     };
     let graphic = static_graphic(call, graphic_at)?;
     Ok(aim_at(
@@ -1936,11 +1973,7 @@ fn target_tile_offset(
         need(call, 2, "a z offset")?,
     )?;
     let here = game.world().self_state.location;
-    let at = Point3::new(
-        (i64::from(here.x) + dx) as u16,
-        (i64::from(here.y) + dy) as u16,
-        (i64::from(here.z) + dz) as i8,
-    );
+    let at = offset_point(here, dx, dy, dz)?;
     let aim = Aim::Ground {
         at,
         graphic: static_graphic(call, 3)?,
@@ -1978,10 +2011,12 @@ fn target_tile_relative(
         }
     };
     let (dx, dy) = Direction::from_byte(facing).delta();
-    let steps = if reverse { -range } else { range };
-    let x = (i64::from(from.x) + i64::from(dx) * steps) as u16;
-    let y = (i64::from(from.y) + i64::from(dy) * steps) as u16;
-    let at = Point3::new(x, y, ground_z(game, x, y));
+    let steps = if reverse { range.checked_neg() } else { Some(range) };
+    let at = steps
+        .and_then(|n| Some((i64::from(dx).checked_mul(n)?, i64::from(dy).checked_mul(n)?)))
+        .ok_or_else(|| format!("{range} is not a range"))
+        .and_then(|(x, y)| offset_point(from, x, y, 0))?;
+    let at = Point3::new(at.x, at.y, ground_z(game, at.x, at.y));
     let aim = Aim::Ground { at, graphic };
     Ok(if queue_only {
         queue_aim(game.inner, aim, TARGET_QUEUE_LIFETIME, ctx.now);

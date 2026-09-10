@@ -260,7 +260,10 @@ fn open_containers(world: &World) -> Vec<OpenContainer> {
                 serial: container.serial.to_string(),
                 name: record.map(|i| i.name.clone()).unwrap_or_default(),
                 graphic: record.map(|i| i.graphic),
-                dist: record.map(|i| here.chebyshev(i.location)),
+                // A bag in another bag or on a mobile is where its holder is.
+                dist: world
+                    .map_location(container.serial)
+                    .map(|at| here.chebyshev(at)),
                 total: held.len(),
                 contents: held
                     .iter()

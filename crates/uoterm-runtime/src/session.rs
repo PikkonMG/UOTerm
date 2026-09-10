@@ -68,6 +68,7 @@ const WHO_LAST: &str = "last";
 /// Worn things are lifted one at a time.
 const ONE_WORN_ITEM: u16 = 1;
 const MUST_WAIT: &str = "must wait to perform another action";
+const HAND_PUT_AWAY: &str = "one hand's item went to the pack; cast again after the action delay";
 /// The graphic a ground target names when the caller names none: bare land.
 const BARE_LAND_GRAPHIC: u16 = 0;
 const LOGIN_DEADLINE: Duration = Duration::from_secs(15);
@@ -5006,6 +5007,7 @@ mod relay_tests {
         let now = Instant::now();
         inner.next_action_at = now - ACTION_BUDGET;
         inner.next_double_click_at = now - DOUBLE_CLICK_INTERVAL;
+        inner.scripting.resume_at = now - scripting::SCRIPT_SEND_GAP;
     }
 
     /// The drop tool read its destination only as a JSON number, so a serial
@@ -6734,7 +6736,8 @@ fn action_ready(inner: &Inner) -> bool {
 }
 
 fn mark_action(inner: &mut Inner) {
-    inner.next_action_at = Instant::now() + ACTION_BUDGET;
+    // A lift in the same tick may have asked for a longer wait already.
+    inner.next_action_at = inner.next_action_at.max(Instant::now() + ACTION_BUDGET);
 }
 
 /// Sends a lift. The shard counts its action delay from when the lift
@@ -7082,8 +7085,10 @@ const CASTING_BOOKS: [u16; 8] = [
 ];
 
 /// Puts the hands' items into the pack before a Magery cast, when the
-/// option says to. Books stay in hand.
-fn clear_hands_for_cast(inner: &mut Inner, spell: u16) {
+/// option says to. Books stay in hand. The shard takes one lift per
+/// action, so one item goes each call. False while a second item still
+/// waits: the cast must wait for the next action.
+fn clear_hands_for_cast(inner: &mut Inner, spell: u16) -> bool {
     let magery = inner
         .scripting
         .spells
@@ -7093,7 +7098,7 @@ fn clear_hands_for_cast(inner: &mut Inner, spell: u16) {
         || !inner.agents.config.options.unequip_before_cast
         || !shard_allows(inner, AssistFeature::UnequipOnCast)
     {
-        return;
+        return true;
     }
     let (pack, held) = {
         let w = inner.world.read();
@@ -7105,9 +7110,10 @@ fn clear_hands_for_cast(inner: &mut Inner, spell: u16) {
             .collect();
         (backpack_serial(&w).unwrap_or(w.self_state.serial), held)
     };
-    for item in held {
+    if let Some(&item) = held.first() {
         lift_and_drop(inner, item, ONE_WORN_ITEM, DropAt::Into(pack));
     }
+    held.len() <= 1
 }
 
 /// True when the option forbids this double-click: the character on
@@ -7926,7 +7932,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             if !action_ready(inner) {
                 return ToolResult::err(MUST_WAIT);
             }
-            clear_hands_for_cast(inner, spell as u16);
+            if !clear_hands_for_cast(inner, spell as u16) {
+                return ToolResult::err(HAND_PUT_AWAY);
+            }
             inner.outbound.push_back(encode::cast_spell(spell as u16));
             note_cast(inner, spell as u16);
             ToolResult::action(TOOL_CAST)

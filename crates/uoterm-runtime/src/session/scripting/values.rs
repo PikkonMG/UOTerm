@@ -531,12 +531,18 @@ fn act_as_condition(game: &mut Game, call: &Call, ctx: &mut Ctx) -> Read {
     if !found {
         return Ok(ScriptValue::Bool(false));
     }
+    let sent_before = game.inner.outbound.len();
     match super::commands::run(game, call, ctx) {
         Step::Acted => {
             ctx.mark_acted();
             Ok(ScriptValue::Bool(true))
         }
         Step::Done => Ok(ScriptValue::Bool(true)),
+        // It acted, and has more to do at the next action.
+        Step::Wait if game.inner.outbound.len() > sent_before => {
+            ctx.mark_acted();
+            Ok(ScriptValue::Bool(true))
+        }
         Step::Wait => Ok(ScriptValue::Bool(false)),
         Step::Fail(message) => Err(message),
     }

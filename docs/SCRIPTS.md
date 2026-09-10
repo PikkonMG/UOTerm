@@ -24,7 +24,9 @@ endwhile
 
 1. **One line, one thing.** A line holds one command, or one check.
 2. **A person's pace.** A command that acts waits until the character may act
-   again. A script never acts faster than a person can.
+   again. After a line that speaks, clicks or asks the shard for something,
+   the script rests a quarter of a second. A script never acts faster than
+   a person can.
 3. **A wait always ends.** Every `waitfor...` command has a time. When the
    time runs out, the script goes on to the next line.
 4. **A bad line stops the script.** An unknown command, a missing argument or
@@ -183,7 +185,7 @@ endif
 | --- | --- |
 | `msg 'bank'` | Says the words. Town and pet commands work: `msg 'all kill'`. |
 | `yellmsg`, `whispermsg`, `emotemsg`, `guildmsg`, `allymsg` | Other ways to speak. |
-| `partymsg 'heal me'` | Says it to your party. Add a serial for one member only. |
+| `partymsg 'heal me'` | Says it to your party. For one member only, add a colour and the serial: `partymsg 'heal me' 0 0x1234`. |
 | `partyaccept`, `partydecline` | Answers a party invite. |
 | `partyinvite 'friend'` | Asks someone into your party. With no one named, the shard gives a target cursor. |
 | `partyremove 'friend'` | Removes someone from your party. |

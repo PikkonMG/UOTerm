@@ -79,6 +79,8 @@ struct DamageMeter {
     started: Option<Instant>,
     paused_for: Duration,
     paused_at: Option<Instant>,
+    /// A stopped meter keeps its totals for the report but never resumes.
+    stopped: bool,
     dealt: HashMap<Serial, u32>,
 }
 
@@ -569,12 +571,18 @@ pub(super) fn damage_meter(inner: &mut Inner, args: &Value) -> ToolResult {
             }
         }
         "pause" => m.paused_at = m.paused_at.or(Some(now)),
+        "resume" if m.stopped => {
+            return ToolResult::err("the damage meter is stopped; start it again")
+        }
         "resume" => {
             if let Some(at) = m.paused_at.take() {
                 m.paused_for += now.saturating_duration_since(at);
             }
         }
-        "stop" => m.started = None,
+        "stop" => {
+            m.paused_at = m.paused_at.or(Some(now));
+            m.stopped = true;
+        }
         "report" => {}
         other => {
             return ToolResult::err(format!(
@@ -862,6 +870,24 @@ mod tests {
         tick(&mut inner);
         assert!(inner.agents.job.is_none(), "nothing more to move");
         assert!(!lifted(&inner, OTHER));
+    }
+
+    #[test]
+    fn a_stopped_damage_meter_keeps_its_totals() {
+        const HIT: u16 = 12;
+        let mut inner = player();
+        let me = inner.world.read().self_state.serial;
+        assert!(damage_meter(&mut inner, &json!({ "action": "start" })).ok);
+        inner.agents.note_damage(me, OTHER, HIT);
+        let stopped = damage_meter(&mut inner, &json!({ "action": "stop" }));
+        inner.agents.note_damage(me, OTHER, HIT);
+        let report = damage_meter(&mut inner, &json!({ "action": "report" }));
+        for r in [&stopped, &report] {
+            let body = &r.result;
+            assert_eq!(body["running"], false);
+            assert_eq!(body["mobiles"][0]["damage"], u64::from(HIT));
+        }
+        assert!(!damage_meter(&mut inner, &json!({ "action": "resume" })).ok);
     }
 
     #[test]
@@ -1190,6 +1216,61 @@ mod tests {
             lift_at.is_some() && lift_at < cast_at,
             "the sword goes first"
         );
+    }
+
+    /// The shard refuses a second lift in one action, so each hand goes at
+    /// its own action and the cast waits for the second.
+    #[test]
+    fn two_full_hands_are_cleared_one_action_each_before_a_cast() {
+        const LIGHTNING: u16 = 30;
+        const SHIELD: Serial = Serial(0x4000_0B0C);
+        let mut inner = player();
+        inner.agents.config.options.unequip_before_cast = true;
+        inner
+            .world
+            .write()
+            .apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
+                serial: SHIELD,
+                graphic: 0x1B72,
+                layer: LAYER_TWO_HANDED,
+                hue: 0,
+            }));
+        let cast = |inner: &mut Inner| {
+            ready_to_act(inner);
+            inner.outbound.clear();
+            handle_tool(
+                inner,
+                ToolCall {
+                    name: TOOL_CAST.into(),
+                    args: json!({ "spell": LIGHTNING }),
+                },
+            )
+        };
+        let lifts = |inner: &Inner| {
+            inner
+                .outbound
+                .iter()
+                .filter(|p| p.first() == Some(&PKT_LIFT))
+                .count()
+        };
+        let first = cast(&mut inner);
+        assert!(!first.ok, "the cast waits for the other hand");
+        assert_eq!(lifts(&inner), 1);
+        assert!(!sent(&inner, &encode::cast_spell(LIGHTNING)));
+        let lifted = inner
+            .world
+            .read()
+            .self_state
+            .equipment
+            .iter()
+            .map(|e| e.serial)
+            .find(|s| inner.outbound[0][1..5] == s.0.to_be_bytes())
+            .expect("a hand's item");
+        inner.world.write().apply(&Inbound::Delete(lifted));
+        let second = cast(&mut inner);
+        assert!(second.ok);
+        assert_eq!(lifts(&inner), 1);
+        assert!(sent(&inner, &encode::cast_spell(LIGHTNING)));
     }
 
     #[test]

@@ -780,6 +780,9 @@ mod tests {
     fn a_carried_container_shows_what_it_holds() {
         let mut w = World::new();
         corpse_and_pack(&mut w);
+        // The pack keeps the tile it was sent at; the character walks on.
+        const STEPS_WALKED: u16 = 8;
+        w.self_state.location.x += STEPS_WALKED;
         let obs = w.observe_default();
         let pack = obs
             .containers
