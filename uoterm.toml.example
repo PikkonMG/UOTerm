@@ -15,4 +15,9 @@ obey_shard_rules = true
 # true  = tell the agent (default).
 # false = tell the agent nothing.
 answer_when_named = true
+# With answer_when_named on, lets the agent say yes to a player's plans:
+# join their party, follow them and help them fight.
+# false = answer in a few words and say no to plans (default).
+# true  = play along.
+play_along = false
 # uopath = "/path/to/uo"

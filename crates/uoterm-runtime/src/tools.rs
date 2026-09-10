@@ -83,6 +83,13 @@ pub struct ToolResult {
     /// Every tool result carries them, so a busy agent still sees them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unanswered: Vec<uoterm_world::SpokenTo>,
+    /// With unanswered lines: `basic` or `play_along`, what the agent may
+    /// agree to when it answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_mode: Option<String>,
+    /// With unanswered lines: how the persona talks, when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_style: Option<String>,
 }
 
 impl ToolResult {
@@ -93,6 +100,8 @@ impl ToolResult {
             error: None,
             action_id: Some(new_action_id()),
             unanswered: Vec::new(),
+            chat_mode: None,
+            reply_style: None,
         }
     }
 
@@ -103,6 +112,8 @@ impl ToolResult {
             error: Some(msg.into()),
             action_id: None,
             unanswered: Vec::new(),
+            chat_mode: None,
+            reply_style: None,
         }
     }
 
@@ -114,6 +125,8 @@ impl ToolResult {
             error: None,
             action_id: Some(id),
             unanswered: Vec::new(),
+            chat_mode: None,
+            reply_style: None,
         }
     }
 }

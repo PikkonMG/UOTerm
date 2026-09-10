@@ -972,6 +972,7 @@ mod tests {
             encryption: Default::default(),
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
+            play_along: crate::config::PLAY_ALONG_DEFAULT,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1025,6 +1026,7 @@ mod tests {
             encryption: crate::config::EncryptionMode::None,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
+            play_along: crate::config::PLAY_ALONG_DEFAULT,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1060,6 +1062,7 @@ mod tests {
             encryption,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
+            play_along: crate::config::PLAY_ALONG_DEFAULT,
         }
     }
 

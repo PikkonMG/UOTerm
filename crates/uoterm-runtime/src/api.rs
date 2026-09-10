@@ -118,6 +118,8 @@ struct CreateBody {
     obey_shard_rules: bool,
     #[serde(default = "crate::config::answer_when_named_default")]
     answer_when_named: bool,
+    #[serde(default)]
+    play_along: bool,
 }
 
 async fn create_session(
@@ -142,6 +144,7 @@ async fn create_session(
         encryption: Default::default(),
         obey_shard_rules: body.obey_shard_rules,
         answer_when_named: body.answer_when_named,
+        play_along: body.play_along,
     };
     match st.runtime.connect(opts).await {
         Ok(h) => (StatusCode::CREATED, Json(json!({ "id": h.id }))).into_response(),

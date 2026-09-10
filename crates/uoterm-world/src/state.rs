@@ -11,7 +11,9 @@ use uoterm_protocol::{
     SPEECH_WHISPER, SPEECH_YELL,
 };
 
-use crate::addressed::{asks_if_bot, names_character, SpokenTo, SpokenToLog};
+use crate::addressed::{
+    asks_if_bot, names_character, SpokenTo, SpokenToLog, CHAT_MODE_BASIC, CHAT_MODE_PLAY_ALONG,
+};
 use crate::assist::AssistRules;
 use crate::events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 use crate::journal::{Journal, JournalEntry};
@@ -393,6 +395,10 @@ pub struct World {
     /// Notes the lines where another character says this one's name. The
     /// session sets it from the `answer_when_named` switch.
     pub answer_when_named: bool,
+    /// With `answer_when_named`, lets the agent party up with, follow and
+    /// fight beside a player who spoke to the character. The session sets
+    /// it from the `play_along` switch.
+    pub play_along: bool,
     /// The lines other characters said to this one by name.
     pub spoken_to: SpokenToLog,
 }
@@ -873,6 +879,21 @@ impl World {
             format!("{}: {}", line.name, line.text),
         ));
         self.spoken_to.push(spoken_to);
+    }
+
+    /// How the agent may answer lines said to the character: `basic` or
+    /// `play_along`. None when the `answer_when_named` switch is off.
+    pub fn chat_mode(&self) -> Option<&'static str> {
+        match (self.answer_when_named, self.play_along) {
+            (false, _) => None,
+            (true, false) => Some(CHAT_MODE_BASIC),
+            (true, true) => Some(CHAT_MODE_PLAY_ALONG),
+        }
+    }
+
+    /// True when this mobile said the character's name in the last minute.
+    pub fn asked_in_chat(&self, serial: Serial) -> bool {
+        self.spoken_to.asked_by(serial, unix_now_ms())
     }
 
     pub fn name_of(&self, serial: Serial) -> String {

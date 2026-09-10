@@ -30,7 +30,66 @@ pub struct Persona {
     pub typo_rate: f32,
     #[serde(default)]
     pub allow_emote: bool,
+    /// How the character plays along with a player who spoke to it, when
+    /// the `play_along` setting is on.
+    #[serde(default)]
+    pub play_along: PlayAlong,
 }
+
+/// A plan a player can ask the character to join in chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Plan {
+    /// Join the player's party.
+    Party,
+    /// Follow the player.
+    Follow,
+    /// Fight what the player fights.
+    Fight,
+}
+
+/// The persona's rules for playing along. A file without them gets
+/// [`PlayAlong::default`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlayAlong {
+    /// The plans the character may say yes to.
+    pub plans: Vec<Plan>,
+    /// How long the character follows a player before it goes back to its
+    /// own task.
+    pub stay_minutes: u32,
+    /// The risk tolerance while it plays along. None keeps the persona's.
+    pub risk_tolerance: Option<f32>,
+    /// A few words on how the character talks, for the agent that writes
+    /// its lines.
+    pub reply_style: String,
+}
+
+/// How long the character plays along when the persona does not say.
+pub const PLAY_ALONG_STAY_MINUTES: u32 = 30;
+
+impl Default for PlayAlong {
+    fn default() -> Self {
+        Self {
+            plans: vec![Plan::Party, Plan::Follow],
+            stay_minutes: PLAY_ALONG_STAY_MINUTES,
+            risk_tolerance: None,
+            reply_style: String::new(),
+        }
+    }
+}
+
+impl PlayAlong {
+    pub fn allows(&self, plan: Plan) -> bool {
+        self.plans.contains(&plan)
+    }
+
+    pub fn stay(&self) -> Duration {
+        Duration::from_secs(u64::from(self.stay_minutes) * SECONDS_PER_MINUTE)
+    }
+}
+
+pub const SECONDS_PER_MINUTE: u64 = 60;
 
 fn default_risk() -> f32 {
     0.35
@@ -60,6 +119,10 @@ impl Persona {
 
     pub fn clamp_rates(&mut self) {
         self.typo_rate = self.typo_rate.clamp(0.0, 1.0);
+        self.risk_tolerance = self.risk_tolerance.clamp(0.0, 1.0);
+        if let Some(risk) = self.play_along.risk_tolerance.as_mut() {
+            *risk = risk.clamp(0.0, 1.0);
+        }
     }
 
     pub fn lumberjack_yew() -> Self {
@@ -72,6 +135,7 @@ impl Persona {
             chat_rate_per_hour: 8,
             typo_rate: 0.02,
             allow_emote: false,
+            play_along: PlayAlong::default(),
         }
     }
 
@@ -84,6 +148,19 @@ impl Persona {
     }
 
     pub fn hp_flee_ratio(&self) -> f32 {
+        self.flee_ratio_at(self.risk_tolerance)
+    }
+
+    /// The flee ratio while the character plays along with a player.
+    pub fn play_along_flee_ratio(&self) -> f32 {
+        self.flee_ratio_at(
+            self.play_along
+                .risk_tolerance
+                .unwrap_or(self.risk_tolerance),
+        )
+    }
+
+    fn flee_ratio_at(&self, risk_tolerance: f32) -> f32 {
         let base = match self.tier.as_str() {
             "novice" => 0.55,
             "apprentice" => 0.45,
@@ -93,7 +170,7 @@ impl Persona {
             "master" | "grandmaster" => 0.18,
             _ => 0.35,
         };
-        base * (1.2 - self.risk_tolerance).clamp(0.7, 1.3)
+        base * (1.2 - risk_tolerance).clamp(0.7, 1.3)
     }
 
     pub fn filter_speech(&self, text: &str) -> Option<String> {
@@ -152,12 +229,18 @@ fn shorten(t: &str) -> String {
 /// How many of a character's own chat lines are remembered, so that none of
 /// them is said again while it is still fresh.
 pub const RECENT_LINES_KEPT: usize = 32;
+/// The shortest gap between two replies to a player who spoke to the
+/// character. A person needs a moment to read and type.
+pub const REPLY_MIN_GAP: Duration = Duration::from_secs(REPLY_MIN_GAP_SECS);
+const REPLY_MIN_GAP_SECS: u64 = 3;
 
 #[derive(Clone, Debug, Default)]
 pub struct SpeechPolicy {
     pub last_chat: Option<Instant>,
     pub chats_this_hour: u32,
     pub hour_stamp: u32,
+    /// When the character last answered a player who spoke to it.
+    pub last_reply: Option<Instant>,
     /// The character's latest chat lines, oldest first, in the form
     /// [`line_key`] gives them.
     recent: VecDeque<String>,
@@ -181,6 +264,20 @@ impl SpeechPolicy {
         }
         self.chats_this_hour += 1;
         self.last_chat = Some(Instant::now());
+        true
+    }
+
+    /// True when the character may answer a player who spoke to it now.
+    /// A reply is not small talk, so the persona's chat budget does not
+    /// hold it; only [`REPLY_MIN_GAP`] does.
+    pub fn allow_reply(&mut self) -> bool {
+        if self
+            .last_reply
+            .is_some_and(|at| at.elapsed() < REPLY_MIN_GAP)
+        {
+            return false;
+        }
+        self.last_reply = Some(Instant::now());
         true
     }
 
@@ -218,6 +315,51 @@ fn line_key(line: &str) -> String {
 mod tests {
     use super::*;
     use crate::tools::Goal;
+
+    const BASE: &str = r#"
+name = "Mara of Yew"
+class = "lumberjack"
+tier = "journeyman"
+"#;
+
+    #[test]
+    fn every_shipped_persona_loads() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../personas");
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .expect("the personas folder")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .collect();
+        assert!(!files.is_empty());
+        for file in files {
+            Persona::load(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        }
+    }
+
+    #[test]
+    fn a_persona_without_play_along_rules_gets_the_defaults() {
+        let persona: Persona = toml::from_str(BASE).expect("a persona");
+        assert_eq!(persona.play_along, PlayAlong::default());
+        assert!(persona.play_along.allows(Plan::Party));
+        assert!(!persona.play_along.allows(Plan::Fight));
+    }
+
+    #[test]
+    fn play_along_rules_are_read_and_their_risk_is_used() {
+        const RISKY: f32 = 0.9;
+        let text = format!(
+            "{BASE}\n[play_along]\nplans = [\"follow\", \"fight\"]\nstay_minutes = 5\nrisk_tolerance = {RISKY}\nreply_style = \"short, jokes a bit\"\n"
+        );
+        let persona: Persona = toml::from_str(&text).expect("a persona");
+        let rules = &persona.play_along;
+        assert_eq!(rules.plans, vec![Plan::Follow, Plan::Fight]);
+        assert_eq!(rules.stay(), Duration::from_secs(5 * SECONDS_PER_MINUTE));
+        assert_eq!(rules.reply_style, "short, jokes a bit");
+        assert!(
+            persona.play_along_flee_ratio() < persona.hp_flee_ratio(),
+            "braver beside a friend"
+        );
+    }
 
     #[test]
     fn rejects_asterisk_emotes() {

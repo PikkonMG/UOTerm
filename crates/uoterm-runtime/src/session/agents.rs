@@ -350,11 +350,19 @@ pub(super) fn on_sell_list(
 }
 
 /// Joins a party a friend asked the character into, when the friends list
-/// says to.
+/// says to, or one a player who spoke to the character asked it into, when
+/// the chat mode is play along.
 pub(super) fn on_party_invite(inner: &mut Inner, leader: Serial) {
-    let a = &inner.agents;
-    let friend = a.is_friend(&inner.world.read(), leader);
-    if a.config.friends.accept_party && friend {
+    let (friend, asked_in_chat) = {
+        let world = inner.world.read();
+        (
+            inner.agents.is_friend(&world, leader),
+            world.chat_mode() == Some(uoterm_world::CHAT_MODE_PLAY_ALONG)
+                && world.asked_in_chat(leader)
+                && inner.persona.play_along.allows(crate::persona::Plan::Party),
+        )
+    };
+    if (inner.agents.config.friends.accept_party && friend) || asked_in_chat {
         inner.outbound.push_back(encode::party_accept(leader));
     }
 }

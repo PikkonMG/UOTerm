@@ -149,6 +149,23 @@ pub struct Observe {
     /// Lines other characters said to this one by name in the last minute,
     /// oldest first. Empty when the `answer_when_named` switch is off.
     pub spoken_to: Vec<SpokenTo>,
+    /// `basic` or `play_along`: what the agent may agree to in chat. None
+    /// when the `answer_when_named` switch is off.
+    pub chat_mode: Option<String>,
+    /// How the character talks, from the persona, for the agent that writes
+    /// its lines. The runtime fills this in.
+    pub reply_style: Option<String>,
+    /// The player the character plays along with now. The runtime fills
+    /// this in.
+    pub playing_along: Option<PlayingAlong>,
+}
+
+/// The player the character plays along with, and how long it has left.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlayingAlong {
+    pub name: String,
+    pub serial: String,
+    pub minutes_left: u64,
 }
 
 impl Observe {
@@ -241,6 +258,9 @@ impl Observe {
             prompt: world.prompt.is_some(),
             text_entry: world.text_entry.as_ref().map(|d| d.description.clone()),
             spoken_to: world.spoken_to.fresh(unix_now_ms()),
+            chat_mode: world.chat_mode().map(String::from),
+            reply_style: None,
+            playing_along: None,
         }
     }
 }

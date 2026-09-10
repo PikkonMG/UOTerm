@@ -10,6 +10,11 @@ use uoterm_protocol::Serial;
 pub const SPOKEN_TO_KEEP: usize = 5;
 /// How long a line spoken to the character stays in the observation.
 pub const SPOKEN_TO_FRESH_MS: u64 = 60_000;
+/// The agent answers in a few friendly words and says no to every plan.
+pub const CHAT_MODE_BASIC: &str = "basic";
+/// The agent may also party up with, follow and fight beside a player who
+/// spoke to the character.
+pub const CHAT_MODE_PLAY_ALONG: &str = "play_along";
 /// A first name shorter than this is too common a word to count alone.
 const FIRST_NAME_MIN: usize = 3;
 /// Words that ask whether the character is played by a program.
@@ -76,6 +81,12 @@ impl SpokenToLog {
             .filter(|l| now_ms.saturating_sub(l.unix_ms) < SPOKEN_TO_FRESH_MS)
             .cloned()
             .collect()
+    }
+
+    /// True when this mobile said the character's name in the last
+    /// [`SPOKEN_TO_FRESH_MS`] before `now_ms`.
+    pub fn asked_by(&self, serial: Serial, now_ms: u64) -> bool {
+        self.fresh(now_ms).iter().any(|l| l.serial == serial)
     }
 
     /// The character spoke: every line so far counts as answered.

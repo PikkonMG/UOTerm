@@ -43,6 +43,10 @@ pub const ANSWER_WHEN_NAMED_DEFAULT: bool = true;
 pub fn answer_when_named_default() -> bool {
     ANSWER_WHEN_NAMED_DEFAULT
 }
+/// With `answer_when_named`, the agent may also party up with, follow and
+/// fight beside a player who spoke to the character. Off unless the user
+/// switches it on; then the agent only answers and says no to plans.
+pub const PLAY_ALONG_DEFAULT: bool = false;
 
 pub fn parse_encryption_mode(s: &str) -> crate::error::Result<EncryptionMode> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -68,6 +72,8 @@ pub struct AppConfig {
     pub obey_shard_rules: bool,
     #[serde(default = "answer_when_named_default")]
     pub answer_when_named: bool,
+    #[serde(default)]
+    pub play_along: bool,
 }
 
 impl Default for AppConfig {
@@ -83,6 +89,7 @@ impl Default for AppConfig {
             stay_on_socket: true,
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
+            play_along: PLAY_ALONG_DEFAULT,
         }
     }
 }
@@ -116,6 +123,8 @@ pub struct ConnectOptions {
     pub obey_shard_rules: bool,
     /// Tell the agent when another character says this one's name.
     pub answer_when_named: bool,
+    /// Let the agent party up with, follow and help a player who spoke.
+    pub play_along: bool,
 }
 
 impl Default for ConnectOptions {
@@ -136,6 +145,7 @@ impl Default for ConnectOptions {
             encryption: EncryptionMode::None,
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
+            play_along: PLAY_ALONG_DEFAULT,
         }
     }
 }
@@ -301,6 +311,10 @@ answer_when_named = false
         assert!(ConnectOptions::default().answer_when_named);
         let cfg: AppConfig = toml::from_str(OFF).expect("the config loads");
         assert!(!cfg.answer_when_named);
+        assert!(
+            !AppConfig::default().play_along,
+            "play along is off at first"
+        );
     }
 
     #[test]

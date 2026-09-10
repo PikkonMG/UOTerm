@@ -93,6 +93,8 @@ Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `conne
 
 `answer_when_named` (default `true`): when another character says your character's name, the agent gets a `spoken_to` event, an `unanswered` list on every tool result until your character speaks, and a `spoken_to` list in `observe`, so it can answer. With `false`, the agent is told nothing. `POST /v1/sessions` takes the same field. See `docs/AGENT_API.md` for how the agent should answer.
 
+`play_along` (default `false`): with `answer_when_named` on, lets the agent say yes to a player's plans: join their party, follow them and help them fight. With `false`, the agent answers in a few words and says no to plans, and the client refuses to follow or join the party of a player who asked in chat. `POST /v1/sessions` takes the same field.
+
 Account profile: copy `profiles/example.toml`. Extra `profiles/*.toml` files are gitignored. `--profile` supplies account, character, password env, and shard.
 
 Persona files live in `personas/`. See `docs/PERSONAS.md`. Attach a persona with `connect --persona`. `agent run --persona` loads the persona into the session, then maps `class` to `set_goal`.

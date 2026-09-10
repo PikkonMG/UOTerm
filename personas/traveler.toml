@@ -6,3 +6,9 @@ risk_tolerance = 0.45
 chat_rate_per_hour = 4
 typo_rate = 0.02
 allow_emote = false
+
+[play_along]
+plans = ["party", "follow", "fight"]
+stay_minutes = 45
+risk_tolerance = 0.55
+reply_style = "easygoing, dry humor, talks about roads and towns"

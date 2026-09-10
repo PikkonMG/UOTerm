@@ -14,7 +14,7 @@ use crate::movement::{
     self, door_in_the_way, facing_toward, follow_plan, DoorOpener, DoorPlan, FollowDecision,
     FollowState, Movement,
 };
-use crate::persona::{Persona, SpeechPolicy};
+use crate::persona::{Persona, Plan, SpeechPolicy};
 use crate::reflex::{self, bandage_self_ms, heal_potion_lock_ms, ReflexAction};
 use crate::scene;
 use crate::tools::*;
@@ -68,6 +68,9 @@ const WHO_LAST: &str = "last";
 /// Worn things are lifted one at a time.
 const ONE_WORN_ITEM: u16 = 1;
 const MUST_WAIT: &str = "must wait to perform another action";
+/// The basic chat mode says no to a player's plans; see `play_along`.
+const CHAT_SAYS_NO: &str =
+    "chat mode is basic: the character does not join or follow a player who asked in chat";
 const HAND_PUT_AWAY: &str = "one hand's item went to the pack; cast again after the action delay";
 /// The graphic a ground target names when the caller names none: bare land.
 const BARE_LAND_GRAPHIC: u16 = 0;
@@ -143,6 +146,7 @@ const WALK_STEPS_ONE: usize = 1;
 const SPEECH_REJECTED: &str = "speech rejected by persona policy";
 const SPEECH_RATE_LIMITED: &str = "persona chat rate exceeded";
 const SPEECH_REPEATED: &str = "that line was said lately; say something new";
+const SPEECH_REPLY_TOO_SOON: &str = "wait a few seconds before the next reply";
 /// The facet a session reads before the shard says which one it is on.
 const START_MAP_INDEX: u8 = 0;
 /// The word the server writes when the character has no stamina left to move
@@ -270,6 +274,7 @@ pub async fn start(
     let world = Arc::new(RwLock::new(World {
         flags_mean_flying: opts.version.reads_flying_flag(),
         answer_when_named: opts.answer_when_named,
+        play_along: opts.play_along,
         ..World::new()
     }));
     let (tx, rx) = mpsc::channel(CMD_QUEUE_CAP);
@@ -323,6 +328,8 @@ struct Inner {
     version: ClientVersion,
     follow: Option<Serial>,
     follow_state: FollowState,
+    /// The player the character plays along with, and when it stops.
+    play_along: Option<PlayAlongRun>,
     cliloc: Option<Arc<ClilocData>>,
     /// The client's own table of command phrases and the keyword number each
     /// stands for. A shard's NPCs obey those numbers, not the words.
@@ -763,6 +770,7 @@ async fn run_session(
         version: opts.version,
         follow: None,
         follow_state: FollowState::default(),
+        play_along: None,
         cliloc,
         speech_data,
         next_action_at: Instant::now() - ACTION_BUDGET,
@@ -1565,6 +1573,7 @@ mod relay_tests {
             version: ClientVersion::MODERN,
             follow: None,
             follow_state: FollowState::default(),
+            play_along: None,
             cliloc: None,
             speech_data: None,
             next_action_at: now - ACTION_BUDGET,
@@ -4434,6 +4443,7 @@ mod relay_tests {
             encryption: EncryptionMode::None,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
+            play_along: crate::config::PLAY_ALONG_DEFAULT,
         }
     }
 
@@ -4522,7 +4532,7 @@ mod relay_tests {
         for _ in 0..20 {
             match reflex::tick(&world, &persona, &Goal::Social) {
                 ReflexAction::Say(text) => {
-                    if speech_allowed(&mut speech, &persona, text, SPEECH_REGULAR).is_ok() {
+                    if speech_allowed(&mut speech, &persona, text, SPEECH_REGULAR, false).is_ok() {
                         sent += 1;
                     }
                 }
@@ -4707,16 +4717,16 @@ mod relay_tests {
         assert!(!inbound_enters_world(&Inbound::VersionRequest));
     }
 
-    /// A busy agent hears of a line said to its character by name in the
-    /// next tool result, whatever the tool, until the character speaks.
-    #[test]
-    fn a_named_line_rides_on_each_tool_result_until_answered() {
-        const ANN: Serial = Serial(0x0000_0E11);
-        let mut inner = armed_session();
+    const ANN: Serial = Serial(0x0000_0E11);
+
+    /// Mara, logged in, with Ann in sight who says `text` to her.
+    fn named_by_ann(play_along: bool, text: &str) -> Inner {
+        let inner = armed_session();
         {
             let mut w = inner.world.write();
             w.logged_in = true;
             w.answer_when_named = true;
+            w.play_along = play_along;
             w.self_state.name = "Mara".into();
             w.apply(&Inbound::MobileIncoming(uoterm_protocol::MobileView {
                 serial: ANN,
@@ -4738,16 +4748,31 @@ mod relay_tests {
                 kind: SPEECH_REGULAR,
                 hue: 0,
                 name: "Ann".into(),
-                text: "hey Mara, are you a bot?".into(),
+                text: text.into(),
             }));
         }
-        let call = |name: &str, args: Value| ToolCall {
+        inner
+    }
+
+    fn call(name: &str, args: Value) -> ToolCall {
+        ToolCall {
             name: name.into(),
             args,
-        };
+        }
+    }
+
+    /// A busy agent hears of a line said to its character by name in the
+    /// next tool result, whatever the tool, until the character speaks.
+    #[test]
+    fn a_named_line_rides_on_each_tool_result_until_answered() {
+        let mut inner = named_by_ann(false, "hey Mara, are you a bot?");
         let seen = answer_agent(&mut inner, call(TOOL_OBSERVE, json!({})));
         assert_eq!(seen.unanswered.len(), 1);
         assert!(seen.unanswered[0].asks_if_bot);
+        assert_eq!(
+            seen.chat_mode.as_deref(),
+            Some(uoterm_world::CHAT_MODE_BASIC)
+        );
         let said = answer_agent(
             &mut inner,
             call(TOOL_SAY, json!({ "text": "lol you're funny" })),
@@ -4772,6 +4797,123 @@ mod relay_tests {
             shop_word.unanswered.is_empty(),
             "a line with a shop word answers too"
         );
+    }
+
+    /// The persona's small-talk budget does not hold back an answer to a
+    /// player, but two answers need a moment between them.
+    #[test]
+    fn a_reply_skips_the_chat_budget_but_not_the_reply_gap() {
+        let mut inner = named_by_ann(false, "mara, you there?");
+        inner.speech.hour_stamp = chrono::Timelike::hour(&chrono::Local::now());
+        inner.speech.chats_this_hour = inner.persona.chat_rate_per_hour;
+        let first = answer_agent(
+            &mut inner,
+            call(TOOL_SAY, json!({ "text": "yep, right here" })),
+        );
+        assert!(first.ok, "{:?}", first.error);
+        inner
+            .world
+            .write()
+            .apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                serial: ANN,
+                graphic: 0x191,
+                kind: SPEECH_REGULAR,
+                hue: 0,
+                name: "Ann".into(),
+                text: "mara, cool".into(),
+            }));
+        let second = answer_agent(&mut inner, call(TOOL_SAY, json!({ "text": "sure thing" })));
+        assert_eq!(second.error.as_deref(), Some(SPEECH_REPLY_TOO_SOON));
+        let chatter = answer_agent(&mut inner, call(TOOL_OBSERVE, json!({})));
+        assert_eq!(chatter.unanswered.len(), 1, "the line still waits");
+    }
+
+    /// In the basic mode the character answers but says no to plans: it
+    /// neither follows nor joins the party of a player who asked in chat.
+    #[test]
+    fn basic_chat_says_no_to_following_and_joining() {
+        let mut inner = named_by_ann(false, "mara, follow me and join my party");
+        let follow = answer_agent(&mut inner, call(TOOL_FOLLOW, json!({ "serial": ANN.0 })));
+        assert_eq!(follow.error.as_deref(), Some(CHAT_SAYS_NO));
+        assert_eq!(inner.follow, None);
+        inner.world.write().party_invite = Some(ANN);
+        agents::on_party_invite(&mut inner, ANN);
+        assert!(!inner.outbound.contains(&encode::party_accept(ANN)));
+        let join = scripting::run_now(&mut inner, "join", "partyaccept");
+        assert_eq!(join.error.as_deref(), Some(CHAT_SAYS_NO));
+        assert_eq!(
+            inner.world.read().party_invite,
+            Some(ANN),
+            "the invite stays open"
+        );
+    }
+
+    /// With play along on, the character joins the party of a player who
+    /// spoke to it and may follow them.
+    #[test]
+    fn play_along_joins_and_follows_a_player_who_asked() {
+        let mut inner = named_by_ann(true, "mara, want to hunt cows?");
+        agents::on_party_invite(&mut inner, ANN);
+        assert!(inner.outbound.contains(&encode::party_accept(ANN)));
+        let follow = answer_agent(&mut inner, call(TOOL_FOLLOW, json!({ "serial": ANN.0 })));
+        assert!(follow.ok, "{:?}", follow.error);
+        assert_eq!(
+            follow.chat_mode.as_deref(),
+            Some(uoterm_world::CHAT_MODE_PLAY_ALONG)
+        );
+    }
+
+    /// Play along says yes only to the plans the persona lists.
+    #[test]
+    fn play_along_refuses_a_plan_the_persona_does_not_list() {
+        let mut inner = named_by_ann(true, "mara, follow me");
+        inner.persona.play_along.plans = vec![Plan::Party];
+        let follow = answer_agent(&mut inner, call(TOOL_FOLLOW, json!({ "serial": ANN.0 })));
+        assert_eq!(follow.error.as_deref(), Some(CHAT_SAYS_NO));
+        agents::on_party_invite(&mut inner, ANN);
+        assert!(inner.outbound.contains(&encode::party_accept(ANN)));
+    }
+
+    /// The character stops playing along when the persona's time is up, or
+    /// when it is hurt past the play-along risk, and the agent hears why.
+    #[test]
+    fn play_along_ends_when_time_is_up_or_the_character_is_hurt() {
+        let ended = |inner: &Inner| {
+            inner
+                .world
+                .read()
+                .events
+                .iter()
+                .filter(|e| e.kind == uoterm_world::EventKind::PlayAlongEnded)
+                .map(|e| e.text.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut inner = named_by_ann(true, "mara, come with me");
+        inner.persona.play_along.reply_style = "short and warm".into();
+        let follow = answer_agent(&mut inner, call(TOOL_FOLLOW, json!({ "serial": ANN.0 })));
+        assert!(follow.ok, "{:?}", follow.error);
+        assert_eq!(follow.reply_style.as_deref(), Some("short and warm"));
+        assert_eq!(observe_value(&inner)["playing_along"]["name"], "Ann");
+        check_play_along(&mut inner);
+        assert_eq!(inner.follow, Some(ANN), "still in time and healthy");
+        inner.play_along = inner.play_along.map(|run| PlayAlongRun {
+            until: Instant::now(),
+            ..run
+        });
+        check_play_along(&mut inner);
+        assert_eq!(inner.follow, None);
+        assert_eq!(ended(&inner), vec![PLAY_ALONG_TIME_UP]);
+
+        let mut inner = named_by_ann(true, "mara, come with me");
+        answer_agent(&mut inner, call(TOOL_FOLLOW, json!({ "serial": ANN.0 })));
+        {
+            let mut w = inner.world.write();
+            w.self_state.hits_max = 100;
+            w.self_state.hits = 1;
+        }
+        check_play_along(&mut inner);
+        assert_eq!(inner.follow, None);
+        assert_eq!(ended(&inner), vec![PLAY_ALONG_HURT]);
     }
 
     #[test]
@@ -7295,6 +7437,7 @@ fn reflex_tick(inner: &mut Inner) {
     if !inner.world.read().logged_in {
         return;
     }
+    check_play_along(inner);
     if inner.loot.is_some() {
         pump_loot(inner);
         return;
@@ -8152,7 +8295,11 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             if !serial.is_valid() {
                 return ToolResult::err("follow needs a mobile serial");
             }
+            if chat_refuses(inner, serial, Plan::Follow) {
+                return ToolResult::err(CHAT_SAYS_NO);
+            }
             inner.follow = Some(serial);
+            start_play_along(inner, serial);
             inner.follow_state = FollowState::default();
             // The followed mobile leads, so the session holds no travel
             // destination of its own to walk back to.
@@ -8305,6 +8452,16 @@ fn observe_value(inner: &Inner) -> Value {
     };
     drop(w);
     obs.buffs = scripting::buff_names(inner);
+    obs.reply_style = reply_style(inner);
+    obs.playing_along = inner.play_along.map(|run| uoterm_world::PlayingAlong {
+        name: inner.world.read().name_of(run.with),
+        serial: run.with.to_string(),
+        minutes_left: run
+            .until
+            .saturating_duration_since(Instant::now())
+            .as_secs()
+            .div_ceil(crate::persona::SECONDS_PER_MINUTE),
+    });
     let mut doors: Vec<uoterm_world::NearbyDoor> = Vec::new();
     if let Some(mul) = inner.maps.get(&idx) {
         for d in mul.doors_near(loc.x, loc.y, uoterm_world::OBSERVE_DOOR_RADIUS) {
@@ -8385,6 +8542,7 @@ fn speech_allowed(
     persona: &Persona,
     text: &str,
     kind: u8,
+    reply: bool,
 ) -> std::result::Result<String, &'static str> {
     let t = persona.filter_speech(text).ok_or(SPEECH_REJECTED)?;
     // A repeat is refused before the budget is charged, so the agent can
@@ -8392,7 +8550,12 @@ fn speech_allowed(
     if speech.said_lately(&t) {
         return Err(SPEECH_REPEATED);
     }
-    if kind == SPEECH_REGULAR && !speech.allow(persona) {
+    // An answer to a player who spoke to the character has its own short
+    // gap; the chat budget is for small talk.
+    if reply && !speech.allow_reply() {
+        return Err(SPEECH_REPLY_TOO_SOON);
+    }
+    if !reply && kind == SPEECH_REGULAR && !speech.allow(persona) {
         return Err(SPEECH_RATE_LIMITED);
     }
     speech.remember(&t);
@@ -8407,13 +8570,96 @@ fn answer_agent(inner: &mut Inner, call: ToolCall) -> ToolResult {
     if let Some(call) = copy {
         recorder::tool_call(inner, &call, &result);
     }
-    result.unanswered = inner
-        .world
-        .read()
-        .spoken_to
-        .unanswered(uoterm_world::unix_now_ms());
+    let world = inner.world.read();
+    result.unanswered = world.spoken_to.unanswered(uoterm_world::unix_now_ms());
+    if !result.unanswered.is_empty() {
+        result.chat_mode = world.chat_mode().map(String::from);
+    }
+    drop(world);
+    if !result.unanswered.is_empty() {
+        result.reply_style = reply_style(inner);
+    }
     result
 }
+
+/// The persona's words on how the character talks, when it gives any.
+fn reply_style(inner: &Inner) -> Option<String> {
+    let style = inner.persona.play_along.reply_style.trim();
+    (!style.is_empty()).then(|| style.to_string())
+}
+
+/// True when the chat mode keeps the character out of this plan with a
+/// player who asked in chat: the basic mode says no to every plan, and play
+/// along says no to a plan the persona does not list. A friend on the
+/// friends list is never kept away.
+fn chat_refuses(inner: &Inner, serial: Serial, plan: Plan) -> bool {
+    let world = inner.world.read();
+    if !world.asked_in_chat(serial) || inner.agents.is_friend(&world, serial) {
+        return false;
+    }
+    match world.chat_mode() {
+        Some(uoterm_world::CHAT_MODE_BASIC) => true,
+        Some(_) => !inner.persona.play_along.allows(plan),
+        None => false,
+    }
+}
+
+/// Playing along with a player who asked in chat: who, and when the
+/// persona's time for it runs out.
+#[derive(Clone, Copy, Debug)]
+struct PlayAlongRun {
+    with: Serial,
+    until: Instant,
+}
+
+/// Starts playing along when the character follows a player who asked in
+/// chat and the chat mode is play along.
+fn start_play_along(inner: &mut Inner, serial: Serial) {
+    let asked = {
+        let world = inner.world.read();
+        world.chat_mode() == Some(uoterm_world::CHAT_MODE_PLAY_ALONG) && world.asked_in_chat(serial)
+    };
+    inner.play_along = asked.then(|| PlayAlongRun {
+        with: serial,
+        until: Instant::now() + inner.persona.play_along.stay(),
+    });
+}
+
+/// Ends playing along when its time is up or the character is hurt past the
+/// persona's play-along risk: the character stops following and goes back
+/// to its own task. The agent hears why.
+fn check_play_along(inner: &mut Inner) {
+    let Some(run) = inner.play_along else {
+        return;
+    };
+    if inner.follow != Some(run.with) {
+        inner.play_along = None;
+        return;
+    }
+    let hurt = {
+        let s = &inner.world.read().self_state;
+        s.hits_max > 0
+            && f32::from(s.hits) / f32::from(s.hits_max) < inner.persona.play_along_flee_ratio()
+    };
+    let why = if hurt {
+        PLAY_ALONG_HURT
+    } else if Instant::now() >= run.until {
+        PLAY_ALONG_TIME_UP
+    } else {
+        return;
+    };
+    inner.play_along = None;
+    inner.follow = None;
+    inner.movement.hold();
+    inner.world.write().push_event(uoterm_world::Event::new(
+        uoterm_world::EventKind::PlayAlongEnded,
+        Some(run.with),
+        why,
+    ));
+}
+
+const PLAY_ALONG_TIME_UP: &str = "the persona's time to play along is up";
+const PLAY_ALONG_HURT: &str = "hurt past the persona's play-along risk";
 
 /// Sends a line of speech. Any line the character says answers the lines
 /// said to it by name, whichever way the line goes out.
@@ -8436,7 +8682,13 @@ fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(
             return queue_command_speech(inner, text, &keywords);
         }
     }
-    let t = speech_allowed(&mut inner.speech, &inner.persona, text, kind)?;
+    let reply = !inner
+        .world
+        .read()
+        .spoken_to
+        .unanswered(uoterm_world::unix_now_ms())
+        .is_empty();
+    let t = speech_allowed(&mut inner.speech, &inner.persona, text, kind, reply)?;
     let mut rng = rand::thread_rng();
     let t = inner.persona.maybe_typo(&t, &mut rng);
     let unicode = inner.era == Era::Modern;

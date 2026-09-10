@@ -10,7 +10,8 @@ mod radar;
 mod state;
 
 pub use addressed::{
-    asks_if_bot, names_character, SpokenTo, SpokenToLog, SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
+    asks_if_bot, names_character, SpokenTo, SpokenToLog, CHAT_MODE_BASIC, CHAT_MODE_PLAY_ALONG,
+    SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
 };
 pub use assist::{AssistFeature, AssistRules};
 pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
@@ -19,9 +20,9 @@ pub use journal::{
 };
 pub use names::{display_name, NameBook};
 pub use observe::{
-    ContainedItem, NearbyDoor, NearbyItem, Observe, OpenContainer, OBSERVE_CONTAINER_CAP,
-    OBSERVE_CONTAINER_ITEM_CAP, OBSERVE_DOOR_RADIUS, OBSERVE_FACT_CAP, OBSERVE_ITEM_CAP,
-    OBSERVE_MOBILE_CAP,
+    ContainedItem, NearbyDoor, NearbyItem, Observe, OpenContainer, PlayingAlong,
+    OBSERVE_CONTAINER_CAP, OBSERVE_CONTAINER_ITEM_CAP, OBSERVE_DOOR_RADIUS, OBSERVE_FACT_CAP,
+    OBSERVE_ITEM_CAP, OBSERVE_MOBILE_CAP,
 };
 pub use radar::{
     default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT, RADAR_SIZE,

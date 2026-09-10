@@ -60,6 +60,7 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
             encryption: Default::default(),
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
+            play_along: crate::config::PLAY_ALONG_DEFAULT,
         };
         let handle = runtime.connect(opts).await?;
         let _ = handle

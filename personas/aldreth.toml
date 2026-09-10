@@ -6,3 +6,9 @@ risk_tolerance = 0.10
 chat_rate_per_hour = 12
 typo_rate = 0.03
 allow_emote = false
+
+[play_along]
+plans = ["party"]
+stay_minutes = 10
+risk_tolerance = 0.10
+reply_style = "polite, calm, few words, talks like a townsman"

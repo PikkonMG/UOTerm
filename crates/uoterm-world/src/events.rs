@@ -26,6 +26,8 @@ pub enum EventKind {
     LiftRejected,
     /// Another character said this one's name.
     SpokenTo,
+    /// The character stopped playing along with a player, and why.
+    PlayAlongEnded,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

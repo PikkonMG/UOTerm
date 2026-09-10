@@ -432,6 +432,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         },
         obey_shard_rules: cfg.obey_shard_rules,
         answer_when_named: cfg.answer_when_named,
+        play_along: cfg.play_along,
     };
     let rt = Runtime::new(cfg.max_sessions);
     let handle = rt.connect(opts).await?;

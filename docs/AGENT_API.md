@@ -4,9 +4,14 @@ Tools return immediately with `action_id`. Completion is an event (`arrived`, `t
 
 ## Spoken to by name
 
-When another character says your character's name, the session sends a `spoken_to` event. Each tool result then carries these lines in `unanswered`, whatever the tool, so an agent that is busy still sees them. The list clears when your character speaks (`say`, `whisper`, `emote`, or a party line), and a line drops off after one minute. `observe` lists the lines of the last minute in `spoken_to`, answered or not. Each line has the speaker's `serial` and `name`, the `text`, and `asks_if_bot`. The name counts only as a whole word: "Tamara" does not name "Mara". System lines, spell words and your own lines never count. The `answer_when_named` setting turns this off.
+When another character says your character's name, the session sends a `spoken_to` event. Each tool result then carries these lines in `unanswered`, whatever the tool, so an agent that is busy still sees them. The list clears when your character speaks (`say`, `whisper`, `emote`, or a party line), and a line drops off after one minute. `observe` lists the lines of the last minute in `spoken_to`, answered or not. Each line has the speaker's `serial` and `name`, the `text`, and `asks_if_bot`. A result with `unanswered` lines also has `chat_mode`, which `observe` shows too: `basic` or `play_along`. The name counts only as a whole word: "Tamara" does not name "Mara". System lines, spell words and your own lines never count. The `answer_when_named` setting turns this off.
 
-Answer with `say` the way a player would:
+Answer with `say` the way a player would. What you may agree to depends on `chat_mode`:
+
+- `basic` (the `play_along` setting is off): answer in a few friendly words and say no to every plan: hunting, following, a party, a trade, "come here". For example "not right now, busy" or "maybe later". Keep doing your own task. The client refuses `follow` and `partyaccept` for a player who asked in chat, unless that player is on the friends list.
+- `play_along`: you may say yes to the plans the persona lists (see `docs/PERSONAS.md`): join the player's party (the client accepts the invite of a player who spoke to you), `follow` them, and `attack` what they fight when `fight` is listed. The client refuses a plan that is not listed. `observe` shows `playing_along` (the player and the minutes left). When the persona's time is up, or the character is hurt past its play-along risk, the character stops following and you get a `play_along_ended` event: say a short goodbye and go back to your own task. Talk the way `reply_style` says, when it is given.
+
+In both modes:
 
 - Keep it short and plain. One line is enough; no long talk.
 - Stay in character as a player. Never bring up AI, bots, programs or "a game" on your own.

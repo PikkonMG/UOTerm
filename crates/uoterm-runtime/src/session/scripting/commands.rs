@@ -335,10 +335,14 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
             Ok(Step::Acted)
         }
         "partyaccept" | "partydecline" => {
-            let Some(leader) = game.inner.world.write().party_invite.take() else {
+            let Some(leader) = game.inner.world.read().party_invite else {
                 Game::note(call, ctx, "no party invite is open");
                 return Ok(Step::Done);
             };
+            if name == "partyaccept" && chat_refuses(game.inner, leader, Plan::Party) {
+                return Err(CHAT_SAYS_NO.into());
+            }
+            game.inner.world.write().party_invite = None;
             let packet = if name == "partyaccept" {
                 encode::party_accept(leader)
             } else {
