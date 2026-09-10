@@ -231,7 +231,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_TARGET,
-        "Answer the pending target cursor.",
+        "Answer the target cursor: serial, who=self|last, or ground x,y,z,graphic. No args cancels.",
         "must have a target cursor",
     ),
     (TOOL_OPEN_CONTAINER, "Open container serial.", "item serial"),
@@ -311,6 +311,7 @@ pub fn mcp_tool_list() -> Value {
                         "amount": {"type": "integer"},
                         "cliloc": {"type": "integer"},
                         "timeout_ms": {"type": "integer"},
+                        "who": {"type": "string"},
                         "switches": {"type": "array", "items": {"type": "integer"}}
                     }
                 }

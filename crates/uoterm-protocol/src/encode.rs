@@ -304,8 +304,39 @@ pub fn target_object(
     z: i8,
     graphic: u16,
 ) -> Vec<u8> {
+    target_answer(TARGET_OBJECT, cursor_id, serial, x, y, z, graphic)
+}
+
+/// The serial a ground target carries: the ground is no object.
+const GROUND_IS_NO_OBJECT: Serial = Serial(0);
+
+/// Answers a target cursor with a spot on the ground: a tile to dig, fish or
+/// cast at. `graphic` names the static on that tile, or zero for bare land.
+pub fn target_ground(cursor_id: u32, x: u16, y: u16, z: i8, graphic: u16) -> Vec<u8> {
+    target_answer(
+        TARGET_GROUND,
+        cursor_id,
+        GROUND_IS_NO_OBJECT,
+        x,
+        y,
+        z,
+        graphic,
+    )
+}
+
+/// One target answer. An object answer and a ground answer share the layout
+/// and differ only in the kind byte and the serial.
+fn target_answer(
+    kind: u8,
+    cursor_id: u32,
+    serial: Serial,
+    x: u16,
+    y: u16,
+    z: i8,
+    graphic: u16,
+) -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_TARGET);
-    w.u8(TARGET_OBJECT)
+    w.u8(kind)
         .u32(cursor_id)
         .u8(TARGET_FLAG_NONE)
         .serial(serial)
@@ -937,6 +968,25 @@ mod tests {
         let packet = bandage_target(BANDAGE, SELF);
         assert_eq!(packet, PACKET);
         assert_eq!(packet.len(), BANDAGE_TARGET_LEN);
+    }
+
+    #[test]
+    fn a_ground_target_names_a_tile_and_no_object() {
+        const CURSOR: u32 = 7;
+        const X: u16 = 1400;
+        const Y: u16 = 1600;
+        const Z: i8 = 5;
+        const ROCK: u16 = 0x053B;
+        let p = target_ground(CURSOR, X, Y, Z, ROCK);
+        assert_eq!(p.len(), 19);
+        assert_eq!(p[0], PKT_TARGET);
+        assert_eq!(p[1], TARGET_GROUND);
+        assert_eq!(&p[2..6], &CURSOR.to_be_bytes());
+        assert_eq!(&p[7..11], &[0, 0, 0, 0], "the ground is no object");
+        assert_eq!(&p[11..13], &X.to_be_bytes());
+        assert_eq!(&p[13..15], &Y.to_be_bytes());
+        assert_eq!(p[16] as i8, Z);
+        assert_eq!(&p[17..19], &ROCK.to_be_bytes());
     }
 
     #[test]

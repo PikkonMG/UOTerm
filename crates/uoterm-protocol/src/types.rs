@@ -300,6 +300,8 @@ pub const SPEECH_ENCODED: u8 = 0xC0;
 pub const SPEECH_KEYWORD_MAX: usize = 50;
 
 pub const TARGET_OBJECT: u8 = 0;
+/// A target answer that names a spot on the ground and no object.
+pub const TARGET_GROUND: u8 = 1;
 pub const TARGET_FLAG_NONE: u8 = 0;
 pub const TARGET_FLAG_CANCEL: u8 = 3;
 

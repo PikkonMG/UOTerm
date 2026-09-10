@@ -60,6 +60,12 @@ const WAIT_TARGET_DEFAULT_MS: u64 = 5000;
 /// answer always comes back before the caller stops listening.
 const WAIT_TARGET_MAX_MS: u64 = 7000;
 const NO_TARGET_CURSOR: &str = "no target cursor came in time";
+const MUST_HAVE_CURSOR: &str = "must have a target cursor";
+/// The words a caller uses to aim at himself or at his last target.
+const TARGET_WHO_SELF: &str = "self";
+const TARGET_WHO_LAST: &str = "last";
+/// The graphic a ground target names when the caller names none: bare land.
+const BARE_LAND_GRAPHIC: u16 = 0;
 const LOGIN_DEADLINE: Duration = Duration::from_secs(15);
 const LOGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_WORLD_DRAIN: Duration = Duration::from_millis(100);
@@ -308,6 +314,9 @@ struct Inner {
     /// Callers of `wait_target` still waiting for a cursor, each with the time
     /// it gives up. Their answers go out from the packet handler or the tick.
     target_waiters: Vec<(Instant, oneshot::Sender<ToolResult>)>,
+    /// The last object a target cursor was answered with, so a script can
+    /// say "target last".
+    last_target: Option<Serial>,
     loot: Option<LootJob>,
     deposit: Option<DepositJob>,
     sent_drop: Option<Serial>,
@@ -634,6 +643,7 @@ async fn run_session(
         attack_sent: None,
         target_intent: None,
         target_waiters: Vec::new(),
+        last_target: None,
         loot: None,
         deposit: None,
         sent_drop: None,
@@ -1417,6 +1427,7 @@ mod relay_tests {
             attack_sent: None,
             target_intent: None,
             target_waiters: Vec::new(),
+            last_target: None,
             loot: None,
             deposit: None,
             sent_drop: None,
@@ -4619,6 +4630,81 @@ mod relay_tests {
         assert!(gives_up_at - now < TOOL_CALL_TIMEOUT);
     }
 
+    fn aim(args: Value) -> ToolCall {
+        ToolCall {
+            name: TOOL_TARGET.into(),
+            args,
+        }
+    }
+
+    const A_TREE: Serial = Serial(0x4000_0010);
+    const ORE_X: u16 = 1400;
+    const ORE_Y: u16 = 1600;
+    const ORE_Z: i8 = 5;
+    const ROCK: u16 = 0x053B;
+
+    #[test]
+    fn target_self_aims_at_the_character() {
+        let mut inner = test_session();
+        let me = inner.world.read().self_state.serial;
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        inner.outbound.clear();
+        assert!(handle_tool(&mut inner, aim(json!({"who": "self"}))).ok);
+        assert_eq!(
+            inner.outbound.back(),
+            Some(&encode::target_object(A_CURSOR, me, 0, 0, 0, 0))
+        );
+    }
+
+    /// "Target last" aims again at whatever was aimed at before, as a script
+    /// does when it swings, heals or casts on the same thing twice.
+    #[test]
+    fn target_last_aims_at_the_last_object() {
+        let mut inner = test_session();
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        assert!(handle_tool(&mut inner, aim(json!({"serial": "0x40000010"}))).ok);
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        inner.outbound.clear();
+        assert!(handle_tool(&mut inner, aim(json!({"who": "last"}))).ok);
+        assert_eq!(
+            inner.outbound.back(),
+            Some(&encode::target_object(A_CURSOR, A_TREE, 0, 0, 0, 0))
+        );
+    }
+
+    #[test]
+    fn target_last_with_nothing_aimed_at_before_is_refused() {
+        let mut inner = test_session();
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        let answer = handle_tool(&mut inner, aim(json!({"who": "last"})));
+        assert!(!answer.ok);
+    }
+
+    /// Mining and fishing aim at a tile, not an object.
+    #[test]
+    fn a_ground_target_answers_the_cursor_with_a_tile() {
+        let mut inner = test_session();
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        inner.outbound.clear();
+        let answer = handle_tool(
+            &mut inner,
+            aim(json!({"x": ORE_X, "y": ORE_Y, "z": ORE_Z, "graphic": ROCK})),
+        );
+        assert!(answer.ok, "{answer:?}");
+        assert_eq!(
+            inner.outbound.back(),
+            Some(&encode::target_ground(A_CURSOR, ORE_X, ORE_Y, ORE_Z, ROCK))
+        );
+        assert!(inner.world.read().pending_target.is_none());
+    }
+
+    #[test]
+    fn a_ground_target_needs_a_cursor() {
+        let mut inner = test_session();
+        let answer = handle_tool(&mut inner, aim(json!({"x": ORE_X, "y": ORE_Y})));
+        assert_eq!(answer.error.as_deref(), Some(MUST_HAVE_CURSOR));
+    }
+
     #[test]
     fn a_target_intent_is_answered_when_the_cursor_arrives() {
         const TREE: Serial = Serial(0x4000_0010);
@@ -5239,10 +5325,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     }
                     if let Inbound::Target(cursor) = &msg {
                         if let Some(serial) = inner.target_intent.take() {
-                            inner
-                                .outbound
-                                .push_back(encode::target_object(cursor.id, serial, 0, 0, 0, 0));
-                            inner.world.write().clear_target();
+                            answer_cursor_with(inner, cursor.id, serial);
                         }
                     }
                     if let Inbound::LiftRejected { .. } = &msg {
@@ -6132,13 +6215,19 @@ fn expire_target_waiters(inner: &mut Inner, now: Instant) {
     }
 }
 
+/// Answers the cursor with an object and remembers it for "target last".
+fn answer_cursor_with(inner: &mut Inner, cursor_id: u32, serial: Serial) {
+    inner
+        .outbound
+        .push_back(encode::target_object(cursor_id, serial, 0, 0, 0, 0));
+    inner.world.write().clear_target();
+    inner.last_target = Some(serial);
+}
+
 fn store_or_answer_target(inner: &mut Inner, serial: Serial) {
     let cursor = inner.world.read().pending_target.clone();
     if let Some(cursor) = cursor {
-        inner
-            .outbound
-            .push_back(encode::target_object(cursor.id, serial, 0, 0, 0, 0));
-        inner.world.write().clear_target();
+        answer_cursor_with(inner, cursor.id, serial);
         inner.target_intent = None;
     } else {
         inner.target_intent = Some(serial);
@@ -6909,8 +6998,37 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_USE_SKILL)
         }
         TOOL_TARGET => {
+            let ground = (
+                args.get("x").and_then(|v| v.as_u64()),
+                args.get("y").and_then(|v| v.as_u64()),
+            );
             if args.get("serial").is_some() {
                 store_or_answer_target(inner, arg_serial(args, "serial"));
+                ToolResult::action(TOOL_TARGET)
+            } else if let Some(who) = args.get("who").and_then(|v| v.as_str()) {
+                let serial = match who {
+                    TARGET_WHO_SELF => inner.world.read().self_state.serial,
+                    TARGET_WHO_LAST => match inner.last_target {
+                        Some(serial) => serial,
+                        None => return ToolResult::err("no last target yet"),
+                    },
+                    _ => return ToolResult::err("who must be self or last"),
+                };
+                store_or_answer_target(inner, serial);
+                ToolResult::action(TOOL_TARGET)
+            } else if let (Some(x), Some(y)) = ground {
+                let Some(cursor) = inner.world.read().pending_target.clone() else {
+                    return ToolResult::err(MUST_HAVE_CURSOR);
+                };
+                let z = asked_z(args, inner.world.read().self_state.location.z);
+                let graphic = args
+                    .get("graphic")
+                    .and_then(|v| v.as_u64())
+                    .map_or(BARE_LAND_GRAPHIC, |g| g as u16);
+                inner.outbound.push_back(encode::target_ground(
+                    cursor.id, x as u16, y as u16, z, graphic,
+                ));
+                inner.world.write().clear_target();
                 ToolResult::action(TOOL_TARGET)
             } else if let Some(cursor) = inner.world.read().pending_target.clone() {
                 inner.outbound.push_back(encode::cancel_target(cursor.id));
@@ -6919,7 +7037,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 ToolResult::action(TOOL_TARGET)
             } else {
                 inner.target_intent = None;
-                ToolResult::err("must have a target cursor")
+                ToolResult::err(MUST_HAVE_CURSOR)
             }
         }
         TOOL_GUMP_RESPOND | TOOL_GUMP_CLOSE => {
