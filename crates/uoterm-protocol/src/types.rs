@@ -57,6 +57,15 @@ pub const PKT_PLAY_CHARACTER: u8 = 0x5D;
 /// request for a page it has not read yet.
 pub const PKT_BOOK_CONTENT: u8 = 0x66;
 pub const PKT_TARGET: u8 = 0x6C;
+/// `0xBE`. The shard asks which assistant runs beside the client, and the
+/// client answers with its name.
+pub const PKT_ASSIST_VERSION: u8 = 0xBE;
+/// `0xF0`. The assistant feature handshake: a command byte, then its body.
+pub const PKT_ASSISTANT: u8 = 0xF0;
+/// Assistant command from the shard: the features an assistant must not use.
+pub const ASSIST_CMD_FEATURES: u8 = 0xFE;
+/// Assistant command from the client: it has the shard's list.
+pub const ASSIST_CMD_ACK: u8 = 0xFF;
 pub const PKT_MUSIC: u8 = 0x6D;
 pub const PKT_CHARACTER_ANIMATION: u8 = 0x6E;
 pub const PKT_SECURE_TRADE: u8 = 0x6F;

@@ -514,6 +514,13 @@ pub enum Inbound {
     /// decoded form that embedded packet carries when it arrives on its own,
     /// so a consumer handles the list by handling each entry in order.
     PacketList(Vec<Inbound>),
+    /// `0xBE` from the shard: which assistant runs beside the client?
+    AssistantVersionRequest,
+    /// `0xF0` command `0xFE`: the assistant features this shard forbids, one
+    /// bit each.
+    AssistantFeatures {
+        disallowed: u64,
+    },
     Unknown {
         id: u8,
         payload: Vec<u8>,
@@ -588,6 +595,8 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_SOUND_EFFECT => parse_sound_effect(packet),
         PKT_MUSIC => parse_music(packet),
         PKT_BUFF_DEBUFF => parse_buff_debuff(packet),
+        PKT_ASSIST_VERSION => Ok(Inbound::AssistantVersionRequest),
+        PKT_ASSISTANT => parse_assistant(packet),
         _ => Ok(Inbound::Unknown {
             id,
             payload: packet.to_vec(),
@@ -624,6 +633,25 @@ fn parse_login_denied(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     Ok(Inbound::LoginDenied { reason: r.u8()? })
+}
+
+/// The assistant handshake. Only the feature list is read; any other command
+/// is kept as it came.
+fn parse_assistant(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    if r.u8()? != ASSIST_CMD_FEATURES {
+        return Ok(Inbound::Unknown {
+            id: PKT_ASSISTANT,
+            payload: packet.to_vec(),
+        });
+    }
+    let high = u64::from(r.u32()?);
+    let low = u64::from(r.u32()?);
+    Ok(Inbound::AssistantFeatures {
+        disallowed: high << u32::BITS | low,
+    })
 }
 
 fn parse_popup_message(packet: &[u8]) -> Result<Inbound> {
@@ -2285,6 +2313,48 @@ mod tests {
                 assert_eq!(eq.serial, Serial(0x4000_0001));
                 assert_eq!(eq.graphic, 0x0F43);
                 assert_eq!(eq.layer, LAYER_ONE_HANDED);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_shard_asks_which_assistant_runs() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_ASSIST_VERSION);
+        w.u8(0x03);
+        let p = w.finish_variable().unwrap();
+        assert!(matches!(
+            parse(&p).unwrap(),
+            Inbound::AssistantVersionRequest
+        ));
+    }
+
+    #[test]
+    fn the_feature_list_reads_all_sixty_four_bits() {
+        const HIGH: u32 = 0x8000_0001;
+        const LOW: u32 = 0x0020_0010;
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_ASSISTANT);
+        w.u8(ASSIST_CMD_FEATURES);
+        w.u32(HIGH);
+        w.u32(LOW);
+        let p = w.finish_variable().unwrap();
+        match parse(&p).unwrap() {
+            Inbound::AssistantFeatures { disallowed } => {
+                assert_eq!(disallowed, 0x8000_0001_0020_0010);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn another_assistant_command_is_kept_as_it_came() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_ASSISTANT);
+        w.u8(ASSIST_CMD_ACK);
+        let p = w.finish_variable().unwrap();
+        match parse(&p).unwrap() {
+            Inbound::Unknown { id, payload } => {
+                assert_eq!(id, PKT_ASSISTANT);
+                assert_eq!(payload, p);
             }
             other => panic!("{other:?}"),
         }

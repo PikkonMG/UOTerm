@@ -166,7 +166,9 @@ fn parse_packet_id(key: &str) -> Result<u8> {
     }
 }
 
-/// T2A 2.0.7 `g_PacketLengthTable`. 0x8000 = variable.
+/// T2A 2.0.7 `g_PacketLengthTable`. 0x8000 = variable. One change: `0xF0`
+/// is marked variable, because shards of every era can send the assistant
+/// handshake.
 pub const T2A_LENGTHS: [u16; 256] = [
     0x0068, 0x0005, 0x0007, 0x8000, 0x0002, 0x0005, 0x0005, 0x0007, 0x000E, 0x0005, 0x000B, 0x010A,
     0x8000, 0x0003, 0x8000, 0x003D, 0x00D7, 0x8000, 0x8000, 0x000A, 0x0006, 0x0009, 0x0001, 0x8000,
@@ -188,7 +190,7 @@ pub const T2A_LENGTHS: [u16; 256] = [
     0x8000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x8000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0000,
 ];
 
@@ -287,13 +289,19 @@ const PRE_HIGH_SEAS_OVERRIDES: &[(u8, u16)] = &[
 mod tests {
     use super::*;
     use crate::types::{
-        PKT_BATCH_QUERY_PROPERTIES, PKT_BOOK_CONTENT, PKT_BOOK_HEADER, PKT_BOOK_HEADER_OLD,
-        PKT_BUFF_DEBUFF, PKT_CHARACTER_ANIMATION, PKT_COMBATANT, PKT_EXTENDED,
+        PKT_ASSISTANT, PKT_BATCH_QUERY_PROPERTIES, PKT_BOOK_CONTENT, PKT_BOOK_HEADER,
+        PKT_BOOK_HEADER_OLD, PKT_BUFF_DEBUFF, PKT_CHARACTER_ANIMATION, PKT_COMBATANT, PKT_EXTENDED,
         PKT_HEALTH_BAR_STATUS, PKT_LIFT_REJECT, PKT_MENU_RESPONSE, PKT_MUSIC, PKT_OPEN_MENU,
         PKT_OPL_INFO, PKT_SECURE_TRADE, PKT_SINGLE_CLICK, PKT_SKILLS, PKT_SOUND_EFFECT, PKT_SWING,
         PKT_UPDATE_STAM, PKT_VENDOR_BUY, PKT_VENDOR_BUY_LIST, PKT_VENDOR_SELL,
         PKT_VENDOR_SELL_LIST,
     };
+
+    #[test]
+    fn the_assistant_handshake_is_variable_in_every_era() {
+        assert!(PacketTable::t2a().is_variable(PKT_ASSISTANT));
+        assert!(PacketTable::modern().is_variable(PKT_ASSISTANT));
+    }
 
     #[test]
     fn t2a_move_is_seven() {

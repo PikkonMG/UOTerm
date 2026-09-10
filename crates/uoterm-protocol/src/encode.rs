@@ -296,6 +296,21 @@ pub fn open_door() -> Vec<u8> {
     text_command(TEXT_CMD_OPEN_DOOR, "")
 }
 
+/// The client's word that it has the shard's assistant feature list. A shard
+/// that asks and hears nothing back can warn the player and then disconnect.
+pub fn assistant_ack() -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_ASSISTANT);
+    w.u8(ASSIST_CMD_ACK);
+    var_bytes(w)
+}
+
+/// The name of the assistant beside the client, in answer to the shard.
+pub fn assistant_version(name: &str) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_ASSIST_VERSION);
+    w.ascii_z(name);
+    var_bytes(w)
+}
+
 pub fn target_object(
     cursor_id: u32,
     serial: Serial,
@@ -968,6 +983,24 @@ mod tests {
         let packet = bandage_target(BANDAGE, SELF);
         assert_eq!(packet, PACKET);
         assert_eq!(packet.len(), BANDAGE_TARGET_LEN);
+    }
+
+    #[test]
+    fn the_assistant_ack_is_the_four_byte_handshake_answer() {
+        assert_eq!(
+            assistant_ack(),
+            vec![PKT_ASSISTANT, 0x00, 0x04, ASSIST_CMD_ACK]
+        );
+    }
+
+    #[test]
+    fn the_assistant_version_is_a_length_prefixed_name() {
+        const NAME: &str = "UOTerm 0.1.0";
+        let p = assistant_version(NAME);
+        assert_eq!(p[0], PKT_ASSIST_VERSION);
+        assert_eq!(u16::from_be_bytes([p[1], p[2]]) as usize, p.len());
+        assert_eq!(&p[3..3 + NAME.len()], NAME.as_bytes());
+        assert_eq!(p.last(), Some(&0), "the name ends in a zero byte");
     }
 
     #[test]
