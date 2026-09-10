@@ -2,6 +2,7 @@ use crate::error::{Result, RuntimeError};
 use chrono::Timelike;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -148,11 +149,18 @@ fn shorten(t: &str) -> String {
     t.split_whitespace().take(8).collect::<Vec<_>>().join(" ")
 }
 
+/// How many of a character's own chat lines are remembered, so that none of
+/// them is said again while it is still fresh.
+pub const RECENT_LINES_KEPT: usize = 32;
+
 #[derive(Clone, Debug, Default)]
 pub struct SpeechPolicy {
     pub last_chat: Option<Instant>,
     pub chats_this_hour: u32,
     pub hour_stamp: u32,
+    /// The character's latest chat lines, oldest first, in the form
+    /// [`line_key`] gives them.
+    recent: VecDeque<String>,
 }
 
 impl SpeechPolicy {
@@ -175,6 +183,35 @@ impl SpeechPolicy {
         self.last_chat = Some(Instant::now());
         true
     }
+
+    /// True when the character said this line lately. A player does not say
+    /// the same sentence over and over; a line said again word for word is
+    /// the plainest sign of a bot. Case, spacing and punctuation do not make
+    /// a line new.
+    pub fn said_lately(&self, line: &str) -> bool {
+        let key = line_key(line);
+        self.recent.iter().any(|said| *said == key)
+    }
+
+    /// Remembers a chat line the character has just said.
+    pub fn remember(&mut self, line: &str) {
+        if self.recent.len() == RECENT_LINES_KEPT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(line_key(line));
+    }
+}
+
+/// A line reduced to its words: lower case, no punctuation, single spaces.
+fn line_key(line: &str) -> String {
+    line.split_whitespace()
+        .map(|word| {
+            word.trim_matches(|letter: char| !letter.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

@@ -110,6 +110,7 @@ const HOLD_MS_NONE: u64 = 0;
 const WALK_STEPS_ONE: usize = 1;
 const SPEECH_REJECTED: &str = "speech rejected by persona policy";
 const SPEECH_RATE_LIMITED: &str = "persona chat rate exceeded";
+const SPEECH_REPEATED: &str = "that line was said lately; say something new";
 /// The facet a session reads before the shard says which one it is on.
 const START_MAP_INDEX: u8 = 0;
 /// The word the server writes when the character has no stamina left to move
@@ -4943,6 +4944,35 @@ mod relay_tests {
     const PHRASE_BALANCE: &str = "*balance*";
     const SAID_BALANCE: &str = "bank balance";
     const SAID_CHATTER: &str = "fine weather for walking";
+    const SAID_OTHER_CHATTER: &str = "think I'll head north after this";
+    /// The same line as [`SAID_CHATTER`], dressed up differently.
+    const SAID_CHATTER_AGAIN: &str = "  Fine weather, for WALKING!  ";
+
+    /// A line said again word for word is the plainest sign of a bot. The
+    /// character is told to find new words, and the refusal costs nothing
+    /// from the chat budget. Whispers carry no budget, so they isolate the
+    /// repeat check.
+    #[test]
+    fn a_chat_line_said_again_is_refused() {
+        let mut inner = test_session();
+        queue_speech(&mut inner, SAID_CHATTER, SPEECH_WHISPER).expect("the first line is allowed");
+        assert_eq!(
+            queue_speech(&mut inner, SAID_CHATTER_AGAIN, SPEECH_WHISPER),
+            Err(SPEECH_REPEATED),
+            "case, spacing and punctuation do not make a line new"
+        );
+        queue_speech(&mut inner, SAID_OTHER_CHATTER, SPEECH_WHISPER)
+            .expect("new words are allowed");
+    }
+
+    /// Commands repeat by nature: a character says "bank" every visit.
+    #[test]
+    fn a_command_may_be_said_again() {
+        let mut inner = test_session();
+        with_speech_table(&mut inner);
+        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("the first bank");
+        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("the second bank");
+    }
     const VENDOR_NAME: &str = "Pamela";
     const GRAPHIC_FOR_SALE: u64 = 0x1408;
     /// More commands in a row than the persona may chat in an hour.
@@ -5018,7 +5048,7 @@ mod relay_tests {
         with_speech_table(&mut inner);
         queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR).expect("the first line is allowed");
         assert_eq!(
-            queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR),
+            queue_speech(&mut inner, SAID_OTHER_CHATTER, SPEECH_REGULAR),
             Err(SPEECH_RATE_LIMITED),
             "a second line straight after the first waits"
         );
@@ -7051,9 +7081,15 @@ fn speech_allowed(
     kind: u8,
 ) -> std::result::Result<String, &'static str> {
     let t = persona.filter_speech(text).ok_or(SPEECH_REJECTED)?;
+    // A repeat is refused before the budget is charged, so the agent can
+    // try new words at once.
+    if speech.said_lately(&t) {
+        return Err(SPEECH_REPEATED);
+    }
     if kind == SPEECH_REGULAR && !speech.allow(persona) {
         return Err(SPEECH_RATE_LIMITED);
     }
+    speech.remember(&t);
     Ok(t)
 }
 
