@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use uoterm_protocol::{
     weapon_range, BuffEntry, ContainerItem, EquipItem, GroundItem, HealthBarStatus, Inbound,
     MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, Serial, StatusExtra,
-    TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR,
-    HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED,
-    RANGE_MELEE,
+    TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN,
+    FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED,
+    LAYER_TWO_HANDED, RANGE_MELEE,
 };
 
 use crate::assist::AssistRules;
@@ -96,6 +96,8 @@ pub struct SelfState {
     pub flying: bool,
     /// The yellow health bar of a blessed or invulnerable mobile.
     pub yellow_bar: bool,
+    /// Steps taken since the character hid, for a stealth walk.
+    pub stealth_steps: u16,
     pub dead: bool,
     pub skills: HashMap<u16, SkillValue>,
     pub equipment: Vec<EquipItem>,
@@ -141,6 +143,7 @@ impl Default for SelfState {
             paralyzed: false,
             flying: false,
             yellow_bar: false,
+            stealth_steps: 0,
             dead: false,
             skills: HashMap::new(),
             equipment: Vec::new(),
@@ -285,6 +288,9 @@ const MAX_NESTING: usize = 16;
 /// The bit a shard sets for poison on an old client and for flying on a
 /// client from 7.0.0.0 up.
 const FLAG_POISONED_OR_FLYING: u8 = FLAG_POISONED;
+
+/// A party list this short is no party.
+const PARTY_OF_ONE: usize = 1;
 
 /// The health bar colours of one mobile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -501,6 +507,9 @@ impl World {
             // which tile the step was aimed at.
             Inbound::MoveAck { notoriety, .. } => {
                 self.self_state.notoriety = *notoriety;
+                if self.self_state.hidden {
+                    self.self_state.stealth_steps = self.self_state.stealth_steps.saturating_add(1);
+                }
             }
             Inbound::Speech(line) => {
                 if line.serial == self.self_state.serial && self.self_state.name.is_empty() {
@@ -784,6 +793,12 @@ impl World {
 
     fn apply_party(&mut self, event: &PartyEvent) {
         match event {
+            // A list of one is the character alone: the party is over.
+            PartyEvent::Members(members) | PartyEvent::Removed { members, .. }
+                if members.len() <= PARTY_OF_ONE =>
+            {
+                self.party.clear();
+            }
             PartyEvent::Members(members) => {
                 self.party.clone_from(members);
                 self.party_invite = None;
@@ -880,7 +895,13 @@ impl World {
         self.self_state.flags = flags;
         self.self_state.war = flags & FLAG_WAR != 0;
         self.self_state.hidden = flags & FLAG_HIDDEN != 0;
+        if !self.self_state.hidden {
+            self.self_state.stealth_steps = 0;
+        }
         self.self_state.paralyzed = flags & FLAG_FROZEN != 0;
+        // Every client reads the yellow bar in this bit; a client from 7.0 up
+        // also gets it on the health bar packet.
+        self.self_state.yellow_bar = flags & FLAG_BLESSED != 0;
         if self.flags_mean_flying {
             self.self_state.flying = flags & FLAG_POISONED_OR_FLYING != 0;
         } else {
@@ -923,6 +944,10 @@ impl World {
             return self.self_state.yellow_bar;
         }
         self.bars.get(&serial).is_some_and(|b| b.yellow)
+            || self
+                .mobiles
+                .get(&serial)
+                .is_some_and(|m| m.flags & FLAG_BLESSED != 0)
     }
 
     fn refresh_dead_from_body(&mut self, body: u16) {

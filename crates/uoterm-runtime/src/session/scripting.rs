@@ -23,13 +23,14 @@ use super::*;
 
 /// The folder scripts are read from, below the working directory and below
 /// the user's config directory.
-const SCRIPTS_DIR: &str = "scripts";
+pub(super) const SCRIPTS_DIR: &str = "scripts";
 /// How many lines of script output the status keeps.
 const OUTPUT_KEPT: usize = 50;
 
 /// A script's argument names for the script tools.
 const ARG_NAME: &str = "name";
 const ARG_TEXT: &str = "text";
+const ARG_LOOP: &str = "loop";
 
 const A_SCRIPT_RUNS: &str = "a script is running; stop it first";
 const NO_SCRIPT_NAMED: &str = "no script by that name in the scripts folder";
@@ -80,6 +81,10 @@ enum Next {
 struct Running {
     name: String,
     script: Script,
+    /// The script as read, to start it again when it loops.
+    program: Program,
+    /// Start again from the top each time it reaches its end.
+    looping: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -184,6 +189,9 @@ pub(super) fn run_script(inner: &mut Inner, args: &Value) -> ToolResult {
     if inner.scripting.running.is_some() {
         return ToolResult::err(A_SCRIPT_RUNS);
     }
+    if !shard_allows(inner, AssistFeature::ScriptMacros) {
+        return ToolResult::err(forbidden(AssistFeature::ScriptMacros));
+    }
     let name = args.get(ARG_NAME).and_then(|v| v.as_str()).map(str::trim);
     let text = args.get(ARG_TEXT).and_then(|v| v.as_str());
     let (name, source) = match (name, text) {
@@ -194,20 +202,31 @@ pub(super) fn run_script(inner: &mut Inner, args: &Value) -> ToolResult {
         },
         _ => return ToolResult::err(RUN_NEEDS_SCRIPT),
     };
-    start_script(inner, name, &source)
+    let looping = args
+        .get(ARG_LOOP)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    start_script(inner, name, &source, looping)
 }
 
-fn start_script(inner: &mut Inner, name: String, source: &str) -> ToolResult {
+fn start_script(inner: &mut Inner, name: String, source: &str, looping: bool) -> ToolResult {
     let program = match Program::parse(source) {
         Ok(program) => program,
         Err(e) => return ToolResult::err(e.to_string()),
     };
-    tracing::info!(script = %name, "script starts");
+    // A script that starts itself again is a looping macro.
+    let loops = looping || program.ops.contains(&uoterm_script::Op::Replay);
+    if loops && !shard_allows(inner, AssistFeature::LoopedMacros) {
+        return ToolResult::err(forbidden(AssistFeature::LoopedMacros));
+    }
+    tracing::info!(script = %name, looping, "script starts");
     inner.scripting.running = Some(Running {
-        script: Script::new(program),
+        script: Script::new(program.clone()),
+        program,
         name: name.clone(),
+        looping,
     });
-    ToolResult::ok(json!({ "script": name }))
+    ToolResult::ok(json!({ "script": name, "loop": looping }))
 }
 
 /// The name of the script running now.
@@ -254,6 +273,7 @@ pub(super) fn script_status(inner: &Inner) -> ToolResult {
         (Some(running), _) => json!({
             "script": running.name,
             "status": "running",
+            "loop": running.looping,
             "line": running.script.line(),
             "output": output,
         }),
@@ -321,7 +341,7 @@ pub(super) fn pump_script(inner: &mut Inner, now: Instant) {
             finish(inner, running);
             match find_script(&name) {
                 Some(source) => {
-                    let result = start_script(inner, name, &source);
+                    let result = start_script(inner, name, &source, false);
                     if let Some(error) = result.error {
                         inner.scripting.keep_output(vec![error]);
                     }
@@ -336,6 +356,11 @@ pub(super) fn pump_script(inner: &mut Inner, now: Instant) {
             finish(inner, running);
         }
         None if *running.script.status() == Status::Running => {
+            inner.scripting.running = Some(running);
+        }
+        // A looping script starts again from the top at the next tick.
+        None if running.looping && *running.script.status() == Status::Done => {
+            running.script = Script::new(running.program.clone());
             inner.scripting.running = Some(running);
         }
         None => finish(inner, running),
@@ -419,7 +444,7 @@ impl Game<'_> {
             "self" => Some(world.self_state.serial),
             "backpack" => backpack_serial(&world),
             "bank" => world.bank_box(),
-            "last" | "lasttarget" => self.inner.last_target,
+            "last" | "lasttarget" => last_target_for_cursor(self.inner),
             "lastobject" => self.inner.last_object,
             "lefthand" => world.worn(LAYER_TWO_HANDED).map(|e| e.serial),
             "righthand" => world.worn(LAYER_ONE_HANDED).map(|e| e.serial),
@@ -752,6 +777,89 @@ mod tests {
     }
 
     #[test]
+    fn a_looping_script_starts_again_at_its_end() {
+        let mut inner = player();
+        let started = run_script(&mut inner, &json!({ "text": "msg 'again'", "loop": true }));
+        assert!(started.ok);
+        tick(&mut inner, 3);
+        let said = inner
+            .outbound
+            .iter()
+            .filter(|p| p.first() == Some(&PKT_UNICODE_SPEECH))
+            .count();
+        assert_eq!(said, 3, "one pass a tick");
+        assert_eq!(status(&inner)["status"], "running");
+    }
+
+    fn forbid(inner: &Inner, feature: AssistFeature) {
+        inner.world.write().assist = uoterm_world::AssistRules::from_bits(1 << feature as u32);
+    }
+
+    #[test]
+    fn a_shard_that_forbids_scripts_or_loops_gets_neither() {
+        let mut inner = player();
+        forbid(&inner, AssistFeature::ScriptMacros);
+        assert!(!run_script(&mut inner, &json!({ "text": "pause 1" })).ok);
+        let mut inner = player();
+        forbid(&inner, AssistFeature::LoopedMacros);
+        assert!(!run_script(&mut inner, &json!({ "text": "pause 1", "loop": true })).ok);
+        assert!(!run_script(&mut inner, &json!({ "text": "pause 1\nreplay" })).ok);
+        assert!(run_script(&mut inner, &json!({ "text": "pause 1" })).ok);
+    }
+
+    #[test]
+    fn a_shard_that_forbids_potion_keys_gets_no_potion_drunk() {
+        let mut inner = player();
+        put_in_pack(&mut inner, POTION, GRAPHIC_POTION_HEAL);
+        forbid(&inner, AssistFeature::PotionHotkeys);
+        start(&mut inner, "drinkpotion 'heal'");
+        tick(&mut inner, 1);
+        assert!(!sent(&inner, &encode::double_click(POTION)));
+        assert_eq!(status(&inner)["status"], "failed");
+    }
+
+    #[test]
+    fn a_text_dialog_is_answered_and_then_closed() {
+        let mut inner = player();
+        let dialog = uoterm_protocol::TextEntryDialog {
+            serial: Serial(0x0000_1234),
+            parent: 1,
+            button: 2,
+            text: String::new(),
+            can_cancel: true,
+            style: 1,
+            max_len: 20,
+            description: "Name?".into(),
+        };
+        inner.world.write().text_entry = Some(dialog.clone());
+        start(&mut inner, "textentrymsg 'Rowan'");
+        tick(&mut inner, 1);
+        assert!(sent(
+            &inner,
+            &encode::text_entry_response(&dialog, "Rowan", true)
+        ));
+        assert!(inner.world.read().text_entry.is_none());
+    }
+
+    #[test]
+    fn a_prompt_answer_longer_than_the_shard_takes_is_refused() {
+        let mut inner = player();
+        inner.world.write().prompt = Some(uoterm_protocol::PromptRequest {
+            serial: Serial(1),
+            id: 1,
+            unicode: false,
+        });
+        let long = "x".repeat(129);
+        start(&mut inner, &format!("promptmsg '{long}'"));
+        tick(&mut inner, 1);
+        assert_eq!(status(&inner)["status"], "failed");
+        assert!(
+            inner.world.read().prompt.is_some(),
+            "the prompt is still open"
+        );
+    }
+
+    #[test]
     fn death_ends_a_script() {
         let mut inner = player();
         start(&mut inner, "pause 60000");
@@ -766,6 +874,76 @@ mod tests {
         let result = run_script(&mut inner, &json!({ "text": "if dead" }));
         assert!(!result.ok);
         assert!(result.error.unwrap_or_default().contains("line 1"));
+    }
+
+    /// The script guide the user reads.
+    const GUIDE: &str = include_str!("../../../../docs/SCRIPTS.md");
+
+    /// The first-column code of each table row in one part of the guide.
+    fn guide_names(from: &str, to: &str) -> Vec<String> {
+        let start = GUIDE.find(from).expect("the part starts");
+        let end = GUIDE[start..].find(to).map_or(GUIDE.len(), |e| start + e);
+        GUIDE[start..end]
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .flat_map(|cell| {
+                let first = cell.split(" |").next().unwrap_or("");
+                first
+                    .split('`')
+                    .step_by(2)
+                    .filter_map(|code| code.split_whitespace().next())
+                    .map(|w| w.trim_start_matches('@').trim_end_matches('!').to_string())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphabetic()))
+            .collect()
+    }
+
+    #[test]
+    fn every_example_in_the_guide_reads() {
+        for block in GUIDE.split("```text").skip(1) {
+            let code = block.split("```").next().unwrap_or("");
+            assert!(Program::parse(code).is_ok(), "{code}");
+        }
+    }
+
+    #[test]
+    fn every_command_the_guide_names_is_known() {
+        let names = guide_names("## Commands", "## Condition words");
+        assert!(
+            names.len() > 100,
+            "the guide lists the commands: {}",
+            names.len()
+        );
+        for name in names {
+            let mut inner = player();
+            let mut vars = Vars::default();
+            let mut script = Script::new(Program::parse(&name).expect("one word"));
+            script.tick(&mut Game { inner: &mut inner }, &mut vars, Instant::now());
+            if let Status::Failed { message, .. } = script.status() {
+                assert!(!message.starts_with("unknown command"), "{name}: {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_word_the_guide_names_is_known() {
+        let words = guide_names("## Condition words", "## Running scripts");
+        assert!(
+            words.len() > 60,
+            "the guide lists the words: {}",
+            words.len()
+        );
+        for word in words {
+            let mut inner = player();
+            let mut vars = Vars::default();
+            let text = format!("if {word}\nendif");
+            let mut script = Script::new(Program::parse(&text).expect("a check"));
+            script.tick(&mut Game { inner: &mut inner }, &mut vars, Instant::now());
+            if let Status::Failed { message, .. } = script.status() {
+                assert!(!message.starts_with("unknown word"), "{word}: {message}");
+            }
+        }
     }
 
     #[test]

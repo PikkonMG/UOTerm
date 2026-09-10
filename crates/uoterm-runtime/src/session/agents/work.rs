@@ -82,9 +82,62 @@ fn rule_for(rules: &[ItemRule], graphic: u16, color: u16) -> Option<&ItemRule> {
     rules.iter().find(|r| r.matches(graphic, color))
 }
 
+// ---------- options ----------
+
+/// Wears again the item a potion took out of the hand, once its time comes.
+pub(super) fn rearm(inner: &mut Inner, now: Instant) -> bool {
+    let Some((item, layer, due)) = inner.agents.rearm else {
+        return false;
+    };
+    if now < due {
+        return false;
+    }
+    inner.agents.rearm = None;
+    let (worn, exists) = {
+        let w = inner.world.read();
+        (w.worn(layer).is_some(), w.items.contains_key(&item))
+    };
+    if worn || !exists {
+        return false;
+    }
+    lift_and_wear(inner, item, layer);
+    true
+}
+
+/// Graphics of the ore, logs and fish the stack option drops at the feet.
+const STACKED_AT_FEET: [std::ops::RangeInclusive<u16>; 3] =
+    [0x19B7..=0x19BA, 0x1BDD..=0x1BE2, 0x09CC..=0x09CF];
+
+/// Drops ore, logs and fish from the pack at the character's feet, where
+/// they stack, when the option says to.
+pub(super) fn stack_at_feet(inner: &mut Inner, now: Instant) -> bool {
+    if !inner.agents.config.options.stack_at_feet {
+        return false;
+    }
+    let (item, at) = {
+        let w = inner.world.read();
+        let item = backpack_serial(&w).and_then(|pack| {
+            w.items_inside(pack, false)
+                .into_iter()
+                .find(|i| STACKED_AT_FEET.iter().any(|r| r.contains(&i.graphic)))
+                .map(|i| (i.serial, i.amount))
+        });
+        (item, w.self_state.location)
+    };
+    let Some((item, amount)) = item else {
+        return false;
+    };
+    lift_and_drop(inner, item, amount.max(1), DropAt::Ground(at));
+    inner.agents.next_move_at = now + delay(config::DEFAULT_DELAY_MS);
+    true
+}
+
 // ---------- remount ----------
 
 pub(super) fn remount(inner: &mut Inner, now: Instant) -> bool {
+    if !shard_allows(inner, AssistFeature::AutoRemount) {
+        return false;
+    }
     let r = inner.agents.config.remount.clone();
     let Some(mount) = r.mount.filter(|_| r.enabled) else {
         return false;
@@ -111,6 +164,9 @@ pub(super) fn remount(inner: &mut Inner, now: Instant) -> bool {
 // ---------- bandage ----------
 
 pub(super) fn bandage(inner: &mut Inner, now: Instant) -> bool {
+    if !shard_allows(inner, AssistFeature::AutoBandage) {
+        return false;
+    }
     let b = inner.agents.config.bandage.clone();
     if !b.enabled || now < inner.next_bandage_at || (b.skip_when_hidden && hidden(inner)) {
         return false;
@@ -256,6 +312,9 @@ fn organize(inner: &mut Inner, name: &str, done: HashSet<Serial>, now: Instant) 
 /// Tops each listed item in the destination up to its amount, from the
 /// source bag.
 fn restock(inner: &mut Inner, name: &str, now: Instant) -> JobStep {
+    if !shard_allows(inner, AssistFeature::RestockAgent) {
+        return JobStep::Failed(forbidden(AssistFeature::RestockAgent));
+    }
     let Some(list) = inner.agents.config.restock.get(name).cloned() else {
         return JobStep::Failed(format!("no restock list '{name}'"));
     };
@@ -366,6 +425,9 @@ fn undress(inner: &mut Inner, name: Option<&str>, now: Instant) -> JobStep {
 /// Opens corpses in range and moves the items the active list wants. With
 /// `once`, it runs even while the agent is switched off.
 pub(super) fn autoloot(inner: &mut Inner, now: Instant, once: bool) -> bool {
+    if !shard_allows(inner, AssistFeature::AutolootAgent) {
+        return false;
+    }
     let a = inner.agents.config.autoloot.clone();
     if (!a.enabled && !once) || (hidden(inner) && !a.while_hidden) || !room_for_more(inner) {
         return false;
@@ -476,6 +538,9 @@ pub(super) fn carve(inner: &mut Inner, now: Instant) -> bool {
 
 /// Uses the blade on the nearest bone pile next to the character.
 pub(super) fn cut_bones(inner: &mut Inner, now: Instant) -> bool {
+    if !shard_allows(inner, AssistFeature::BoneCutterAgent) {
+        return false;
+    }
     let c = inner.agents.config.bone_cutter.clone();
     let Some(blade) = c.blade.filter(|_| c.enabled) else {
         return false;
@@ -548,6 +613,9 @@ pub(super) fn buy(
     container: Serial,
     entries: &[uoterm_protocol::VendorBuyEntry],
 ) {
+    if !shard_allows(inner, AssistFeature::BuyAgent) {
+        return;
+    }
     let b = inner.agents.config.buy.clone();
     let Some((listed, stock)) = inner.agents.last_contents.clone() else {
         return;
@@ -609,6 +677,9 @@ pub(super) fn sell(
     vendor: Serial,
     entries: &[uoterm_protocol::VendorSellEntry],
 ) -> bool {
+    if !shard_allows(inner, AssistFeature::SellAgent) {
+        return false;
+    }
     let s = inner.agents.config.sell.clone();
     let bag = s.bag;
     let mut left: Vec<Option<u32>> = s.items.rules().iter().map(|r| r.amount).collect();
@@ -717,6 +788,14 @@ pub(super) fn pick_by_filter(
             u32::from(m.hits.unwrap_or(0)) * PERCENT / u32::from(max)
         })
     };
+    let feature = match filter.selector {
+        Selector::Nearest | Selector::Farthest => Some(AssistFeature::ClosestTargets),
+        Selector::Random => Some(AssistFeature::RandomTargets),
+        _ => None,
+    };
+    if let Some(f) = feature.filter(|&f| !shard_allows(inner, f)) {
+        return Err(forbidden(f));
+    }
     let last = inner.agents.last_pick.get(name).copied();
     let place = last.and_then(|l| passing.iter().position(|m| m.serial == l));
     let chosen = match filter.selector {

@@ -91,6 +91,15 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
         }
         "drinkpotion" => drink_potion(game, call, ctx),
         "interrupt" => interrupt(game, call, ctx),
+        "opendoor" => {
+            let Some(tile) = nearest_door_tile(game.inner) else {
+                Game::note(call, ctx, "no door beside the character");
+                return Ok(Step::Done);
+            };
+            let at = game.world().self_state.location;
+            want_door_macro(game.inner, at, tile, Instant::now());
+            Ok(Step::Acted)
+        }
         "togglewar" => {
             let on = !game.world().self_state.war;
             send_war_mode(game.inner, on);
@@ -294,6 +303,35 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
             }
             Ok(Step::Done)
         }
+        "textentrymsg" => text_entry(game, call, ctx, true),
+        "canceltextentry" => text_entry(game, call, ctx, false),
+        "waitfortextentry" => {
+            let open = game.world().text_entry.is_some();
+            wait_until(call, ctx, 0, "no text dialog came", open)
+        }
+        "partyinvite" => {
+            let member = call.args.first().map(|a| game.serial(a, ctx)).transpose()?;
+            game.inner.outbound.push_back(encode::party_invite(member));
+            Ok(Step::Acted)
+        }
+        "partyremove" => {
+            let member = game.serial(need(call, 0, "a member")?, ctx)?;
+            game.inner.outbound.push_back(encode::party_remove(member));
+            Ok(Step::Acted)
+        }
+        "partyloot" => {
+            let allow = on_off(call, 0)?;
+            game.inner.outbound.push_back(encode::party_can_loot(allow));
+            Ok(Step::Acted)
+        }
+        "setstatlock" => stat_lock(game, call),
+        "emoteaction" => {
+            let action = text_arg(call, 0, EMOTE_ACTION_MAX)?;
+            game.inner
+                .outbound
+                .push_back(encode::emote_animation(action));
+            Ok(Step::Acted)
+        }
         "partyaccept" | "partydecline" => {
             let Some(leader) = game.inner.world.write().party_invite.take() else {
                 Game::note(call, ctx, "no party invite is open");
@@ -354,6 +392,9 @@ fn first_run(ctx: &Ctx) -> bool {
 
 /// Double-clicks, or waits for the double-click to be allowed.
 fn double_click(game: &mut Game, serial: Serial) -> Step {
+    if dismount_blocked(game.inner, serial) {
+        return Step::Fail(DISMOUNT_BLOCKED.into());
+    }
     if send_double_click(game.inner, serial) {
         game.inner.last_object = Some(serial);
         Step::Acted
@@ -476,6 +517,9 @@ fn bandage(
 /// Drinks a potion by its name: heal, cure, refresh, and the rest. The
 /// potions that share a bottle are told apart by colour.
 fn drink_potion(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<Step, String> {
+    if !shard_allows(game.inner, AssistFeature::PotionHotkeys) {
+        return Err(forbidden(AssistFeature::PotionHotkeys));
+    }
     let name = &need(call, 0, "a potion name")?.text;
     let potion =
         uoterm_assist::items::potion(name).ok_or_else(|| format!("no potion named '{name}'"))?;
@@ -488,6 +532,9 @@ fn drink_potion(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Res
         )
         .first()
         .copied();
+    if found.is_some() && free_a_hand(game) {
+        return Ok(Step::Wait);
+    }
     match found {
         Some(serial) => Ok(double_click(game, serial)),
         None => {
@@ -495,6 +542,102 @@ fn drink_potion(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Res
             Ok(Step::Done)
         }
     }
+}
+
+/// Puts the left-hand item away so a hand is free to drink, when the
+/// option says to, and has the agents take it out again after. True while
+/// the hand is being freed, so the drink waits a tick.
+fn free_a_hand(game: &mut Game) -> bool {
+    let options = &game.inner.agents.config.options;
+    if !options.free_hand_for_potions || !shard_allows(game.inner, AssistFeature::AutoPotionEquip) {
+        return false;
+    }
+    let (free, left) = {
+        let w = game.world();
+        (
+            reflex::has_free_hand(&w),
+            w.worn(LAYER_TWO_HANDED).map(|e| e.serial),
+        )
+    };
+    let Some(left) = left.filter(|_| !free) else {
+        return false;
+    };
+    if game.inner.agents.rearm_pending(left) {
+        // Put away already: wait for the shard to say the hand is empty.
+        return true;
+    }
+    if !ready(game) {
+        return true;
+    }
+    let pack = backpack_serial(&game.world()).unwrap_or_else(|| game.me());
+    lift_and_drop(game.inner, left, ONE_WORN_ITEM, DropAt::Into(pack));
+    game.inner.agents.rearm_later(left, LAYER_TWO_HANDED);
+    true
+}
+
+/// The most characters a line of speech or party chat may have.
+const TEXT_MAX: usize = 512;
+/// The most characters a shard takes in a prompt answer.
+const PROMPT_TEXT_MAX: usize = 128;
+/// The most characters of an emote animation's name.
+const EMOTE_ACTION_MAX: usize = 32;
+/// The stats a lock is set on, by the number the shard reads.
+const STATS: [(&str, u8); 3] = [("str", 0), ("dex", 1), ("int", 2)];
+
+/// The text argument at `i`, refused when it is longer than `max`.
+fn text_arg(call: &Call, i: usize, max: usize) -> std::result::Result<&str, String> {
+    let text = &need(call, i, "text")?.text;
+    if text.chars().count() > max {
+        return Err(format!(
+            "{}: the text is longer than {max} characters",
+            call.name
+        ));
+    }
+    Ok(text)
+}
+
+/// Answers the open one-field dialog: OK with the text, or cancel.
+fn text_entry(
+    game: &mut Game,
+    call: &Call,
+    ctx: &mut Ctx,
+    accept: bool,
+) -> std::result::Result<Step, String> {
+    let Some(dialog) = game.world().text_entry.clone() else {
+        Game::note(call, ctx, "no text dialog is open");
+        return Ok(Step::Done);
+    };
+    let text = if accept {
+        let max = usize::try_from(dialog.max_len)
+            .unwrap_or(usize::MAX)
+            .min(TEXT_MAX);
+        text_arg(call, 0, max)?.to_string()
+    } else {
+        String::new()
+    };
+    game.inner
+        .outbound
+        .push_back(encode::text_entry_response(&dialog, &text, accept));
+    game.inner.world.write().text_entry = None;
+    Ok(Step::Acted)
+}
+
+/// `setstatlock 'str' 'locked'`: sets the lock of a stat.
+fn stat_lock(game: &mut Game, call: &Call) -> std::result::Result<Step, String> {
+    let stat = need(call, 0, "str, dex or int")?;
+    let id = STATS
+        .iter()
+        .find(|(n, _)| stat.is(n))
+        .map(|&(_, id)| id)
+        .ok_or_else(|| format!("'{}' is not str, dex or int", stat.text))?;
+    let word = need(call, 1, "up, down or locked")?;
+    let lock = LOCKS
+        .iter()
+        .find(|(w, _)| word.is(w))
+        .map(|&(_, l)| l)
+        .ok_or_else(|| format!("'{}' is not up, down or locked", word.text))?;
+    game.inner.outbound.push_back(encode::stat_lock(id, lock));
+    Ok(Step::Acted)
 }
 
 /// Breaks the spell being cast the way a player does: lifts an item from
@@ -569,6 +712,9 @@ pub(super) fn use_once_pick(
 
 /// Uses the last matching item in the pack that `useonce` has not used.
 fn use_once(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<Step, String> {
+    if !shard_allows(game.inner, AssistFeature::UseOnceAgent) {
+        return Err(forbidden(AssistFeature::UseOnceAgent));
+    }
     let Some(serial) = use_once_pick(game, call)? else {
         Game::note(call, ctx, "none left that was not used");
         return Ok(Step::Done);
@@ -1364,7 +1510,7 @@ fn virtue(game: &mut Game, call: &Call) -> std::result::Result<Step, String> {
 /// as written: with the keyword numbers a shard listens for, and without the
 /// chat budget or the no-repeat rule that guards an agent's small talk.
 fn say(game: &mut Game, call: &Call, kind: u8) -> std::result::Result<Step, String> {
-    let text = &need(call, 0, "text")?.text;
+    let text = text_arg(call, 0, TEXT_MAX)?;
     let keywords = if kind == SPEECH_REGULAR {
         game.inner
             .speech_data
@@ -1389,7 +1535,7 @@ fn say(game: &mut Game, call: &Call, kind: u8) -> std::result::Result<Step, Stri
 }
 
 fn party_message(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Step, String> {
-    let text = &need(call, 0, "text")?.text;
+    let text = text_arg(call, 0, TEXT_MAX)?;
     // A serial after the text makes it a private line to that member.
     let to = match call.args.get(1) {
         Some(a) if a.number().is_some_and(|n| n > i64::from(u16::MAX)) || a.number().is_none() => {
@@ -1420,7 +1566,9 @@ fn prompt_message(
     call: &Call,
     ctx: &mut Ctx,
 ) -> std::result::Result<Step, String> {
-    let text = need(call, 0, "text")?.text.clone();
+    // A shard drops a longer answer and keeps its prompt open, so it is
+    // refused here, before the prompt is marked answered.
+    let text = text_arg(call, 0, PROMPT_TEXT_MAX)?.to_string();
     let Some(prompt) = game.inner.world.write().prompt.take() else {
         Game::note(call, ctx, "no prompt is open");
         return Ok(Step::Done);
@@ -1566,7 +1714,9 @@ fn send_cast(game: &mut Game, spell: u16, target: Option<Serial>, now: Instant) 
     if !ready(game) {
         return Step::Wait;
     }
+    clear_hands_for_cast(game.inner, spell);
     game.inner.outbound.push_back(encode::cast_spell(spell));
+    note_cast(game.inner, spell);
     game.inner.scripting.last_spell = Some(spell);
     if let Some(target) = target {
         queue_target(game.inner, target, now);
@@ -1633,7 +1783,11 @@ fn aim_at(game: &mut Game, call: &Call, ctx: &mut Ctx, aim: Aim, lifetime: Durat
 }
 
 fn target(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<Step, String> {
-    let serial = game.serial(need(call, 0, "a target")?, ctx)?;
+    let arg = need(call, 0, "a target")?;
+    let serial = game.serial(arg, ctx)?;
+    if arg.is(LAST) || arg.is("lasttarget") {
+        check_last_target_range(game.inner, serial)?;
+    }
     let lifetime = call
         .args
         .get(1)
@@ -1929,6 +2083,9 @@ fn pick_mobile(
         list.sort_by_key(|m| (here.chebyshev(m.location), m.serial.0));
         list.into_iter().map(|m| m.serial).collect()
     };
+    if (closest || nearest) && !shard_allows(game.inner, AssistFeature::ClosestTargets) {
+        return Err(forbidden(AssistFeature::ClosestTargets));
+    }
     let current = ctx.vars.alias(alias).map(Serial);
     let chosen = if closest {
         candidates.first().copied()

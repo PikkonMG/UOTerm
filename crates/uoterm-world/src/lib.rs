@@ -181,12 +181,47 @@ mod tests {
     }
 
     #[test]
+    fn steps_are_counted_while_hidden_and_reset_on_showing() {
+        const HIDDEN: u8 = 0x80;
+        let mut w = me();
+        draw_me(&mut w, HIDDEN);
+        for sequence in 0..3 {
+            w.apply(&Inbound::MoveAck {
+                sequence,
+                notoriety: NOTO_INNOCENT,
+            });
+        }
+        assert_eq!(w.self_state.stealth_steps, 3);
+        draw_me(&mut w, 0);
+        assert_eq!(w.self_state.stealth_steps, 0);
+    }
+
+    #[test]
     fn an_old_client_reads_poison_from_the_flag() {
         const POISON_BIT: u8 = 0x04;
         let mut w = me();
         draw_me(&mut w, POISON_BIT);
         assert!(w.self_state.poisoned);
         assert!(!w.self_state.flying);
+    }
+
+    #[test]
+    fn the_yellow_bar_is_read_from_the_flag_on_any_client() {
+        const BLESSED: u8 = 0x08;
+        let mut w = me();
+        draw_me(&mut w, BLESSED);
+        assert!(w.has_yellow_bar(w.self_state.serial));
+        draw_me(&mut w, 0);
+        assert!(!w.has_yellow_bar(w.self_state.serial));
+    }
+
+    #[test]
+    fn a_party_list_of_one_ends_the_party() {
+        let mut w = me();
+        let me = w.self_state.serial;
+        w.apply(&Inbound::Party(PartyEvent::Members(vec![LEADER, me])));
+        w.apply(&Inbound::Party(PartyEvent::Members(vec![me])));
+        assert!(w.party.is_empty());
     }
 
     #[test]

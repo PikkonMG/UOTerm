@@ -23,6 +23,8 @@ const AGENTS_DIR: &str = "agents";
 const AGENTS_FILE_EXT: &str = "toml";
 /// A dress list made from what the character wears now.
 pub(super) const TEMP_DRESS_LIST: &str = "temp";
+/// How long a hand freed for a potion stays free before the item goes back.
+const REARM_DELAY: Duration = Duration::from_millis(1500);
 /// An item held longer than this is taken to have landed somewhere the
 /// client did not hear of, so the agents do not wait for it for ever.
 const HOLD_LIMIT: Duration = Duration::from_secs(10);
@@ -102,6 +104,9 @@ pub(super) struct Agents {
     last_pick: HashMap<String, Serial>,
     /// When the item in hand was lifted, for [`HOLD_LIMIT`].
     holding_since: Option<Instant>,
+    /// An item to wear again, on its layer, once its time comes: the hand
+    /// freed for a potion.
+    rearm: Option<(Serial, u8, Instant)>,
     /// The contents of the last container the shard listed, in its order.
     /// A vendor's buy list prices them in that same order.
     last_contents: Option<(Serial, Vec<uoterm_protocol::ContainerItem>)>,
@@ -139,6 +144,7 @@ impl Agents {
             meter: DamageMeter::default(),
             last_pick: HashMap::new(),
             holding_since: None,
+            rearm: None,
             last_contents: None,
         }
     }
@@ -238,6 +244,16 @@ impl Agents {
         );
     }
 
+    /// Has the agents wear an item again after [`REARM_DELAY`].
+    pub(super) fn rearm_later(&mut self, item: Serial, layer: u8) {
+        self.rearm = Some((item, layer, Instant::now() + REARM_DELAY));
+    }
+
+    /// True while this item waits to be worn again.
+    pub(super) fn rearm_pending(&self, item: Serial) -> bool {
+        self.rearm.is_some_and(|(i, _, _)| i == item)
+    }
+
     /// Notes damage the shard reports on a mobile, while the meter runs.
     pub(super) fn note_damage(&mut self, me: Serial, serial: Serial, amount: u16) {
         let m = &mut self.meter;
@@ -291,14 +307,16 @@ pub(super) fn pump_agents(inner: &mut Inner, now: Instant) {
     if !action_ready(inner) || now < inner.agents.next_move_at {
         return;
     }
-    let acted = work::remount(inner, now)
+    let acted = work::rearm(inner, now)
+        || work::remount(inner, now)
         || work::bandage(inner, now)
         || work::job(inner, now)
         || work::autoloot(inner, now, false)
         || work::scavenge(inner, now)
         || work::carve(inner, now)
         || work::cut_bones(inner, now)
-        || work::open_corpses(inner, now);
+        || work::open_corpses(inner, now)
+        || work::stack_at_feet(inner, now);
     if acted {
         tracing::debug!("an agent acted");
     }
@@ -417,6 +435,7 @@ pub(super) fn agent_set(inner: &mut Inner, args: &Value) -> ToolResult {
         ("bone_cutter", _) => from(settings).map(|v| c.bone_cutter = v),
         ("carver", _) => from(settings).map(|v| c.carver = v),
         ("open_corpses", _) => from(settings).map(|v| c.open_corpses = v),
+        ("options", _) => from(settings).map(|v| c.options = v),
         (other, _) => Err(format!("no agent named '{other}'")),
     };
     if let Err(e) = result.and_then(|()| inner.agents.save()) {
@@ -1012,6 +1031,221 @@ mod tests {
         let result = target_filter(&mut inner, &json!({ "name": "greys" }));
         assert!(result.ok);
         assert_eq!(inner.last_target, Some(NEAR));
+    }
+
+    #[test]
+    fn a_shard_that_forbids_autoloot_gets_no_looting() {
+        let mut inner = player();
+        item(
+            &mut inner,
+            CORPSE,
+            CORPSE_GRAPHIC,
+            None,
+            Point3::new(101, 100, 0),
+        );
+        inner.agents.config.autoloot.enabled = true;
+        inner.agents.config.autoloot.items = list_of(vec![gold_rule()]);
+        inner.world.write().assist =
+            uoterm_world::AssistRules::from_bits(1 << AssistFeature::AutolootAgent as u32);
+        tick(&mut inner);
+        assert!(inner.outbound.is_empty());
+    }
+
+    fn cursor(flags: u8) -> Vec<u8> {
+        const CURSOR_ID: u32 = 7;
+        let mut w = uoterm_protocol::buf::PacketWriter::new(PKT_TARGET);
+        w.u8(0)
+            .u32(CURSOR_ID)
+            .u8(flags)
+            .u32(0)
+            .u16(0)
+            .u16(0)
+            .u8(0)
+            .i8(0)
+            .u16(0);
+        w.finish()
+    }
+
+    #[test]
+    fn smart_last_target_keeps_harm_and_help_apart() {
+        const FOE: Serial = Serial(0x0000_0600);
+        const PAL: Serial = Serial(0x0000_0601);
+        let mut inner = player();
+        inner.agents.config.options.smart_last_target = true;
+        ingest(&mut inner, &cursor(CURSOR_HARMFUL));
+        answer_cursor_with(&mut inner, 7, FOE);
+        ingest(&mut inner, &cursor(CURSOR_BENEFICIAL));
+        answer_cursor_with(&mut inner, 7, PAL);
+        ingest(&mut inner, &cursor(CURSOR_HARMFUL));
+        assert_eq!(
+            last_target_for_cursor(&inner),
+            Some(FOE),
+            "a harmful cursor takes the foe"
+        );
+        inner.agents.config.options.smart_last_target = false;
+        assert_eq!(
+            last_target_for_cursor(&inner),
+            Some(PAL),
+            "without the option, the last one"
+        );
+    }
+
+    #[test]
+    fn a_far_last_target_is_refused_when_the_range_is_set() {
+        const FAR: Serial = Serial(0x0000_0700);
+        let mut inner = player();
+        mobile(&mut inner, FAR, 120, NOTO_GREY, None);
+        inner.agents.config.options.last_target_range = Some(10);
+        assert!(check_last_target_range(&inner, FAR).is_err());
+        inner.agents.config.options.last_target_range = Some(30);
+        assert!(check_last_target_range(&inner, FAR).is_ok());
+    }
+
+    #[test]
+    fn a_heal_cursor_is_not_answered_with_a_poisoned_target() {
+        const HEAL: u16 = 4;
+        let mut inner = player();
+        inner.agents.config.options.block_heal_poisoned = true;
+        mobile(&mut inner, FRIEND, 101, NOTO_INNOCENT, None);
+        inner.world.write().flags_mean_flying = true;
+        inner.world.write().apply(&Inbound::HealthBarUpdate {
+            serial: FRIEND,
+            bars: vec![uoterm_protocol::HealthBarStatus {
+                kind: uoterm_protocol::HEALTH_BAR_POISON,
+                enabled: true,
+                poison_level: None,
+            }],
+        });
+        note_cast(&mut inner, HEAL);
+        ingest(&mut inner, &cursor(CURSOR_BENEFICIAL));
+        inner.outbound.clear();
+        answer_cursor_with(&mut inner, 7, FRIEND);
+        assert!(
+            inner.outbound.is_empty(),
+            "the heal waits; the cursor stays up"
+        );
+        assert!(inner.world.read().pending_target.is_some());
+    }
+
+    #[test]
+    fn the_hands_are_cleared_before_a_magery_cast() {
+        const LIGHTNING: u16 = 30;
+        let mut inner = player();
+        inner.agents.config.options.unequip_before_cast = true;
+        let sword = inner
+            .world
+            .read()
+            .worn(LAYER_ONE_HANDED)
+            .map(|e| e.serial)
+            .expect("a sword");
+        let result = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_CAST.into(),
+                args: json!({ "spell": LIGHTNING }),
+            },
+        );
+        assert!(result.ok);
+        let lift_at = inner
+            .outbound
+            .iter()
+            .position(|p| *p == encode::lift(sword, ONE_WORN_ITEM));
+        let cast_at = inner
+            .outbound
+            .iter()
+            .position(|p| *p == encode::cast_spell(LIGHTNING));
+        assert!(
+            lift_at.is_some() && lift_at < cast_at,
+            "the sword goes first"
+        );
+    }
+
+    #[test]
+    fn a_hand_is_freed_to_drink_and_armed_again_after() {
+        const SHIELD: Serial = Serial(0x4000_0B09);
+        const POTION: Serial = Serial(0x4000_0B0A);
+        let mut inner = player();
+        inner.agents.config.options.free_hand_for_potions = true;
+        inner
+            .world
+            .write()
+            .apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
+                serial: SHIELD,
+                graphic: 0x1B72,
+                layer: LAYER_TWO_HANDED,
+                hue: 0,
+            }));
+        item(&mut inner, SHIELD, 0x1B72, Some(ME), Point3::new(0, 0, 0));
+        item(
+            &mut inner,
+            POTION,
+            GRAPHIC_POTION_HEAL,
+            Some(PACK),
+            Point3::new(0, 0, 0),
+        );
+        ready_to_act(&mut inner);
+        let pressed = scripting::run_now(&mut inner, "drink", "drinkpotion 'heal'");
+        assert!(!pressed.ok, "this press only freed the hand");
+        assert!(inner
+            .outbound
+            .contains(&encode::lift(SHIELD, ONE_WORN_ITEM)));
+        assert!(inner.agents.rearm_pending(SHIELD));
+    }
+
+    #[test]
+    fn ore_logs_and_fish_are_dropped_at_the_feet() {
+        const LOGS: Serial = Serial(0x4000_0B0B);
+        let mut inner = player();
+        inner.agents.config.options.stack_at_feet = true;
+        item(&mut inner, LOGS, 0x1BDD, Some(PACK), Point3::new(0, 0, 0));
+        tick(&mut inner);
+        let feet = inner.world.read().self_state.location;
+        let grid = drop_grid(&inner);
+        assert!(inner.outbound.contains(&encode::drop(
+            LOGS,
+            feet.x,
+            feet.y,
+            feet.z,
+            Serial::WORLD,
+            grid
+        )));
+    }
+
+    #[test]
+    fn hiding_holds_a_walk_and_the_doors_when_the_options_say_so() {
+        let mut inner = player();
+        inner.world.write().self_state.hidden = true;
+        assert!(!walks_only(&inner) && doors_open_by_themselves(&inner));
+        inner.agents.config.options.no_run_hidden = true;
+        inner.agents.config.options.no_doors_hidden = true;
+        assert!(walks_only(&inner));
+        assert!(!doors_open_by_themselves(&inner));
+    }
+
+    #[test]
+    fn a_double_click_on_yourself_in_war_mode_is_held_back() {
+        const HORSE: Serial = Serial(0x4000_0B0C);
+        let mut inner = player();
+        inner.agents.config.options.block_dismount_in_war = true;
+        {
+            let mut w = inner.world.write();
+            w.self_state.war = true;
+            w.apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
+                serial: HORSE,
+                graphic: 0x3EA0,
+                layer: LAYER_MOUNT,
+                hue: 0,
+            }));
+        }
+        ready_to_act(&mut inner);
+        let used = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_USE.into(),
+                args: json!({ "serial": ME.0 }),
+            },
+        );
+        assert_eq!(used.error.as_deref(), Some(DISMOUNT_BLOCKED));
     }
 
     #[test]

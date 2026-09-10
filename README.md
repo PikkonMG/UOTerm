@@ -229,6 +229,33 @@ Goals: `gather` uses the hatchet, then targets a tree. `hunt` attacks grey+ mobi
 
 Rules in code: reject `*emotes*` unless `allow_emote`; shorten long lines; clamp `typo_rate` to `0.0..=1.0`; skip populate agents outside `active_hours`. See `docs/PERSONAS.md`.
 
+## Scripts, agents and hotkeys
+
+UOTerm has an assistant built in. A script is a plain list of commands, one
+on each line, in the command style UO assistant scripts have long used:
+
+```text
+while not dead
+  if poisoned
+    cast 'Cure' 'self'
+  elseif hits < maxhits
+    bandageself
+    pause 10000
+  endif
+  pause 500
+endwhile
+```
+
+Run it with the `run_script` tool. Agents loot, pick up, organize, restock,
+dress, buy, sell, bandage and remount on their own; hotkeys are named actions
+such as `Bandage Self` or `Cast Greater Heal`; and `record_macro` writes what
+you do as a script. Everything goes at the pace a person plays.
+
+A shard can send a list of assistant features it forbids. UOTerm obeys the
+list by default; set `obey_shard_rules = false` to ignore it.
+
+See `docs/SCRIPTS.md` and `docs/AGENTS.md`.
+
 ## Populate (several sessions)
 
 ```bash
@@ -306,11 +333,13 @@ CI (`.github/workflows/ci.yml`) builds on Ubuntu and Windows: `cargo fmt`, `clip
 
 - `crates/uoterm-protocol` — framing, Huffman, codecs
 - `crates/uoterm-world` — serials, journal, radar
-- `crates/uoterm-nav` — MUL/UOP, A*
-- `crates/uoterm-runtime` — session, mock shard, reflex, HTTP
+- `crates/uoterm-nav` — MUL/UOP, A*, skill names
+- `crates/uoterm-assist` — spells, weapon moves, potions and other game data
+- `crates/uoterm-script` — the script language: parser and step interpreter
+- `crates/uoterm-runtime` — session, mock shard, reflex, scripts, agents, hotkeys, HTTP
 - `crates/uoterm` — CLI binary
 
-Docs: `docs/PROTOCOL.md` (wire protocol), `docs/AGENT_API.md` (tools, HTTP, MCP), `docs/PERSONAS.md` (persona files), `LEGAL.md`.
+Docs: `docs/PROTOCOL.md` (wire protocol), `docs/AGENT_API.md` (tools, HTTP, MCP), `docs/SCRIPTS.md` (script language), `docs/AGENTS.md` (agents, hotkeys, recording), `docs/PERSONAS.md` (persona files), `LEGAL.md`.
 
 ## License
 

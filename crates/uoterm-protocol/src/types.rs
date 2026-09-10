@@ -31,6 +31,9 @@ pub const PKT_TEXT_COMMAND: u8 = 0x12;
 pub const PKT_EQUIP: u8 = 0x13;
 pub const PKT_STATUS: u8 = 0x11;
 pub const PKT_HEALTH_BAR_STATUS: u8 = 0x17;
+/// The older health bar packet, laid out as `0x17`. Clients from 5.0.0a up
+/// read it.
+pub const PKT_HEALTH_BAR_OLD: u8 = 0x16;
 pub const PKT_WORLD_ITEM: u8 = 0x1A;
 pub const PKT_LOGIN_CONFIRM: u8 = 0x1B;
 pub const PKT_ASCII_MESSAGE: u8 = 0x1C;
@@ -739,6 +742,16 @@ impl ClientVersion {
 
     pub fn has_prefixed_mobile_incoming(self) -> bool {
         self.has_sa_item_packet()
+    }
+
+    /// Clients from 5.0.0a up read the `0x16` health bar packet as `0x17`.
+    pub fn reads_old_health_bar(self) -> bool {
+        self.at_least(Self {
+            major: 5,
+            minor: 0,
+            revision: 0,
+            patch: u32::from(b'a'),
+        })
     }
 
     /// Clients from 7.0.0.0 up read flag bit 4 of a mobile as "flying". The

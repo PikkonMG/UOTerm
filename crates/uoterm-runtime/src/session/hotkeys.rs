@@ -301,7 +301,14 @@ pub(super) fn press(inner: &mut Inner, args: &Value) -> ToolResult {
         ));
     };
     match key.action {
-        Action::Lines(text) => scripting::run_now(inner, &key.name, &text),
+        Action::Lines(text) => {
+            let mut pressed = scripting::run_now(inner, &key.name, &text);
+            if pressed.ok {
+                // The lines it ran, so a recording can write them down.
+                pressed.result["lines"] = json!(text);
+            }
+            pressed
+        }
         Action::ToggleAgent(agent) => {
             let on = !inner.agents.enabled(agent);
             let a = &mut inner.agents;

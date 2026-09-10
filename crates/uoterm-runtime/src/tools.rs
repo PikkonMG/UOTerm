@@ -55,6 +55,7 @@ pub const TOOL_DAMAGE_METER: &str = "damage_meter";
 pub const TOOL_TARGET_FILTER: &str = "target_filter";
 pub const TOOL_HOTKEYS: &str = "hotkeys";
 pub const TOOL_HOTKEY: &str = "hotkey";
+pub const TOOL_RECORD_MACRO: &str = "record_macro";
 
 pub const BANK_X: u16 = 1425;
 pub const BANK_Y: u16 = 1695;
@@ -298,7 +299,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_RUN_SCRIPT,
-        "Run a script: name (a file in the scripts folder) or text (the script itself). One script runs at a time.",
+        "Run a script: name (a file in the scripts folder) or text (the script itself); loop true runs it again each time it ends. One script runs at a time.",
         "no script running",
     ),
     (TOOL_STOP_SCRIPT, "Stop the running script.", "a script is running"),
@@ -349,6 +350,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Press a hotkey by name, such as 'Bandage Self', 'Cast Greater Heal', 'Potion Cure' or 'Attack Nearest Enemy'.",
         "in world",
     ),
+    (
+        TOOL_RECORD_MACRO,
+        "Record a macro: action start (with name), stop (saves it as a script), or cancel. While it records, tool calls and hotkeys become script lines, with waits for cursors, gumps and prompts.",
+        "session exists",
+    ),
 ];
 
 pub fn mcp_tool_list() -> Value {
@@ -392,7 +398,8 @@ pub fn mcp_tool_list() -> Value {
                         "on": {"type": "boolean"},
                         "action": {"type": "string"},
                         "settings": {"type": "object"},
-                        "group": {"type": "string"}
+                        "group": {"type": "string"},
+                        "loop": {"type": "boolean"}
                     }
                 }
             })

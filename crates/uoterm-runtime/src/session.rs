@@ -17,18 +17,7 @@ use crate::movement::{
 use crate::persona::{Persona, SpeechPolicy};
 use crate::reflex::{self, bandage_self_ms, heal_potion_lock_ms, ReflexAction};
 use crate::scene;
-use crate::tools::{
-    Goal, ToolCall, ToolResult, TOOL_AGENTS, TOOL_AGENT_ON, TOOL_AGENT_RUN, TOOL_AGENT_SET,
-    TOOL_AGENT_STOP, TOOL_ATTACK, TOOL_CANCEL_GOAL, TOOL_CAN_WALK, TOOL_CAST, TOOL_CONTEXT_MENU,
-    TOOL_DAMAGE_METER, TOOL_DEPOSIT, TOOL_DROP, TOOL_EMOTE, TOOL_EQUIP, TOOL_FIND_ITEMS,
-    TOOL_FIND_MOBILES, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_HOTKEY, TOOL_HOTKEYS,
-    TOOL_JOURNAL_SEARCH, TOOL_LIFT, TOOL_LIST_SCRIPTS, TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE,
-    TOOL_MOVE_TO, TOOL_OBSERVE, TOOL_OPEN_CONTAINER, TOOL_OPEN_DOOR, TOOL_RUN_SCRIPT, TOOL_SAY,
-    TOOL_SCRIPT_STATUS, TOOL_SET_GOAL, TOOL_SET_PERSONA, TOOL_SINGLE_CLICK, TOOL_STOP,
-    TOOL_STOP_SCRIPT, TOOL_TARGET, TOOL_TARGET_FILTER, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE,
-    TOOL_USE_SKILL, TOOL_VENDOR_BUY, TOOL_VENDOR_SELL, TOOL_WAIT_JOURNAL, TOOL_WAIT_TARGET,
-    TOOL_WALK, TOOL_WAR_MODE, TOOL_WHISPER,
-};
+use crate::tools::*;
 use parking_lot::RwLock;
 use rand::Rng;
 use serde_json::{json, Value};
@@ -55,6 +44,7 @@ use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World};
 
 mod agents;
 mod hotkeys;
+mod recorder;
 mod scripting;
 use agents::Agents;
 use scripting::Scripting;
@@ -344,6 +334,8 @@ struct Inner {
     scripting: Scripting,
     /// The agents' settings and what they are doing.
     agents: Agents,
+    /// A macro being recorded.
+    recording: Option<recorder::Recording>,
     attack_sent: Option<Serial>,
     /// The object the next target cursor is answered with, until it runs out.
     target_intent: Option<TargetIntent>,
@@ -353,6 +345,12 @@ struct Inner {
     /// The last object a target cursor was answered with, so a script can
     /// say "target last".
     last_target: Option<Serial>,
+    /// The last objects a harmful and a helpful cursor were answered with,
+    /// for the smart last target option.
+    last_harmful: Option<Serial>,
+    last_beneficial: Option<Serial>,
+    /// The last spell cast and when, so a heal spell's cursor is known.
+    last_cast: Option<(u16, Instant)>,
     /// The last object double-clicked, for "use last".
     last_object: Option<Serial>,
     /// The last weapon taken out of the character's hands, for "arm".
@@ -768,10 +766,14 @@ async fn run_session(
         obey_shard_rules: opts.obey_shard_rules,
         scripting: Scripting::new(opts.uopath.as_deref()),
         agents: Agents::load(&opts.character),
+        recording: None,
         attack_sent: None,
         target_intent: None,
         target_waiters: Vec::new(),
         last_target: None,
+        last_harmful: None,
+        last_beneficial: None,
+        last_cast: None,
         last_object: None,
         last_weapon: None,
         journal_waiters: Vec::new(),
@@ -824,7 +826,11 @@ async fn run_session(
                         } else if call.name == TOOL_WAIT_JOURNAL {
                             wait_for_journal(&mut inner, &call.args, reply, Instant::now());
                         } else {
+                            let copy = inner.recording.is_some().then(|| call.clone());
                             let result = handle_tool(&mut inner, call);
+                            if let Some(call) = copy {
+                                recorder::tool_call(&mut inner, &call, &result);
+                            }
                             let _ = reply.send(result);
                         }
                     }
@@ -1564,10 +1570,14 @@ mod relay_tests {
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             scripting: Scripting::new(None),
             agents: Agents::load(""),
+            recording: None,
             attack_sent: None,
             target_intent: None,
             target_waiters: Vec::new(),
             last_target: None,
+            last_harmful: None,
+            last_beneficial: None,
+            last_cast: None,
             last_object: None,
             last_weapon: None,
             journal_waiters: Vec::new(),
@@ -4991,6 +5001,27 @@ mod relay_tests {
         inner.next_double_click_at = now - DOUBLE_CLICK_INTERVAL;
     }
 
+    /// The drop tool read its destination only as a JSON number, so a serial
+    /// copied from `observe` as `0x...` text dropped the item on the ground;
+    /// and a mobile as the destination also dropped it on the ground in
+    /// place of giving it.
+    #[test]
+    fn a_drop_gives_to_a_mobile_named_in_hex_text() {
+        const ITEM: Serial = Serial(0x4000_0001);
+        const PET: Serial = Serial(0x0000_0200);
+        let mut inner = test_session();
+        let result = tool(
+            &mut inner,
+            TOOL_DROP,
+            json!({ "serial": "0x40000001", "dest": "0x00000200" }),
+        );
+        assert!(result.ok, "{:?}", result.error);
+        let grid = drop_grid(&inner);
+        assert!(inner
+            .outbound
+            .contains(&encode::drop_into_container(ITEM, PET, grid)));
+    }
+
     /// A cast with no spell used to cast spell 1, and spend mana and
     /// reagents on a spell nobody asked for.
     #[test]
@@ -5841,6 +5872,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         let mut world = inner.world.write();
                         world.apply(&msg);
                     }
+                    recorder::shard_opened(inner, &msg);
                     if let Inbound::Target(cursor) = &msg {
                         expire_target_intent(inner, Instant::now());
                         if let Some(intent) = inner.target_intent.take() {
@@ -6565,11 +6597,23 @@ fn take_assistant_rules(inner: &mut Inner, disallowed: u64) {
 /// True unless the shard forbids a walk from opening the doors in its way. The
 /// door tool is a player's own key press, and the list does not stop it.
 fn doors_open_by_themselves(inner: &Inner) -> bool {
-    inner
-        .world
-        .read()
-        .assist
-        .allows(AssistFeature::AutoOpenDoors)
+    let hidden_now = inner.world.read().self_state.hidden;
+    shard_allows(inner, AssistFeature::AutoOpenDoors)
+        && !(hidden_now && inner.agents.config.options.no_doors_hidden)
+}
+
+/// True unless the shard forbids this assistant feature. The list is empty
+/// when the user set the character to ignore it.
+fn shard_allows(inner: &Inner, feature: AssistFeature) -> bool {
+    inner.world.read().assist.allows(feature)
+}
+
+/// What a tool or a script says about a feature the shard forbids.
+fn forbidden(feature: AssistFeature) -> String {
+    format!(
+        "this shard forbids assistants the {} feature",
+        feature.name()
+    )
 }
 
 /// Asks for the door the character has walked up to, once: the second ask is
@@ -6700,6 +6744,12 @@ fn send_double_click(inner: &mut Inner, serial: Serial) -> bool {
     inner.outbound.push_back(packet);
     mark_action(inner);
     true
+}
+
+/// Where the drop tool puts an item: a container or a mobile, or `None`
+/// for the ground.
+fn drop_destination(args: &Value) -> Option<Serial> {
+    arg_serial_opt(args, "dest").filter(|d| d.is_valid())
 }
 
 /// The layer a mount rides on.
@@ -6925,11 +6975,129 @@ fn expire_target_waiters(inner: &mut Inner, now: Instant) {
 
 /// Answers the cursor with an object and remembers it for "target last".
 fn answer_cursor_with(inner: &mut Inner, cursor_id: u32, serial: Serial) {
+    if heal_blocked(inner, serial) {
+        tracing::info!(%serial, "the heal is not sent: the target is poisoned");
+        return;
+    }
+    let flags = inner.world.read().pending_target.as_ref().map(|c| c.flags);
     inner
         .outbound
         .push_back(encode::target_object(cursor_id, serial, 0, 0, 0, 0));
     inner.world.write().clear_target();
     inner.last_target = Some(serial);
+    match flags {
+        Some(CURSOR_HARMFUL) => inner.last_harmful = Some(serial),
+        Some(CURSOR_BENEFICIAL) => inner.last_beneficial = Some(serial),
+        _ => {}
+    }
+}
+
+/// True when the no-run-while-hidden option holds the character to a walk.
+fn walks_only(inner: &Inner) -> bool {
+    inner.agents.config.options.no_run_hidden && inner.world.read().self_state.hidden
+}
+
+/// What a double-click the dismount option holds back says.
+const DISMOUNT_BLOCKED: &str = "blocked: that would dismount you in war mode";
+
+/// A cursor's flag byte: harmful or helpful.
+const CURSOR_HARMFUL: u8 = 1;
+const CURSOR_BENEFICIAL: u8 = 2;
+/// A cursor this soon after a cast is taken to be that spell's cursor.
+const SPELL_CURSOR_WINDOW: Duration = Duration::from_secs(3);
+/// The heal spells a poisoned target cannot take: Heal, Greater Heal, and
+/// Close Wounds.
+const HEAL_SPELLS: [u16; 3] = [4, 29, 202];
+
+/// Notes a cast, so the cursor it opens is known.
+fn note_cast(inner: &mut Inner, spell: u16) {
+    inner.last_cast = Some((spell, Instant::now()));
+}
+
+/// True when the block-heal option holds this target back: the cursor came
+/// from a heal spell, and the target is poisoned.
+fn heal_blocked(inner: &Inner, target: Serial) -> bool {
+    let o = &inner.agents.config.options;
+    let heal_cursor = inner.last_cast.is_some_and(|(spell, at)| {
+        HEAL_SPELLS.contains(&spell) && at.elapsed() <= SPELL_CURSOR_WINDOW
+    });
+    o.block_heal_poisoned
+        && heal_cursor
+        && shard_allows(inner, AssistFeature::PoisonedChecks)
+        && inner.world.read().is_poisoned(target)
+}
+
+/// The last target for the open cursor. With the smart option, a harmful
+/// cursor takes the last harmful target and a helpful one the last helpful
+/// one; each falls back to the plain last target.
+fn last_target_for_cursor(inner: &Inner) -> Option<Serial> {
+    let smart = inner.agents.config.options.smart_last_target
+        && shard_allows(inner, AssistFeature::SmartTarget);
+    let flags = inner.world.read().pending_target.as_ref().map(|c| c.flags);
+    match (smart, flags) {
+        (true, Some(CURSOR_HARMFUL)) => inner.last_harmful.or(inner.last_target),
+        (true, Some(CURSOR_BENEFICIAL)) => inner.last_beneficial.or(inner.last_target),
+        _ => inner.last_target,
+    }
+}
+
+/// Refuses a last target farther than the range the option sets.
+fn check_last_target_range(inner: &Inner, serial: Serial) -> std::result::Result<(), String> {
+    let Some(range) = inner.agents.config.options.last_target_range else {
+        return Ok(());
+    };
+    if !shard_allows(inner, AssistFeature::RangedTarget) {
+        return Ok(());
+    }
+    let w = inner.world.read();
+    match w.map_location(serial) {
+        Some(at) if w.self_state.location.chebyshev(at) <= range => Ok(()),
+        _ => Err("the last target is out of range".into()),
+    }
+}
+
+/// The spellbooks and runebooks a cast leaves in the hands.
+const CASTING_BOOKS: [u16; 8] = [
+    0x0EFA, 0x2253, 0x2252, 0x238C, 0x23A0, 0x2D50, 0x2D9D, 0x22C5,
+];
+
+/// Puts the hands' items into the pack before a Magery cast, when the
+/// option says to. Books stay in hand.
+fn clear_hands_for_cast(inner: &mut Inner, spell: u16) {
+    let magery = inner
+        .scripting
+        .spells
+        .by_id(spell)
+        .is_some_and(|s| s.circle().is_some());
+    if !magery
+        || !inner.agents.config.options.unequip_before_cast
+        || !shard_allows(inner, AssistFeature::UnequipOnCast)
+    {
+        return;
+    }
+    let (pack, held) = {
+        let w = inner.world.read();
+        let held: Vec<Serial> = [LAYER_ONE_HANDED, LAYER_TWO_HANDED]
+            .iter()
+            .filter_map(|&l| w.worn(l))
+            .filter(|e| !CASTING_BOOKS.contains(&e.graphic))
+            .map(|e| e.serial)
+            .collect();
+        (backpack_serial(&w).unwrap_or(w.self_state.serial), held)
+    };
+    for item in held {
+        lift_and_drop(inner, item, ONE_WORN_ITEM, DropAt::Into(pack));
+    }
+}
+
+/// True when the option forbids this double-click: the character on
+/// himself, mounted and in war mode, which would dismount him.
+fn dismount_blocked(inner: &Inner, serial: Serial) -> bool {
+    let w = inner.world.read();
+    inner.agents.config.options.block_dismount_in_war
+        && serial == w.self_state.serial
+        && w.self_state.war
+        && w.worn(LAYER_MOUNT).is_some()
 }
 
 fn store_or_answer_target(inner: &mut Inner, serial: Serial) {
@@ -7393,10 +7561,10 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
     inner.movement.mounted = mounted;
     let travel = matches!(inner.goal, Goal::Travel { .. });
     let danger = matches!(inner.goal, Goal::Flee | Goal::Hunt);
-    let running = inner
-        .movement
-        .run_override
-        .unwrap_or_else(|| movement::should_run(false, danger || travel, false, stam, stam_max));
+    let running = !walks_only(inner)
+        && inner.movement.run_override.unwrap_or_else(|| {
+            movement::should_run(false, danger || travel, false, stam, stam_max)
+        });
     if inner.movement.arrived(from) && inner.movement.goal.is_some() {
         inner.world.write().push_event(uoterm_world::Event::new(
             uoterm_world::EventKind::Arrived,
@@ -7616,6 +7784,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             } else {
                 arg_serial(args, "serial")
             };
+            if dismount_blocked(inner, serial) {
+                return ToolResult::err(DISMOUNT_BLOCKED);
+            }
             if !send_double_click(inner, serial) {
                 return ToolResult::err(MUST_WAIT);
             }
@@ -7683,25 +7854,30 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         }
         TOOL_DROP => {
             if !action_ready(inner) {
-                return ToolResult::err("must wait to perform another action");
+                return ToolResult::err(MUST_WAIT);
             }
-            let dest = args
-                .get("dest")
-                .and_then(|v| v.as_u64())
-                .map(|n| Serial(n as u32))
-                .unwrap_or(Serial::WORLD);
+            // A destination read like every other serial, so `0x...` text
+            // works. A mobile takes the item as a gift; none means the ground.
+            let dest = drop_destination(args);
             let grid = drop_grid(inner);
             let serial = arg_serial(args, "serial");
-            if dest.is_item() {
-                inner
+            match dest {
+                Some(into) => inner
                     .outbound
-                    .push_back(encode::drop_into_container(serial, dest, grid));
-            } else {
-                let loc = inner.world.read().self_state.location;
-                inner
-                    .outbound
-                    .push_back(encode::drop(serial, loc.x, loc.y, loc.z, dest, grid));
+                    .push_back(encode::drop_into_container(serial, into, grid)),
+                None => {
+                    let loc = inner.world.read().self_state.location;
+                    inner.outbound.push_back(encode::drop(
+                        serial,
+                        loc.x,
+                        loc.y,
+                        loc.z,
+                        Serial::WORLD,
+                        grid,
+                    ));
+                }
             }
+            inner.sent_drop = Some(serial);
             mark_action(inner);
             ToolResult::action(TOOL_DROP)
         }
@@ -7730,7 +7906,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let Some(spell) = arg_number(args, ARG_SPELL) else {
                 return ToolResult::err(NEEDS_SPELL);
             };
+            clear_hands_for_cast(inner, spell as u16);
             inner.outbound.push_back(encode::cast_spell(spell as u16));
+            note_cast(inner, spell as u16);
             ToolResult::action(TOOL_CAST)
         }
         TOOL_USE_SKILL => {
@@ -7751,8 +7929,13 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             } else if let Some(who) = args.get("who").and_then(|v| v.as_str()) {
                 let serial = match who {
                     WHO_SELF => inner.world.read().self_state.serial,
-                    WHO_LAST => match inner.last_target {
-                        Some(serial) => serial,
+                    WHO_LAST => match last_target_for_cursor(inner) {
+                        Some(serial) => {
+                            if let Err(e) = check_last_target_range(inner, serial) {
+                                return ToolResult::err(e);
+                            }
+                            serial
+                        }
                         None => return ToolResult::err("no last target yet"),
                     },
                     _ => return ToolResult::err("who must be self or last"),
@@ -7808,11 +7991,14 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     g.serial, g.gump_id, button, &switches,
                 ));
                 inner.world.write().close_gump(g.gump_id);
-                ToolResult::action(if call.name == TOOL_GUMP_CLOSE {
+                let mut answered = ToolResult::action(if call.name == TOOL_GUMP_CLOSE {
                     TOOL_GUMP_CLOSE
                 } else {
                     TOOL_GUMP_RESPOND
-                })
+                });
+                // The gump it answered, so a recording can name it.
+                answered.result["gump"] = json!(g.gump_id);
+                answered
             } else {
                 ToolResult::err("no open gump")
             }
@@ -7954,6 +8140,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .push_back(encode::context_menu_request(serial));
             ToolResult::action(TOOL_CONTEXT_MENU)
         }
+        TOOL_RECORD_MACRO => recorder::record_macro(inner, args),
         TOOL_HOTKEYS => hotkeys::list(inner, args),
         TOOL_HOTKEY => hotkeys::press(inner, args),
         TOOL_AGENTS => agents::agents_status(inner),

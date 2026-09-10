@@ -241,7 +241,7 @@ fn drinkable_potion(world: &World, graphic: u16, name_part: Option<&str>) -> Opt
     })
 }
 
-fn has_free_hand(world: &World) -> bool {
+pub(crate) fn has_free_hand(world: &World) -> bool {
     let one = world
         .self_state
         .equipment

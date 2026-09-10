@@ -16,9 +16,9 @@ const STATUS_FLAG_RENAISSANCE: u8 = 3;
 const STATUS_FLAG_AOS: u8 = 4;
 const STATUS_FLAG_ML: u8 = 5;
 const STATUS_FLAG_COMBAT: u8 = 6;
-/// The bytes of the level-4 block: four resists, luck, two damage words and
-/// a 32-bit tithing count.
-const STATUS_AOS_BLOCK_LEN: usize = 22;
+/// The bytes of the level-4 block: four resists (8), luck (2), two damage
+/// words (4) and a 32-bit tithing count (4).
+const STATUS_AOS_BLOCK_LEN: usize = 18;
 /// The bytes of the level-3 block: stat cap, followers, most followers.
 const STATUS_RENAISSANCE_BLOCK_LEN: usize = 4;
 const COMPRESSED_LEN_HEADER: usize = 4;
@@ -693,6 +693,9 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_MUSIC => parse_music(packet),
         PKT_BUFF_DEBUFF => parse_buff_debuff(packet),
         PKT_ASSIST_VERSION => Ok(Inbound::AssistantVersionRequest),
+        PKT_HEALTH_BAR_OLD if version.reads_old_health_bar() => {
+            parse_health_bar_update(packet, version)
+        }
         PKT_DYE => parse_dye(packet),
         PKT_ASCII_PROMPT => parse_prompt(packet, false),
         PKT_UNICODE_PROMPT => parse_prompt(packet, true),
@@ -2100,8 +2103,22 @@ fn read_buff_arguments(r: &mut PacketReader<'_>) -> String {
     let Ok(prefix) = r.utf16le_fixed_z(BUFF_ARGUMENT_PREFIX_UNITS) else {
         return String::new();
     };
-    prefix + &r.utf16le_z().unwrap_or_default()
+    let arguments = prefix + &r.utf16le_z().unwrap_or_default();
+    // One more length word and its text close the effect, as the shard
+    // writes it. It is read past, or the next effect of the same packet
+    // reads from the middle of this one. A reference client reads a further
+    // pair when bytes are left; with none left the loop ends early.
+    for _ in 0..BUFF_TRAILING_TEXTS {
+        if r.u16().is_err() {
+            break;
+        }
+        let _ = r.utf16le_z();
+    }
+    arguments
 }
+
+/// The texts after an effect's arguments that this client does not show.
+const BUFF_TRAILING_TEXTS: usize = 1;
 
 #[cfg(test)]
 mod tests {
@@ -3673,6 +3690,83 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A packet with two effects: each one closes with one more length word
+    /// and text, which must be read past or the second effect is misread.
+    #[test]
+    fn buff_with_two_effects_reads_both() {
+        const HEADER_LEN: usize = 11;
+        const COUNT_AT: usize = 9;
+        let one = &BUFF_ADD_WITH_ARGUMENTS_PACKET;
+        let effect = &one[HEADER_LEN..];
+        let mut two = one[..HEADER_LEN].to_vec();
+        two[COUNT_AT..HEADER_LEN].copy_from_slice(&2u16.to_be_bytes());
+        two.extend_from_slice(effect);
+        two.extend_from_slice(effect);
+        let len = (two.len() as u16).to_be_bytes();
+        two[1..3].copy_from_slice(&len);
+        match parse(&two).unwrap() {
+            Inbound::BuffDebuff { effects, .. } => {
+                assert_eq!(effects.len(), 2);
+                for e in &effects {
+                    assert_eq!(e.title_cliloc, 1075845);
+                    assert_eq!(e.arguments, "15");
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Status levels 4 and 5 end right after the resists, luck, damage and
+    /// tithing block: 88 and 91 bytes on the wire.
+    #[test]
+    fn status_levels_four_and_five_read_resists_and_tithing() {
+        const LEVEL_FOUR_LEN: usize = 88;
+        const LEVEL_FIVE_LEN: usize = 91;
+        for (level, want_len) in [
+            (STATUS_FLAG_AOS, LEVEL_FOUR_LEN),
+            (STATUS_FLAG_ML, LEVEL_FIVE_LEN),
+        ] {
+            let mut w = crate::buf::PacketWriter::with_variable(PKT_STATUS);
+            w.u32(0xAA).ascii_fixed("Mara", 30).u16(10).u16(10).u8(0);
+            w.u8(level).u8(1);
+            w.u16(20).u16(30).u16(40).u16(10).u16(10).u16(10).u16(10);
+            w.u32(5).u16(35).u16(40);
+            if level >= STATUS_FLAG_ML {
+                w.u16(100).u8(1);
+            }
+            w.u16(225).u8(1).u8(5);
+            w.u16(50)
+                .u16(45)
+                .u16(40)
+                .u16(35)
+                .u16(400)
+                .u16(9)
+                .u16(13)
+                .u32(77);
+            let p = w.finish_variable().unwrap();
+            assert_eq!(p.len(), want_len, "level {level}");
+            match parse(&p).unwrap() {
+                Inbound::Status { extra, .. } => {
+                    assert_eq!(extra.fire_resist, 50, "level {level}");
+                    assert_eq!(extra.luck, 400);
+                    assert_eq!(extra.tithing, 77);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_older_health_bar_packet_reads_on_a_modern_client() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_HEALTH_BAR_OLD);
+        w.u32(0x42).u16(1).u16(HEALTH_BAR_POISON).u8(1);
+        let p = w.finish_variable().unwrap();
+        assert!(matches!(
+            parse_with_version(&p, ClientVersion::MODERN).unwrap(),
+            Inbound::HealthBarUpdate { .. }
+        ));
     }
 
     #[test]

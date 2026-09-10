@@ -359,6 +359,31 @@ pub struct TargetFilter {
     pub selector: Selector,
 }
 
+/// The switches that change how the character plays. All are off until set.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Options {
+    /// "Last target" at a harmful cursor is the last harmful target, and at a
+    /// helpful cursor the last helpful one.
+    pub smart_last_target: bool,
+    /// A last target farther than this many tiles is not targeted.
+    pub last_target_range: Option<u32>,
+    /// A heal spell's cursor is not answered with a poisoned target.
+    pub block_heal_poisoned: bool,
+    /// Put what the hands hold into the pack before a Magery cast.
+    pub unequip_before_cast: bool,
+    /// Free a hand to drink a potion, and take the weapon out again after.
+    pub free_hand_for_potions: bool,
+    /// Drop ore, logs and fish from the pack on the ground at your feet.
+    pub stack_at_feet: bool,
+    /// Walk, never run, while hidden.
+    pub no_run_hidden: bool,
+    /// Open no door on the way while hidden.
+    pub no_doors_hidden: bool,
+    /// Do not double-click yourself while mounted in war mode: that dismounts.
+    pub block_dismount_in_war: bool,
+}
+
 /// Every agent's settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -377,6 +402,7 @@ pub struct AgentsConfig {
     pub carver: BladeAgent,
     pub open_corpses: OpenCorpsesAgent,
     pub targets: BTreeMap<String, TargetFilter>,
+    pub options: Options,
 }
 
 #[cfg(test)]
@@ -398,6 +424,20 @@ mod tests {
             ..ItemRule::default()
         };
         assert!(!off.matches(GOLD, 0));
+    }
+
+    /// The settings example in the agents guide reads as real settings.
+    #[test]
+    fn the_guide_example_reads() {
+        const GUIDE: &str = include_str!("../../../../../docs/AGENTS.md");
+        let start = GUIDE.find("```toml").expect("a settings example") + "```toml".len();
+        let end = start + GUIDE[start..].find("```").expect("its end");
+        let config: AgentsConfig = toml::from_str(&GUIDE[start..end]).expect("the example reads");
+        assert!(config.autoloot.enabled);
+        assert_eq!(config.autoloot.items.rules().len(), 2);
+        assert_eq!(config.bandage.whom, HealWhom::FriendOrSelf);
+        assert_eq!(config.restock["reagents"].items[0].amount, Some(50));
+        assert_eq!(config.targets["greys"].selector, Selector::Nearest);
     }
 
     #[test]
