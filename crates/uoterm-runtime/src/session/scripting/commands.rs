@@ -1171,7 +1171,11 @@ fn clear_hands(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<S
     lift_and_drop(game.inner, item, ONE_WORN_ITEM, DropAt::Into(pack));
     game.inner.scripting.hands[hand] = Some(item);
     game.inner.last_weapon = Some(item);
-    Ok(if full.len() == 1 { Step::Acted } else { Step::Wait })
+    Ok(if full.len() == 1 {
+        Step::Acted
+    } else {
+        Step::Wait
+    })
 }
 
 fn equip_item(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Step, String> {
@@ -1713,7 +1717,10 @@ fn map_point(x: i64, y: i64, z: i64) -> std::result::Result<Point3, String> {
 
 /// The tile these steps away from a place.
 fn offset_point(from: Point3, dx: i64, dy: i64, dz: i64) -> std::result::Result<Point3, String> {
-    let add = |a: i64, b: i64| a.checked_add(b).ok_or_else(|| "the offset is too far".to_string());
+    let add = |a: i64, b: i64| {
+        a.checked_add(b)
+            .ok_or_else(|| "the offset is too far".to_string())
+    };
     map_point(
         add(i64::from(from.x), dx)?,
         add(i64::from(from.y), dy)?,
@@ -2023,7 +2030,11 @@ fn target_tile_relative(
         }
     };
     let (dx, dy) = Direction::from_byte(facing).delta();
-    let steps = if reverse { range.checked_neg() } else { Some(range) };
+    let steps = if reverse {
+        range.checked_neg()
+    } else {
+        Some(range)
+    };
     let at = steps
         .and_then(|n| Some((i64::from(dx).checked_mul(n)?, i64::from(dy).checked_mul(n)?)))
         .ok_or_else(|| format!("{range} is not a range"))

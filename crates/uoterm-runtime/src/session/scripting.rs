@@ -24,6 +24,8 @@ use super::*;
 /// The folder scripts are read from, below the working directory and below
 /// the user's config directory.
 pub(super) const SCRIPTS_DIR: &str = "scripts";
+/// The extension of a script file, in any case.
+pub(super) const SCRIPT_EXT: &str = "txt";
 /// How many lines of script output the status keeps.
 const OUTPUT_KEPT: usize = 50;
 /// The shortest gap after a tick in which the script sent packets. Speech,
@@ -157,35 +159,44 @@ fn script_dirs() -> Vec<PathBuf> {
     ]
 }
 
-/// The text of the script with this name. Any file whose name without its
-/// extension matches, in any case, is the script.
+/// The script files in these folders, in folder order, each with its name:
+/// the file name without its extension.
+fn script_files(dirs: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    dirs.iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case(SCRIPT_EXT))
+        })
+        .filter_map(|path| {
+            let name = path.file_stem()?.to_str()?.to_string();
+            Some((name, path))
+        })
+        .collect()
+}
+
+/// The text of the script with this name, in any case.
 fn find_script(name: &str) -> Option<String> {
-    for dir in script_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            if path.is_file() && stem.eq_ignore_ascii_case(name) {
-                if let Ok(text) = std::fs::read_to_string(&path) {
-                    return Some(text);
-                }
-            }
-        }
-    }
-    None
+    find_script_in(&script_dirs(), name)
+}
+
+fn find_script_in(dirs: &[PathBuf], name: &str) -> Option<String> {
+    script_files(dirs)
+        .into_iter()
+        .filter(|(stem, _)| stem.eq_ignore_ascii_case(name))
+        .find_map(|(_, path)| std::fs::read_to_string(path).ok())
 }
 
 /// The names of the scripts in the scripts folders.
 pub(super) fn script_names() -> Vec<String> {
-    let mut names: Vec<String> = script_dirs()
+    let mut names: Vec<String> = script_files(&script_dirs())
         .into_iter()
-        .filter_map(|dir| std::fs::read_dir(dir).ok())
-        .flat_map(|entries| entries.flatten())
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .filter_map(|path| path.file_stem().and_then(|s| s.to_str()).map(String::from))
+        .map(|(name, _)| name)
         .collect();
     names.sort_unstable_by_key(|n| n.to_ascii_lowercase());
     names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
@@ -801,9 +812,15 @@ mod tests {
     fn a_party_line_goes_to_the_member_named_after_its_colour() {
         const MEMBER: Serial = Serial(0x0000_0042);
         let mut inner = player();
-        start(&mut inner, "partymsg 'heal me' 0 0x42\npartymsg 'all of you' 33");
+        start(
+            &mut inner,
+            "partymsg 'heal me' 0 0x42\npartymsg 'all of you' 33",
+        );
         tick(&mut inner, 1);
-        assert!(sent(&inner, &encode::party_message(Some(MEMBER), "heal me")));
+        assert!(sent(
+            &inner,
+            &encode::party_message(Some(MEMBER), "heal me")
+        ));
         ready_to_act(&mut inner);
         tick(&mut inner, 1);
         assert!(sent(&inner, &encode::party_message(None, "all of you")));
@@ -963,6 +980,24 @@ mod tests {
         inner.world.write().self_state.dead = true;
         tick(&mut inner, 1);
         assert_eq!(status(&inner)["status"], "stopped");
+    }
+
+    #[test]
+    fn only_a_file_with_the_script_extension_is_a_script() {
+        const SCRIPT: &str = "sysmsg 'heal'";
+        let dir = std::env::temp_dir().join(format!("uoterm-scripts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the test scripts folder is made");
+        std::fs::write(dir.join("heal.TXT"), SCRIPT).expect("a script is written");
+        std::fs::write(dir.join("notes.md"), SCRIPT).expect("a note is written");
+        std::fs::write(dir.join("bank.json"), SCRIPT).expect("a data file is written");
+        let dirs = [dir.clone()];
+        let heal = find_script_in(&dirs, "heal");
+        let notes = find_script_in(&dirs, "notes");
+        let names: Vec<String> = script_files(&dirs).into_iter().map(|(n, _)| n).collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(heal.as_deref(), Some(SCRIPT));
+        assert_eq!(notes, None);
+        assert_eq!(names, vec!["heal"]);
     }
 
     #[test]

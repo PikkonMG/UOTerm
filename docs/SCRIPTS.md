@@ -301,9 +301,10 @@ yourself when you give none.
 
 ## Running scripts
 
-Save a script as a text file in a `scripts` folder: in the folder you run
+Save a script as a `.txt` file in a `scripts` folder: in the folder you run
 UOTerm from, or in your config folder (on Linux `~/.config/uoterm/scripts`).
-The file name without its extension is the script name.
+The file name without `.txt` is the script name. Files with other extensions
+are not scripts.
 
 | Tool | What it does |
 | --- | --- |

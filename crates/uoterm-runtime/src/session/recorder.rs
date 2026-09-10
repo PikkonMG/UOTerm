@@ -9,8 +9,6 @@ use std::path::PathBuf;
 
 use super::*;
 
-/// The extension recorded scripts are saved with.
-const SCRIPT_EXT: &str = "txt";
 /// How long a recorded wait waits.
 const RECORDED_WAIT_MS: u32 = 5000;
 
@@ -81,7 +79,7 @@ fn save(name: &str, text: &str) -> std::result::Result<PathBuf, String> {
         crate::config::config_dir().join(scripting::SCRIPTS_DIR)
     };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{name}.{SCRIPT_EXT}"));
+    let path = dir.join(format!("{name}.{}", scripting::SCRIPT_EXT));
     std::fs::write(&path, text).map_err(|e| e.to_string())?;
     Ok(path)
 }
@@ -248,7 +246,11 @@ fn script_line(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let path = vec![dir; steps as usize].join(", ");
-            format!("{} {}", if running { "run" } else { "walk" }, quoted(&path)?)
+            format!(
+                "{} {}",
+                if running { "run" } else { "walk" },
+                quoted(&path)?
+            )
         }
         TOOL_OPEN_DOOR => "opendoor".into(),
         TOOL_CONTEXT_MENU => {

@@ -300,7 +300,11 @@ enum JobStep {
 /// True while a job may still move this item. An item the shard refuses
 /// to move stays put; after a few tries the job leaves it.
 fn may_move(inner: &Inner, item: Serial) -> bool {
-    inner.agents.job_moves.get(&item).map_or(true, |&n| n < MAX_JOB_MOVES)
+    inner
+        .agents
+        .job_moves
+        .get(&item)
+        .map_or(true, |&n| n < MAX_JOB_MOVES)
 }
 
 /// Moves each listed item from the source bag to the destination, split to
