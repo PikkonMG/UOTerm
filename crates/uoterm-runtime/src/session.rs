@@ -4627,6 +4627,236 @@ mod relay_tests {
             "a click on something else, once the second is up, still goes out"
         );
     }
+
+    /// A shopkeeper who buys, and three stacks he offers to buy. Two of them
+    /// are the goods the sell tool asked for: one full stack, and one empty
+    /// entry the shopkeeper counts but holds nothing of.
+    const SHOPKEEPER: Serial = Serial(0x0000_2001);
+    const ASKED_STACK: Serial = Serial(0x4000_2002);
+    const EMPTY_STACK: Serial = Serial(0x4000_2003);
+    const OTHER_STACK: Serial = Serial(0x4000_2004);
+    /// The graphic the sell tool asked for, and a graphic it did not ask for.
+    const ASKED_GRAPHIC: u16 = 0x1BDD;
+    const OTHER_GRAPHIC: u16 = 0x1078;
+    const ASKED_HELD: u16 = 12;
+    const OTHER_HELD: u16 = 5;
+    const NOTHING_HELD: u16 = 0;
+    const SHOPKEEPER_PAYS: u16 = 3;
+    const SELL_ENTRY_NAME: &str = "goods";
+    const ONE_SELL: usize = 1;
+
+    /// Writes a `0x9E` sell list the way a shopkeeper does: one entry for
+    /// each stack he buys, with the price he pays for it.
+    fn vendor_sell_list(vendor: Serial, entries: &[(Serial, u16, u16)]) -> Vec<u8> {
+        let mut w = uoterm_protocol::buf::PacketWriter::with_variable(PKT_VENDOR_SELL_LIST);
+        w.serial(vendor).u16(entries.len() as u16);
+        for (serial, graphic, amount) in entries {
+            w.serial(*serial)
+                .u16(*graphic)
+                .u16(NO_HUE)
+                .u16(*amount)
+                .u16(SHOPKEEPER_PAYS)
+                .u16(SELL_ENTRY_NAME.len() as u16)
+                .ascii_fixed(SELL_ENTRY_NAME, SELL_ENTRY_NAME.len());
+        }
+        w.finish_variable().expect("a sell list is one packet")
+    }
+
+    /// Every `0x9F` sell the session has queued for the server.
+    fn sells(inner: &Inner) -> Vec<&[u8]> {
+        inner
+            .outbound
+            .iter()
+            .filter(|pkt| pkt.first() == Some(&PKT_VENDOR_SELL))
+            .map(Vec::as_slice)
+            .collect()
+    }
+
+    /// The sell tool names one graphic, but the shopkeeper answers with every
+    /// stack he buys. Only the goods the tool asked for may go, and all of
+    /// that stack: a sell built from the whole list empties the pack, and a
+    /// sell built from part of the stack leaves goods behind.
+    #[test]
+    fn a_sell_list_sells_only_the_goods_the_tool_asked_for() {
+        let mut inner = test_session();
+        inner.pending_vendor_sell_graphic = Some(ASKED_GRAPHIC);
+        ingest(
+            &mut inner,
+            &vendor_sell_list(
+                SHOPKEEPER,
+                &[
+                    (OTHER_STACK, OTHER_GRAPHIC, OTHER_HELD),
+                    (ASKED_STACK, ASKED_GRAPHIC, ASKED_HELD),
+                    (EMPTY_STACK, ASKED_GRAPHIC, NOTHING_HELD),
+                ],
+            ),
+        );
+        assert_eq!(
+            sells(&inner),
+            [encode::vendor_sell(SHOPKEEPER, &[(ASKED_STACK, ASKED_HELD)]).as_slice()],
+            "the asked-for stack goes in full, and nothing else does"
+        );
+    }
+
+    /// A shopkeeper who buys none of the goods the tool asked for gets no
+    /// answer. An empty sell packet is a sell of nothing, which a shard
+    /// answers with a refusal the caller cannot read.
+    #[test]
+    fn a_sell_list_without_the_asked_goods_sells_nothing() {
+        let mut inner = test_session();
+        inner.pending_vendor_sell_graphic = Some(ASKED_GRAPHIC);
+        ingest(
+            &mut inner,
+            &vendor_sell_list(SHOPKEEPER, &[(OTHER_STACK, OTHER_GRAPHIC, OTHER_HELD)]),
+        );
+        assert!(
+            sells(&inner).is_empty(),
+            "nothing the tool asked for is in the list, so nothing is sold"
+        );
+    }
+
+    /// One request sells once. A shopkeeper sends his list again each time the
+    /// window opens, and a request that stays behind sells the same goods a
+    /// second time.
+    #[test]
+    fn one_sell_list_answers_one_sell_and_no_more() {
+        let mut inner = test_session();
+        inner.pending_vendor_sell_graphic = Some(ASKED_GRAPHIC);
+        let list = vendor_sell_list(SHOPKEEPER, &[(ASKED_STACK, ASKED_GRAPHIC, ASKED_HELD)]);
+        ingest(&mut inner, &list);
+        ingest(&mut inner, &list);
+        assert_eq!(
+            sells(&inner).len(),
+            ONE_SELL,
+            "the second list finds no request and sells nothing"
+        );
+        assert!(
+            inner.pending_vendor_sell_graphic.is_none(),
+            "and the request is gone after the first list"
+        );
+    }
+
+    /// A locked chest the tool asks a context menu of, and another chest that
+    /// sends a menu of its own.
+    const THE_CHEST: Serial = Serial(0x4000_3001);
+    const ANOTHER_CHEST: Serial = Serial(0x4000_3002);
+    /// The cliloc number of the words the tool asks for, and the number of
+    /// different words in the same menu.
+    const CLILOC_ASKED_FOR: u32 = 3_000_006;
+    const CLILOC_OTHER: u32 = 3_000_007;
+    const MENU_ENTRY_FIRST: u16 = 0;
+    const MENU_ENTRY_SECOND: u16 = 1;
+    const MENU_ENTRY_THIRD: u16 = 2;
+    const NO_MENU_FLAGS: u16 = 0;
+    /// Where the sub-command of a `0xBF` starts: one id byte and two length
+    /// bytes before it.
+    const EXTENDED_SUB_AT: usize = 3;
+
+    /// Writes a `0xBF` `0x14` context menu in the mode that carries a whole
+    /// cliloc for each entry, which is the mode a modern shard sends.
+    fn context_menu(serial: Serial, entries: &[(u16, u32, u16)]) -> Vec<u8> {
+        let mut w = uoterm_protocol::buf::PacketWriter::with_variable(PKT_EXTENDED);
+        w.u16(EXT_CONTEXT_MENU_DISPLAY)
+            .u16(CONTEXT_MENU_MODE_CLILOC)
+            .serial(serial)
+            .u8(entries.len() as u8);
+        for (index, cliloc, flags) in entries {
+            w.u32(*cliloc).u16(*index).u16(*flags);
+        }
+        w.finish_variable().expect("a context menu is one packet")
+    }
+
+    /// Every `0xBF` `0x15` answer the session has queued for the server.
+    fn menu_answers(inner: &Inner) -> Vec<&[u8]> {
+        inner
+            .outbound
+            .iter()
+            .filter(|pkt| {
+                pkt.first() == Some(&PKT_EXTENDED)
+                    && pkt.get(EXTENDED_SUB_AT..EXTENDED_SUB_AT + 2)
+                        == Some(&EXT_CONTEXT_MENU_RESPONSE.to_be_bytes()[..])
+            })
+            .map(Vec::as_slice)
+            .collect()
+    }
+
+    /// A menu is answered by the number of the entry, not by its words, and
+    /// the numbers are the shard's own. The session must read the number off
+    /// the entry whose words the tool asked for: a guessed number picks
+    /// whatever entry that shard put there.
+    #[test]
+    fn a_context_menu_answers_the_entry_with_the_asked_words() {
+        let mut inner = test_session();
+        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        ingest(
+            &mut inner,
+            &context_menu(
+                THE_CHEST,
+                &[
+                    (MENU_ENTRY_FIRST, CLILOC_OTHER, NO_MENU_FLAGS),
+                    (MENU_ENTRY_SECOND, CLILOC_ASKED_FOR, NO_MENU_FLAGS),
+                    (MENU_ENTRY_THIRD, CLILOC_ASKED_FOR, NO_MENU_FLAGS),
+                ],
+            ),
+        );
+        assert_eq!(
+            menu_answers(&inner),
+            [encode::context_menu_response(THE_CHEST, MENU_ENTRY_SECOND).as_slice()],
+            "the first entry with those words is answered, and answered once"
+        );
+        assert!(
+            inner.pending_context_menu.is_none(),
+            "and the request is gone, so a later menu is not answered again"
+        );
+    }
+
+    /// A shard greys out the entries the character may not use, but it leaves
+    /// the words on them. An answer that picks a greyed-out entry does
+    /// nothing at all, and the caller waits for something that never happens.
+    #[test]
+    fn a_context_menu_steps_over_a_greyed_out_entry() {
+        let mut inner = test_session();
+        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        ingest(
+            &mut inner,
+            &context_menu(
+                THE_CHEST,
+                &[
+                    (MENU_ENTRY_FIRST, CLILOC_ASKED_FOR, CME_FLAG_DISABLED),
+                    (MENU_ENTRY_SECOND, CLILOC_ASKED_FOR, NO_MENU_FLAGS),
+                ],
+            ),
+        );
+        assert_eq!(
+            menu_answers(&inner),
+            [encode::context_menu_response(THE_CHEST, MENU_ENTRY_SECOND).as_slice()],
+            "the greyed-out entry is stepped over for the one that works"
+        );
+    }
+
+    /// A menu of a different object is not the answer to the request. The
+    /// session must let it be: an answer sent to another object does what the
+    /// caller never asked for.
+    ///
+    /// The request itself does not live through this menu, because the
+    /// handler takes it before it looks at the serial. That fault is reported
+    /// and not corrected here, so this test measures only the answer.
+    #[test]
+    fn a_context_menu_of_another_object_is_not_answered() {
+        let mut inner = test_session();
+        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        ingest(
+            &mut inner,
+            &context_menu(
+                ANOTHER_CHEST,
+                &[(MENU_ENTRY_FIRST, CLILOC_ASKED_FOR, NO_MENU_FLAGS)],
+            ),
+        );
+        assert!(
+            menu_answers(&inner).is_empty(),
+            "the other object gets no answer from this request"
+        );
+    }
 }
 
 fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
