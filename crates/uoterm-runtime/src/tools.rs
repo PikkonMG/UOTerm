@@ -221,8 +221,8 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_WAR_MODE, "Set war/peace.", "in world"),
     (TOOL_LIFT, "Pick up item.", "item serial"),
     (TOOL_DROP, "Drop item.", "serial"),
-    (TOOL_EQUIP, "Equip item on self.", "item serial"),
-    (TOOL_UNEQUIP, "Unequip into backpack.", "layer occupied"),
+    (TOOL_EQUIP, "Lift and wear an item: serial, or who=last for the last weapon put away.", "item serial"),
+    (TOOL_UNEQUIP, "Lift a worn item into the backpack; a weapon is remembered.", "layer occupied"),
     (TOOL_CAST, "Cast spell id.", "enough mana"),
     (TOOL_USE_SKILL, "Use skill id.", "in world"),
     (

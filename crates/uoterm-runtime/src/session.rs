@@ -63,9 +63,13 @@ const NO_TARGET_CURSOR: &str = "no target cursor came in time";
 const NO_JOURNAL_LINE: &str = "no journal line with those words came in time";
 const WAIT_JOURNAL_NEEDS_WORDS: &str = "wait_journal needs q, the words to wait for";
 const MUST_HAVE_CURSOR: &str = "must have a target cursor";
-/// The words a caller uses to aim at himself or at his last target.
-const TARGET_WHO_SELF: &str = "self";
-const TARGET_WHO_LAST: &str = "last";
+/// The words a caller uses for himself, or for the last thing of a kind: the
+/// last target, the last object used, the last weapon put away.
+const WHO_SELF: &str = "self";
+const WHO_LAST: &str = "last";
+/// Worn things are lifted one at a time.
+const ONE_WORN_ITEM: u16 = 1;
+const MUST_WAIT: &str = "must wait to perform another action";
 /// The graphic a ground target names when the caller names none: bare land.
 const BARE_LAND_GRAPHIC: u16 = 0;
 const LOGIN_DEADLINE: Duration = Duration::from_secs(15);
@@ -319,6 +323,10 @@ struct Inner {
     /// The last object a target cursor was answered with, so a script can
     /// say "target last".
     last_target: Option<Serial>,
+    /// The last object double-clicked, for "use last".
+    last_object: Option<Serial>,
+    /// The last weapon taken out of the character's hands, for "arm".
+    last_weapon: Option<Serial>,
     /// Callers of `wait_journal` still waiting for a line.
     journal_waiters: Vec<JournalWaiter>,
     loot: Option<LootJob>,
@@ -648,6 +656,8 @@ async fn run_session(
         target_intent: None,
         target_waiters: Vec::new(),
         last_target: None,
+        last_object: None,
+        last_weapon: None,
         journal_waiters: Vec::new(),
         loot: None,
         deposit: None,
@@ -1436,6 +1446,8 @@ mod relay_tests {
             target_intent: None,
             target_waiters: Vec::new(),
             last_target: None,
+            last_object: None,
+            last_weapon: None,
             journal_waiters: Vec::new(),
             loot: None,
             deposit: None,
@@ -4725,6 +4737,123 @@ mod relay_tests {
         assert_eq!(answer.result["last_seq"], seen + 1);
     }
 
+    const PACK: Serial = Serial(0x4000_0B01);
+    const SWORD: Serial = Serial(0x4000_0B02);
+    const GRAPHIC_SWORD: u16 = 0x13FF;
+    const SOMETHING_TO_USE: Serial = Serial(0x4000_0B03);
+
+    /// A character wearing a pack and holding a sword.
+    fn armed_session() -> Inner {
+        let mut inner = test_session();
+        {
+            let mut world = inner.world.write();
+            world.apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
+                serial: PACK,
+                graphic: GRAPHIC_BACKPACK,
+                layer: LAYER_BACKPACK,
+                hue: 0,
+            }));
+            world.apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
+                serial: SWORD,
+                graphic: GRAPHIC_SWORD,
+                layer: LAYER_ONE_HANDED,
+                hue: 0,
+            }));
+        }
+        inner.outbound.clear();
+        inner
+    }
+
+    fn ready_to_act(inner: &mut Inner) {
+        let now = Instant::now();
+        inner.next_action_at = now - ACTION_BUDGET;
+        inner.next_double_click_at = now - DOUBLE_CLICK_INTERVAL;
+    }
+
+    fn tool(inner: &mut Inner, name: &str, args: Value) -> ToolResult {
+        handle_tool(
+            inner,
+            ToolCall {
+                name: name.into(),
+                args,
+            },
+        )
+    }
+
+    /// Measured live: a bare drop left a sword in the hand. A shard moves
+    /// the item in the character's hand, so the lift goes out first.
+    #[test]
+    fn unequip_lifts_the_item_before_it_drops_it_in_the_pack() {
+        let mut inner = armed_session();
+        let grid = drop_grid(&inner);
+        let answer = tool(&mut inner, TOOL_UNEQUIP, json!({"layer": LAYER_ONE_HANDED}));
+        assert!(answer.ok, "{answer:?}");
+        let sent: Vec<_> = inner.outbound.iter().cloned().collect();
+        assert_eq!(
+            sent,
+            vec![
+                encode::lift(SWORD, ONE_WORN_ITEM),
+                encode::drop_into_container(SWORD, PACK, grid),
+            ]
+        );
+    }
+
+    /// Arm and disarm: the weapon put away is the one put back.
+    #[test]
+    fn a_weapon_put_away_is_worn_again_by_equip_last() {
+        let mut inner = armed_session();
+        assert!(tool(&mut inner, TOOL_UNEQUIP, json!({"layer": LAYER_ONE_HANDED})).ok);
+        ready_to_act(&mut inner);
+        inner.outbound.clear();
+        let me = inner.world.read().self_state.serial;
+        let answer = tool(&mut inner, TOOL_EQUIP, json!({"who": "last"}));
+        assert!(answer.ok, "{answer:?}");
+        let sent: Vec<_> = inner.outbound.iter().cloned().collect();
+        assert_eq!(
+            sent,
+            vec![
+                encode::lift(SWORD, ONE_WORN_ITEM),
+                encode::equip(SWORD, LAYER_ONE_HANDED, me),
+            ]
+        );
+    }
+
+    #[test]
+    fn equip_last_with_no_weapon_put_away_is_refused() {
+        let mut inner = armed_session();
+        assert!(!tool(&mut inner, TOOL_EQUIP, json!({"who": "last"})).ok);
+    }
+
+    /// Equipping is an action and waits for the action budget like any other.
+    #[test]
+    fn equip_waits_for_the_action_budget() {
+        let mut inner = armed_session();
+        mark_action(&mut inner);
+        let answer = tool(&mut inner, TOOL_EQUIP, json!({"serial": "0x40000B02"}));
+        assert_eq!(answer.error.as_deref(), Some(MUST_WAIT));
+        assert!(inner.outbound.is_empty(), "nothing goes out early");
+    }
+
+    #[test]
+    fn use_last_uses_the_last_object_again() {
+        let mut inner = armed_session();
+        ready_to_act(&mut inner);
+        assert!(tool(&mut inner, TOOL_USE, json!({"serial": "0x40000B03"})).ok);
+        ready_to_act(&mut inner);
+        inner.outbound.clear();
+        assert!(tool(&mut inner, TOOL_USE, json!({"who": "last"})).ok);
+        assert_eq!(
+            inner.outbound.back(),
+            Some(&encode::double_click(SOMETHING_TO_USE))
+        );
+    }
+
+    #[test]
+    fn use_last_with_nothing_used_is_refused() {
+        let mut inner = armed_session();
+        assert!(!tool(&mut inner, TOOL_USE, json!({"who": "last"})).ok);
+    }
+
     /// No caller waits longer than the tool call itself allows.
     #[test]
     fn wait_target_never_outlasts_the_tool_call() {
@@ -7073,9 +7202,18 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::ok(json!(Goal::Idle.name()))
         }
         TOOL_USE | TOOL_OPEN_CONTAINER => {
-            if !send_double_click(inner, arg_serial(args, "serial")) {
-                return ToolResult::err("must wait to perform another action");
+            let serial = if args.get("who").and_then(|v| v.as_str()) == Some(WHO_LAST) {
+                match inner.last_object {
+                    Some(serial) => serial,
+                    None => return ToolResult::err("no last object yet"),
+                }
+            } else {
+                arg_serial(args, "serial")
+            };
+            if !send_double_click(inner, serial) {
+                return ToolResult::err(MUST_WAIT);
             }
+            inner.last_object = Some(serial);
             ToolResult::action(TOOL_USE)
         }
         TOOL_LOOT => {
@@ -7162,12 +7300,27 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_DROP)
         }
         TOOL_EQUIP => {
+            let item = if args.get("who").and_then(|v| v.as_str()) == Some(WHO_LAST) {
+                match inner.last_weapon {
+                    Some(serial) => serial,
+                    None => return ToolResult::err("no weapon put away yet"),
+                }
+            } else {
+                arg_serial(args, "serial")
+            };
+            if !action_ready(inner) {
+                return ToolResult::err(MUST_WAIT);
+            }
+            let layer = args
+                .get("layer")
+                .and_then(|v| v.as_u64())
+                .map_or(LAYER_ONE_HANDED, |layer| layer as u8);
             let me = inner.world.read().self_state.serial;
-            inner.outbound.push_back(encode::equip(
-                arg_serial(args, "serial"),
-                args.get("layer").and_then(|v| v.as_u64()).unwrap_or(1) as u8,
-                me,
-            ));
+            // A shard wears the item in the character's hand, so it is lifted
+            // first: a wear request with nothing lifted does nothing.
+            inner.outbound.push_back(encode::lift(item, ONE_WORN_ITEM));
+            inner.outbound.push_back(encode::equip(item, layer, me));
+            mark_action(inner);
             ToolResult::action(TOOL_EQUIP)
         }
         TOOL_CAST => {
@@ -7194,8 +7347,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 ToolResult::action(TOOL_TARGET)
             } else if let Some(who) = args.get("who").and_then(|v| v.as_str()) {
                 let serial = match who {
-                    TARGET_WHO_SELF => inner.world.read().self_state.serial,
-                    TARGET_WHO_LAST => match inner.last_target {
+                    WHO_SELF => inner.world.read().self_state.serial,
+                    WHO_LAST => match inner.last_target {
                         Some(serial) => serial,
                         None => return ToolResult::err("no last target yet"),
                     },
@@ -7324,16 +7477,27 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     .unwrap_or(w.self_state.serial);
                 (item, pack)
             };
-            match item {
-                Some(eq) => {
-                    let grid = drop_grid(inner);
-                    inner
-                        .outbound
-                        .push_back(encode::drop_into_container(eq.serial, pack, grid));
-                    ToolResult::action(TOOL_UNEQUIP)
-                }
-                None => ToolResult::err("layer empty"),
+            let Some(eq) = item else {
+                return ToolResult::err("layer empty");
+            };
+            if !action_ready(inner) {
+                return ToolResult::err(MUST_WAIT);
             }
+            // A drop moves the item in the character's hand, so it is lifted
+            // first: a drop with nothing lifted does nothing. Measured live, a
+            // weapon stayed in the hand after a bare drop.
+            let grid = drop_grid(inner);
+            inner
+                .outbound
+                .push_back(encode::lift(eq.serial, ONE_WORN_ITEM));
+            inner
+                .outbound
+                .push_back(encode::drop_into_container(eq.serial, pack, grid));
+            mark_action(inner);
+            if layer == LAYER_ONE_HANDED || layer == LAYER_TWO_HANDED {
+                inner.last_weapon = Some(eq.serial);
+            }
+            ToolResult::action(TOOL_UNEQUIP)
         }
         TOOL_TRADE_OFFER => {
             let serial = arg_serial(args, "serial");
