@@ -24,8 +24,8 @@ use crate::tools::{
     TOOL_LIFT, TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE, TOOL_MOVE_TO, TOOL_OBSERVE,
     TOOL_OPEN_CONTAINER, TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL, TOOL_SET_PERSONA,
     TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_TARGET, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE,
-    TOOL_USE_SKILL, TOOL_VENDOR_BUY, TOOL_VENDOR_SELL, TOOL_WAIT_TARGET, TOOL_WALK, TOOL_WAR_MODE,
-    TOOL_WHISPER,
+    TOOL_USE_SKILL, TOOL_VENDOR_BUY, TOOL_VENDOR_SELL, TOOL_WAIT_JOURNAL, TOOL_WAIT_TARGET,
+    TOOL_WALK, TOOL_WAR_MODE, TOOL_WHISPER,
 };
 use parking_lot::RwLock;
 use rand::Rng;
@@ -54,12 +54,14 @@ use uoterm_world::{DoorUpdate, MultiUpdate, World};
 const CMD_QUEUE_CAP: usize = 64;
 const READ_BUF_LEN: usize = 8192;
 const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(8);
-/// How long `wait_target` waits for a cursor when the caller names no time.
-const WAIT_TARGET_DEFAULT_MS: u64 = 5000;
+/// How long a waiting tool waits when the caller names no time.
+const WAIT_DEFAULT_MS: u64 = 5000;
 /// The longest wait allowed. It stays under [`TOOL_CALL_TIMEOUT`], so the
 /// answer always comes back before the caller stops listening.
-const WAIT_TARGET_MAX_MS: u64 = 7000;
+const WAIT_MAX_MS: u64 = 7000;
 const NO_TARGET_CURSOR: &str = "no target cursor came in time";
+const NO_JOURNAL_LINE: &str = "no journal line with those words came in time";
+const WAIT_JOURNAL_NEEDS_WORDS: &str = "wait_journal needs q, the words to wait for";
 const MUST_HAVE_CURSOR: &str = "must have a target cursor";
 /// The words a caller uses to aim at himself or at his last target.
 const TARGET_WHO_SELF: &str = "self";
@@ -317,6 +319,8 @@ struct Inner {
     /// The last object a target cursor was answered with, so a script can
     /// say "target last".
     last_target: Option<Serial>,
+    /// Callers of `wait_journal` still waiting for a line.
+    journal_waiters: Vec<JournalWaiter>,
     loot: Option<LootJob>,
     deposit: Option<DepositJob>,
     sent_drop: Option<Serial>,
@@ -644,6 +648,7 @@ async fn run_session(
         target_intent: None,
         target_waiters: Vec::new(),
         last_target: None,
+        journal_waiters: Vec::new(),
         loot: None,
         deposit: None,
         sent_drop: None,
@@ -690,6 +695,8 @@ async fn run_session(
                     Some(SessionCmd::Tool(call, reply)) => {
                         if call.name == TOOL_WAIT_TARGET {
                             wait_for_target(&mut inner, &call.args, reply, Instant::now());
+                        } else if call.name == TOOL_WAIT_JOURNAL {
+                            wait_for_journal(&mut inner, &call.args, reply, Instant::now());
                         } else {
                             let result = handle_tool(&mut inner, call);
                             let _ = reply.send(result);
@@ -711,6 +718,7 @@ async fn run_session(
                 pump_names(&mut inner);
                 harvest_new_events(&mut inner);
                 expire_target_waiters(&mut inner, Instant::now());
+                answer_journal_waiters(&mut inner, Instant::now());
             }
         }
         flush_out(&mut inner, &out_tx);
@@ -1428,6 +1436,7 @@ mod relay_tests {
             target_intent: None,
             target_waiters: Vec::new(),
             last_target: None,
+            journal_waiters: Vec::new(),
             loot: None,
             deposit: None,
             sent_drop: None,
@@ -4619,6 +4628,103 @@ mod relay_tests {
         assert_eq!(answer.error.as_deref(), Some(NO_TARGET_CURSOR));
     }
 
+    const BANDAGE_DONE: &str = "You finish applying the bandages.";
+    const WAIT_FOR_BANDAGE: &str = "finish applying";
+
+    /// Puts a line in the character's journal as if the shard had said it.
+    fn hear(inner: &mut Inner, text: &str) {
+        inner
+            .world
+            .write()
+            .journal
+            .push(uoterm_world::JournalEntry {
+                serial: Serial(0),
+                name: String::new(),
+                hue: 0,
+                kind: 0,
+                text: text.into(),
+                at: Instant::now(),
+                seq: 0,
+            });
+    }
+
+    fn wait_for_words(ms: u64) -> Value {
+        json!({ "q": WAIT_FOR_BANDAGE, "timeout_ms": ms })
+    }
+
+    /// A script waits for the words that say a bandage is done, then goes on.
+    #[test]
+    fn wait_journal_answers_when_the_words_are_heard() {
+        let mut inner = test_session();
+        let (tx, mut rx) = oneshot::channel();
+        let now = Instant::now();
+        wait_for_journal(&mut inner, &wait_for_words(A_SHORT_WAIT_MS), tx, now);
+        answer_journal_waiters(&mut inner, now);
+        assert!(rx.try_recv().is_err(), "nothing heard yet");
+        hear(&mut inner, BANDAGE_DONE);
+        answer_journal_waiters(&mut inner, now);
+        let answer = rx.try_recv().expect("answered when heard");
+        assert!(answer.ok);
+        assert_eq!(answer.result["text"], BANDAGE_DONE);
+    }
+
+    /// Words already in the journal are old news: the wait is for the next
+    /// time they are said, or a script would race past the step at once.
+    #[test]
+    fn wait_journal_ignores_lines_heard_before_it_began() {
+        let mut inner = test_session();
+        hear(&mut inner, BANDAGE_DONE);
+        let (tx, mut rx) = oneshot::channel();
+        let now = Instant::now();
+        wait_for_journal(&mut inner, &wait_for_words(A_SHORT_WAIT_MS), tx, now);
+        answer_journal_waiters(&mut inner, now);
+        assert!(rx.try_recv().is_err(), "the old line does not count");
+    }
+
+    #[test]
+    fn wait_journal_gives_up_when_its_time_runs_out() {
+        let mut inner = test_session();
+        let (tx, mut rx) = oneshot::channel();
+        let now = Instant::now();
+        wait_for_journal(&mut inner, &wait_for_words(A_SHORT_WAIT_MS), tx, now);
+        answer_journal_waiters(&mut inner, now + Duration::from_millis(A_SHORT_WAIT_MS));
+        assert_eq!(
+            rx.try_recv().expect("answered").error.as_deref(),
+            Some(NO_JOURNAL_LINE)
+        );
+    }
+
+    #[test]
+    fn wait_journal_needs_words_to_wait_for() {
+        let mut inner = test_session();
+        let (tx, mut rx) = oneshot::channel();
+        wait_for_journal(&mut inner, &json!({}), tx, Instant::now());
+        assert_eq!(
+            rx.try_recv().expect("answered at once").error.as_deref(),
+            Some(WAIT_JOURNAL_NEEDS_WORDS)
+        );
+    }
+
+    /// A caller holding the last number it saw gets only the lines since.
+    #[test]
+    fn journal_search_since_returns_only_newer_numbered_lines() {
+        let mut inner = test_session();
+        hear(&mut inner, "old line");
+        let seen = inner.world.read().journal.last_seq();
+        hear(&mut inner, BANDAGE_DONE);
+        let answer = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_JOURNAL_SEARCH.into(),
+                args: json!({ "since": seen }),
+            },
+        );
+        let lines = answer.result["lines"].as_array().expect("lines").clone();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["text"], BANDAGE_DONE);
+        assert_eq!(answer.result["last_seq"], seen + 1);
+    }
+
     /// No caller waits longer than the tool call itself allows.
     #[test]
     fn wait_target_never_outlasts_the_tool_call() {
@@ -6182,14 +6288,81 @@ fn wait_for_target(
         let _ = reply.send(target_arrived());
         return;
     }
+    inner.target_waiters.push((wait_deadline(args, now), reply));
+}
+
+/// When a waiting tool gives up: the caller's `timeout_ms`, or the default,
+/// never past the longest wait allowed.
+fn wait_deadline(args: &Value, now: Instant) -> Instant {
     let wait_ms = args
         .get("timeout_ms")
         .and_then(|v| v.as_u64())
-        .unwrap_or(WAIT_TARGET_DEFAULT_MS)
-        .min(WAIT_TARGET_MAX_MS);
-    inner
-        .target_waiters
-        .push((now + Duration::from_millis(wait_ms), reply));
+        .unwrap_or(WAIT_DEFAULT_MS)
+        .min(WAIT_MAX_MS);
+    now + Duration::from_millis(wait_ms)
+}
+
+/// A caller waiting for a journal line that holds some words.
+struct JournalWaiter {
+    gives_up_at: Instant,
+    /// Only lines heard after this number count. Lines already in the
+    /// journal when the caller asked are old news.
+    after: u64,
+    /// The words to wait for, lower case.
+    needle: String,
+    reply: oneshot::Sender<ToolResult>,
+}
+
+/// Starts a wait for a new journal line holding the words `q`, the way a
+/// script waits for "You finish applying the bandages". Only lines heard
+/// after the call count.
+fn wait_for_journal(
+    inner: &mut Inner,
+    args: &Value,
+    reply: oneshot::Sender<ToolResult>,
+    now: Instant,
+) {
+    let needle = args
+        .get("q")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if needle.is_empty() {
+        let _ = reply.send(ToolResult::err(WAIT_JOURNAL_NEEDS_WORDS));
+        return;
+    }
+    let after = inner.world.read().journal.last_seq();
+    inner.journal_waiters.push(JournalWaiter {
+        gives_up_at: wait_deadline(args, now),
+        after,
+        needle,
+        reply,
+    });
+}
+
+/// Answers each journal wait whose words have been heard, and gives up the
+/// ones whose time has run out.
+fn answer_journal_waiters(inner: &mut Inner, now: Instant) {
+    let waiters = std::mem::take(&mut inner.journal_waiters);
+    let world = inner.world.read();
+    for waiter in waiters {
+        let heard = world
+            .journal
+            .after(waiter.after)
+            .find(|line| line.mentions(&waiter.needle));
+        if let Some(line) = heard {
+            let _ = waiter.reply.send(ToolResult::ok(json!({
+                "seq": line.seq,
+                "name": line.name,
+                "text": line.text,
+            })));
+        } else if waiter.gives_up_at <= now {
+            let _ = waiter.reply.send(ToolResult::err(NO_JOURNAL_LINE));
+        } else {
+            inner.journal_waiters.push(waiter);
+        }
+    }
 }
 
 fn target_arrived() -> ToolResult {
@@ -6818,6 +6991,20 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .or_else(|| args.get("query"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            if let Some(since) = args.get("since").and_then(|v| v.as_u64()) {
+                let needle = q.to_ascii_lowercase();
+                let world = inner.world.read();
+                let lines: Vec<Value> = world
+                    .journal
+                    .after(since)
+                    .filter(|line| line.mentions(&needle))
+                    .map(|line| json!({"seq": line.seq, "name": line.name, "text": line.text}))
+                    .collect();
+                return ToolResult::ok(json!({
+                    "last_seq": world.journal.last_seq(),
+                    "lines": lines,
+                }));
+            }
             ToolResult::ok(json!(inner
                 .world
                 .read()

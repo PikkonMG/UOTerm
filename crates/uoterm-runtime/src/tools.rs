@@ -28,6 +28,7 @@ pub const TOOL_UNEQUIP: &str = "unequip";
 pub const TOOL_CAST: &str = "cast";
 pub const TOOL_USE_SKILL: &str = "use_skill";
 pub const TOOL_WAIT_TARGET: &str = "wait_target";
+pub const TOOL_WAIT_JOURNAL: &str = "wait_journal";
 pub const TOOL_TARGET: &str = "target";
 pub const TOOL_OPEN_CONTAINER: &str = "open_container";
 pub const TOOL_LOOT: &str = "loot";
@@ -173,7 +174,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_JOURNAL_SEARCH,
-        "Search journal text.",
+        "Search journal text (q). Give since=N for only lines after number N, with numbers.",
         "session exists",
     ),
     (
@@ -224,6 +225,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_UNEQUIP, "Unequip into backpack.", "layer occupied"),
     (TOOL_CAST, "Cast spell id.", "enough mana"),
     (TOOL_USE_SKILL, "Use skill id.", "in world"),
+    (
+        TOOL_WAIT_JOURNAL,
+        "Wait for a new journal line holding q; timeout_ms (default 5000, max 7000).",
+        "session exists",
+    ),
     (
         TOOL_WAIT_TARGET,
         "Wait for a target cursor; timeout_ms (default 5000, max 7000).",
@@ -312,6 +318,8 @@ pub fn mcp_tool_list() -> Value {
                         "cliloc": {"type": "integer"},
                         "timeout_ms": {"type": "integer"},
                         "who": {"type": "string"},
+                        "q": {"type": "string"},
+                        "since": {"type": "integer"},
                         "switches": {"type": "array", "items": {"type": "integer"}}
                     }
                 }
