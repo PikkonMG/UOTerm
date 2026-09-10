@@ -50,6 +50,7 @@ mod tests {
             stay_on_socket: true,
             next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
             encryption: Default::default(),
+            obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
         };
         let handle = rt.connect(opts).await.unwrap();
         for _ in 0..25 {

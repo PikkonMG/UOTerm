@@ -129,8 +129,9 @@ pub struct Observe {
     pub combatant: Option<String>,
     pub goal: String,
     pub facts: Vec<String>,
-    /// The assistant features the shard forbids. The character does not use
-    /// them by itself.
+    /// The assistant features the shard forbids and the character obeys. It
+    /// does not use them by itself. Empty when the user set the character to
+    /// ignore the shard's list.
     pub forbidden: Vec<String>,
 }
 

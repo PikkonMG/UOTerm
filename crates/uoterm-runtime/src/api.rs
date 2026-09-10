@@ -114,6 +114,8 @@ struct CreateBody {
     era: Option<String>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default = "crate::config::obey_shard_rules_default")]
+    obey_shard_rules: bool,
 }
 
 async fn create_session(
@@ -136,6 +138,7 @@ async fn create_session(
         stay_on_socket: true,
         next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
         encryption: Default::default(),
+        obey_shard_rules: body.obey_shard_rules,
     };
     match st.runtime.connect(opts).await {
         Ok(h) => (StatusCode::CREATED, Json(json!({ "id": h.id }))).into_response(),

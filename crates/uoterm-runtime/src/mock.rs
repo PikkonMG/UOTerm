@@ -970,6 +970,7 @@ mod tests {
             stay_on_socket: true,
             next_login_key: 0xFF,
             encryption: Default::default(),
+            obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1021,6 +1022,7 @@ mod tests {
             stay_on_socket: true,
             next_login_key: 0xFF,
             encryption: crate::config::EncryptionMode::None,
+            obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1054,6 +1056,7 @@ mod tests {
             stay_on_socket: stay,
             next_login_key: 0xFF,
             encryption,
+            obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
         }
     }
 

@@ -322,6 +322,9 @@ struct Inner {
     next_double_click_at: Instant,
     next_bandage_at: Instant,
     next_heal_potion_at: Instant,
+    /// Keep the shard's list of forbidden assistant features, or ignore it.
+    /// See [`crate::config::OBEY_SHARD_RULES_DEFAULT`].
+    obey_shard_rules: bool,
     attack_sent: Option<Serial>,
     target_intent: Option<Serial>,
     /// Callers of `wait_target` still waiting for a cursor, each with the time
@@ -659,6 +662,7 @@ async fn run_session(
         next_double_click_at: Instant::now() - DOUBLE_CLICK_INTERVAL,
         next_bandage_at: Instant::now() - ACTION_BUDGET,
         next_heal_potion_at: Instant::now() - ACTION_BUDGET,
+        obey_shard_rules: opts.obey_shard_rules,
         attack_sent: None,
         target_intent: None,
         target_waiters: Vec::new(),
@@ -1449,6 +1453,7 @@ mod relay_tests {
             next_double_click_at: now - DOUBLE_CLICK_INTERVAL,
             next_bandage_at: now - ACTION_BUDGET,
             next_heal_potion_at: now - ACTION_BUDGET,
+            obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             attack_sent: None,
             target_intent: None,
             target_waiters: Vec::new(),
@@ -3580,6 +3585,21 @@ mod relay_tests {
             .allows(AssistFeature::AutoOpenDoors));
     }
 
+    /// A user who switched the rules off still answers the shard, but keeps
+    /// no list: the character uses every feature as normal.
+    #[test]
+    fn a_character_set_to_ignore_the_rules_answers_but_keeps_none() {
+        let mut inner = test_session();
+        inner.obey_shard_rules = false;
+        ingest(&mut inner, &assistant_rules(AssistFeature::AutoOpenDoors));
+        assert!(inner.outbound.contains(&encode::assistant_ack()));
+        assert!(inner
+            .world
+            .read()
+            .assist
+            .allows(AssistFeature::AutoOpenDoors));
+    }
+
     /// The client gives its own name, with a space in it, when the shard asks.
     #[test]
     fn the_shard_hears_the_assistant_name() {
@@ -4288,6 +4308,7 @@ mod relay_tests {
             stay_on_socket: stay,
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,
+            obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
         }
     }
 
@@ -5647,11 +5668,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                                 .push_back(encode::assistant_version(ASSISTANT_NAME));
                         }
                         Inbound::AssistantFeatures { disallowed } => {
-                            inner.outbound.push_back(encode::assistant_ack());
-                            tracing::info!(
-                                forbidden = ?uoterm_world::AssistRules::from_bits(*disallowed).forbidden(),
-                                "the shard's assistant rules"
-                            );
+                            take_assistant_rules(inner, *disallowed);
                         }
                         _ => {}
                     }
@@ -6346,6 +6363,20 @@ fn door_route(inner: &mut Inner, from: Point3, dest: Point3) -> DoorRoute {
             note_path_failure(inner, dest, format!("{DOOR_LOCKED} at {}", door.location));
             DoorRoute::Blocked
         }
+    }
+}
+
+/// Answers the shard's list of forbidden assistant features. The shard always
+/// hears back, because a shard that hears nothing can disconnect the client.
+/// The list is kept only when the user lets the shard decide.
+fn take_assistant_rules(inner: &mut Inner, disallowed: u64) {
+    inner.outbound.push_back(encode::assistant_ack());
+    let rules = uoterm_world::AssistRules::from_bits(disallowed);
+    if inner.obey_shard_rules {
+        tracing::info!(forbidden = ?rules.forbidden(), "the shard's assistant rules are obeyed");
+        inner.world.write().assist = rules;
+    } else {
+        tracing::info!(forbidden = ?rules.forbidden(), "the shard's assistant rules are ignored by config");
     }
 }
 

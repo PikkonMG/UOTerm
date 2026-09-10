@@ -89,6 +89,8 @@ Load order for `uoterm.toml`:
 
 Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `connect` uses this file for `host`, `port`, `era`, `uopath`, `api_bind`, `max_sessions`, and `stay_on_socket` when the matching CLI flag is omitted.
 
+`obey_shard_rules` (default `true`): some shards send a list of assistant features they forbid, such as auto-open doors, auto-bandage, and auto-potions. With `true`, the character does not use those features by itself on that shard. With `false`, it ignores the list. The client answers the shard in both cases. A session made with `POST /v1/sessions` takes the same `obey_shard_rules` field.
+
 Account profile: copy `profiles/example.toml`. Extra `profiles/*.toml` files are gitignored. `--profile` supplies account, character, password env, and shard.
 
 Persona files live in `personas/`. See `docs/PERSONAS.md`. Attach a persona with `connect --persona`. `agent run --persona` loads the persona into the session, then maps `class` to `set_goal`.

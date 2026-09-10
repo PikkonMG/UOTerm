@@ -40,14 +40,11 @@ mod tests {
     };
 
     #[test]
-    fn the_shard_list_of_forbidden_features_is_kept() {
+    fn observe_names_the_forbidden_features() {
         const AUTO_OPEN_DOORS_BIT: u64 = 1 << 4;
         let mut w = World::new();
-        assert!(w.assist.allows(AssistFeature::AutoOpenDoors));
-        w.apply(&Inbound::AssistantFeatures {
-            disallowed: AUTO_OPEN_DOORS_BIT,
-        });
-        assert!(!w.assist.allows(AssistFeature::AutoOpenDoors));
+        assert!(w.observe_default().forbidden.is_empty());
+        w.assist = AssistRules::from_bits(AUTO_OPEN_DOORS_BIT);
         assert_eq!(w.observe_default().forbidden, vec!["auto_open_doors"]);
     }
 

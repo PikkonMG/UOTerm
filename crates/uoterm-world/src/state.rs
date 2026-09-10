@@ -297,7 +297,8 @@ pub struct World {
     pub map_height: u16,
     pub season: u8,
     pub names: NameBook,
-    /// The assistant features the shard forbids.
+    /// The assistant features the shard forbids, when the user lets the
+    /// shard decide. The session fills it in.
     pub assist: AssistRules,
 }
 
@@ -671,9 +672,6 @@ impl World {
                 properties,
             } => {
                 self.accept_properties(*serial, *hash, properties);
-            }
-            Inbound::AssistantFeatures { disallowed } => {
-                self.assist = AssistRules::from_bits(*disallowed);
             }
             Inbound::Unknown { id, .. } => {
                 tracing::debug!(packet = format!("{id:#04x}"), "unhandled inbound packet");

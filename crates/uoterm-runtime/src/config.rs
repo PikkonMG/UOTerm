@@ -27,6 +27,14 @@ pub const ENCRYPTION_NONE: &str = "none";
 pub const ENCRYPTION_OSI: &str = "osi";
 pub const ENV_API_TOKEN: &str = "UOTERM_API_TOKEN";
 pub const BEARER_PREFIX: &str = "Bearer ";
+/// Some shards send a list of assistant features they forbid. By default the
+/// character obeys it. A user can switch this off to ignore the list.
+pub const OBEY_SHARD_RULES_DEFAULT: bool = true;
+
+/// For serde: a config file without the setting obeys the shard's list.
+pub fn obey_shard_rules_default() -> bool {
+    OBEY_SHARD_RULES_DEFAULT
+}
 
 pub fn parse_encryption_mode(s: &str) -> crate::error::Result<EncryptionMode> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -48,6 +56,8 @@ pub struct AppConfig {
     pub api_bind: String,
     pub max_sessions: usize,
     pub stay_on_socket: bool,
+    #[serde(default = "obey_shard_rules_default")]
+    pub obey_shard_rules: bool,
 }
 
 impl Default for AppConfig {
@@ -61,6 +71,7 @@ impl Default for AppConfig {
             api_bind: format!("127.0.0.1:{DEFAULT_API_PORT}"),
             max_sessions: DEFAULT_MAX_SESSIONS,
             stay_on_socket: true,
+            obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
         }
     }
 }
@@ -90,6 +101,8 @@ pub struct ConnectOptions {
     pub stay_on_socket: bool,
     pub next_login_key: u8,
     pub encryption: EncryptionMode,
+    /// Obey the shard's list of forbidden assistant features.
+    pub obey_shard_rules: bool,
 }
 
 impl Default for ConnectOptions {
@@ -108,6 +121,7 @@ impl Default for ConnectOptions {
             stay_on_socket: false,
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,
+            obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
         }
     }
 }
@@ -218,6 +232,41 @@ mod tests {
             for_mode(EncryptionMode::None, 1, ClientVersion::MODERN).name(),
             ENCRYPTION_NONE
         );
+    }
+
+    /// A config file written before the setting existed still loads, and
+    /// obeys the shard's list.
+    #[test]
+    fn a_config_without_the_setting_obeys_the_shard() {
+        const OLD_CONFIG: &str = r#"
+host = "127.0.0.1"
+port = 2593
+era = "t2a"
+log_level = "info"
+api_bind = "127.0.0.1:7733"
+max_sessions = 32
+stay_on_socket = true
+"#;
+        let cfg: AppConfig = toml::from_str(OLD_CONFIG).expect("an old config loads");
+        assert!(cfg.obey_shard_rules);
+        assert!(AppConfig::default().obey_shard_rules);
+        assert!(ConnectOptions::default().obey_shard_rules);
+    }
+
+    #[test]
+    fn the_setting_can_ignore_the_shard() {
+        const IGNORING: &str = r#"
+host = "127.0.0.1"
+port = 2593
+era = "t2a"
+log_level = "info"
+api_bind = "127.0.0.1:7733"
+max_sessions = 32
+stay_on_socket = true
+obey_shard_rules = false
+"#;
+        let cfg: AppConfig = toml::from_str(IGNORING).expect("the config loads");
+        assert!(!cfg.obey_shard_rules);
     }
 
     #[test]
