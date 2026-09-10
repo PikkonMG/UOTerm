@@ -11,6 +11,7 @@ pub const TOOL_MAP_TILE: &str = "map_tile";
 pub const TOOL_CAN_WALK: &str = "can_walk";
 pub const TOOL_SAY: &str = "say";
 pub const TOOL_WHISPER: &str = "whisper";
+pub const TOOL_REPLY: &str = "reply";
 pub const TOOL_EMOTE: &str = "emote";
 pub const TOOL_MOVE_TO: &str = "move_to";
 pub const TOOL_WALK: &str = "walk";
@@ -227,6 +228,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "in world",
     ),
     (TOOL_WHISPER, "Whisper.", "in world"),
+    (
+        TOOL_REPLY,
+        "Answer the newest line said to the character by name, in the channel it came in: say, whisper, party, private party, guild or alliance.",
+        "a line waits in unanswered",
+    ),
     (
         TOOL_EMOTE,
         "Emote only if persona.allow_emote is true.",

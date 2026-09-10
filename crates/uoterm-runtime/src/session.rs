@@ -71,6 +71,8 @@ const MUST_WAIT: &str = "must wait to perform another action";
 /// The basic chat mode says no to a player's plans; see `play_along`.
 const CHAT_SAYS_NO: &str =
     "chat mode is basic: the character does not join or follow a player who asked in chat";
+/// Play along says no to a plan the persona's `[play_along]` part leaves out.
+const PLAN_NOT_LISTED: &str = "the persona's play-along plans do not list this";
 const HAND_PUT_AWAY: &str = "one hand's item went to the pack; cast again after the action delay";
 /// The graphic a ground target names when the caller names none: bare land.
 const BARE_LAND_GRAPHIC: u16 = 0;
@@ -4828,6 +4830,70 @@ mod relay_tests {
         assert_eq!(chatter.unanswered.len(), 1, "the line still waits");
     }
 
+    /// A reply goes back the way the line came: party to the party, a
+    /// private party line to that member, guild to the guild, a yell in a
+    /// normal voice.
+    #[test]
+    fn a_reply_goes_back_in_the_channel_it_came_in() {
+        let mut inner = named_by_ann(false, "hey Mara");
+        // No typos, so each packet can be matched word for word.
+        inner.persona.typo_rate = 0.0;
+        let reply_to = |inner: &mut Inner, text: &str| {
+            inner.speech.last_reply = None;
+            inner.outbound.clear();
+            answer_agent(inner, call(TOOL_REPLY, json!({ "text": text })))
+        };
+        let said = reply_to(&mut inner, "hey Ann");
+        assert!(said.ok, "{:?}", said.error);
+        assert!(inner.outbound.contains(&encode::say("hey Ann", false)));
+
+        let lines = [
+            Inbound::Party(uoterm_protocol::PartyEvent::Message {
+                from: ANN,
+                text: "mara, heal?".into(),
+                private: false,
+            }),
+            Inbound::Party(uoterm_protocol::PartyEvent::Message {
+                from: ANN,
+                text: "mara, just us".into(),
+                private: true,
+            }),
+        ];
+        let answers = [
+            encode::party_message(None, "on it"),
+            encode::party_message(Some(ANN), "sure"),
+        ];
+        for (line, (text, packet)) in lines.iter().zip(["on it", "sure"].into_iter().zip(answers)) {
+            inner.world.write().apply(line);
+            let answered = reply_to(&mut inner, text);
+            assert!(answered.ok, "{:?}", answered.error);
+            assert!(inner.outbound.contains(&packet), "{text}");
+        }
+
+        inner
+            .world
+            .write()
+            .apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                serial: ANN,
+                graphic: 0x191,
+                kind: SPEECH_GUILD,
+                hue: 0,
+                name: "Ann".into(),
+                text: "mara, guild hall?".into(),
+            }));
+        let guild = reply_to(&mut inner, "omw");
+        assert_eq!(guild.result["channel"], "guild");
+        assert!(inner.outbound.contains(&encode::keyword_speech(
+            SPEECH_GUILD,
+            DEFAULT_SPEECH_HUE,
+            &[],
+            "omw"
+        )));
+
+        let nothing = reply_to(&mut inner, "hello?");
+        assert_eq!(nothing.error.as_deref(), Some(NOTHING_TO_ANSWER));
+    }
+
     /// In the basic mode the character answers but says no to plans: it
     /// neither follows nor joins the party of a player who asked in chat.
     #[test]
@@ -4869,7 +4935,7 @@ mod relay_tests {
         let mut inner = named_by_ann(true, "mara, follow me");
         inner.persona.play_along.plans = vec![Plan::Party];
         let follow = answer_agent(&mut inner, call(TOOL_FOLLOW, json!({ "serial": ANN.0 })));
-        assert_eq!(follow.error.as_deref(), Some(CHAT_SAYS_NO));
+        assert_eq!(follow.error.as_deref(), Some(PLAN_NOT_LISTED));
         agents::on_party_invite(&mut inner, ANN);
         assert!(inner.outbound.contains(&encode::party_accept(ANN)));
     }
@@ -7987,6 +8053,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::ok(json!(inner.tiles().can_walk_from(z, x, y)))
         }
         TOOL_SAY => speak(inner, args, SPEECH_REGULAR),
+        TOOL_REPLY => reply(inner, args),
         TOOL_WHISPER => speak(inner, args, SPEECH_WHISPER),
         TOOL_EMOTE => {
             if !inner.persona.allow_emote {
@@ -8295,8 +8362,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             if !serial.is_valid() {
                 return ToolResult::err("follow needs a mobile serial");
             }
-            if chat_refuses(inner, serial, Plan::Follow) {
-                return ToolResult::err(CHAT_SAYS_NO);
+            if let Some(why) = chat_refuses(inner, serial, Plan::Follow) {
+                return ToolResult::err(why);
             }
             inner.follow = Some(serial);
             start_play_along(inner, serial);
@@ -8588,19 +8655,19 @@ fn reply_style(inner: &Inner) -> Option<String> {
     (!style.is_empty()).then(|| style.to_string())
 }
 
-/// True when the chat mode keeps the character out of this plan with a
-/// player who asked in chat: the basic mode says no to every plan, and play
-/// along says no to a plan the persona does not list. A friend on the
-/// friends list is never kept away.
-fn chat_refuses(inner: &Inner, serial: Serial, plan: Plan) -> bool {
+/// Why the chat mode keeps the character out of this plan with a player
+/// who asked in chat, or None when it may join: the basic mode says no to
+/// every plan, and play along says no to a plan the persona does not list.
+/// A friend on the friends list is never kept away.
+fn chat_refuses(inner: &Inner, serial: Serial, plan: Plan) -> Option<&'static str> {
     let world = inner.world.read();
     if !world.asked_in_chat(serial) || inner.agents.is_friend(&world, serial) {
-        return false;
+        return None;
     }
     match world.chat_mode() {
-        Some(uoterm_world::CHAT_MODE_BASIC) => true,
-        Some(_) => !inner.persona.play_along.allows(plan),
-        None => false,
+        Some(uoterm_world::CHAT_MODE_BASIC) => Some(CHAT_SAYS_NO),
+        Some(_) if !inner.persona.play_along.allows(plan) => Some(PLAN_NOT_LISTED),
+        _ => None,
     }
 }
 
@@ -8695,6 +8762,7 @@ fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(
     let pkt = match kind {
         SPEECH_WHISPER => encode::whisper(&t, unicode),
         SPEECH_EMOTE => encode::emote(&t, unicode),
+        SPEECH_GUILD | SPEECH_ALLIANCE => encode::keyword_speech(kind, DEFAULT_SPEECH_HUE, &[], &t),
         _ => encode::say(&t, false),
     };
     inner.outbound.push_back(pkt);
@@ -8721,6 +8789,57 @@ fn queue_command_speech(
     ));
     Ok(())
 }
+
+/// Answers the newest line said to the character by name, in the channel
+/// it came in. A yell is answered in a normal voice.
+fn reply(inner: &mut Inner, args: &Value) -> ToolResult {
+    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let newest = inner
+        .world
+        .read()
+        .spoken_to
+        .unanswered(uoterm_world::unix_now_ms())
+        .pop();
+    let Some(line) = newest else {
+        return ToolResult::err(NOTHING_TO_ANSWER);
+    };
+    let sent = match line.channel {
+        uoterm_world::Channel::Say | uoterm_world::Channel::Yell => {
+            queue_speech(inner, text, SPEECH_REGULAR)
+        }
+        uoterm_world::Channel::Whisper => queue_speech(inner, text, SPEECH_WHISPER),
+        uoterm_world::Channel::Guild => queue_speech(inner, text, SPEECH_GUILD),
+        uoterm_world::Channel::Alliance => queue_speech(inner, text, SPEECH_ALLIANCE),
+        uoterm_world::Channel::Party => send_party_line(inner, None, text),
+        uoterm_world::Channel::PartyPrivate => send_party_line(inner, Some(line.serial), text),
+    };
+    match sent {
+        Ok(()) => ToolResult::ok(json!({ "channel": line.channel, "to": line.name })),
+        Err(e) => ToolResult::err(e),
+    }
+}
+
+/// Says a line to the party, or to one member, under the same speech rules
+/// as any answer.
+fn send_party_line(
+    inner: &mut Inner,
+    to: Option<Serial>,
+    text: &str,
+) -> std::result::Result<(), &'static str> {
+    let t = speech_allowed(
+        &mut inner.speech,
+        &inner.persona,
+        text,
+        uoterm_world::SPEECH_KIND_PARTY,
+        true,
+    )?;
+    let t = inner.persona.maybe_typo(&t, &mut rand::thread_rng());
+    inner.outbound.push_back(encode::party_message(to, &t));
+    inner.world.write().spoken_to.mark_answered();
+    Ok(())
+}
+
+const NOTHING_TO_ANSWER: &str = "no line said to the character waits for an answer";
 
 fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");

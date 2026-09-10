@@ -4,15 +4,16 @@ use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
     weapon_range, BuffEntry, ContainerItem, EquipItem, GroundItem, HealthBarStatus, Inbound,
-    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, Serial, SpeechLine,
-    StatusExtra, TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN,
-    FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK,
-    LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ENCODED, SPEECH_REGULAR,
+    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, Serial, StatusExtra,
+    TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN,
+    FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED,
+    LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD, SPEECH_REGULAR,
     SPEECH_WHISPER, SPEECH_YELL,
 };
 
 use crate::addressed::{
-    asks_if_bot, names_character, SpokenTo, SpokenToLog, CHAT_MODE_BASIC, CHAT_MODE_PLAY_ALONG,
+    asks_if_bot, names_character, Channel, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
+    CHAT_MODE_PLAY_ALONG,
 };
 use crate::assist::AssistRules;
 use crate::events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
@@ -403,6 +404,19 @@ pub struct World {
     pub spoken_to: SpokenToLog,
 }
 
+/// The channel of a speech line that can name the character. System lines,
+/// labels and spell words have none.
+fn speech_channel(kind: u8) -> Option<Channel> {
+    match kind & !SPEECH_ENCODED {
+        SPEECH_REGULAR => Some(Channel::Say),
+        SPEECH_WHISPER => Some(Channel::Whisper),
+        SPEECH_YELL => Some(Channel::Yell),
+        SPEECH_GUILD => Some(Channel::Guild),
+        SPEECH_ALLIANCE => Some(Channel::Alliance),
+        _ => None,
+    }
+}
+
 impl World {
     pub fn new() -> Self {
         Self {
@@ -539,7 +553,9 @@ impl World {
                     Some(line.serial),
                     format!("{}: {}", line.name, line.text),
                 ));
-                self.note_spoken_to(line);
+                if let Some(channel) = speech_channel(line.kind) {
+                    self.note_spoken_to(line.serial, &line.name, &line.text, channel);
+                }
             }
             Inbound::Delete(serial) => {
                 self.detach(*serial);
@@ -844,39 +860,40 @@ impl World {
                     at: Instant::now(),
                     seq: 0,
                 });
+                let channel = if *private {
+                    Channel::PartyPrivate
+                } else {
+                    Channel::Party
+                };
+                let name = self.name_of(*from);
+                self.note_spoken_to(*from, &name, text, channel);
             }
         }
     }
 
     /// The name the world knows a mobile by, or its serial when it has none.
-    /// Notes a line when another character in sight says this one's name,
-    /// and tells the agent with a [`EventKind::SpokenTo`] event. System
-    /// lines, spell words and lines with no mobile behind them never count.
-    fn note_spoken_to(&mut self, line: &SpeechLine) {
-        let party = [SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE].contains(&line.kind);
-        let said =
-            [SPEECH_REGULAR, SPEECH_WHISPER, SPEECH_YELL].contains(&(line.kind & !SPEECH_ENCODED));
-        let spoken = party || said;
-        let from_other =
-            line.serial != self.self_state.serial && self.mobiles.contains_key(&line.serial);
-        if !self.answer_when_named
-            || !spoken
-            || !from_other
-            || !names_character(&line.text, &self.self_state.name)
-        {
+    /// Notes a line when another character says this one's name, and tells
+    /// the agent with a [`EventKind::SpokenTo`] event. A spoken line counts
+    /// only from a mobile in sight; party, guild and alliance lines reach
+    /// from anywhere.
+    fn note_spoken_to(&mut self, serial: Serial, name: &str, text: &str, channel: Channel) {
+        let from_other = serial != self.self_state.serial
+            && (channel.reaches_far() || self.mobiles.contains_key(&serial));
+        if !self.answer_when_named || !from_other || !names_character(text, &self.self_state.name) {
             return;
         }
         let spoken_to = SpokenTo {
-            serial: line.serial,
-            name: line.name.clone(),
-            text: line.text.clone(),
-            asks_if_bot: asks_if_bot(&line.text),
+            serial,
+            name: name.to_string(),
+            text: text.to_string(),
+            channel,
+            asks_if_bot: asks_if_bot(text),
             unix_ms: unix_now_ms(),
         };
         self.push_event(Event::new(
             EventKind::SpokenTo,
-            Some(line.serial),
-            format!("{}: {}", line.name, line.text),
+            Some(serial),
+            format!("{name}: {text}"),
         ));
         self.spoken_to.push(spoken_to);
     }

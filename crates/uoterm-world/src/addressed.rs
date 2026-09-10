@@ -31,12 +31,38 @@ const BOT_WORDS: [&str; 8] = [
 /// Word pairs that ask the same.
 const BOT_PHRASES: [&str; 3] = ["you real", "are you human", "a real person"];
 
+/// Where a line was said. An answer goes back the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    Say,
+    Whisper,
+    Yell,
+    Party,
+    /// A party line sent to this character only.
+    PartyPrivate,
+    Guild,
+    Alliance,
+}
+
+impl Channel {
+    /// True for the channels that reach the character from anywhere, so
+    /// the speaker need not be in sight.
+    pub fn reaches_far(self) -> bool {
+        matches!(
+            self,
+            Self::Party | Self::PartyPrivate | Self::Guild | Self::Alliance
+        )
+    }
+}
+
 /// A line another character said to this one by name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpokenTo {
     pub serial: Serial,
     pub name: String,
     pub text: String,
+    pub channel: Channel,
     /// The line asks whether the character is a bot or a macro.
     pub asks_if_bot: bool,
     pub unix_ms: u64,
@@ -169,6 +195,7 @@ mod tests {
                 serial: Serial(1),
                 name: "Ann".into(),
                 text: format!("mara {i}"),
+                channel: Channel::Say,
                 asks_if_bot: false,
                 unix_ms: i,
             });
@@ -188,6 +215,7 @@ mod tests {
             serial: Serial(1),
             name: "Ann".into(),
             text: text.into(),
+            channel: Channel::Say,
             asks_if_bot: false,
             unix_ms,
         };

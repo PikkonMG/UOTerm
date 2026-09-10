@@ -10,8 +10,8 @@ mod radar;
 mod state;
 
 pub use addressed::{
-    asks_if_bot, names_character, SpokenTo, SpokenToLog, CHAT_MODE_BASIC, CHAT_MODE_PLAY_ALONG,
-    SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
+    asks_if_bot, names_character, Channel, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
+    CHAT_MODE_PLAY_ALONG, SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
 };
 pub use assist::{AssistFeature, AssistRules};
 pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
@@ -1498,10 +1498,48 @@ mod tests {
     }
 
     #[test]
-    fn a_party_line_with_the_name_counts() {
+    fn party_and_guild_lines_count_from_out_of_sight() {
+        const FAR: Serial = Serial(0x0000_0E04);
         let mut w = mara_and_ann(true);
-        say(&mut w, TALKER, SPEECH_KIND_PARTY, "mara heal me");
-        assert_eq!(spoken_to_events(&w), 1);
+        w.apply(&Inbound::Party(PartyEvent::Message {
+            from: FAR,
+            text: "mara heal me".into(),
+            private: false,
+        }));
+        w.apply(&Inbound::Party(PartyEvent::Message {
+            from: FAR,
+            text: "mara, just you".into(),
+            private: true,
+        }));
+        say(
+            &mut w,
+            FAR,
+            uoterm_protocol::SPEECH_GUILD,
+            "mara, guild meeting",
+        );
+        say(
+            &mut w,
+            FAR,
+            uoterm_protocol::SPEECH_ALLIANCE,
+            "mara, allies up",
+        );
+        say(&mut w, FAR, 0, "mara, can you hear me?");
+        let channels: Vec<Channel> = w
+            .observe_default()
+            .spoken_to
+            .iter()
+            .map(|l| l.channel)
+            .collect();
+        assert_eq!(
+            channels,
+            vec![
+                Channel::Party,
+                Channel::PartyPrivate,
+                Channel::Guild,
+                Channel::Alliance
+            ],
+            "a spoken line from out of sight does not count"
+        );
     }
 
     #[test]
