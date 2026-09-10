@@ -23,10 +23,10 @@ pub use radar::{
     default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT, RADAR_SIZE,
 };
 pub use state::{
-    facet_free_movement, facet_rules, is_ghost_body, Container, DoorItem, DoorUpdate, Harm, Item,
-    Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, World, BODY_GHOST_ELF_FEMALE,
+    facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem, DoorUpdate, Harm,
+    Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, World, BODY_GHOST_ELF_FEMALE,
     BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_MALE, FACET_RULES_FELUCCA,
-    FACET_RULES_TRAMMEL, MAP_RULE_FREE_MOVEMENT,
+    FACET_RULES_TRAMMEL, MAP_RULE_FREE_MOVEMENT, SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE,
 };
 
 #[cfg(test)]
@@ -35,9 +35,246 @@ mod tests {
     use std::time::{Duration, Instant};
     use uoterm_protocol::{
         ContainerItem, EquipItem, GroundItem, Inbound, MobileView, ObjectProperty, OpenGump,
-        Point3, Serial, SpeechLine, TargetCursor, FLAG_FROZEN, FLAG_HIDDEN, FLAG_WAR,
+        PartyEvent, Point3, Serial, SpeechLine, TargetCursor, FLAG_FROZEN, FLAG_HIDDEN, FLAG_WAR,
         GRAPHIC_BACKPACK, LAYER_BACKPACK, LAYER_BANK, NOTO_INNOCENT,
     };
+
+    const LEADER: Serial = Serial(0x0000_0042);
+
+    fn me() -> World {
+        let mut w = World::new();
+        w.self_state.serial = Serial(0x0000_0001);
+        w
+    }
+
+    #[test]
+    fn a_buff_is_kept_until_the_shard_removes_it() {
+        const BLESS_ICON: u16 = 1048;
+        const BLESS_CLILOC: u32 = 1_075_847;
+        let mut w = me();
+        let serial = w.self_state.serial;
+        w.apply(&Inbound::BuffDebuff {
+            serial,
+            icon: BLESS_ICON,
+            effects: vec![uoterm_protocol::BuffEntry {
+                icon: BLESS_ICON,
+                duration_secs: 60,
+                title_cliloc: BLESS_CLILOC,
+                description_cliloc: 0,
+                arguments: String::new(),
+            }],
+        });
+        assert_eq!(w.buffs[&BLESS_ICON].title_cliloc, BLESS_CLILOC);
+        w.apply(&Inbound::BuffDebuff {
+            serial,
+            icon: BLESS_ICON,
+            effects: Vec::new(),
+        });
+        assert!(w.buffs.is_empty());
+    }
+
+    #[test]
+    fn a_buff_on_someone_else_is_not_ours() {
+        const OTHER: Serial = Serial(0x0000_0099);
+        let mut w = me();
+        w.apply(&Inbound::BuffDebuff {
+            serial: OTHER,
+            icon: 1,
+            effects: vec![uoterm_protocol::BuffEntry {
+                icon: 1,
+                duration_secs: 0,
+                title_cliloc: 0,
+                description_cliloc: 0,
+                arguments: String::new(),
+            }],
+        });
+        assert!(w.buffs.is_empty());
+    }
+
+    #[test]
+    fn a_party_invite_is_kept_and_joining_clears_it() {
+        let mut w = me();
+        w.apply(&Inbound::Party(PartyEvent::Invite { leader: LEADER }));
+        assert_eq!(w.party_invite, Some(LEADER));
+        assert!(w.events.iter().any(|e| e.kind == EventKind::PartyInvite));
+        let members = vec![LEADER, w.self_state.serial];
+        w.apply(&Inbound::Party(PartyEvent::Members(members.clone())));
+        assert_eq!(w.party, members);
+        assert_eq!(w.party_invite, None);
+        w.apply(&Inbound::Party(PartyEvent::Removed {
+            who: LEADER,
+            members: Vec::new(),
+        }));
+        assert!(w.party.is_empty(), "the party is over");
+    }
+
+    #[test]
+    fn party_chat_goes_in_the_journal_under_the_speaker_name() {
+        let mut w = me();
+        w.mobiles.insert(
+            LEADER,
+            Mobile {
+                serial: LEADER,
+                name: "Rowan".into(),
+                body: 0x0190,
+                hue: 0,
+                location: Point3::new(0, 0, 0),
+                direction: 0,
+                running: false,
+                notoriety: NOTO_INNOCENT,
+                flags: 0,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            },
+        );
+        w.apply(&Inbound::Party(PartyEvent::Message {
+            from: LEADER,
+            text: "heal me".into(),
+            private: false,
+        }));
+        let line = w.journal.after(0).last().expect("a party line");
+        assert_eq!(line.name, "Rowan");
+        assert_eq!(line.kind, SPEECH_KIND_PARTY);
+    }
+
+    fn draw_me(w: &mut World, flags: u8) {
+        let serial = w.self_state.serial;
+        w.apply(&Inbound::DrawPlayer {
+            serial,
+            body: 0x0190,
+            hue: 0,
+            flags,
+            x: 0,
+            y: 0,
+            direction: 0,
+            z: 0,
+        });
+    }
+
+    fn poison_bar(serial: Serial, enabled: bool) -> Inbound {
+        Inbound::HealthBarUpdate {
+            serial,
+            bars: vec![uoterm_protocol::HealthBarStatus {
+                kind: uoterm_protocol::HEALTH_BAR_POISON,
+                enabled,
+                poison_level: None,
+            }],
+        }
+    }
+
+    /// Measured against the shard source: for a client from 7.0.0.0 up the
+    /// flag bit is flying, and poison comes only on the health bar.
+    #[test]
+    fn a_modern_client_reads_flying_from_the_flag_and_poison_from_the_bar() {
+        const FLYING_BIT: u8 = 0x04;
+        let mut w = me();
+        w.flags_mean_flying = true;
+        let serial = w.self_state.serial;
+        draw_me(&mut w, FLYING_BIT);
+        assert!(w.self_state.flying);
+        assert!(!w.self_state.poisoned, "flying is not poison");
+        w.apply(&poison_bar(serial, true));
+        assert!(w.is_poisoned(serial));
+        w.apply(&poison_bar(serial, false));
+        assert!(!w.is_poisoned(serial));
+    }
+
+    #[test]
+    fn an_old_client_reads_poison_from_the_flag() {
+        const POISON_BIT: u8 = 0x04;
+        let mut w = me();
+        draw_me(&mut w, POISON_BIT);
+        assert!(w.self_state.poisoned);
+        assert!(!w.self_state.flying);
+    }
+
+    #[test]
+    fn another_mobile_is_poisoned_by_its_bar() {
+        let mut w = me();
+        w.flags_mean_flying = true;
+        w.apply(&poison_bar(LEADER, true));
+        assert!(w.is_poisoned(LEADER));
+        w.apply(&Inbound::Delete(LEADER));
+        assert!(
+            !w.is_poisoned(LEADER),
+            "a mobile gone takes its bars with it"
+        );
+    }
+
+    fn item_in(serial: u32, parent: Option<Serial>) -> Item {
+        Item {
+            serial: Serial(serial),
+            graphic: 0x0E21,
+            amount: 1,
+            hue: 0,
+            location: Point3::new(10, 10, 0),
+            parent,
+            layer: None,
+            grid: 0,
+            name: String::new(),
+        }
+    }
+
+    #[test]
+    fn an_item_in_a_bag_in_the_pack_is_inside_the_pack() {
+        const PACK: Serial = Serial(0x4000_0001);
+        const BAG: Serial = Serial(0x4000_0002);
+        const BANDAGE: Serial = Serial(0x4000_0003);
+        let mut w = me();
+        w.self_state.location = Point3::new(5, 5, 0);
+        w.items
+            .insert(PACK, item_in(PACK.0, Some(w.self_state.serial)));
+        w.items.insert(BAG, item_in(BAG.0, Some(PACK)));
+        w.items.insert(BANDAGE, item_in(BANDAGE.0, Some(BAG)));
+        assert!(w.is_inside(BANDAGE, PACK));
+        assert!(!w.is_inside(PACK, BAG));
+        assert_eq!(w.items_inside(PACK, false).len(), 1);
+        assert_eq!(w.items_inside(PACK, true).len(), 2);
+        assert_eq!(w.map_location(BANDAGE), Some(Point3::new(5, 5, 0)));
+    }
+
+    #[test]
+    fn an_object_keeps_its_property_list_until_it_is_gone() {
+        const RING: Serial = Serial(0x4000_0020);
+        const FASTER_CASTING: u32 = 1_060_413;
+        let mut w = me();
+        w.apply(&Inbound::ObjectPropertyList {
+            serial: RING,
+            hash: 1,
+            properties: vec![ObjectProperty {
+                cliloc: FASTER_CASTING,
+                arguments: "1".into(),
+            }],
+        });
+        assert_eq!(w.properties[&RING][0].cliloc, FASTER_CASTING);
+        w.apply(&Inbound::Delete(RING));
+        assert!(!w.properties.contains_key(&RING));
+    }
+
+    #[test]
+    fn a_broken_parent_chain_does_not_hang() {
+        const A: Serial = Serial(0x4000_0010);
+        const B: Serial = Serial(0x4000_0011);
+        let mut w = me();
+        w.items.insert(A, item_in(A.0, Some(B)));
+        w.items.insert(B, item_in(B.0, Some(A)));
+        assert!(!w.is_inside(A, Serial(0x4000_0099)));
+        assert_eq!(w.map_location(A), None);
+    }
+
+    #[test]
+    fn a_prompt_and_a_text_dialog_wait_for_an_answer() {
+        let mut w = me();
+        let prompt = uoterm_protocol::PromptRequest {
+            serial: LEADER,
+            id: 3,
+            unicode: true,
+        };
+        w.apply(&Inbound::Prompt(prompt));
+        assert_eq!(w.prompt, Some(prompt));
+        assert!(w.observe_default().prompt);
+    }
 
     #[test]
     fn observe_names_the_forbidden_features() {

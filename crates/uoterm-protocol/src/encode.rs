@@ -550,6 +550,13 @@ pub fn text_entry_response(dialog: &TextEntryDialog, text: &str, accept: bool) -
     var_bytes(w)
 }
 
+/// The colour picked for a dye tub.
+pub fn dye_response(tub: Serial, hue: u16) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_DYE);
+    w.serial(tub).u16(0).u16(hue);
+    w.finish()
+}
+
 /// Asks the shard to rename a pet the character owns.
 pub fn rename(serial: Serial, name: &str) -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_RENAME);
@@ -1225,6 +1232,15 @@ mod tests {
         assert_eq!(&p[7..10], &[1, 2, 1]);
         assert_eq!(&p[10..12], &3u16.to_be_bytes());
         assert_eq!(&p[12..], b"ok\0");
+    }
+
+    #[test]
+    fn a_dye_answer_names_the_tub_and_the_colour() {
+        const HUE: u16 = 35;
+        assert_eq!(
+            dye_response(PROMPT.serial, HUE),
+            vec![PKT_DYE, 0, 0, 0x12, 0x34, 0, 0, 0, 35]
+        );
     }
 
     #[test]

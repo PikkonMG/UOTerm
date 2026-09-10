@@ -5,6 +5,7 @@ members = [
     "crates/uoterm-world",
     "crates/uoterm-nav",
     "crates/uoterm-assist",
+    "crates/uoterm-script",
     "crates/uoterm-runtime",
     "crates/uoterm",
 ]
@@ -23,6 +24,7 @@ uoterm-protocol = { path = "crates/uoterm-protocol" }
 uoterm-world = { path = "crates/uoterm-world" }
 uoterm-nav = { path = "crates/uoterm-nav" }
 uoterm-assist = { path = "crates/uoterm-assist" }
+uoterm-script = { path = "crates/uoterm-script" }
 uoterm-runtime = { path = "crates/uoterm-runtime" }
 
 thiserror = "2"

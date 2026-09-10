@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
-    weapon_range, ContainerItem, EquipItem, GroundItem, Inbound, MobileView, ObjectProperty,
-    OpenGump, Point3, Serial, TargetCursor, DIR_RUNNING, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED,
-    FLAG_WAR, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE,
+    weapon_range, BuffEntry, ContainerItem, EquipItem, GroundItem, HealthBarStatus, Inbound,
+    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, Serial, StatusExtra,
+    TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR,
+    HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED,
+    RANGE_MELEE,
 };
 
 use crate::assist::AssistRules;
@@ -90,9 +92,15 @@ pub struct SelfState {
     pub hidden: bool,
     pub poisoned: bool,
     pub paralyzed: bool,
+    /// A gargoyle in the air.
+    pub flying: bool,
+    /// The yellow health bar of a blessed or invulnerable mobile.
+    pub yellow_bar: bool,
     pub dead: bool,
     pub skills: HashMap<u16, SkillValue>,
     pub equipment: Vec<EquipItem>,
+    /// Resists, luck, followers, tithing and the rest of the status.
+    pub status: StatusExtra,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -131,9 +139,12 @@ impl Default for SelfState {
             hidden: false,
             poisoned: false,
             paralyzed: false,
+            flying: false,
+            yellow_bar: false,
             dead: false,
             skills: HashMap::new(),
             equipment: Vec::new(),
+            status: StatusExtra::default(),
         }
     }
 }
@@ -259,6 +270,57 @@ pub enum MultiUpdate {
     Moved,
 }
 
+/// Journal kinds for party lines. Party chat comes in its own packet, not as
+/// speech, so these numbers never come from the wire; they sit above every
+/// speech kind a shard sends.
+pub const SPEECH_KIND_PARTY: u8 = 0xF0;
+pub const SPEECH_KIND_PARTY_PRIVATE: u8 = 0xF1;
+/// The hue party lines are filed with. The shard sends none.
+const PARTY_HUE: u16 = 0;
+
+/// The deepest a bag inside a bag is followed. A loop in a broken parent
+/// chain stops here.
+const MAX_NESTING: usize = 16;
+
+/// The bit a shard sets for poison on an old client and for flying on a
+/// client from 7.0.0.0 up.
+const FLAG_POISONED_OR_FLYING: u8 = FLAG_POISONED;
+
+/// The health bar colours of one mobile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BarState {
+    pub poisoned: bool,
+    pub yellow: bool,
+}
+
+/// One buff or debuff on the character.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Buff {
+    pub icon: u16,
+    /// The client text numbers of its name and its description.
+    pub title_cliloc: u32,
+    pub description_cliloc: u32,
+    pub arguments: String,
+    /// How long it lasts, as the shard said when it began. Zero when it lasts
+    /// until something ends it.
+    pub duration_secs: u16,
+    #[serde(skip, default = "Instant::now")]
+    pub since: Instant,
+}
+
+impl Buff {
+    fn new(effect: &BuffEntry) -> Self {
+        Self {
+            icon: effect.icon,
+            title_cliloc: effect.title_cliloc,
+            description_cliloc: effect.description_cliloc,
+            arguments: effect.arguments.clone(),
+            duration_secs: effect.duration_secs,
+            since: Instant::now(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct World {
     pub self_state: SelfState,
@@ -297,6 +359,26 @@ pub struct World {
     pub map_height: u16,
     pub season: u8,
     pub names: NameBook,
+    /// The property list of each object the shard described, as text numbers
+    /// and their arguments. The runtime turns them into words.
+    pub properties: HashMap<Serial, Vec<ObjectProperty>>,
+    /// The buffs and debuffs on the character, by icon.
+    pub buffs: HashMap<u16, Buff>,
+    /// A text prompt the shard is waiting on.
+    pub prompt: Option<PromptRequest>,
+    /// A one-field text dialog the shard is waiting on.
+    pub text_entry: Option<TextEntryDialog>,
+    /// Flag bit 4 means "flying", and poison comes on the health bar packet.
+    /// Clients from 7.0.0.0 up read the bits this way; older clients read bit
+    /// 4 as poison. The session sets this from the client version.
+    pub flags_mean_flying: bool,
+    /// The poison and yellow health bars of other mobiles, as the health bar
+    /// packet last set them.
+    pub bars: HashMap<Serial, BarState>,
+    /// The party members, the character among them. Empty outside a party.
+    pub party: Vec<Serial>,
+    /// The leader of a party the character was asked to join.
+    pub party_invite: Option<Serial>,
     /// The assistant features the shard forbids, when the user lets the
     /// shard decide. The session fills it in.
     pub assist: AssistRules,
@@ -445,6 +527,8 @@ impl World {
                 self.doors.remove(serial);
                 self.multis.remove(serial);
                 self.self_state.equipment.retain(|e| e.serial != *serial);
+                self.bars.remove(serial);
+                self.properties.remove(serial);
                 // The held item is left held. Lifting takes an item off the
                 // map and the shard reports that with a delete, so a delete of
                 // the item on the cursor is the lift itself. The hold ends when
@@ -523,8 +607,10 @@ impl World {
                 gold,
                 weight,
                 weight_max,
+                extra,
             } => {
                 if *serial == self.self_state.serial || self.self_state.serial.0 == 0 {
+                    self.self_state.status.clone_from(extra);
                     self.self_state.serial = *serial;
                     if !name.is_empty() {
                         self.self_state.name.clone_from(name);
@@ -673,6 +759,22 @@ impl World {
             } => {
                 self.accept_properties(*serial, *hash, properties);
             }
+            Inbound::BuffDebuff {
+                serial,
+                icon,
+                effects,
+            } if *serial == self.self_state.serial => match effects.first() {
+                Some(effect) => {
+                    self.buffs.insert(*icon, Buff::new(effect));
+                }
+                None => {
+                    self.buffs.remove(icon);
+                }
+            },
+            Inbound::HealthBarUpdate { serial, bars } => self.apply_bars(*serial, bars),
+            Inbound::Prompt(prompt) => self.prompt = Some(*prompt),
+            Inbound::TextEntry(dialog) => self.text_entry = Some(dialog.clone()),
+            Inbound::Party(event) => self.apply_party(event),
             Inbound::Unknown { id, .. } => {
                 tracing::debug!(packet = format!("{id:#04x}"), "unhandled inbound packet");
             }
@@ -680,9 +782,59 @@ impl World {
         }
     }
 
+    fn apply_party(&mut self, event: &PartyEvent) {
+        match event {
+            PartyEvent::Members(members) => {
+                self.party.clone_from(members);
+                self.party_invite = None;
+            }
+            PartyEvent::Removed { members, .. } => self.party.clone_from(members),
+            PartyEvent::Invite { leader } => {
+                self.party_invite = Some(*leader);
+                self.push_event(Event::new(
+                    EventKind::PartyInvite,
+                    Some(*leader),
+                    self.name_of(*leader),
+                ));
+            }
+            PartyEvent::Message {
+                from,
+                text,
+                private,
+            } => {
+                self.journal.push(JournalEntry {
+                    serial: *from,
+                    name: self.name_of(*from),
+                    hue: PARTY_HUE,
+                    kind: if *private {
+                        SPEECH_KIND_PARTY_PRIVATE
+                    } else {
+                        SPEECH_KIND_PARTY
+                    },
+                    text: text.clone(),
+                    at: Instant::now(),
+                    seq: 0,
+                });
+            }
+        }
+    }
+
+    /// The name the world knows a mobile by, or its serial when it has none.
+    pub fn name_of(&self, serial: Serial) -> String {
+        if serial == self.self_state.serial {
+            return self.self_state.name.clone();
+        }
+        self.mobiles
+            .get(&serial)
+            .map(|m| m.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| serial.to_string())
+    }
+
     /// Record a property list reply: keep its revision and take the name.
     fn accept_properties(&mut self, serial: Serial, hash: u32, properties: &[ObjectProperty]) {
         self.names.accept(serial, hash);
+        self.properties.insert(serial, properties.to_vec());
         if let Some(name) = display_name(properties) {
             self.set_object_name(serial, name);
         }
@@ -728,8 +880,49 @@ impl World {
         self.self_state.flags = flags;
         self.self_state.war = flags & FLAG_WAR != 0;
         self.self_state.hidden = flags & FLAG_HIDDEN != 0;
-        self.self_state.poisoned = flags & FLAG_POISONED != 0;
         self.self_state.paralyzed = flags & FLAG_FROZEN != 0;
+        if self.flags_mean_flying {
+            self.self_state.flying = flags & FLAG_POISONED_OR_FLYING != 0;
+        } else {
+            self.self_state.poisoned = flags & FLAG_POISONED_OR_FLYING != 0;
+        }
+    }
+
+    /// The health bar packet: poison and the yellow bar, for the character
+    /// or anyone else.
+    fn apply_bars(&mut self, serial: Serial, bars: &[HealthBarStatus]) {
+        let mine = serial == self.self_state.serial;
+        for bar in bars {
+            match bar.kind {
+                HEALTH_BAR_POISON if mine => self.self_state.poisoned = bar.enabled,
+                HEALTH_BAR_YELLOW if mine => self.self_state.yellow_bar = bar.enabled,
+                HEALTH_BAR_POISON => self.bars.entry(serial).or_default().poisoned = bar.enabled,
+                HEALTH_BAR_YELLOW => self.bars.entry(serial).or_default().yellow = bar.enabled,
+                _ => {}
+            }
+        }
+    }
+
+    /// True when the mobile is poisoned, by whichever sign this client reads.
+    pub fn is_poisoned(&self, serial: Serial) -> bool {
+        if serial == self.self_state.serial {
+            return self.self_state.poisoned;
+        }
+        let by_bar = self.bars.get(&serial).is_some_and(|b| b.poisoned);
+        let by_flag = !self.flags_mean_flying
+            && self
+                .mobiles
+                .get(&serial)
+                .is_some_and(|m| m.flags & FLAG_POISONED_OR_FLYING != 0);
+        by_bar || by_flag
+    }
+
+    /// True when the mobile wears the yellow bar of the blessed.
+    pub fn has_yellow_bar(&self, serial: Serial) -> bool {
+        if serial == self.self_state.serial {
+            return self.self_state.yellow_bar;
+        }
+        self.bars.get(&serial).is_some_and(|b| b.yellow)
     }
 
     fn refresh_dead_from_body(&mut self, body: u16) {
@@ -1000,6 +1193,69 @@ impl World {
             .filter(|i| container.map(|c| i.parent == Some(c)).unwrap_or(true))
             .filter(|i| word.as_deref().map(|w| item_named(i, w)).unwrap_or(true))
             .collect()
+    }
+
+    /// True when the item sits in `container`, straight in it or in a bag
+    /// inside it.
+    pub fn is_inside(&self, item: Serial, container: Serial) -> bool {
+        let mut holder = self.items.get(&item).and_then(|i| i.parent);
+        for _ in 0..MAX_NESTING {
+            match holder {
+                Some(p) if p == container => return true,
+                Some(p) => holder = self.items.get(&p).and_then(|i| i.parent),
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// The items in a container, lowest serial first. With `deep`, the items
+    /// in the bags inside it count too.
+    pub fn items_inside(&self, container: Serial, deep: bool) -> Vec<&Item> {
+        let mut found: Vec<&Item> = self
+            .items
+            .values()
+            .filter(|i| {
+                if deep {
+                    self.is_inside(i.serial, container)
+                } else {
+                    i.parent == Some(container)
+                }
+            })
+            .collect();
+        found.sort_by_key(|i| i.serial.0);
+        found
+    }
+
+    /// What the character wears on a layer.
+    pub fn worn(&self, layer: u8) -> Option<&EquipItem> {
+        self.self_state.equipment.iter().find(|e| e.layer == layer)
+    }
+
+    /// Where a thing is on the map: its own tile on the ground, or the tile
+    /// of the mobile or the ground container that holds it.
+    pub fn map_location(&self, serial: Serial) -> Option<Point3> {
+        if serial == self.self_state.serial {
+            return Some(self.self_state.location);
+        }
+        if let Some(mobile) = self.mobiles.get(&serial) {
+            return Some(mobile.location);
+        }
+        let mut at = serial;
+        for _ in 0..MAX_NESTING {
+            let item = self.items.get(&at)?;
+            match item.parent {
+                None => return Some(item.location),
+                Some(holder) if holder == self.self_state.serial => {
+                    return Some(self.self_state.location)
+                }
+                Some(holder) => match self.mobiles.get(&holder) {
+                    Some(mobile) => return Some(mobile.location),
+                    None => at = holder,
+                },
+            }
+        }
+        None
     }
 
     pub fn find_item_graphic(&self, graphic: u16) -> Option<&Item> {

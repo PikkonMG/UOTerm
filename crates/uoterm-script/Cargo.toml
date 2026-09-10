@@ -1,0 +1,13 @@
+[package]
+name = "uoterm-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Line-based script language for UOTerm: parser and step interpreter"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

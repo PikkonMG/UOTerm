@@ -264,7 +264,10 @@ pub async fn start(
     multi_shapes: Arc<FacetCache<MultiData>>,
     clilocs: Arc<FacetCache<ClilocData>>,
 ) -> Result<SessionHandle> {
-    let world = Arc::new(RwLock::new(World::new()));
+    let world = Arc::new(RwLock::new(World {
+        flags_mean_flying: opts.version.reads_flying_flag(),
+        ..World::new()
+    }));
     let (tx, rx) = mpsc::channel(CMD_QUEUE_CAP);
     let (login_tx, login_rx) = oneshot::channel::<Result<()>>();
     let handle = SessionHandle {
@@ -330,7 +333,8 @@ struct Inner {
     /// See [`crate::config::OBEY_SHARD_RULES_DEFAULT`].
     obey_shard_rules: bool,
     attack_sent: Option<Serial>,
-    target_intent: Option<Serial>,
+    /// The object the next target cursor is answered with, until it runs out.
+    target_intent: Option<TargetIntent>,
     /// Callers of `wait_target` still waiting for a cursor, each with the time
     /// it gives up. Their answers go out from the packet handler or the tick.
     target_waiters: Vec<(Instant, oneshot::Sender<ToolResult>)>,
@@ -359,6 +363,33 @@ struct Inner {
     /// refusal that close behind it is about his stamina and about nothing in
     /// the way.
     last_fatigued: Option<Instant>,
+}
+
+/// An object waiting for the next target cursor. It runs out, so a cursor
+/// that never comes cannot be answered with it long after: a later cursor
+/// from something else would take the wrong target.
+#[derive(Clone, Copy, Debug)]
+struct TargetIntent {
+    serial: Serial,
+    until: Instant,
+}
+
+/// How long a queued target waits for its cursor.
+const TARGET_QUEUE_LIFETIME: Duration = Duration::from_secs(5);
+
+/// Queues `serial` for the next target cursor, for [`TARGET_QUEUE_LIFETIME`].
+fn queue_target(inner: &mut Inner, serial: Serial, now: Instant) {
+    inner.target_intent = Some(TargetIntent {
+        serial,
+        until: now + TARGET_QUEUE_LIFETIME,
+    });
+}
+
+/// Drops a queued target whose time has run out.
+fn expire_target_intent(inner: &mut Inner, now: Instant) {
+    if inner.target_intent.is_some_and(|intent| intent.until < now) {
+        inner.target_intent = None;
+    }
 }
 
 /// A door macro the character means to send, held until it can be aimed.
@@ -743,6 +774,7 @@ async fn run_session(
                 pump_names(&mut inner);
                 harvest_new_events(&mut inner);
                 expire_target_waiters(&mut inner, Instant::now());
+                expire_target_intent(&mut inner, Instant::now());
                 answer_journal_waiters(&mut inner, Instant::now());
             }
         }
@@ -5082,11 +5114,33 @@ mod relay_tests {
         assert_eq!(answer.error.as_deref(), Some(MUST_HAVE_CURSOR));
     }
 
+    /// A queued target that no cursor came for is dropped, so a cursor from
+    /// something else much later is not answered with it.
+    #[test]
+    fn a_queued_target_runs_out() {
+        const TREE: Serial = Serial(0x4000_0010);
+        let mut inner = test_session();
+        let long_ago = Instant::now() - TARGET_QUEUE_LIFETIME * 2;
+        queue_target(&mut inner, TREE, long_ago);
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        assert!(
+            !inner
+                .outbound
+                .iter()
+                .any(|p| p.first() == Some(&PKT_TARGET)),
+            "the stale target is not sent"
+        );
+        assert!(
+            inner.world.read().pending_target.is_some(),
+            "the cursor stays up"
+        );
+    }
+
     #[test]
     fn a_target_intent_is_answered_when_the_cursor_arrives() {
         const TREE: Serial = Serial(0x4000_0010);
         let mut inner = test_session();
-        inner.target_intent = Some(TREE);
+        queue_target(&mut inner, TREE, Instant::now());
         ingest(&mut inner, &target_cursor(A_CURSOR));
         assert!(inner.target_intent.is_none());
         assert!(inner.world.read().pending_target.is_none());
@@ -5709,8 +5763,9 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         world.apply(&msg);
                     }
                     if let Inbound::Target(cursor) = &msg {
-                        if let Some(serial) = inner.target_intent.take() {
-                            answer_cursor_with(inner, cursor.id, serial);
+                        expire_target_intent(inner, Instant::now());
+                        if let Some(intent) = inner.target_intent.take() {
+                            answer_cursor_with(inner, cursor.id, intent.serial);
                         }
                     }
                     if let Inbound::LiftRejected { .. } = &msg {
@@ -6718,7 +6773,7 @@ fn store_or_answer_target(inner: &mut Inner, serial: Serial) {
         answer_cursor_with(inner, cursor.id, serial);
         inner.target_intent = None;
     } else {
-        inner.target_intent = Some(serial);
+        queue_target(inner, serial, Instant::now());
     }
 }
 
@@ -6867,7 +6922,7 @@ fn reflex_tick(inner: &mut Inner) {
                         i.parent.is_none()
                             && (TREE_GRAPHIC_MIN..=TREE_GRAPHIC_MAX).contains(&i.graphic)
                     }) {
-                        inner.target_intent = Some(tree.serial);
+                        queue_target(inner, tree.serial, Instant::now());
                     }
                 }
             }

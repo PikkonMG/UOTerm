@@ -139,6 +139,8 @@ pub const PARTY_INVITE: u8 = 0x07;
 pub const PARTY_ACCEPT: u8 = 0x08;
 pub const PARTY_DECLINE: u8 = 0x09;
 pub const PKT_RENAME: u8 = 0x75;
+/// A dye tub asks for a colour, and the answer names it.
+pub const PKT_DYE: u8 = 0x95;
 /// A text prompt. The shard waits for a line of text; the ASCII and the
 /// Unicode forms carry the same ids.
 pub const PKT_ASCII_PROMPT: u8 = 0x9A;

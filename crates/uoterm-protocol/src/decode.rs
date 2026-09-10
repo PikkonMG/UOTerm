@@ -601,6 +601,11 @@ pub enum Inbound {
     /// decoded form that embedded packet carries when it arrives on its own,
     /// so a consumer handles the list by handling each entry in order.
     PacketList(Vec<Inbound>),
+    /// A dye tub waits for a colour.
+    DyeRequest {
+        serial: Serial,
+        graphic: u16,
+    },
     /// The shard waits for a line of text, the answer to a prompt it showed.
     Prompt(PromptRequest),
     /// A dialog with one text field.
@@ -688,6 +693,7 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_MUSIC => parse_music(packet),
         PKT_BUFF_DEBUFF => parse_buff_debuff(packet),
         PKT_ASSIST_VERSION => Ok(Inbound::AssistantVersionRequest),
+        PKT_DYE => parse_dye(packet),
         PKT_ASCII_PROMPT => parse_prompt(packet, false),
         PKT_UNICODE_PROMPT => parse_prompt(packet, true),
         PKT_TEXT_ENTRY => parse_text_entry(packet),
@@ -728,6 +734,17 @@ fn parse_login_denied(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     Ok(Inbound::LoginDenied { reason: r.u8()? })
+}
+
+fn parse_dye(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    let serial = r.serial()?;
+    r.u16()?;
+    Ok(Inbound::DyeRequest {
+        serial,
+        graphic: r.u16()?,
+    })
 }
 
 fn parse_prompt(packet: &[u8], unicode: bool) -> Result<Inbound> {
@@ -2539,6 +2556,17 @@ mod tests {
 
     const SHARD_OBJECT: Serial = Serial(0x0000_1234);
     const PROMPT_ID: u32 = 7;
+
+    #[test]
+    fn a_dye_request_names_the_tub_and_its_graphic() {
+        const TUB_GRAPHIC: u16 = 0x0FAB;
+        let mut w = crate::buf::PacketWriter::new(PKT_DYE);
+        w.serial(SHARD_OBJECT).u16(0).u16(TUB_GRAPHIC);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::DyeRequest { serial, graphic } if serial == SHARD_OBJECT && graphic == TUB_GRAPHIC
+        ));
+    }
 
     #[test]
     fn a_prompt_keeps_both_ids_and_its_form() {

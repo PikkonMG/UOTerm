@@ -133,6 +133,17 @@ pub struct Observe {
     /// does not use them by itself. Empty when the user set the character to
     /// ignore the shard's list.
     pub forbidden: Vec<String>,
+    /// The names of the buffs and debuffs on the character. The runtime
+    /// fills this in, because the names live in the client text files.
+    pub buffs: Vec<String>,
+    /// The party members by name. Empty outside a party.
+    pub party: Vec<String>,
+    /// Who asked the character to join a party, while the ask is open.
+    pub party_invite: Option<String>,
+    /// The shard waits for a line of text.
+    pub prompt: bool,
+    /// The question of an open one-field text dialog.
+    pub text_entry: Option<String>,
 }
 
 impl Observe {
@@ -219,6 +230,11 @@ impl Observe {
                 .into_iter()
                 .map(String::from)
                 .collect(),
+            buffs: Vec::new(),
+            party: world.party.iter().map(|&m| world.name_of(m)).collect(),
+            party_invite: world.party_invite.map(|leader| world.name_of(leader)),
+            prompt: world.prompt.is_some(),
+            text_entry: world.text_entry.as_ref().map(|d| d.description.clone()),
         }
     }
 }
