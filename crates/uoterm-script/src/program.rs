@@ -79,8 +79,8 @@ pub struct Call {
     pub line: usize,
 }
 
-/// The right side of a compare: a plain value, or a word the host reads, as
-/// in `hits < maxhits`.
+/// One side of a compare: a plain value, or a word the host reads, as in
+/// `hits < maxhits`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operand {
     Value(Arg),
@@ -91,7 +91,7 @@ pub enum Operand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Test {
     pub not: bool,
-    pub left: Call,
+    pub left: Operand,
     pub compare: Option<(Compare, Operand)>,
 }
 
@@ -253,6 +253,7 @@ impl Program {
                     elseif(&mut ops, &mut blocks, &rest[1..], line_no)?
                 }
                 KW_ELSE => {
+                    no_arguments(rest, line_no, KW_ELSE)?;
                     let Some(Block::If { pending, ends, .. }) = blocks.last_mut() else {
                         return Err(ParseError::new(line_no, "else with no if"));
                     };
@@ -265,6 +266,7 @@ impl Program {
                     point(&mut ops, test, here);
                 }
                 KW_ENDIF => {
+                    no_arguments(rest, line_no, KW_ENDIF)?;
                     let Some(Block::If { pending, ends, .. }) = blocks.pop() else {
                         return Err(ParseError::new(line_no, "endif with no if"));
                     };
@@ -290,6 +292,7 @@ impl Program {
                     });
                 }
                 KW_ENDWHILE => {
+                    no_arguments(rest, line_no, KW_ENDWHILE)?;
                     let Some(Block::While { start, breaks, .. }) = blocks.pop() else {
                         return Err(ParseError::new(line_no, "endwhile with no while"));
                     };
@@ -319,6 +322,7 @@ impl Program {
                     });
                 }
                 KW_ENDFOR => {
+                    no_arguments(rest, line_no, KW_ENDFOR)?;
                     let Some(Block::For {
                         start,
                         slot,
@@ -555,30 +559,34 @@ fn parse_test(tokens: &[Token], line_no: usize) -> Result<Test, ParseError> {
     let Some(at) = split else {
         return Ok(Test {
             not,
-            left: parse_call(tokens, line_no)?,
+            left: parse_operand(tokens, line_no)?,
             compare: None,
         });
     };
     let Token::Compare(compare) = tokens[at] else {
         unreachable!("the split is on a compare sign");
     };
-    let left = parse_call(&tokens[..at], line_no)?;
+    let left = parse_operand(&tokens[..at], line_no)?;
     let right = &tokens[at + 1..];
-    let operand = match right {
-        [] => {
-            return Err(ParseError::new(
-                line_no,
-                "a compare has nothing on its right",
-            ))
-        }
-        [Token::Quoted(q)] => Operand::Value(Arg::quoted(q.clone())),
-        [Token::Word(w)] if parse_number(w).is_some() => Operand::Value(Arg::word(w.clone())),
-        _ => Operand::Call(parse_call(right, line_no)?),
-    };
+    if right.is_empty() {
+        return Err(ParseError::new(
+            line_no,
+            "a compare has nothing on its right",
+        ));
+    }
     Ok(Test {
         not,
         left,
-        compare: Some((compare, operand)),
+        compare: Some((compare, parse_operand(right, line_no)?)),
+    })
+}
+
+/// A quoted text or a number is a plain value; anything else is a word.
+fn parse_operand(tokens: &[Token], line_no: usize) -> Result<Operand, ParseError> {
+    Ok(match tokens {
+        [Token::Quoted(q)] => Operand::Value(Arg::quoted(q.clone())),
+        [Token::Word(w)] if parse_number(w).is_some() => Operand::Value(Arg::word(w.clone())),
+        _ => Operand::Call(parse_call(tokens, line_no)?),
     })
 }
 
@@ -590,7 +598,8 @@ fn parse_for(tokens: &[Token], line_no: usize) -> Result<ForSpec, ParseError> {
     let word = |i: usize, w: &str| args.get(i).is_some_and(|a| !a.quoted && a.is(w));
     match args.len() {
         1 => Ok(ForSpec::Count(args[0].clone())),
-        3 if word(1, KW_TO) && args[2].quoted => Ok(ForSpec::List {
+        // A quoted number is a number, not a list name.
+        3 if word(1, KW_TO) && args[2].quoted && args[2].number().is_none() => Ok(ForSpec::List {
             start: args[0].clone(),
             list: args[2].clone(),
         }),
@@ -721,6 +730,7 @@ endfor",
         };
         assert!(matches!(spec("for 1 to 10"), ForSpec::Range(..)));
         assert!(matches!(spec("for 0 to 'list'"), ForSpec::List { .. }));
+        assert!(matches!(spec("for 1 to '3'"), ForSpec::Range(..)));
         assert!(matches!(
             spec("for 0 to 2 in 'list'"),
             ForSpec::ListRange { .. }
@@ -734,7 +744,7 @@ endfor",
             panic!("an if");
         };
         assert!(cond.first.not);
-        assert_eq!(cond.first.left.name, "poisoned");
+        assert!(matches!(&cond.first.left, Operand::Call(c) if c.name == "poisoned"));
         assert_eq!(cond.rest.len(), 2);
         let (join, hits) = &cond.rest[0];
         assert_eq!(*join, Join::And);
@@ -744,7 +754,7 @@ endfor",
         ));
         let (join, count) = &cond.rest[1];
         assert_eq!(*join, Join::Or);
-        assert_eq!(count.left.args.len(), 3);
+        assert!(matches!(&count.left, Operand::Call(c) if c.args.len() == 3));
         assert!(
             matches!(&count.compare, Some((Compare::Greater, Operand::Value(v))) if v.number() == Some(10))
         );
@@ -759,6 +769,22 @@ endfor",
         };
         assert_eq!(first.args[0].text, "a;b");
         assert_eq!(cmd(&p.ops[1]), "pause");
+    }
+
+    #[test]
+    fn words_after_a_block_end_are_an_error_on_their_line() {
+        assert_eq!(
+            Program::parse("if dead\nelse msg 'x'\nendif")
+                .unwrap_err()
+                .line,
+            2
+        );
+        assert_eq!(Program::parse("if dead\nendif x").unwrap_err().line, 2);
+        assert_eq!(
+            Program::parse("while dead\nendwhile x").unwrap_err().line,
+            2
+        );
+        assert_eq!(Program::parse("for 2\nendfor x").unwrap_err().line, 2);
     }
 
     #[test]

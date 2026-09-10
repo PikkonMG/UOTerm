@@ -131,7 +131,8 @@ pub enum Status {
 struct LoopState {
     /// The pass number or the list place.
     at: i64,
-    /// The last pass number or list place.
+    /// The last pass number or list place. A list loop also stops at the
+    /// list's last place, read on each pass.
     last: i64,
     /// The list a list loop walks.
     list: Option<String>,
@@ -148,7 +149,10 @@ pub struct Script {
     output: Vec<String>,
 }
 
-const LIST_CURRENT: &str = "[]";
+const LIST_OPEN: char = '[';
+const LIST_CLOSE: char = ']';
+/// A list loop with no end of its own: the list's length ends it.
+const LIST_TO_ITS_END: i64 = i64::MAX;
 
 impl Script {
     pub fn new(program: Program) -> Self {
@@ -205,17 +209,17 @@ impl Script {
                 acted: false,
             };
             let flow = match op {
-                Op::Command(call) => {
-                    let call = expand_list_items(&call, &self.loops, ctx.vars);
-                    match run_builtin(&call, &mut ctx)
+                Op::Command(call) => match expand_list_items(&call, &self.loops, ctx.vars) {
+                    Err(message) => Flow::Fail(call.line, message),
+                    Ok(call) => match run_builtin(&call, &mut ctx)
                         .unwrap_or_else(|| host.command(&call, &mut ctx))
                     {
                         Step::Done => Flow::Next,
                         Step::Acted => Flow::NextTick,
                         Step::Wait => return,
                         Step::Fail(message) => Flow::Fail(call.line, message),
-                    }
-                }
+                    },
+                },
                 Op::If { cond, jump, line } => match eval(&cond, host, &mut ctx, &self.loops) {
                     Ok(true) => after(Flow::Next, ctx.acted),
                     Ok(false) => after(Flow::Goto(jump), ctx.acted),
@@ -263,24 +267,36 @@ impl Script {
                 }
             };
             self.line_started = None;
-            match flow {
-                Flow::Next => self.pc += 1,
+            let tick_ends = match flow {
+                Flow::Next => {
+                    self.pc += 1;
+                    false
+                }
                 Flow::NextTick => {
                     self.pc += 1;
-                    if self.pc >= self.program.ops.len() {
-                        self.status = Status::Done;
-                    }
-                    return;
+                    true
                 }
-                Flow::Goto(target) => self.pc = target,
+                Flow::Goto(target) => {
+                    self.pc = target;
+                    false
+                }
                 Flow::GotoNextTick(target) => {
                     self.pc = target;
-                    return;
+                    true
                 }
                 Flow::Fail(line, message) => {
                     self.status = Status::Failed { line, message };
                     return;
                 }
+            };
+            // Past the last line the script is done now, even when this was
+            // the last step of the tick.
+            if self.pc >= self.program.ops.len() {
+                self.status = Status::Done;
+                return;
+            }
+            if tick_ends {
+                return;
             }
         }
     }
@@ -306,7 +322,13 @@ fn enter_loop(
         loops[slot] = Some(start_loop(spec, vars)?);
     }
     let state = loops[slot].as_ref().expect("the loop was just started");
-    let runs = state.at <= state.last;
+    // A list loop reads the list's length on each pass, so the body may
+    // grow or shrink the list.
+    let last = match &state.list {
+        Some(name) => state.last.min(list_last(vars, name)),
+        None => state.last,
+    };
+    let runs = state.at <= last;
     if !runs {
         loops[slot] = None;
     }
@@ -335,12 +357,16 @@ fn arg_number(arg: &Arg, what: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("{what} must be a number, not '{}'", arg.text))
 }
 
+/// The last place of a list; below zero when the list is empty or gone.
+fn list_last(vars: &Vars, name: &str) -> i64 {
+    vars.list(name).map_or(0, Vec::len) as i64 - 1
+}
+
 fn start_loop(spec: &ForSpec, vars: &Vars) -> Result<LoopState, String> {
-    let list_last = |list: &Arg| -> Result<i64, String> {
-        let items = vars
-            .list(&list.text)
-            .ok_or_else(|| format!("there is no list '{}'", list.text))?;
-        Ok(items.len() as i64 - 1)
+    let list_name = |list: &Arg| -> Result<String, String> {
+        vars.list(&list.text)
+            .map(|_| list.text.to_ascii_lowercase())
+            .ok_or_else(|| format!("there is no list '{}'", list.text))
     };
     Ok(match spec {
         ForSpec::Count(count) => LoopState {
@@ -355,48 +381,66 @@ fn start_loop(spec: &ForSpec, vars: &Vars) -> Result<LoopState, String> {
         },
         ForSpec::List { start, list } => LoopState {
             at: arg_number(start, "a loop start")?,
-            last: list_last(list)?,
-            list: Some(list.text.to_ascii_lowercase()),
+            last: LIST_TO_ITS_END,
+            list: Some(list_name(list)?),
         },
         ForSpec::ListRange { start, end, list } => LoopState {
             at: arg_number(start, "a loop start")?,
-            last: arg_number(end, "a loop end")?.min(list_last(list)?),
-            list: Some(list.text.to_ascii_lowercase()),
+            last: arg_number(end, "a loop end")?,
+            list: Some(list_name(list)?),
         },
     })
 }
 
 /// Puts list items in for `name[]` (the item a list loop is on) and
 /// `name[3]` (the item at a place).
-fn expand_list_items(call: &Call, loops: &[Option<LoopState>], vars: &Vars) -> Call {
+fn expand_list_items(
+    call: &Call,
+    loops: &[Option<LoopState>],
+    vars: &Vars,
+) -> Result<Call, String> {
     let mut call = call.clone();
     for arg in &mut call.args {
         if let Some(item) = list_item(&arg.text, loops, vars) {
-            *arg = Arg::quoted(item);
+            *arg = Arg::quoted(item?);
         }
     }
-    call
+    Ok(call)
 }
 
-fn list_item(text: &str, loops: &[Option<LoopState>], vars: &Vars) -> Option<String> {
-    let open = text.find('[')?;
-    let inner = text[open..].strip_prefix('[')?.strip_suffix(']')?;
+/// The item `text` names, when it is `name[]` or `name[3]` of a list that
+/// exists. An error when that list has no such item, or no loop walks it.
+fn list_item(
+    text: &str,
+    loops: &[Option<LoopState>],
+    vars: &Vars,
+) -> Option<Result<String, String>> {
+    let open = text.find(LIST_OPEN)?;
+    let inner = text[open..]
+        .strip_prefix(LIST_OPEN)?
+        .strip_suffix(LIST_CLOSE)?;
     let name = text[..open].to_ascii_lowercase();
     let items = vars.list(&name)?;
-    let place = if format!("[{inner}]") == LIST_CURRENT {
-        loops
+    let place = if inner.is_empty() {
+        let walking = loops
             .iter()
             .rev()
             .flatten()
-            .find(|l| l.list.as_deref() == Some(name.as_str()))?
-            .at
+            .find(|l| l.list.as_deref() == Some(name.as_str()));
+        match walking {
+            Some(state) => state.at,
+            None => return Some(Err(format!("no loop walks the list '{name}'"))),
+        }
     } else {
         inner.parse::<i64>().ok()?
     };
-    usize::try_from(place)
-        .ok()
-        .and_then(|i| items.get(i))
-        .cloned()
+    Some(
+        usize::try_from(place)
+            .ok()
+            .and_then(|i| items.get(i))
+            .cloned()
+            .ok_or_else(|| format!("the list '{name}' has no item {place}")),
+    )
 }
 
 fn eval(
@@ -424,27 +468,33 @@ fn test(
     let left = read(&t.left, host, ctx, loops)?;
     let holds = match &t.compare {
         None => left.truthy(),
-        Some((compare, operand)) => {
-            let right = match operand {
-                Operand::Value(arg) => match arg.number() {
-                    Some(n) if !arg.quoted => Value::Number(n as f64),
-                    _ => Value::Text(arg.text.clone()),
-                },
-                Operand::Call(call) => read(call, host, ctx, loops)?,
-            };
-            left.compare(*compare, &right)
-        }
+        Some((compare, right)) => left.compare(*compare, &read(right, host, ctx, loops)?),
     };
     Ok(holds != t.not)
 }
 
 fn read(
-    call: &Call,
+    operand: &Operand,
     host: &mut dyn Host,
     ctx: &mut Ctx,
     loops: &[Option<LoopState>],
 ) -> Result<Value, String> {
-    let call = expand_list_items(call, loops, ctx.vars);
+    let call = match operand {
+        Operand::Value(arg) => {
+            return Ok(match arg.number() {
+                Some(n) if !arg.quoted => Value::Number(n as f64),
+                _ => Value::Text(arg.text.clone()),
+            })
+        }
+        Operand::Call(call) => call,
+    };
+    // A list item on its own, such as `fruit[0]`, is the item's text.
+    if call.args.is_empty() {
+        if let Some(item) = list_item(&call.name, loops, ctx.vars) {
+            return item.map(Value::Text);
+        }
+    }
+    let call = expand_list_items(call, loops, ctx.vars)?;
     match builtin_value(&call, ctx) {
         Some(value) => value,
         None => host.value(&call, ctx),
@@ -693,6 +743,16 @@ mod tests {
     }
 
     #[test]
+    fn a_script_whose_last_line_is_the_last_step_of_a_tick_is_done() {
+        let mut host = Fake::default();
+        let mut vars = Vars::default();
+        let mut s = script(&vec!["say 'x'"; MAX_STEPS_PER_TICK].join("\n"));
+        s.tick(&mut host, &mut vars, Instant::now());
+        assert_eq!(host.ran.len(), MAX_STEPS_PER_TICK);
+        assert_eq!(*s.status(), Status::Done);
+    }
+
+    #[test]
     fn a_pause_waits_its_time_then_goes_on() {
         let mut host = Fake::default();
         let mut vars = Vars::default();
@@ -799,6 +859,52 @@ mod tests {
         );
         run(&mut s, &mut host, &mut vars, 3);
         assert_eq!(host.ran, vec!["say apple", "say pear", "say pear"]);
+    }
+
+    #[test]
+    fn a_list_loop_reads_the_list_length_on_each_pass() {
+        let mut host = Fake::default();
+        let mut vars = Vars::default();
+        vars.list_mut("l").push("a".into());
+        let mut s = script(
+            "for 0 to 'l'\n  say l[]\n  if list 'l' < 3\n    pushlist 'l' 'b'\n  endif\nendfor\nfor 0 to 2 in 'l'\n  say l[]\n  poplist 'l' 'back'\nendfor",
+        );
+        run(&mut s, &mut host, &mut vars, 2);
+        assert_eq!(host.ran, vec!["say a", "say b", "say b", "say a", "say b"]);
+        assert_eq!(*s.status(), Status::Done);
+    }
+
+    #[test]
+    fn a_list_item_that_is_not_there_fails_its_line() {
+        let fails = |source: &str| {
+            let mut host = Fake::default();
+            let mut vars = Vars::default();
+            vars.list_mut("l").push("a".into());
+            let mut s = script(source);
+            run(&mut s, &mut host, &mut vars, 2);
+            assert!(host.ran.is_empty(), "{source} ran {:?}", host.ran);
+            assert!(
+                matches!(s.status(), Status::Failed { line: 1, .. }),
+                "{source}"
+            );
+        };
+        fails("say l[1]");
+        fails("say l[-1]");
+        fails("say l[]");
+        fails("if l[1] == 'a'\n  say 'x'\nendif");
+    }
+
+    #[test]
+    fn a_condition_reads_list_items_on_both_sides_of_a_compare() {
+        let mut host = Fake::default();
+        let mut vars = Vars::default();
+        vars.list_mut("fruit")
+            .extend(["apple".into(), "pear".into()]);
+        let mut s = script(
+            "if fruit[0] and fruit[0] == 'apple' and 'x' != fruit[1]\n  say 'first'\nendif\nfor 0 to 'fruit'\n  if fruit[] == fruit[1]\n    say fruit[]\n  endif\nendfor",
+        );
+        run(&mut s, &mut host, &mut vars, 2);
+        assert_eq!(host.ran, vec!["say first", "say pear"]);
     }
 
     #[test]
