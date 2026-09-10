@@ -5881,13 +5881,15 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         let mut world = inner.world.write();
                         world.apply(&msg);
                     }
-                    recorder::shard_opened(inner, &msg);
                     if let Inbound::Target(cursor) = &msg {
                         expire_target_intent(inner, Instant::now());
                         if let Some(intent) = inner.target_intent.take() {
                             answer_cursor(inner, cursor.id, intent.aim);
                         }
                     }
+                    // After the queued answer: a cursor it answered needs
+                    // no wait in a recording.
+                    recorder::shard_opened(inner, &msg);
                     if let Inbound::LiftRejected { .. } = &msg {
                         inner.world.write().holding = None;
                     }

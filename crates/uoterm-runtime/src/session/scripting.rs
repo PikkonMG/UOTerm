@@ -966,6 +966,29 @@ mod tests {
     }
 
     #[test]
+    fn a_context_menu_number_picks_an_entry_by_place_or_by_client_text() {
+        const CHEST: Serial = Serial(0x4000_0D01);
+        const OPEN_BANKBOX: u32 = 3_000_489;
+        const THIRD_ENTRY: u16 = 3;
+        for (line, choice) in [
+            (
+                "contextmenu 0x40000D01 3000489",
+                MenuChoice::Cliloc(OPEN_BANKBOX),
+            ),
+            ("contextmenu 0x40000D01 3", MenuChoice::Index(THIRD_ENTRY)),
+            (
+                "contextmenu 0x40000D01 'Open'",
+                MenuChoice::Text("Open".into()),
+            ),
+        ] {
+            let mut inner = player();
+            start(&mut inner, line);
+            tick(&mut inner, 1);
+            assert_eq!(inner.pending_context_menu, Some((CHEST, choice)), "{line}");
+        }
+    }
+
+    #[test]
     fn a_script_that_does_not_parse_does_not_start() {
         let mut inner = player();
         let result = run_script(&mut inner, &json!({ "text": "if dead" }));

@@ -13,5 +13,5 @@ mod vars;
 pub use error::ParseError;
 pub use program::{parse_number, Arg, Call, Condition, ForSpec, Join, Op, Operand, Program, Test};
 pub use run::{Ctx, Host, Script, Status, Step, Value, MAX_STEPS_PER_TICK};
-pub use token::Compare;
+pub use token::{Compare, COMMENT};
 pub use vars::Vars;

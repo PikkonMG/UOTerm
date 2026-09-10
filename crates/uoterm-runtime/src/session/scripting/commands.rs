@@ -32,6 +32,9 @@ const SPELL_ARCH_CURE: u16 = 25;
 const SPELL_GREATER_HEAL: u16 = 29;
 const SPELL_CLEANSE_BY_FIRE: u16 = 201;
 const SPELL_CLOSE_WOUNDS: u16 = 202;
+/// The lowest client text number. A context menu entry number from here up
+/// names the entry's text; below it, the entry's place in the menu.
+const FIRST_CLILOC_NUMBER: i64 = 500_000;
 /// A skill lock by its word.
 const LOCKS: [(&str, u8); 3] = [
     ("up", SKILL_LOCK_UP),
@@ -1613,13 +1616,22 @@ fn cancel_prompt(game: &mut Game) -> std::result::Result<Step, String> {
     Ok(Step::Acted)
 }
 
-/// The menu choice a script names: a place in the menu, or words.
+/// The menu choice a script names: a client text number, a place in the
+/// menu, or words. A number from [`FIRST_CLILOC_NUMBER`] up is a client text
+/// number; a smaller one is a place.
 fn menu_choice(arg: &Arg) -> MenuChoice {
-    match arg.number().and_then(|n| u16::try_from(n).ok()) {
-        Some(index) if !arg.quoted || arg.text.chars().all(|c| c.is_ascii_digit()) => {
-            MenuChoice::Index(index)
-        }
-        _ => MenuChoice::Text(arg.text.clone()),
+    let number = arg
+        .number()
+        .filter(|_| !arg.quoted || arg.text.chars().all(|c| c.is_ascii_digit()));
+    if let Some(cliloc) = number
+        .filter(|&n| n >= FIRST_CLILOC_NUMBER)
+        .and_then(|n| u32::try_from(n).ok())
+    {
+        return MenuChoice::Cliloc(cliloc);
+    }
+    match number.and_then(|n| u16::try_from(n).ok()) {
+        Some(index) => MenuChoice::Index(index),
+        None => MenuChoice::Text(arg.text.clone()),
     }
 }
 

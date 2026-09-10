@@ -206,7 +206,7 @@ endif
 | `waitforgump 0x1EC8C837 5000` | Waits for a gump. `'any'` for any gump. |
 | `replygump 0x1EC8C837 1 [switches...]` | Presses a gump button. |
 | `closegump 'container' 'found'` | Forgets an open container. |
-| `contextmenu 'bank' 'Open Bankbox'` | Picks a context menu entry by its words, or by its number. |
+| `contextmenu 'bank' 'Open Bankbox'` | Picks a context menu entry by its words, or by its number. A number of 500000 or more is the entry's client text number, such as `3000489`; a smaller number is its place in the menu. |
 | `waitforcontext 'vendor' 'Buy' 3000` | Asks for the menu and waits until the entry is picked. |
 | `autocolorpick 35` | The next dye tub gets colour 35. |
 
