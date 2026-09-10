@@ -28,6 +28,14 @@ pub enum EventKind {
     SpokenTo,
     /// The character stopped playing along with a player, and why.
     PlayAlongEnded,
+    /// The character's health fell under the low mark.
+    LowHealth,
+    /// A mobile the character may fight came near.
+    EnemyNear,
+    /// The shard waits for a line of text: a prompt or a text dialog.
+    PromptOpened,
+    /// Another player opened a trade window with the character.
+    TradeOpened,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

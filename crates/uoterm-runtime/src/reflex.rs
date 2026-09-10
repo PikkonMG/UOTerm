@@ -285,7 +285,7 @@ pub fn heal_potion_lock_ms(name: &str) -> u64 {
 /// This is why an earlier build attacked a blessed target eight times and read
 /// the failure as a broken packet. It tested `notoriety >= NOTO_GREY`, and
 /// [`NOTO_INVULNERABLE`] sorts above every attackable rank.
-fn can_be_harmed(notoriety: u8, flags: u8) -> bool {
+pub(crate) fn can_be_harmed(notoriety: u8, flags: u8) -> bool {
     NOTO_ATTACKABLE.contains(&notoriety) && flags & FLAG_BLESSED == 0
 }
 

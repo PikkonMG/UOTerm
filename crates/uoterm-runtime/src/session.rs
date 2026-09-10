@@ -43,6 +43,7 @@ use uoterm_protocol::{parse_with_version, GroundItem, Inbound};
 use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World};
 
 mod agents;
+mod awareness;
 mod hotkeys;
 mod recorder;
 mod scripting;
@@ -372,6 +373,9 @@ struct Inner {
     last_weapon: Option<Serial>,
     /// Callers of `wait_journal` still waiting for a line.
     journal_waiters: Vec<JournalWaiter>,
+    /// Callers of `next_event` waiting for something important.
+    event_waiters: Vec<awareness::EventWaiter>,
+    aware: awareness::Awareness,
     loot: Option<LootJob>,
     deposit: Option<DepositJob>,
     sent_drop: Option<Serial>,
@@ -793,6 +797,8 @@ async fn run_session(
         last_object: None,
         last_weapon: None,
         journal_waiters: Vec::new(),
+        event_waiters: Vec::new(),
+        aware: awareness::Awareness::default(),
         loot: None,
         deposit: None,
         sent_drop: None,
@@ -841,6 +847,8 @@ async fn run_session(
                             wait_for_target(&mut inner, &call.args, reply, Instant::now());
                         } else if call.name == TOOL_WAIT_JOURNAL {
                             wait_for_journal(&mut inner, &call.args, reply, Instant::now());
+                        } else if call.name == TOOL_NEXT_EVENT {
+                            awareness::wait_for_event(&mut inner, &call.args, reply, Instant::now());
                         } else {
                             let _ = reply.send(answer_agent(&mut inner, call));
                         }
@@ -865,6 +873,8 @@ async fn run_session(
                 agents::pump_agents(&mut inner, Instant::now());
                 scripting::pump_script(&mut inner, Instant::now());
                 answer_journal_waiters(&mut inner, Instant::now());
+                awareness::pump_awareness(&mut inner);
+                awareness::answer_event_waiters(&mut inner, Instant::now());
             }
         }
         flush_out(&mut inner, &out_tx);
@@ -1596,6 +1606,8 @@ mod relay_tests {
             last_object: None,
             last_weapon: None,
             journal_waiters: Vec::new(),
+            event_waiters: Vec::new(),
+            aware: awareness::Awareness::default(),
             loot: None,
             deposit: None,
             sent_drop: None,

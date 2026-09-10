@@ -8,7 +8,7 @@ use uoterm_protocol::{
     TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN,
     FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED,
     LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD, SPEECH_REGULAR,
-    SPEECH_WHISPER, SPEECH_YELL,
+    SPEECH_WHISPER, SPEECH_YELL, TRADE_DISPLAY,
 };
 
 use crate::addressed::{
@@ -824,8 +824,25 @@ impl World {
                 }
             },
             Inbound::HealthBarUpdate { serial, bars } => self.apply_bars(*serial, bars),
-            Inbound::Prompt(prompt) => self.prompt = Some(*prompt),
-            Inbound::TextEntry(dialog) => self.text_entry = Some(dialog.clone()),
+            Inbound::Prompt(prompt) => {
+                self.prompt = Some(*prompt);
+                self.push_event(Event::new(EventKind::PromptOpened, None, "prompt"));
+            }
+            Inbound::TextEntry(dialog) => {
+                self.text_entry = Some(dialog.clone());
+                self.push_event(Event::new(
+                    EventKind::PromptOpened,
+                    None,
+                    dialog.description.clone(),
+                ));
+            }
+            Inbound::Trade(trade) if trade.kind == TRADE_DISPLAY => {
+                self.push_event(Event::new(
+                    EventKind::TradeOpened,
+                    Some(trade.serial),
+                    trade.name.clone(),
+                ));
+            }
             Inbound::Party(event) => self.apply_party(event),
             Inbound::Unknown { id, .. } => {
                 tracing::debug!(packet = format!("{id:#04x}"), "unhandled inbound packet");

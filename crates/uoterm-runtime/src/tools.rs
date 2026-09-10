@@ -30,6 +30,7 @@ pub const TOOL_CAST: &str = "cast";
 pub const TOOL_USE_SKILL: &str = "use_skill";
 pub const TOOL_WAIT_TARGET: &str = "wait_target";
 pub const TOOL_WAIT_JOURNAL: &str = "wait_journal";
+pub const TOOL_NEXT_EVENT: &str = "next_event";
 pub const TOOL_TARGET: &str = "target";
 pub const TOOL_OPEN_CONTAINER: &str = "open_container";
 pub const TOOL_LOOT: &str = "loot";
@@ -265,6 +266,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_UNEQUIP, "Lift a worn item into the backpack; a weapon is remembered.", "layer occupied"),
     (TOOL_CAST, "Cast spell by number (required).", "enough mana"),
     (TOOL_USE_SKILL, "Use skill by number (required).", "in world"),
+    (
+        TOOL_NEXT_EVENT,
+        "Wait for the next important event: named in chat, hurt or low health, an enemy near, a target cursor, gump, prompt or trade, an item in the pack, a party invite, death. Returns the events and the state (health, enemies near, unanswered lines, pack). Call it in a loop; events wait for you. timeout_ms (default 5000, max 7000).",
+        "session exists",
+    ),
     (
         TOOL_WAIT_JOURNAL,
         "Wait for a new journal line holding q; timeout_ms (default 5000, max 7000).",
