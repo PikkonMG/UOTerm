@@ -4973,7 +4973,7 @@ mod relay_tests {
         queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("the first bank");
         queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("the second bank");
     }
-    const VENDOR_NAME: &str = "Pamela";
+    const VENDOR_NAME: &str = "Shopkeeper";
     const GRAPHIC_FOR_SALE: u64 = 0x1408;
     /// More commands in a row than the persona may chat in an hour.
     const COMMANDS_IN_A_ROW: usize = 20;
