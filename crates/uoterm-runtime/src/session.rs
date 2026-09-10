@@ -41,7 +41,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, interval_at, MissedTickBehavior};
 use uoterm_nav::{
     pathfind, pathfind_flat, BlockedMove, ClilocData, MapError, MockMap, MulMap, MultiData,
-    Obstacles, TileQuery,
+    Obstacles, SpeechData, TileQuery,
 };
 use uoterm_protocol::crypto::{for_mode, IdentityCipher, StreamCipher};
 use uoterm_protocol::encode;
@@ -287,6 +287,9 @@ struct Inner {
     follow: Option<Serial>,
     follow_state: FollowState,
     cliloc: Option<Arc<ClilocData>>,
+    /// The client's own table of command phrases and the keyword number each
+    /// stands for. A shard's NPCs obey those numbers, not the words.
+    speech_data: Option<Arc<SpeechData>>,
     next_action_at: Instant,
     /// When the next double-click may go out. It is a limit of its own on top
     /// of the action budget: see [`DOUBLE_CLICK_INTERVAL`].
@@ -576,6 +579,19 @@ async fn run_session(
                 None
             }
         });
+    let speech_data = opts
+        .uopath
+        .as_deref()
+        .and_then(|path| match SpeechData::open(path) {
+            Ok(table) => {
+                tracing::info!(phrases = table.phrase_count(), "speech keywords ready");
+                Some(Arc::new(table))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read the client speech keywords");
+                None
+            }
+        });
     let mut inner = Inner {
         id,
         world,
@@ -600,6 +616,7 @@ async fn run_session(
         follow: None,
         follow_state: FollowState::default(),
         cliloc,
+        speech_data,
         next_action_at: Instant::now() - ACTION_BUDGET,
         next_double_click_at: Instant::now() - DOUBLE_CLICK_INTERVAL,
         next_bandage_at: Instant::now() - ACTION_BUDGET,
@@ -1376,6 +1393,7 @@ mod relay_tests {
             follow: None,
             follow_state: FollowState::default(),
             cliloc: None,
+            speech_data: None,
             next_action_at: now - ACTION_BUDGET,
             next_double_click_at: now - DOUBLE_CLICK_INTERVAL,
             next_bandage_at: now - ACTION_BUDGET,
@@ -4891,6 +4909,113 @@ mod relay_tests {
             "the menu it waited for is answered"
         );
     }
+
+    /// Keyword numbers a speech table gives the two command phrases below.
+    const KEYWORD_BANK: u16 = 0x0002;
+    const KEYWORD_BALANCE: u16 = 0x0001;
+    const PHRASE_BANK: &str = "bank";
+    const PHRASE_BALANCE: &str = "*balance*";
+    const SAID_BALANCE: &str = "bank balance";
+    const SAID_CHATTER: &str = "fine weather for walking";
+    const VENDOR_NAME: &str = "Pamela";
+    const GRAPHIC_FOR_SALE: u64 = 0x1408;
+    /// More commands in a row than the persona may chat in an hour.
+    const COMMANDS_IN_A_ROW: usize = 20;
+
+    /// Gives each written test table its own file, because tests run at once.
+    static SPEECH_FILES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// A speech table written the way the client's file is written: for each
+    /// phrase a big-endian keyword number and length, then the words.
+    fn speech_table(phrases: &[(u16, &str)]) -> Arc<SpeechData> {
+        let mut bytes = Vec::new();
+        for (keyword, words) in phrases {
+            bytes.extend_from_slice(&keyword.to_be_bytes());
+            bytes.extend_from_slice(&(words.len() as u16).to_be_bytes());
+            bytes.extend_from_slice(words.as_bytes());
+        }
+        let n = SPEECH_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("uoterm-speech-{}-{n}.mul", std::process::id()));
+        std::fs::write(&path, bytes).expect("the test speech table is written");
+        let table = SpeechData::from_file(&path).expect("the test speech table reads back");
+        let _ = std::fs::remove_file(&path);
+        Arc::new(table)
+    }
+
+    fn with_speech_table(inner: &mut Inner) {
+        inner.speech_data = Some(speech_table(&[
+            (KEYWORD_BANK, PHRASE_BANK),
+            (KEYWORD_BALANCE, PHRASE_BALANCE),
+        ]));
+        inner.outbound.clear();
+    }
+
+    /// A shard's banker answers the keyword number, not the words. Words sent
+    /// with no number beside them are chatter to the banker, which is why a
+    /// headless character once said "balance" and heard nothing back.
+    #[test]
+    fn a_command_phrase_goes_out_with_the_keyword_the_shard_obeys() {
+        let mut inner = test_session();
+        with_speech_table(&mut inner);
+        queue_speech(&mut inner, SAID_BALANCE, SPEECH_REGULAR).expect("a command is sent");
+        let expected = encode::keyword_speech(
+            SPEECH_REGULAR,
+            DEFAULT_SPEECH_HUE,
+            &[KEYWORD_BALANCE],
+            SAID_BALANCE,
+        );
+        assert_eq!(
+            inner.outbound.back(),
+            Some(&expected),
+            "the words go out exactly as said, with their keyword number"
+        );
+    }
+
+    /// A command is not chatter, so the persona's chat budget never holds it
+    /// back. A character who has said "bank" must not wait minutes to say the
+    /// next command.
+    #[test]
+    fn commands_are_never_charged_to_the_chat_budget() {
+        let mut inner = test_session();
+        with_speech_table(&mut inner);
+        for _ in 0..COMMANDS_IN_A_ROW {
+            queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("every command goes out");
+        }
+        assert_eq!(inner.outbound.len(), COMMANDS_IN_A_ROW);
+    }
+
+    /// Chatter keeps its human pace: the budget still spaces out plain talk.
+    #[test]
+    fn plain_chatter_still_waits_on_the_chat_budget() {
+        let mut inner = test_session();
+        with_speech_table(&mut inner);
+        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR).expect("the first line is allowed");
+        assert_eq!(
+            queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR),
+            Err(SPEECH_RATE_LIMITED),
+            "a second line straight after the first waits"
+        );
+    }
+
+    /// Measured live: a character said one line, and the sell command after it
+    /// was refused as chatter over budget. Selling is a command.
+    #[test]
+    fn a_vendor_sell_goes_out_after_the_character_has_chatted() {
+        let mut inner = test_session();
+        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR).expect("the first line is allowed");
+        let result = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_VENDOR_SELL.into(),
+                args: json!({"vendor_name": VENDOR_NAME, "graphic": GRAPHIC_FOR_SALE}),
+            },
+        );
+        assert!(
+            result.ok,
+            "the sell is not held back by chatter: {result:?}"
+        );
+    }
 }
 
 fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
@@ -6740,7 +6865,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             };
             inner.pending_vendor_sell_graphic = Some(graphic);
             let speech = format!("{vendor_name} sell");
-            match queue_keyword_speech(inner, &speech, 0x0177) {
+            match queue_command_speech(inner, &speech, &[0x0177]) {
                 Ok(()) => ToolResult::action(TOOL_VENDOR_SELL),
                 Err(error) => {
                     inner.pending_vendor_sell_graphic = None;
@@ -6895,6 +7020,16 @@ fn speech_allowed(
 }
 
 fn queue_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
+    if kind == SPEECH_REGULAR {
+        let keywords = inner
+            .speech_data
+            .as_ref()
+            .map(|table| table.keywords(inner.version, text))
+            .unwrap_or_default();
+        if !keywords.is_empty() {
+            return queue_command_speech(inner, text, &keywords);
+        }
+    }
     let t = speech_allowed(&mut inner.speech, &inner.persona, text, kind)?;
     let mut rng = rand::thread_rng();
     let t = inner.persona.maybe_typo(&t, &mut rng);
@@ -6908,19 +7043,22 @@ fn queue_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<
     Ok(())
 }
 
-/// Sends a client-recognized command phrase with the numbered speech keyword
-/// that drives shard-side NPC handlers. Command text is never typo-mutated
-/// because its keyword and visible words must agree.
-fn queue_keyword_speech(
+/// Sends a phrase the shard reads as a command, with the keyword numbers the
+/// client's speech table gives it. The shard's NPC handlers read those numbers
+/// and not the words, so a command goes out exactly as written. It is never
+/// typo-mutated, because its keywords and visible words must agree, and never
+/// charged to the persona's chat budget, because a command is not chatter: a
+/// character who says "bank" must not then wait minutes to say "vendor sell".
+fn queue_command_speech(
     inner: &mut Inner,
     text: &str,
-    keyword: u16,
+    keywords: &[u16],
 ) -> std::result::Result<(), &'static str> {
-    let text = speech_allowed(&mut inner.speech, &inner.persona, text, SPEECH_REGULAR)?;
+    let text = inner.persona.filter_speech(text).ok_or(SPEECH_REJECTED)?;
     inner.outbound.push_back(encode::keyword_speech(
         SPEECH_REGULAR,
         DEFAULT_SPEECH_HUE,
-        &[keyword],
+        keywords,
         &text,
     ));
     Ok(())
