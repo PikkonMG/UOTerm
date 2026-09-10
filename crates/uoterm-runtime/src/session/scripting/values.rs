@@ -160,9 +160,8 @@ pub(super) fn read(game: &mut Game, call: &Call, ctx: &mut Ctx) -> Read {
         }
         "infriendlist" => {
             let serial = game.serial(need(call, 0, "a mobile")?, ctx)?;
-            let world = game.world().clone();
             Ok(ScriptValue::Bool(
-                game.inner.agents.is_friend(&world, serial),
+                game.inner.agents.is_friend(&game.world(), serial),
             ))
         }
         "ingump" => {

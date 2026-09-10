@@ -6871,8 +6871,8 @@ fn send_attack(inner: &mut Inner, serial: Serial) {
     if inner.attack_sent == Some(serial) {
         return;
     }
-    let world = inner.world.read().clone();
-    if inner.agents.config.friends.prevent_attack && inner.agents.is_friend(&world, serial) {
+    let friend = inner.agents.is_friend(&inner.world.read(), serial);
+    if inner.agents.config.friends.prevent_attack && friend {
         tracing::info!(%serial, "the friends list keeps the character from attacking a friend");
         return;
     }
@@ -7140,8 +7140,10 @@ fn pump_loot(inner: &mut Inner) {
     let Some(job) = inner.loot.clone() else {
         return;
     };
-    let world = inner.world.read().clone();
-    match job.step(&world, action_ready(inner)) {
+    // Read first, then match: a guard in the match head would live through
+    // the arms, and they take the write lock.
+    let step = job.step(&inner.world.read(), action_ready(inner));
+    match step {
         LootStep::Walk { x, y, z } => {
             let _ = queue_move(inner, Point3::new(x, y, z));
         }
@@ -7177,8 +7179,10 @@ fn pump_deposit(inner: &mut Inner) {
     let Some(job) = inner.deposit.clone() else {
         return;
     };
-    let world = inner.world.read().clone();
-    match job.step(&world, action_ready(inner)) {
+    // Read first, then match: a guard in the match head would live through
+    // the arms, and they take the write lock.
+    let step = job.step(&inner.world.read(), action_ready(inner));
+    match step {
         DepositStep::Open(serial) => {
             send_double_click(inner, serial);
         }
@@ -7205,24 +7209,24 @@ fn pump_deposit(inner: &mut Inner) {
     }
 }
 
-fn send_bandage_self(inner: &mut Inner, world: &uoterm_world::World) {
+fn send_bandage_self(inner: &mut Inner) {
     if Instant::now() < inner.next_bandage_at || !action_ready(inner) {
         return;
     }
-    let Some(item) = world.find_item_graphic(GRAPHIC_BANDAGE) else {
-        return;
+    let (item, me, dex) = {
+        let world = inner.world.read();
+        let Some(item) = world.find_item_graphic(GRAPHIC_BANDAGE) else {
+            return;
+        };
+        (item.serial, world.self_state.serial, world.self_state.dex)
     };
-    inner
-        .outbound
-        .push_back(encode::bandage_target(item.serial, world.self_state.serial));
+    inner.outbound.push_back(encode::bandage_target(item, me));
     mark_action(inner);
-    inner.next_bandage_at =
-        Instant::now() + Duration::from_millis(bandage_self_ms(world.self_state.dex));
+    inner.next_bandage_at = Instant::now() + Duration::from_millis(bandage_self_ms(dex));
 }
 
 fn reflex_tick(inner: &mut Inner) {
-    let world = inner.world.read().clone();
-    if !world.logged_in {
+    if !inner.world.read().logged_in {
         return;
     }
     if inner.loot.is_some() {
@@ -7233,13 +7237,18 @@ fn reflex_tick(inner: &mut Inner) {
         pump_deposit(inner);
         return;
     }
-    if let Some(serial) = inner.follow {
-        if let Some(mob) = world.mobiles.get(&serial) {
-            follow_tick(inner, mob.location, mob.running);
-            return;
-        }
+    let leader = inner.follow.and_then(|serial| {
+        let world = inner.world.read();
+        world.mobiles.get(&serial).map(|m| (m.location, m.running))
+    });
+    if let Some((at, running)) = leader {
+        follow_tick(inner, at, running);
+        return;
     }
-    match reflex::tick(&world, &inner.persona, &inner.goal) {
+    // Each world read below is a short guard, never a copy of the world:
+    // this runs every tick.
+    let action = reflex::tick(&inner.world.read(), &inner.persona, &inner.goal);
+    match action {
         ReflexAction::None => {
             if inner.world.read().fighting() {
                 inner.movement.hold();
@@ -7260,35 +7269,47 @@ fn reflex_tick(inner: &mut Inner) {
         }
         ReflexAction::WarMode(on) => send_war_mode(inner, on),
         ReflexAction::Use(serial) => {
-            if let Some(item) = world.items.get(&serial) {
-                if item.graphic == GRAPHIC_POTION_HEAL && Instant::now() < inner.next_heal_potion_at
-                {
-                    return;
-                }
+            let used = inner
+                .world
+                .read()
+                .items
+                .get(&serial)
+                .map(|i| (i.graphic, i.name.clone()));
+            let graphic = used.as_ref().map(|(g, _)| *g);
+            if graphic == Some(GRAPHIC_POTION_HEAL) && Instant::now() < inner.next_heal_potion_at {
+                return;
             }
             if !send_double_click(inner, serial) {
                 return;
             }
-            if let Some(item) = world.items.get(&serial) {
-                if item.graphic == GRAPHIC_POTION_HEAL {
+            match used {
+                Some((GRAPHIC_POTION_HEAL, name)) => {
                     inner.next_heal_potion_at =
-                        Instant::now() + Duration::from_millis(heal_potion_lock_ms(&item.name));
+                        Instant::now() + Duration::from_millis(heal_potion_lock_ms(&name));
                 }
-                if item.graphic == GRAPHIC_HATCHET {
-                    if let Some(tree) = world.find_items(None, None, None).into_iter().find(|i| {
-                        i.parent.is_none()
-                            && (TREE_GRAPHIC_MIN..=TREE_GRAPHIC_MAX).contains(&i.graphic)
-                    }) {
-                        queue_target(inner, tree.serial, Instant::now());
+                Some((GRAPHIC_HATCHET, _)) => {
+                    let tree = inner
+                        .world
+                        .read()
+                        .find_items(None, None, None)
+                        .into_iter()
+                        .find(|i| {
+                            i.parent.is_none()
+                                && (TREE_GRAPHIC_MIN..=TREE_GRAPHIC_MAX).contains(&i.graphic)
+                        })
+                        .map(|i| i.serial);
+                    if let Some(tree) = tree {
+                        queue_target(inner, tree, Instant::now());
                     }
                 }
+                _ => {}
             }
         }
         ReflexAction::UseSkill(id) => {
             inner.outbound.push_back(encode::use_skill(id));
         }
         ReflexAction::Target(serial) => store_or_answer_target(inner, serial),
-        ReflexAction::BandageSelf => send_bandage_self(inner, &world),
+        ReflexAction::BandageSelf => send_bandage_self(inner),
     }
 }
 

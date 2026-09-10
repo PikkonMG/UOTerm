@@ -15,6 +15,8 @@ pub struct Arg {
 
 const HEX_PREFIX: &str = "0x";
 const HEX_RADIX: u32 = 16;
+const DECIMAL_RADIX: u32 = 10;
+const MINUS_SIGN: char = '-';
 
 impl Arg {
     pub fn word(text: impl Into<String>) -> Self {
@@ -46,15 +48,21 @@ impl Arg {
 /// A number as a script writes it: decimal, negative, or `0x` hex.
 pub fn parse_number(text: &str) -> Option<i64> {
     let t = text.trim();
-    let (negative, digits) = match t.strip_prefix('-') {
+    let (negative, digits) = match t.strip_prefix(MINUS_SIGN) {
         Some(rest) => (true, rest),
         None => (false, t),
     };
     let lower = digits.to_ascii_lowercase();
-    let value = match lower.strip_prefix(HEX_PREFIX) {
-        Some(hex) => i64::from_str_radix(hex, HEX_RADIX).ok()?,
-        None => lower.parse::<i64>().ok()?,
+    let (radix, body) = match lower.strip_prefix(HEX_PREFIX) {
+        Some(hex) => (HEX_RADIX, hex),
+        None => (DECIMAL_RADIX, lower.as_str()),
     };
+    // One minus sign only: the value below is never negative, so turning it
+    // negative cannot overflow.
+    if body.starts_with(MINUS_SIGN) {
+        return None;
+    }
+    let value = i64::from_str_radix(body, radix).ok()?;
     Some(if negative { -value } else { value })
 }
 
@@ -633,6 +641,13 @@ mod tests {
         assert_eq!(parse_number("-1"), Some(-1));
         assert_eq!(parse_number("12"), Some(12));
         assert_eq!(parse_number("any"), None);
+    }
+
+    #[test]
+    fn a_second_minus_sign_is_not_a_number() {
+        assert_eq!(parse_number("--9223372036854775808"), None);
+        assert_eq!(parse_number("-0x-8000000000000000"), None);
+        assert_eq!(parse_number("--1"), None);
     }
 
     #[test]

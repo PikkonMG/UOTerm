@@ -183,52 +183,56 @@ pub(super) fn bandage(inner: &mut Inner, now: Instant) -> bool {
     if !b.enabled || now < inner.next_bandage_at || (b.skip_when_hidden && hidden(inner)) {
         return false;
     }
-    let world = inner.world.read().clone();
-    let hurt = |hits: u16, max: u16| {
-        max > 0 && u32::from(hits) * PERCENT < u32::from(max) * u32::from(b.hp_pct)
-    };
-    let me = world.self_state.serial;
-    let self_hurt = hurt(world.self_state.hits, world.self_state.hits_max);
-    let range = if b.range == 0 { HEAL_SIGHT } else { b.range };
-    let friend = || {
-        world
-            .mobiles
+    // A guard, not a copy of the world: it drops before anything is sent.
+    let (target, bandage, dex) = {
+        let world = inner.world.read();
+        let hurt = |hits: u16, max: u16| {
+            max > 0 && u32::from(hits) * PERCENT < u32::from(max) * u32::from(b.hp_pct)
+        };
+        let me = world.self_state.serial;
+        let self_hurt = hurt(world.self_state.hits, world.self_state.hits_max);
+        let range = if b.range == 0 { HEAL_SIGHT } else { b.range };
+        let friend = || {
+            world
+                .mobiles
+                .values()
+                .filter(|m| inner.agents.is_friend(&world, m.serial))
+                .filter(|m| world.self_state.location.chebyshev(m.location) <= range)
+                .filter_map(|m| Some((m.serial, m.hits?, m.hits_max?)))
+                .filter(|&(_, hits, max)| hurt(hits, max))
+                .min_by_key(|&(_, hits, max)| u32::from(hits) * PERCENT / u32::from(max.max(1)))
+                .map(|(serial, _, _)| serial)
+        };
+        let target = match b.whom {
+            HealWhom::SelfOnly => self_hurt.then_some(me),
+            HealWhom::Friend => friend(),
+            HealWhom::FriendOrSelf => friend().or(self_hurt.then_some(me)),
+            HealWhom::Target(serial) => world
+                .mobiles
+                .get(&serial)
+                .and_then(|m| Some((m.hits?, m.hits_max?)))
+                .filter(|&(hits, max)| hurt(hits, max))
+                .map(|_| serial),
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        if b.skip_poisoned && world.is_poisoned(target) {
+            return false;
+        }
+        let graphic = b.bandage_graphic.unwrap_or(GRAPHIC_BANDAGE);
+        let pack = backpack_serial(&world);
+        let Some(bandage) = world
+            .items
             .values()
-            .filter(|m| inner.agents.is_friend(&world, m.serial))
-            .filter(|m| world.self_state.location.chebyshev(m.location) <= range)
-            .filter_map(|m| Some((m.serial, m.hits?, m.hits_max?)))
-            .filter(|&(_, hits, max)| hurt(hits, max))
-            .min_by_key(|&(_, hits, max)| u32::from(hits) * PERCENT / u32::from(max.max(1)))
-            .map(|(serial, _, _)| serial)
-    };
-    let target = match b.whom {
-        HealWhom::SelfOnly => self_hurt.then_some(me),
-        HealWhom::Friend => friend(),
-        HealWhom::FriendOrSelf => friend().or(self_hurt.then_some(me)),
-        HealWhom::Target(serial) => world
-            .mobiles
-            .get(&serial)
-            .and_then(|m| Some((m.hits?, m.hits_max?)))
-            .filter(|&(hits, max)| hurt(hits, max))
-            .map(|_| serial),
-    };
-    let Some(target) = target else {
-        return false;
-    };
-    if b.skip_poisoned && world.is_poisoned(target) {
-        return false;
-    }
-    let graphic = b.bandage_graphic.unwrap_or(GRAPHIC_BANDAGE);
-    let pack = backpack_serial(&world);
-    let Some(bandage) = world
-        .items
-        .values()
-        .filter(|i| i.graphic == graphic && b.bandage_color.map_or(true, |c| i.hue == c))
-        .filter(|i| pack.is_some_and(|p| world.is_inside(i.serial, p)))
-        .map(|i| i.serial)
-        .min_by_key(|s| s.0)
-    else {
-        return false;
+            .filter(|i| i.graphic == graphic && b.bandage_color.map_or(true, |c| i.hue == c))
+            .filter(|i| pack.is_some_and(|p| world.is_inside(i.serial, p)))
+            .map(|i| i.serial)
+            .min_by_key(|s| s.0)
+        else {
+            return false;
+        };
+        (target, bandage, world.self_state.dex)
     };
     inner
         .outbound
@@ -236,7 +240,7 @@ pub(super) fn bandage(inner: &mut Inner, now: Instant) -> bool {
     mark_action(inner);
     let wait = b
         .delay_ms
-        .map_or_else(|| delay(bandage_self_ms(world.self_state.dex)), delay);
+        .map_or_else(|| delay(bandage_self_ms(dex)), delay);
     inner.next_bandage_at = now + wait;
     true
 }

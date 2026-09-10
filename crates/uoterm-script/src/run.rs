@@ -237,12 +237,18 @@ impl Script {
                     Ok(false) => Flow::Goto(exit),
                     Err(message) => Flow::Fail(line, message),
                 },
-                Op::ForNext { slot, start } => {
-                    if let Some(state) = self.loops[slot].as_mut() {
-                        state.at += 1;
-                    }
-                    Flow::Goto(start)
-                }
+                Op::ForNext { slot, start } => match self.loops[slot].as_mut() {
+                    Some(state) => match state.at.checked_add(1) {
+                        Some(at) => {
+                            state.at = at;
+                            Flow::Goto(start)
+                        }
+                        // No pass after the largest number: the next op is
+                        // the loop's `ForDone`, which ends it.
+                        None => Flow::Next,
+                    },
+                    None => Flow::Goto(start),
+                },
                 Op::ForDone { slot } => {
                     self.loops[slot] = None;
                     Flow::Next
@@ -500,13 +506,7 @@ fn run_builtin(call: &Call, ctx: &mut Ctx) -> Option<Step> {
             Step::Done
         }),
         "pushlist" => need(0, "a list name").and_then(|name| {
-            // An alias goes in as the serial it holds now, so a later change
-            // to the alias does not change the list.
-            let raw = need(1, "a value")?;
-            let value = match ctx.vars.alias(&raw.text) {
-                Some(serial) if raw.number().is_none() => serial.to_string(),
-                _ => raw.text.clone(),
-            };
+            let value = list_value(need(1, "a value")?, ctx.vars);
             let front = arg(2).is_some_and(|a| a.is(LIST_FRONT));
             let list = ctx.vars.list_mut(&name.text);
             if call.force && list.iter().any(|v| v.eq_ignore_ascii_case(&value)) {
@@ -521,6 +521,7 @@ fn run_builtin(call: &Call, ctx: &mut Ctx) -> Option<Step> {
         }),
         "poplist" => need(0, "a list name").and_then(|name| {
             let which = need(1, "a value, 'front' or 'back'")?;
+            let value = list_value(which, ctx.vars);
             let list = ctx.vars.list_mut(&name.text);
             if which.is(LIST_FRONT) {
                 if !list.is_empty() {
@@ -529,11 +530,8 @@ fn run_builtin(call: &Call, ctx: &mut Ctx) -> Option<Step> {
             } else if which.is(LIST_BACK) {
                 list.pop();
             } else if call.force {
-                list.retain(|v| !v.eq_ignore_ascii_case(&which.text));
-            } else if let Some(i) = list
-                .iter()
-                .position(|v| v.eq_ignore_ascii_case(&which.text))
-            {
+                list.retain(|v| !v.eq_ignore_ascii_case(&value));
+            } else if let Some(i) = list.iter().position(|v| v.eq_ignore_ascii_case(&value)) {
                 list.remove(i);
             }
             Ok(Step::Done)
@@ -559,6 +557,16 @@ fn run_builtin(call: &Call, ctx: &mut Ctx) -> Option<Step> {
     Some(result.unwrap_or_else(|fail| fail))
 }
 
+/// A value as a list keeps it. An alias goes in as the serial it holds now,
+/// so a later change to the alias does not change the list. `pushlist`,
+/// `poplist` and `inlist` all read it this way, so they agree.
+fn list_value(arg: &Arg, vars: &Vars) -> String {
+    match vars.alias(&arg.text) {
+        Some(serial) if arg.number().is_none() => serial.to_string(),
+        _ => arg.text.clone(),
+    }
+}
+
 /// The condition words the interpreter reads itself. `None` for every other
 /// word.
 fn builtin_value(call: &Call, ctx: &Ctx) -> Option<Result<Value, String>> {
@@ -582,12 +590,13 @@ fn builtin_value(call: &Call, ctx: &Ctx) -> Option<Result<Value, String>> {
                 .args
                 .get(1)
                 .ok_or_else(|| "inlist needs a value".to_string())?;
+            let value = list_value(value, ctx.vars);
             let found = ctx.vars.list(&n).is_some_and(|items| {
                 items.iter().any(|v| {
                     if call.force {
-                        *v == value.text
+                        *v == value
                     } else {
-                        v.eq_ignore_ascii_case(&value.text)
+                        v.eq_ignore_ascii_case(&value)
                     }
                 })
             });
@@ -768,6 +777,20 @@ mod tests {
     }
 
     #[test]
+    fn a_range_loop_that_ends_at_the_largest_number_stops() {
+        let mut host = Fake::default();
+        let mut vars = Vars::default();
+        let mut s = script(&format!(
+            "for {} to {}\n  say 'x'\nendfor",
+            i64::MAX - 1,
+            i64::MAX
+        ));
+        run(&mut s, &mut host, &mut vars, 3);
+        assert_eq!(host.ran.len(), 2);
+        assert_eq!(*s.status(), Status::Done);
+    }
+
+    #[test]
     fn a_list_loop_hands_each_item_to_the_body() {
         let mut host = Fake::default();
         let mut vars = Vars::default();
@@ -806,6 +829,19 @@ mod tests {
             Some("4660"),
             "the alias went in as its serial, and createlist kept the list"
         );
+    }
+
+    #[test]
+    fn inlist_and_poplist_find_an_alias_the_way_pushlist_put_it() {
+        let mut host = Fake::default();
+        let mut vars = Vars::default();
+        vars.set_alias("found", 0x1234);
+        let mut s = script(
+            "pushlist 'seen' 'found'\nif inlist 'seen' 'found' and inlist! 'seen' 'found'\n  say 'in'\nendif\npoplist 'seen' 'found'",
+        );
+        run(&mut s, &mut host, &mut vars, 2);
+        assert_eq!(host.ran, vec!["say in"]);
+        assert_eq!(vars.list("seen"), Some(&Vec::new()));
     }
 
     #[test]

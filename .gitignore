@@ -85,8 +85,8 @@ desktop.ini
 # ---------------------------------------------------------------------------
 # AI coding tools: local caches, memories and session state. Machine-specific.
 # ---------------------------------------------------------------------------
-AGENTS.md
-MEMORY.md
+/AGENTS.md
+/MEMORY.md
 *.pkl
 .serena/
 .claude/

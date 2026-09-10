@@ -352,9 +352,9 @@ pub(super) fn on_sell_list(
 /// Joins a party a friend asked the character into, when the friends list
 /// says to.
 pub(super) fn on_party_invite(inner: &mut Inner, leader: Serial) {
-    let world = inner.world.read().clone();
     let a = &inner.agents;
-    if a.config.friends.accept_party && a.is_friend(&world, leader) {
+    let friend = a.is_friend(&inner.world.read(), leader);
+    if a.config.friends.accept_party && friend {
         inner.outbound.push_back(encode::party_accept(leader));
     }
 }
