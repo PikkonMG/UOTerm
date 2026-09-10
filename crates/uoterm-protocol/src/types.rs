@@ -122,6 +122,39 @@ pub const EXT_CONTEXT_MENU_DISPLAY: u16 = 0x0014;
 pub const EXT_CONTEXT_MENU_RESPONSE: u16 = 0x0015;
 /// `0xBF` sub-command that uses a bandage on a target with no cursor.
 pub const EXT_BANDAGE_TARGET: u16 = 0x002C;
+/// Party: a command byte, then its body. See the `PARTY_*` commands.
+pub const EXT_PARTY: u16 = 0x0006;
+pub const EXT_STUN: u16 = 0x000A;
+pub const EXT_DISARM: u16 = 0x0009;
+pub const EXT_STAT_LOCK: u16 = 0x001A;
+/// Use a tool on the resource it gathers, with no cursor.
+pub const EXT_RESOURCE_TARGET: u16 = 0x0030;
+pub const EXT_TOGGLE_FLYING: u16 = 0x0032;
+pub const PARTY_ADD: u8 = 0x01;
+pub const PARTY_REMOVE: u8 = 0x02;
+pub const PARTY_PRIVATE_MESSAGE: u8 = 0x03;
+pub const PARTY_PUBLIC_MESSAGE: u8 = 0x04;
+pub const PARTY_CAN_LOOT: u8 = 0x06;
+pub const PARTY_INVITE: u8 = 0x07;
+pub const PARTY_ACCEPT: u8 = 0x08;
+pub const PARTY_DECLINE: u8 = 0x09;
+pub const PKT_RENAME: u8 = 0x75;
+/// A text prompt. The shard waits for a line of text; the ASCII and the
+/// Unicode forms carry the same ids.
+pub const PKT_ASCII_PROMPT: u8 = 0x9A;
+pub const PKT_UNICODE_PROMPT: u8 = 0xC2;
+/// A dialog with one text field, and its answer.
+pub const PKT_TEXT_ENTRY: u8 = 0xAB;
+pub const PKT_TEXT_ENTRY_RESPONSE: u8 = 0xAC;
+/// Commands the client sends in the encoded form: the player serial, a
+/// command word, then its body.
+pub const PKT_ENCODED: u8 = 0xD7;
+pub const ENCODED_SET_ABILITY: u16 = 0x0019;
+pub const ENCODED_GUILD_MENU: u16 = 0x0028;
+pub const ENCODED_QUEST_MENU: u16 = 0x0032;
+pub const PKT_LOGOUT: u8 = 0xD1;
+pub const TEXT_CMD_EMOTE_ANIMATION: u8 = 0xC7;
+pub const TEXT_CMD_INVOKE_VIRTUE: u8 = 0xF4;
 /// Bytes of that bandage command: id, length, sub, bandage serial, target serial.
 pub const BANDAGE_TARGET_LEN: usize = 13;
 pub const FASTWALK_KEY_COUNT: usize = 6;
@@ -703,6 +736,12 @@ impl ClientVersion {
     }
 
     pub fn has_prefixed_mobile_incoming(self) -> bool {
+        self.has_sa_item_packet()
+    }
+
+    /// Clients from 7.0.0.0 up read flag bit 4 of a mobile as "flying". The
+    /// shard then sends poison only on the `0x17` health bar packet.
+    pub fn reads_flying_flag(self) -> bool {
         self.has_sa_item_packet()
     }
 

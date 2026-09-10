@@ -81,6 +81,14 @@ impl PacketWriter {
         self
     }
 
+    /// UTF-16 little-endian text with no terminator.
+    pub fn utf16le(&mut self, text: &str) -> &mut Self {
+        for c in text.encode_utf16() {
+            self.buf.extend_from_slice(&c.to_le_bytes());
+        }
+        self
+    }
+
     pub fn pad(&mut self, n: usize) -> &mut Self {
         self.buf.resize(self.buf.len() + n, 0);
         self

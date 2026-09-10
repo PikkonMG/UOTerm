@@ -110,6 +110,10 @@ const DOOR_NOT_OPENED_BY_ITSELF: &str =
     "shut door in the way; this shard does not let doors open by themselves, use open_door beside it";
 /// The name the client gives when the shard asks which assistant runs. It has
 /// a space, so the shard keeps it as it is.
+const ARG_SPELL: &str = "spell";
+const ARG_SKILL: &str = "skill";
+const NEEDS_SPELL: &str = "cast needs spell, a spell number";
+const NEEDS_SKILL: &str = "use_skill needs skill, a skill number";
 const ASSISTANT_NAME: &str = concat!("UOTerm ", env!("CARGO_PKG_VERSION"));
 /// Why a refused tile is forgotten: it has been remembered its full
 /// [`movement::REFUSED_TILE_MEMORY`].
@@ -4881,6 +4885,33 @@ mod relay_tests {
         inner.next_double_click_at = now - DOUBLE_CLICK_INTERVAL;
     }
 
+    /// A cast with no spell used to cast spell 1, and spend mana and
+    /// reagents on a spell nobody asked for.
+    #[test]
+    fn a_cast_with_no_spell_is_refused() {
+        let mut inner = test_session();
+        let result = tool(&mut inner, TOOL_CAST, json!({}));
+        assert!(!result.ok);
+        assert!(inner.outbound.is_empty(), "nothing is cast");
+    }
+
+    #[test]
+    fn a_cast_names_its_spell_as_a_number_or_as_text() {
+        const GREATER_HEAL: u16 = 29;
+        let mut inner = test_session();
+        assert!(tool(&mut inner, TOOL_CAST, json!({ "spell": GREATER_HEAL })).ok);
+        assert!(tool(&mut inner, TOOL_CAST, json!({ "spell": "29" })).ok);
+        let cast = encode::cast_spell(GREATER_HEAL);
+        assert_eq!(inner.outbound.iter().filter(|p| **p == cast).count(), 2);
+    }
+
+    #[test]
+    fn a_skill_with_no_number_is_refused() {
+        let mut inner = test_session();
+        assert!(!tool(&mut inner, TOOL_USE_SKILL, json!({})).ok);
+        assert!(inner.outbound.is_empty(), "no skill is used");
+    }
+
     fn tool(inner: &mut Inner, name: &str, args: Value) -> ToolResult {
         handle_tool(
             inner,
@@ -7479,17 +7510,19 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_EQUIP)
         }
         TOOL_CAST => {
-            inner.outbound.push_back(encode::cast_spell(
-                args.get("spell").and_then(|v| v.as_u64()).unwrap_or(1) as u16,
-            ));
+            // A missing number used to cast spell 1. A spell nobody asked for
+            // spends mana and reagents, so a missing number is refused.
+            let Some(spell) = arg_number(args, ARG_SPELL) else {
+                return ToolResult::err(NEEDS_SPELL);
+            };
+            inner.outbound.push_back(encode::cast_spell(spell as u16));
             ToolResult::action(TOOL_CAST)
         }
         TOOL_USE_SKILL => {
-            inner.outbound.push_back(encode::use_skill(
-                args.get("skill")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(u64::from(SKILL_LUMBERJACKING)) as u16,
-            ));
+            let Some(skill) = arg_number(args, ARG_SKILL) else {
+                return ToolResult::err(NEEDS_SKILL);
+            };
+            inner.outbound.push_back(encode::use_skill(skill as u16));
             ToolResult::action(TOOL_USE_SKILL)
         }
         TOOL_TARGET => {
@@ -7902,23 +7935,24 @@ fn asked_z(args: &Value, standing_z: i8) -> i8 {
 }
 
 fn arg_u32(args: &Value, key: &str, default: u32) -> u32 {
-    let Some(v) = args.get(key) else {
-        return default;
-    };
+    arg_number(args, key).unwrap_or(default)
+}
+
+/// A number argument, as a JSON number or as decimal or `0x` hex text. `None`
+/// when it is missing or is not a number.
+fn arg_number(args: &Value, key: &str) -> Option<u32> {
+    let v = args.get(key)?;
     if let Some(n) = v.as_u64() {
-        return n as u32;
+        return Some(n as u32);
     }
     if let Some(n) = v.as_i64() {
-        return n.max(0) as u32;
+        return Some(n.max(0) as u32);
     }
-    if let Some(s) = v.as_str() {
-        let text = s.trim();
-        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-            return u32::from_str_radix(hex, 16).unwrap_or(default);
-        }
-        return text.parse().unwrap_or(default);
+    let text = v.as_str()?.trim();
+    match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
     }
-    default
 }
 
 fn arg_serial(args: &Value, key: &str) -> Serial {

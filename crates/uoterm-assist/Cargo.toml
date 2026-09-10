@@ -1,0 +1,13 @@
+[package]
+name = "uoterm-assist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Game data and pure rules for the UOTerm assistant: spells, potions, weapon moves, mobile filters"
+
+[dependencies]
+serde.workspace = true
+uoterm-protocol.workspace = true

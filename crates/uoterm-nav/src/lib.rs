@@ -4,6 +4,7 @@ mod cliloc;
 mod mul;
 mod multi;
 mod path;
+mod skills;
 mod speech;
 mod step;
 mod tiles;
@@ -19,6 +20,7 @@ pub use path::{
     pathfind, pathfind_flat, BlockedMove, Obstacles, Path, PathError, Step, SAME_MOVE_HEIGHT,
     SAME_SPOT_HEIGHT,
 };
+pub use skills::{read_skills, SkillEntry};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};
 pub use step::{
     is_standing_surface, LandCorners, TileColumn, TilePiece, PERSON_HEIGHT, STEP_HEIGHT,

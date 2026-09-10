@@ -1,4 +1,5 @@
 use crate::buf::PacketWriter;
+use crate::decode::{PromptRequest, TextEntryDialog};
 use crate::types::*;
 
 fn var_bytes(w: PacketWriter) -> Vec<u8> {
@@ -512,6 +513,196 @@ pub fn bandage_target(bandage: Serial, target: Serial) -> Vec<u8> {
     var_bytes(w)
 }
 
+/// A prompt answer. Accept sends the text; cancel sends none and tells the
+/// shard to give up.
+pub fn prompt_response(prompt: PromptRequest, text: &str, accept: bool) -> Vec<u8> {
+    let id = if prompt.unicode {
+        PKT_UNICODE_PROMPT
+    } else {
+        PKT_ASCII_PROMPT
+    };
+    let mut w = PacketWriter::with_variable(id);
+    w.serial(prompt.serial)
+        .u32(prompt.id)
+        .u32(u32::from(accept));
+    if prompt.unicode {
+        w.ascii_fixed(PROMPT_LANGUAGE, PROMPT_LANGUAGE_FIELD)
+            .utf16le(if accept { text } else { "" });
+    } else {
+        w.ascii_z(if accept { text } else { "" });
+    }
+    var_bytes(w)
+}
+
+/// The language field of a Unicode prompt answer: three letters and a zero.
+const PROMPT_LANGUAGE: &str = "ENU";
+const PROMPT_LANGUAGE_FIELD: usize = 4;
+
+/// The answer to a one-field dialog. `accept` false is its cancel button.
+pub fn text_entry_response(dialog: &TextEntryDialog, text: &str, accept: bool) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_TEXT_ENTRY_RESPONSE);
+    w.serial(dialog.serial)
+        .u8(dialog.parent)
+        .u8(dialog.button)
+        .u8(u8::from(accept))
+        .u16((text.len() + 1) as u16)
+        .ascii_z(text);
+    var_bytes(w)
+}
+
+/// Asks the shard to rename a pet the character owns.
+pub fn rename(serial: Serial, name: &str) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_RENAME);
+    w.serial(serial).ascii_fixed(name, RENAME_NAME_FIELD);
+    w.finish()
+}
+
+const RENAME_NAME_FIELD: usize = 30;
+
+/// Arms a weapon special move by its number, or clears the armed move with
+/// [`NO_ABILITY`]. The move number goes in the encoded form: a zero type byte,
+/// then the number as a 32-bit word, then the closing byte the reference
+/// client sends.
+pub fn set_ability(player: Serial, ability: u8) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_ENCODED);
+    w.serial(player)
+        .u16(ENCODED_SET_ABILITY)
+        .u8(ENCODED_INT_TYPE)
+        .u32(u32::from(ability))
+        .u8(ENCODED_END);
+    var_bytes(w)
+}
+
+/// The ability number that clears an armed move.
+pub const NO_ABILITY: u8 = 0;
+const ENCODED_INT_TYPE: u8 = 0;
+const ENCODED_END: u8 = 0x0A;
+
+/// The pre-AOS stun and disarm requests of bare hands.
+pub fn stun_request() -> Vec<u8> {
+    extended(EXT_STUN)
+}
+
+pub fn disarm_request() -> Vec<u8> {
+    extended(EXT_DISARM)
+}
+
+/// A gargoyle takes off or lands.
+pub fn toggle_flying() -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_TOGGLE_FLYING).u16(TOGGLE_FLYING_ON).u32(0);
+    var_bytes(w)
+}
+
+const TOGGLE_FLYING_ON: u16 = 1;
+
+/// An extended packet with no body.
+fn extended(sub: u16) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(sub);
+    var_bytes(w)
+}
+
+/// Uses a tool on the resource it gathers, with no cursor: ore, sand, wood,
+/// graves or red mushrooms by number, or a shard's own number.
+pub fn resource_target(tool: Serial, resource: u16) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_RESOURCE_TARGET).serial(tool).u16(resource);
+    var_bytes(w)
+}
+
+/// Sets the lock of one stat: 0 strength, 1 dexterity, 2 intelligence.
+pub fn stat_lock(stat: u8, lock: u8) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_STAT_LOCK).u8(stat).u8(lock);
+    var_bytes(w)
+}
+
+fn party(command: u8) -> PacketWriter {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_PARTY).u8(command);
+    w
+}
+
+pub fn party_accept(leader: Serial) -> Vec<u8> {
+    let mut w = party(PARTY_ACCEPT);
+    w.serial(leader);
+    var_bytes(w)
+}
+
+pub fn party_decline(leader: Serial) -> Vec<u8> {
+    let mut w = party(PARTY_DECLINE);
+    w.serial(leader);
+    var_bytes(w)
+}
+
+/// Asks to add a member. With no serial the shard gives a target cursor.
+pub fn party_invite(member: Option<Serial>) -> Vec<u8> {
+    let mut w = party(PARTY_ADD);
+    w.serial(member.unwrap_or(Serial(0)));
+    var_bytes(w)
+}
+
+pub fn party_remove(member: Serial) -> Vec<u8> {
+    let mut w = party(PARTY_REMOVE);
+    w.serial(member);
+    var_bytes(w)
+}
+
+/// Says a line to the whole party, or to one member.
+pub fn party_message(to: Option<Serial>, text: &str) -> Vec<u8> {
+    let mut w = match to {
+        Some(member) => {
+            let mut w = party(PARTY_PRIVATE_MESSAGE);
+            w.serial(member);
+            w
+        }
+        None => party(PARTY_PUBLIC_MESSAGE),
+    };
+    w.utf16be_z(text);
+    var_bytes(w)
+}
+
+pub fn party_can_loot(allow: bool) -> Vec<u8> {
+    let mut w = party(PARTY_CAN_LOOT);
+    w.u8(u8::from(allow));
+    var_bytes(w)
+}
+
+/// Invokes a virtue by its number, 1 to 8.
+pub fn invoke_virtue(virtue: u8) -> Vec<u8> {
+    text_command(TEXT_CMD_INVOKE_VIRTUE, &virtue.to_string())
+}
+
+/// Plays an emote animation by name, such as "bow" or "salute".
+pub fn emote_animation(action: &str) -> Vec<u8> {
+    text_command(TEXT_CMD_EMOTE_ANIMATION, action)
+}
+
+/// Opens the guild or the quest menu, as the paperdoll buttons do.
+pub fn guild_menu(player: Serial) -> Vec<u8> {
+    encoded_button(player, ENCODED_GUILD_MENU, ENCODED_END)
+}
+
+pub fn quest_menu(player: Serial) -> Vec<u8> {
+    encoded_button(player, ENCODED_QUEST_MENU, ENCODED_QUEST_END)
+}
+
+const ENCODED_QUEST_END: u8 = 0;
+
+fn encoded_button(player: Serial, command: u16, end: u8) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_ENCODED);
+    w.serial(player).u16(command).u8(end);
+    var_bytes(w)
+}
+
+/// Tells the shard the character logs out.
+pub fn logout() -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_LOGOUT);
+    w.u8(0);
+    w.finish()
+}
+
 /// The Classic Client skill status change request (`0x3A`): set the lock of
 /// one skill to [`SKILL_LOCK_UP`], [`SKILL_LOCK_DOWN`] or
 /// [`SKILL_LOCK_LOCKED`]. A server reads the skill number and the lock byte.
@@ -983,6 +1174,91 @@ mod tests {
         let packet = bandage_target(BANDAGE, SELF);
         assert_eq!(packet, PACKET);
         assert_eq!(packet.len(), BANDAGE_TARGET_LEN);
+    }
+
+    const PLAYER: Serial = Serial(0x0000_0001);
+    const PROMPT: PromptRequest = PromptRequest {
+        serial: Serial(0x0000_1234),
+        id: 7,
+        unicode: false,
+    };
+
+    #[test]
+    fn a_prompt_answer_names_both_ids_and_the_text() {
+        let p = prompt_response(PROMPT, "home", true);
+        assert_eq!(p[0], PKT_ASCII_PROMPT);
+        assert_eq!(&p[3..7], &PROMPT.serial.0.to_be_bytes());
+        assert_eq!(&p[7..11], &PROMPT.id.to_be_bytes());
+        assert_eq!(&p[11..15], &1u32.to_be_bytes(), "accepted");
+        assert_eq!(&p[15..], b"home\0");
+    }
+
+    #[test]
+    fn a_unicode_prompt_answer_carries_a_language_and_little_endian_text() {
+        let unicode = PromptRequest {
+            unicode: true,
+            ..PROMPT
+        };
+        let p = prompt_response(unicode, "hi", true);
+        assert_eq!(p[0], PKT_UNICODE_PROMPT);
+        assert_eq!(&p[15..19], b"ENU\0");
+        assert_eq!(&p[19..], &[b'h', 0, b'i', 0]);
+        let cancelled = prompt_response(unicode, "hi", false);
+        assert_eq!(&cancelled[11..15], &0u32.to_be_bytes());
+        assert_eq!(cancelled.len(), 19, "a cancel sends no text");
+    }
+
+    #[test]
+    fn a_text_entry_answer_repeats_the_dialog_ids() {
+        let dialog = TextEntryDialog {
+            serial: PROMPT.serial,
+            parent: 1,
+            button: 2,
+            text: String::new(),
+            can_cancel: true,
+            style: 1,
+            max_len: 20,
+            description: String::new(),
+        };
+        let p = text_entry_response(&dialog, "ok", true);
+        assert_eq!(&p[3..7], &PROMPT.serial.0.to_be_bytes());
+        assert_eq!(&p[7..10], &[1, 2, 1]);
+        assert_eq!(&p[10..12], &3u16.to_be_bytes());
+        assert_eq!(&p[12..], b"ok\0");
+    }
+
+    #[test]
+    fn a_rename_has_the_fixed_size_the_shard_expects() {
+        const RENAME_LEN: usize = 35;
+        assert_eq!(rename(PROMPT.serial, "Snorlax").len(), RENAME_LEN);
+    }
+
+    /// The layout the reference client sends: player, command 0x19, a zero
+    /// type byte, the move as a 32-bit word, and a closing 0x0A.
+    #[test]
+    fn a_special_move_is_armed_by_number() {
+        const MORTAL_STRIKE: u8 = 9;
+        let p = set_ability(PLAYER, MORTAL_STRIKE);
+        assert_eq!(p[0], PKT_ENCODED);
+        assert_eq!(u16::from_be_bytes([p[1], p[2]]) as usize, p.len());
+        assert_eq!(&p[3..7], &PLAYER.0.to_be_bytes());
+        assert_eq!(&p[7..], &[0x00, 0x19, 0, 0, 0, 0, MORTAL_STRIKE, 0x0A]);
+    }
+
+    #[test]
+    fn party_answers_name_the_leader() {
+        const LEADER: Serial = Serial(0x0000_0042);
+        let p = party_accept(LEADER);
+        assert_eq!(&p[3..], &[0x00, 0x06, PARTY_ACCEPT, 0, 0, 0, 0x42]);
+        assert_eq!(party_decline(LEADER)[5], PARTY_DECLINE);
+        let chat = party_message(None, "hi");
+        assert_eq!(&chat[5..], &[PARTY_PUBLIC_MESSAGE, 0, b'h', 0, b'i', 0, 0]);
+    }
+
+    #[test]
+    fn logout_and_flying_have_their_fixed_forms() {
+        assert_eq!(logout(), vec![PKT_LOGOUT, 0]);
+        assert_eq!(&toggle_flying()[3..], &[0x00, 0x32, 0x00, 0x01, 0, 0, 0, 0]);
     }
 
     #[test]

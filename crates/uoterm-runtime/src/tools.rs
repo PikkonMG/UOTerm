@@ -223,8 +223,8 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_DROP, "Drop item.", "serial"),
     (TOOL_EQUIP, "Lift and wear an item: serial, or who=last for the last weapon put away.", "item serial"),
     (TOOL_UNEQUIP, "Lift a worn item into the backpack; a weapon is remembered.", "layer occupied"),
-    (TOOL_CAST, "Cast spell id.", "enough mana"),
-    (TOOL_USE_SKILL, "Use skill id.", "in world"),
+    (TOOL_CAST, "Cast spell by number (required).", "enough mana"),
+    (TOOL_USE_SKILL, "Use skill by number (required).", "in world"),
     (
         TOOL_WAIT_JOURNAL,
         "Wait for a new journal line holding q; timeout_ms (default 5000, max 7000).",

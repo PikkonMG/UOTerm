@@ -9,7 +9,18 @@ const SKILL_TYPE_LIST: u8 = 0x00;
 const SKILL_TYPE_LIST_CAP: u8 = 0x02;
 const SKILL_TYPE_UPDATE_CAP: u8 = 0xDF;
 const SKILL_CAP_DEFAULT: u16 = 1000;
+/// Status levels: each one adds a block of fields to the one below it.
+/// An extended packet opens with its id, its length and its sub-command.
+const EXTENDED_HEADER_LEN: usize = 5;
+const STATUS_FLAG_RENAISSANCE: u8 = 3;
+const STATUS_FLAG_AOS: u8 = 4;
 const STATUS_FLAG_ML: u8 = 5;
+const STATUS_FLAG_COMBAT: u8 = 6;
+/// The bytes of the level-4 block: four resists, luck, two damage words and
+/// a 32-bit tithing count.
+const STATUS_AOS_BLOCK_LEN: usize = 22;
+/// The bytes of the level-3 block: stat cap, followers, most followers.
+const STATUS_RENAISSANCE_BLOCK_LEN: usize = 4;
 const COMPRESSED_LEN_HEADER: usize = 4;
 /// The id and the big-endian total length that open a self-describing packet.
 const VARIABLE_HEADER_LEN: usize = 3;
@@ -176,6 +187,79 @@ impl HealthBarStatus {
             poison_level,
         }
     }
+}
+
+/// A text prompt the shard is waiting on. The answer names both ids.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptRequest {
+    pub serial: Serial,
+    pub id: u32,
+    /// The shard sent the Unicode form and takes a Unicode answer.
+    pub unicode: bool,
+}
+
+/// A dialog with one text field and an OK button.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextEntryDialog {
+    pub serial: Serial,
+    pub parent: u8,
+    pub button: u8,
+    pub text: String,
+    pub can_cancel: bool,
+    pub style: u8,
+    pub max_len: u32,
+    pub description: String,
+}
+
+/// What the shard says about the character's party.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PartyEvent {
+    /// The whole member list, the character among them.
+    Members(Vec<Serial>),
+    /// One member left. The rest of the list follows; an empty list means
+    /// the party is over.
+    Removed { who: Serial, members: Vec<Serial> },
+    Message {
+        from: Serial,
+        text: String,
+        private: bool,
+    },
+    /// A player asks the character to join a party.
+    Invite { leader: Serial },
+}
+
+/// The status fields past weight. Each group is present only from some status
+/// level up; a field the packet does not carry stays zero.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusExtra {
+    pub physical_resist: i16,
+    pub race: u8,
+    pub stat_cap: u16,
+    pub followers: u8,
+    pub followers_max: u8,
+    pub fire_resist: i16,
+    pub cold_resist: i16,
+    pub poison_resist: i16,
+    pub energy_resist: i16,
+    pub luck: u16,
+    pub damage_min: u16,
+    pub damage_max: u16,
+    pub tithing: u32,
+    pub max_physical_resist: i16,
+    pub max_fire_resist: i16,
+    pub max_cold_resist: i16,
+    pub max_poison_resist: i16,
+    pub max_energy_resist: i16,
+    pub defense_chance_increase: i16,
+    pub max_defense_chance_increase: i16,
+    pub hit_chance_increase: i16,
+    pub swing_speed_increase: i16,
+    pub damage_increase: i16,
+    pub lower_reagent_cost: i16,
+    pub spell_damage_increase: i16,
+    pub faster_cast_recovery: i16,
+    pub faster_casting: i16,
+    pub lower_mana_cost: i16,
 }
 
 /// One effect from a `0xDF` buff and debuff bar update. `arguments` holds the
@@ -363,6 +447,9 @@ pub enum Inbound {
         gold: u32,
         weight: u16,
         weight_max: Option<u16>,
+        /// Everything past weight. Zero for a field the packet level does not
+        /// carry.
+        extra: StatusExtra,
     },
     Skills {
         skills: Vec<SkillEntry>,
@@ -514,6 +601,11 @@ pub enum Inbound {
     /// decoded form that embedded packet carries when it arrives on its own,
     /// so a consumer handles the list by handling each entry in order.
     PacketList(Vec<Inbound>),
+    /// The shard waits for a line of text, the answer to a prompt it showed.
+    Prompt(PromptRequest),
+    /// A dialog with one text field.
+    TextEntry(TextEntryDialog),
+    Party(PartyEvent),
     /// `0xBE` from the shard: which assistant runs beside the client?
     AssistantVersionRequest,
     /// `0xF0` command `0xFE`: the assistant features this shard forbids, one
@@ -596,6 +688,9 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_MUSIC => parse_music(packet),
         PKT_BUFF_DEBUFF => parse_buff_debuff(packet),
         PKT_ASSIST_VERSION => Ok(Inbound::AssistantVersionRequest),
+        PKT_ASCII_PROMPT => parse_prompt(packet, false),
+        PKT_UNICODE_PROMPT => parse_prompt(packet, true),
+        PKT_TEXT_ENTRY => parse_text_entry(packet),
         PKT_ASSISTANT => parse_assistant(packet),
         _ => Ok(Inbound::Unknown {
             id,
@@ -633,6 +728,81 @@ fn parse_login_denied(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     Ok(Inbound::LoginDenied { reason: r.u8()? })
+}
+
+fn parse_prompt(packet: &[u8], unicode: bool) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    Ok(Inbound::Prompt(PromptRequest {
+        serial: r.serial()?,
+        id: r.u32()?,
+        unicode,
+    }))
+}
+
+fn parse_text_entry(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let serial = r.serial()?;
+    let parent = r.u8()?;
+    let button = r.u8()?;
+    let text_len = usize::from(r.u16()?);
+    let text = r.ascii_fixed(text_len)?;
+    let can_cancel = r.u8()? != 0;
+    let style = r.u8()?;
+    let max_len = r.u32()?;
+    let description_len = usize::from(r.u16()?);
+    let description = r.ascii_fixed(description_len)?;
+    Ok(Inbound::TextEntry(TextEntryDialog {
+        serial,
+        parent,
+        button,
+        text,
+        can_cancel,
+        style,
+        max_len,
+        description,
+    }))
+}
+
+fn read_serials(r: &mut PacketReader<'_>, count: u8) -> Result<Vec<Serial>> {
+    (0..count).map(|_| r.serial()).collect()
+}
+
+/// A party message. A command this client does not act on is kept as the
+/// extended packet it came in.
+fn parse_party(r: &mut PacketReader<'_>, packet: &[u8]) -> Result<Inbound> {
+    let event = match r.u8()? {
+        PARTY_ADD => {
+            let count = r.u8()?;
+            PartyEvent::Members(read_serials(r, count)?)
+        }
+        PARTY_REMOVE => {
+            let count = r.u8()?;
+            let who = r.serial()?;
+            PartyEvent::Removed {
+                who,
+                members: read_serials(r, count)?,
+            }
+        }
+        command @ (PARTY_PRIVATE_MESSAGE | PARTY_PUBLIC_MESSAGE) => PartyEvent::Message {
+            from: r.serial()?,
+            text: r.utf16be_z()?,
+            private: command == PARTY_PRIVATE_MESSAGE,
+        },
+        PARTY_INVITE => PartyEvent::Invite {
+            leader: r.serial()?,
+        },
+        _ => {
+            return Ok(Inbound::Extended {
+                sub: EXT_PARTY,
+                payload: packet[EXTENDED_HEADER_LEN..].to_vec(),
+            })
+        }
+    };
+    Ok(Inbound::Party(event))
 }
 
 /// The assistant handshake. Only the feature list is read; any other command
@@ -1131,6 +1301,7 @@ fn parse_status(packet: &[u8]) -> Result<Inbound> {
             gold: 0,
             weight: 0,
             weight_max: None,
+            extra: StatusExtra::default(),
         });
     }
     let female = r.u8()? != 0;
@@ -1142,13 +1313,59 @@ fn parse_status(packet: &[u8]) -> Result<Inbound> {
     let mana = r.u16()?;
     let mana_max = r.u16()?;
     let gold = r.u32()?;
-    r.u16()?;
-    let weight = r.u16()?;
-    let weight_max = if flag >= STATUS_FLAG_ML && r.remaining() >= 2 {
-        Some(r.u16()?)
-    } else {
-        None
+    let mut extra = StatusExtra {
+        physical_resist: r.u16()? as i16,
+        ..StatusExtra::default()
     };
+    let weight = r.u16()?;
+    let mut weight_max = None;
+    if flag >= STATUS_FLAG_ML && r.remaining() >= 2 {
+        weight_max = Some(r.u16()?);
+        if r.remaining() >= 1 {
+            extra.race = r.u8()?;
+        }
+    }
+    if flag >= STATUS_FLAG_RENAISSANCE && r.remaining() >= STATUS_RENAISSANCE_BLOCK_LEN {
+        extra.stat_cap = r.u16()?;
+        extra.followers = r.u8()?;
+        extra.followers_max = r.u8()?;
+    }
+    if flag >= STATUS_FLAG_AOS && r.remaining() >= STATUS_AOS_BLOCK_LEN {
+        extra.fire_resist = r.u16()? as i16;
+        extra.cold_resist = r.u16()? as i16;
+        extra.poison_resist = r.u16()? as i16;
+        extra.energy_resist = r.u16()? as i16;
+        extra.luck = r.u16()?;
+        extra.damage_min = r.u16()?;
+        extra.damage_max = r.u16()?;
+        extra.tithing = r.u32()?;
+    }
+    if flag >= STATUS_FLAG_COMBAT {
+        // Each of these is read only while bytes are left: shards stop the
+        // list at different places.
+        for field in [
+            &mut extra.max_physical_resist,
+            &mut extra.max_fire_resist,
+            &mut extra.max_cold_resist,
+            &mut extra.max_poison_resist,
+            &mut extra.max_energy_resist,
+            &mut extra.defense_chance_increase,
+            &mut extra.max_defense_chance_increase,
+            &mut extra.hit_chance_increase,
+            &mut extra.swing_speed_increase,
+            &mut extra.damage_increase,
+            &mut extra.lower_reagent_cost,
+            &mut extra.spell_damage_increase,
+            &mut extra.faster_cast_recovery,
+            &mut extra.faster_casting,
+            &mut extra.lower_mana_cost,
+        ] {
+            if r.remaining() < 2 {
+                break;
+            }
+            *field = r.u16()? as i16;
+        }
+    }
     Ok(Inbound::Status {
         serial,
         name,
@@ -1165,6 +1382,7 @@ fn parse_status(packet: &[u8]) -> Result<Inbound> {
         gold,
         weight,
         weight_max,
+        extra,
     })
 }
 
@@ -1387,6 +1605,7 @@ fn parse_extended(packet: &[u8]) -> Result<Inbound> {
         EXT_FASTWALK_ADD => Ok(Inbound::FastwalkKeyAdd(r.u32()?)),
         EXT_MAP_CHANGE => Ok(Inbound::MapChange { map: r.u8()? }),
         EXT_CONTEXT_MENU_DISPLAY => parse_context_menu(&mut r),
+        EXT_PARTY => parse_party(&mut r, packet),
         _ => Ok(Inbound::Extended {
             sub,
             payload: r.rest().to_vec(),
@@ -2318,6 +2537,92 @@ mod tests {
         }
     }
 
+    const SHARD_OBJECT: Serial = Serial(0x0000_1234);
+    const PROMPT_ID: u32 = 7;
+
+    #[test]
+    fn a_prompt_keeps_both_ids_and_its_form() {
+        for (id, unicode) in [(PKT_ASCII_PROMPT, false), (PKT_UNICODE_PROMPT, true)] {
+            let mut w = crate::buf::PacketWriter::with_variable(id);
+            w.serial(SHARD_OBJECT).u32(PROMPT_ID).u32(0).u8(0);
+            match parse(&w.finish_variable().unwrap()).unwrap() {
+                Inbound::Prompt(p) => {
+                    assert_eq!(
+                        (p.serial, p.id, p.unicode),
+                        (SHARD_OBJECT, PROMPT_ID, unicode)
+                    );
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_text_entry_dialog_reads_its_text_and_limits() {
+        const MAX_LEN: u32 = 20;
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_TEXT_ENTRY);
+        w.serial(SHARD_OBJECT).u8(1).u8(2);
+        w.u16(10).ascii_fixed("Rune name", 10);
+        w.u8(1).u8(1).u32(MAX_LEN);
+        w.u16(6).ascii_fixed("Name?", 6);
+        match parse(&w.finish_variable().unwrap()).unwrap() {
+            Inbound::TextEntry(d) => {
+                assert_eq!(d.text, "Rune name");
+                assert_eq!(d.description, "Name?");
+                assert_eq!((d.parent, d.button, d.max_len), (1, 2, MAX_LEN));
+                assert!(d.can_cancel);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn party_packet(command: u8) -> crate::buf::PacketWriter {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_EXTENDED);
+        w.u16(EXT_PARTY).u8(command);
+        w
+    }
+
+    #[test]
+    fn party_members_invites_and_messages_are_read() {
+        const FRIEND: Serial = Serial(0x0000_0042);
+        let mut w = party_packet(PARTY_ADD);
+        w.u8(2).serial(SHARD_OBJECT).serial(FRIEND);
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::Party(PartyEvent::Members(m)) if m == vec![SHARD_OBJECT, FRIEND]
+        ));
+        let mut w = party_packet(PARTY_INVITE);
+        w.serial(FRIEND);
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::Party(PartyEvent::Invite { leader }) if leader == FRIEND
+        ));
+        let mut w = party_packet(PARTY_PUBLIC_MESSAGE);
+        w.serial(FRIEND).utf16be_z("heal me");
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::Party(PartyEvent::Message { from, text, private: false })
+                if from == FRIEND && text == "heal me"
+        ));
+        let mut w = party_packet(PARTY_REMOVE);
+        w.u8(1).serial(FRIEND).serial(SHARD_OBJECT);
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::Party(PartyEvent::Removed { who, members })
+                if who == FRIEND && members == vec![SHARD_OBJECT]
+        ));
+    }
+
+    #[test]
+    fn a_party_command_not_acted_on_stays_an_extended_packet() {
+        let mut w = party_packet(PARTY_CAN_LOOT);
+        w.u8(1);
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::Extended { sub: EXT_PARTY, payload } if payload == vec![PARTY_CAN_LOOT, 1]
+        ));
+    }
+
     #[test]
     fn the_shard_asks_which_assistant_runs() {
         let mut w = crate::buf::PacketWriter::with_variable(PKT_ASSIST_VERSION);
@@ -2575,6 +2880,66 @@ mod tests {
             } => {
                 assert_eq!(weight, 40);
                 assert_eq!(weight_max, Some(100));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A level-6 status, as a modern shard sends it: every block present.
+    #[test]
+    fn a_full_status_reads_resists_luck_followers_and_tithing() {
+        const TITHING: u32 = 12_345;
+        const LUCK: u16 = 400;
+        const FASTER_CASTING: u16 = 2;
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_STATUS);
+        w.u32(0xAA).ascii_fixed("Mara", 30).u16(10).u16(10).u8(0);
+        w.u8(STATUS_FLAG_COMBAT).u8(1);
+        w.u16(20).u16(30).u16(40).u16(10).u16(10).u16(10).u16(10);
+        w.u32(5).u16(35).u16(40); // gold, physical resist, weight
+        w.u16(100).u8(1); // weight max, race
+        w.u16(225).u8(1).u8(5); // stat cap, followers, most followers
+        w.u16(50)
+            .u16(45)
+            .u16(40)
+            .u16(35)
+            .u16(LUCK)
+            .u16(9)
+            .u16(13)
+            .u32(TITHING);
+        for value in [
+            70,
+            70,
+            70,
+            70,
+            70,
+            10,
+            45,
+            15,
+            20,
+            30,
+            40,
+            10,
+            6,
+            FASTER_CASTING,
+            30,
+        ] {
+            w.u16(value);
+        }
+        let p = w.finish_variable().unwrap();
+        match parse(&p).unwrap() {
+            Inbound::Status {
+                extra, weight_max, ..
+            } => {
+                assert_eq!(weight_max, Some(100));
+                assert_eq!(extra.physical_resist, 35);
+                assert_eq!(extra.race, 1);
+                assert_eq!((extra.followers, extra.followers_max), (1, 5));
+                assert_eq!(extra.fire_resist, 50);
+                assert_eq!(extra.energy_resist, 35);
+                assert_eq!(extra.luck, LUCK);
+                assert_eq!(extra.tithing, TITHING);
+                assert_eq!(extra.faster_casting, FASTER_CASTING as i16);
+                assert_eq!(extra.lower_mana_cost, 30);
             }
             other => panic!("{other:?}"),
         }

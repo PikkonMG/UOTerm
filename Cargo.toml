@@ -4,6 +4,7 @@ members = [
     "crates/uoterm-protocol",
     "crates/uoterm-world",
     "crates/uoterm-nav",
+    "crates/uoterm-assist",
     "crates/uoterm-runtime",
     "crates/uoterm",
 ]
@@ -21,6 +22,7 @@ description = "Headless Ultima Online client and agent runtime for private shard
 uoterm-protocol = { path = "crates/uoterm-protocol" }
 uoterm-world = { path = "crates/uoterm-world" }
 uoterm-nav = { path = "crates/uoterm-nav" }
+uoterm-assist = { path = "crates/uoterm-assist" }
 uoterm-runtime = { path = "crates/uoterm-runtime" }
 
 thiserror = "2"

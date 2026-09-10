@@ -13,8 +13,8 @@ pub mod types;
 pub use decode::{
     parse, parse_with_version, BookPage, BuffEntry, CharacterSlot, ContainerItem, ContextMenuEntry,
     EquipItem, GroundItem, HealthBarStatus, Inbound, MenuEntry, MobileView, ObjectProperty,
-    OpenGump, SecureTrade, ServerEntry, SkillEntry, SpeechLine, TargetCursor, VendorBuyEntry,
-    VendorSellEntry,
+    OpenGump, PartyEvent, PromptRequest, SecureTrade, ServerEntry, SkillEntry, SpeechLine,
+    StatusExtra, TargetCursor, TextEntryDialog, VendorBuyEntry, VendorSellEntry,
 };
 pub use error::{ProtocolError, Result};
 pub use frame::{compress_packet, FrameDecoder, GameDecoder, RawPacket};

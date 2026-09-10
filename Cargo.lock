@@ -1698,6 +1698,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "uoterm-assist"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "uoterm-protocol",
+]
+
+[[package]]
 name = "uoterm-nav"
 version = "0.1.0"
 dependencies = [
