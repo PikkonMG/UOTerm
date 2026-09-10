@@ -4857,6 +4857,40 @@ mod relay_tests {
             "the other object gets no answer from this request"
         );
     }
+
+    /// A menu the character never asked for must not eat the request. The
+    /// server sends a menu for whatever was clicked last, so another object's
+    /// menu can arrive first. If that threw the request away, the tool would
+    /// wait for an answer that never goes out.
+    #[test]
+    fn a_menu_from_another_object_does_not_lose_the_request() {
+        let mut inner = test_session();
+        inner.pending_context_menu = Some((THE_CHEST, CLILOC_ASKED_FOR));
+        ingest(
+            &mut inner,
+            &context_menu(
+                ANOTHER_CHEST,
+                &[(MENU_ENTRY_FIRST, CLILOC_ASKED_FOR, NO_MENU_FLAGS)],
+            ),
+        );
+        assert_eq!(
+            inner.pending_context_menu,
+            Some((THE_CHEST, CLILOC_ASKED_FOR)),
+            "the request still waits for the object it named"
+        );
+        ingest(
+            &mut inner,
+            &context_menu(
+                THE_CHEST,
+                &[(MENU_ENTRY_FIRST, CLILOC_ASKED_FOR, NO_MENU_FLAGS)],
+            ),
+        );
+        assert_eq!(
+            menu_answers(&inner),
+            [encode::context_menu_response(THE_CHEST, MENU_ENTRY_FIRST).as_slice()],
+            "the menu it waited for is answered"
+        );
+    }
 }
 
 fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
@@ -4974,8 +5008,13 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         }
                     }
                     if let Inbound::ContextMenu { serial, entries } = &msg {
-                        if let Some((expected_serial, cliloc)) = inner.pending_context_menu.take() {
+                        // The request waits for the menu of the object it
+                        // named. A menu for anything else is not ours to
+                        // answer, and taking the request on it would leave the
+                        // tool waiting for an answer that never goes out.
+                        if let Some((expected_serial, cliloc)) = inner.pending_context_menu {
                             if *serial == expected_serial {
+                                inner.pending_context_menu = None;
                                 if let Some(entry) = entries
                                     .iter()
                                     .find(|entry| entry.cliloc == cliloc && entry.enabled())
