@@ -1,6 +1,7 @@
 pub mod api;
 pub mod building;
 pub mod config;
+pub mod deposit;
 pub mod error;
 pub mod harvest;
 pub mod loot;

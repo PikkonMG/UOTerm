@@ -5,6 +5,7 @@ use crate::building::{building_tiles, multi_id};
 use crate::config::{
     ConnectOptions, EncryptionMode, PING_INTERVAL_MS, REFLEX_TICK_MS, STEP_RUN_MS, STEP_WALK_MS,
 };
+use crate::deposit::{DepositJob, DepositStep};
 use crate::error::{Result, RuntimeError};
 use crate::harvest;
 use crate::loot::{LootJob, LootStep};
@@ -18,12 +19,13 @@ use crate::reflex::{self, bandage_self_ms, heal_potion_lock_ms, ReflexAction};
 use crate::scene;
 use crate::tools::{
     Goal, ToolCall, ToolResult, TOOL_ATTACK, TOOL_CANCEL_GOAL, TOOL_CAN_WALK, TOOL_CAST,
-    TOOL_CONTEXT_MENU, TOOL_DROP, TOOL_EMOTE, TOOL_EQUIP, TOOL_FIND_ITEMS, TOOL_FIND_MOBILES,
-    TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_JOURNAL_SEARCH, TOOL_LIFT,
-    TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE, TOOL_MOVE_TO, TOOL_OBSERVE, TOOL_OPEN_CONTAINER,
-    TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL, TOOL_SET_PERSONA, TOOL_SINGLE_CLICK, TOOL_STOP,
-    TOOL_TARGET, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_VENDOR_BUY,
-    TOOL_VENDOR_SELL, TOOL_WAIT_TARGET, TOOL_WALK, TOOL_WAR_MODE, TOOL_WHISPER,
+    TOOL_CONTEXT_MENU, TOOL_DEPOSIT, TOOL_DROP, TOOL_EMOTE, TOOL_EQUIP, TOOL_FIND_ITEMS,
+    TOOL_FIND_MOBILES, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_JOURNAL_SEARCH,
+    TOOL_LIFT, TOOL_LOOK_AROUND, TOOL_LOOT, TOOL_MAP_TILE, TOOL_MOVE_TO, TOOL_OBSERVE,
+    TOOL_OPEN_CONTAINER, TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL, TOOL_SET_PERSONA,
+    TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_TARGET, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE,
+    TOOL_USE_SKILL, TOOL_VENDOR_BUY, TOOL_VENDOR_SELL, TOOL_WAIT_TARGET, TOOL_WALK, TOOL_WAR_MODE,
+    TOOL_WHISPER,
 };
 use parking_lot::RwLock;
 use rand::Rng;
@@ -294,6 +296,7 @@ struct Inner {
     attack_sent: Option<Serial>,
     target_intent: Option<Serial>,
     loot: Option<LootJob>,
+    deposit: Option<DepositJob>,
     sent_drop: Option<Serial>,
     /// The next server-authored sell list is filtered to this graphic, then
     /// the request is cleared.
@@ -604,6 +607,7 @@ async fn run_session(
         attack_sent: None,
         target_intent: None,
         loot: None,
+        deposit: None,
         sent_drop: None,
         pending_vendor_sell_graphic: None,
         pending_context_menu: None,
@@ -1379,6 +1383,7 @@ mod relay_tests {
             attack_sent: None,
             target_intent: None,
             loot: None,
+            deposit: None,
             sent_drop: None,
             pending_vendor_sell_graphic: None,
             pending_context_menu: None,
@@ -5591,6 +5596,41 @@ fn pump_loot(inner: &mut Inner) {
     }
 }
 
+/// Works the bank job the same way [`pump_loot`] works a corpse: one request a
+/// tick, and the job is dropped as soon as it is finished or refused.
+fn pump_deposit(inner: &mut Inner) {
+    let Some(job) = inner.deposit.clone() else {
+        return;
+    };
+    let world = inner.world.read().clone();
+    match job.step(&world, action_ready(inner)) {
+        DepositStep::Open(serial) => {
+            send_double_click(inner, serial);
+        }
+        DepositStep::Lift { serial, amount } => {
+            inner.outbound.push_back(encode::lift(serial, amount));
+            mark_action(inner);
+            inner.world.write().holding = Some(serial);
+            inner.sent_drop = None;
+        }
+        DepositStep::Drop { serial, dest } => {
+            if inner.sent_drop != Some(serial) {
+                inner.outbound.push_back(encode::drop_into_container(
+                    serial,
+                    dest,
+                    drop_grid(inner),
+                ));
+                mark_action(inner);
+                inner.sent_drop = Some(serial);
+            }
+        }
+        DepositStep::Wait => {}
+        DepositStep::Done | DepositStep::Fail(_) => {
+            inner.deposit = None;
+        }
+    }
+}
+
 fn send_bandage_self(inner: &mut Inner, world: &uoterm_world::World) {
     if Instant::now() < inner.next_bandage_at || !action_ready(inner) {
         return;
@@ -5613,6 +5653,10 @@ fn reflex_tick(inner: &mut Inner) {
     }
     if inner.loot.is_some() {
         pump_loot(inner);
+        return;
+    }
+    if inner.deposit.is_some() {
+        pump_deposit(inner);
         return;
     }
     if let Some(serial) = inner.follow {
@@ -6182,6 +6226,22 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             inner.sent_drop = None;
             pump_loot(inner);
             ToolResult::action(TOOL_LOOT)
+        }
+        TOOL_DEPOSIT => {
+            let Some(pack) = backpack_serial(&inner.world.read()) else {
+                return ToolResult::err("no backpack");
+            };
+            if inner.world.read().bank_box().is_none() {
+                return ToolResult::err("no bank box; say bank beside a banker first");
+            }
+            let only = args
+                .get("graphic")
+                .and_then(|v| v.as_u64())
+                .map(|graphic| graphic as u16);
+            inner.deposit = Some(DepositJob::new(pack, only));
+            inner.sent_drop = None;
+            pump_deposit(inner);
+            ToolResult::action(TOOL_DEPOSIT)
         }
         TOOL_SINGLE_CLICK => {
             inner

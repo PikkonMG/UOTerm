@@ -31,6 +31,7 @@ pub const TOOL_WAIT_TARGET: &str = "wait_target";
 pub const TOOL_TARGET: &str = "target";
 pub const TOOL_OPEN_CONTAINER: &str = "open_container";
 pub const TOOL_LOOT: &str = "loot";
+pub const TOOL_DEPOSIT: &str = "deposit";
 pub const TOOL_TRADE_OFFER: &str = "trade_offer";
 pub const TOOL_VENDOR_SELL: &str = "vendor_sell";
 pub const TOOL_VENDOR_BUY: &str = "vendor_buy";
@@ -238,6 +239,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         TOOL_LOOT,
         "Walk to a corpse, open it, lift each stack and drop it in the pack.",
         "corpse serial",
+    ),
+    (
+        TOOL_DEPOSIT,
+        "Open the bank box and move the pack into it. Give a graphic to bank only that kind.",
+        "at a banker",
     ),
     (TOOL_TRADE_OFFER, "Secure trade offer.", "mobile serial"),
     (
