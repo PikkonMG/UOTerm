@@ -226,7 +226,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_USE_SKILL, "Use skill id.", "in world"),
     (
         TOOL_WAIT_TARGET,
-        "True if a target cursor is pending.",
+        "Wait for a target cursor; timeout_ms (default 5000, max 7000).",
         "none",
     ),
     (
@@ -310,6 +310,7 @@ pub fn mcp_tool_list() -> Value {
                         "item": {"type": "string"},
                         "amount": {"type": "integer"},
                         "cliloc": {"type": "integer"},
+                        "timeout_ms": {"type": "integer"},
                         "switches": {"type": "array", "items": {"type": "integer"}}
                     }
                 }

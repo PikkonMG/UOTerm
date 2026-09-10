@@ -54,6 +54,12 @@ use uoterm_world::{DoorUpdate, MultiUpdate, World};
 const CMD_QUEUE_CAP: usize = 64;
 const READ_BUF_LEN: usize = 8192;
 const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long `wait_target` waits for a cursor when the caller names no time.
+const WAIT_TARGET_DEFAULT_MS: u64 = 5000;
+/// The longest wait allowed. It stays under [`TOOL_CALL_TIMEOUT`], so the
+/// answer always comes back before the caller stops listening.
+const WAIT_TARGET_MAX_MS: u64 = 7000;
+const NO_TARGET_CURSOR: &str = "no target cursor came in time";
 const LOGIN_DEADLINE: Duration = Duration::from_secs(15);
 const LOGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_WORLD_DRAIN: Duration = Duration::from_millis(100);
@@ -299,6 +305,9 @@ struct Inner {
     next_heal_potion_at: Instant,
     attack_sent: Option<Serial>,
     target_intent: Option<Serial>,
+    /// Callers of `wait_target` still waiting for a cursor, each with the time
+    /// it gives up. Their answers go out from the packet handler or the tick.
+    target_waiters: Vec<(Instant, oneshot::Sender<ToolResult>)>,
     loot: Option<LootJob>,
     deposit: Option<DepositJob>,
     sent_drop: Option<Serial>,
@@ -624,6 +633,7 @@ async fn run_session(
         next_heal_potion_at: Instant::now() - ACTION_BUDGET,
         attack_sent: None,
         target_intent: None,
+        target_waiters: Vec::new(),
         loot: None,
         deposit: None,
         sent_drop: None,
@@ -668,8 +678,12 @@ async fn run_session(
                 match cmd {
                     None | Some(SessionCmd::Shutdown) => break,
                     Some(SessionCmd::Tool(call, reply)) => {
-                        let result = handle_tool(&mut inner, call);
-                        let _ = reply.send(result);
+                        if call.name == TOOL_WAIT_TARGET {
+                            wait_for_target(&mut inner, &call.args, reply, Instant::now());
+                        } else {
+                            let result = handle_tool(&mut inner, call);
+                            let _ = reply.send(result);
+                        }
                     }
                 }
             }
@@ -686,6 +700,7 @@ async fn run_session(
                 pump_movement(&mut inner, Instant::now());
                 pump_names(&mut inner);
                 harvest_new_events(&mut inner);
+                expire_target_waiters(&mut inner, Instant::now());
             }
         }
         flush_out(&mut inner, &out_tx);
@@ -1401,6 +1416,7 @@ mod relay_tests {
             next_heal_potion_at: now - ACTION_BUDGET,
             attack_sent: None,
             target_intent: None,
+            target_waiters: Vec::new(),
             loot: None,
             deposit: None,
             sent_drop: None,
@@ -4534,15 +4550,11 @@ mod relay_tests {
         );
     }
 
-    #[test]
-    fn a_target_intent_is_answered_when_the_cursor_arrives() {
-        const TREE: Serial = Serial(0x4000_0010);
-        const CURSOR_ID: u32 = 9;
-        let mut inner = test_session();
-        inner.target_intent = Some(TREE);
+    /// A target cursor as the shard sends it, asking for an object.
+    fn target_cursor(cursor_id: u32) -> Vec<u8> {
         let mut w = uoterm_protocol::buf::PacketWriter::new(PKT_TARGET);
         w.u8(0)
-            .u32(CURSOR_ID)
+            .u32(cursor_id)
             .u8(0)
             .u32(0)
             .u16(0)
@@ -4550,7 +4562,69 @@ mod relay_tests {
             .u8(0)
             .i8(0)
             .u16(0);
-        ingest(&mut inner, &w.finish());
+        w.finish()
+    }
+
+    const A_CURSOR: u32 = 9;
+    const A_SHORT_WAIT_MS: u64 = 300;
+
+    fn wait_args(ms: u64) -> Value {
+        json!({ "timeout_ms": ms })
+    }
+
+    /// A cursor already up answers the wait at once.
+    #[test]
+    fn wait_target_answers_at_once_when_a_cursor_is_up() {
+        let mut inner = test_session();
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        let (tx, mut rx) = oneshot::channel();
+        wait_for_target(&mut inner, &wait_args(A_SHORT_WAIT_MS), tx, Instant::now());
+        assert!(rx.try_recv().expect("answered at once").ok);
+    }
+
+    /// The wait holds its answer until the cursor comes, the way a script
+    /// waits for a spell's target before it aims.
+    #[test]
+    fn wait_target_answers_when_the_cursor_comes() {
+        let mut inner = test_session();
+        let (tx, mut rx) = oneshot::channel();
+        wait_for_target(&mut inner, &wait_args(A_SHORT_WAIT_MS), tx, Instant::now());
+        assert!(rx.try_recv().is_err(), "no answer before a cursor comes");
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        assert!(rx.try_recv().expect("answered when the cursor came").ok);
+    }
+
+    /// A wait that runs out says so, so a script stops at the step that failed
+    /// and does not aim at nothing.
+    #[test]
+    fn wait_target_gives_up_when_its_time_runs_out() {
+        let mut inner = test_session();
+        let (tx, mut rx) = oneshot::channel();
+        let now = Instant::now();
+        wait_for_target(&mut inner, &wait_args(A_SHORT_WAIT_MS), tx, now);
+        expire_target_waiters(&mut inner, now + Duration::from_millis(A_SHORT_WAIT_MS));
+        let answer = rx.try_recv().expect("answered when the time ran out");
+        assert!(!answer.ok);
+        assert_eq!(answer.error.as_deref(), Some(NO_TARGET_CURSOR));
+    }
+
+    /// No caller waits longer than the tool call itself allows.
+    #[test]
+    fn wait_target_never_outlasts_the_tool_call() {
+        let mut inner = test_session();
+        let (tx, _rx) = oneshot::channel();
+        let now = Instant::now();
+        wait_for_target(&mut inner, &wait_args(u64::MAX), tx, now);
+        let gives_up_at = inner.target_waiters[0].0;
+        assert!(gives_up_at - now < TOOL_CALL_TIMEOUT);
+    }
+
+    #[test]
+    fn a_target_intent_is_answered_when_the_cursor_arrives() {
+        const TREE: Serial = Serial(0x4000_0010);
+        let mut inner = test_session();
+        inner.target_intent = Some(TREE);
+        ingest(&mut inner, &target_cursor(A_CURSOR));
         assert!(inner.target_intent.is_none());
         assert!(inner.world.read().pending_target.is_none());
         assert!(
@@ -5173,6 +5247,9 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     }
                     if let Inbound::LiftRejected { .. } = &msg {
                         inner.world.write().holding = None;
+                    }
+                    if let Inbound::Target(_) = &msg {
+                        answer_target_waiters(inner);
                     }
                     // A held item deleted after its drop went out has landed
                     // and been used up: a bank that keeps account gold turns
@@ -6009,6 +6086,52 @@ fn send_attack(inner: &mut Inner, serial: Serial) {
     inner.outbound.push_back(encode::attack(serial));
 }
 
+/// Answers a `wait_target` call at once when a cursor is already up, and
+/// otherwise keeps the reply until a cursor comes or the wait runs out. The
+/// session loop never blocks on it, so the reflexes keep running.
+fn wait_for_target(
+    inner: &mut Inner,
+    args: &Value,
+    reply: oneshot::Sender<ToolResult>,
+    now: Instant,
+) {
+    if inner.world.read().pending_target.is_some() {
+        let _ = reply.send(target_arrived());
+        return;
+    }
+    let wait_ms = args
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(WAIT_TARGET_DEFAULT_MS)
+        .min(WAIT_TARGET_MAX_MS);
+    inner
+        .target_waiters
+        .push((now + Duration::from_millis(wait_ms), reply));
+}
+
+fn target_arrived() -> ToolResult {
+    ToolResult::ok(json!({ "pending": true }))
+}
+
+/// Tells every caller still waiting that a cursor has come.
+fn answer_target_waiters(inner: &mut Inner) {
+    for (_, reply) in inner.target_waiters.drain(..) {
+        let _ = reply.send(target_arrived());
+    }
+}
+
+/// Gives up the waits whose time has run out, with an error that says so.
+fn expire_target_waiters(inner: &mut Inner, now: Instant) {
+    let (due, waiting): (Vec<_>, Vec<_>) = inner
+        .target_waiters
+        .drain(..)
+        .partition(|(gives_up_at, _)| *gives_up_at <= now);
+    inner.target_waiters = waiting;
+    for (_, reply) in due {
+        let _ = reply.send(ToolResult::err(NO_TARGET_CURSOR));
+    }
+}
+
 fn store_or_answer_target(inner: &mut Inner, serial: Serial) {
     let cursor = inner.world.read().pending_target.clone();
     if let Some(cursor) = cursor {
@@ -6798,9 +6921,6 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 inner.target_intent = None;
                 ToolResult::err("must have a target cursor")
             }
-        }
-        TOOL_WAIT_TARGET => {
-            ToolResult::ok(json!({ "pending": inner.world.read().pending_target.is_some() }))
         }
         TOOL_GUMP_RESPOND | TOOL_GUMP_CLOSE => {
             let gump = inner.world.read().gumps.first().cloned();
