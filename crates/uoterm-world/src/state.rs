@@ -934,7 +934,8 @@ impl World {
         }
     }
 
-    /// True when this mobile said the character's name in the last minute.
+    /// True when this mobile said the character's name in the last three
+    /// minutes.
     pub fn asked_in_chat(&self, serial: Serial) -> bool {
         self.spoken_to.asked_by(serial, unix_now_ms())
     }

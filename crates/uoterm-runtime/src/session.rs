@@ -4906,6 +4906,45 @@ mod relay_tests {
         assert_eq!(nothing.error.as_deref(), Some(NOTHING_TO_ANSWER));
     }
 
+    /// A found corpse says where it lies, so an agent can walk to it, and
+    /// `distance` leaves out what is farther.
+    #[test]
+    fn find_items_gives_each_items_place_and_distance() {
+        const NEAR: Serial = Serial(0x4000_0E21);
+        const FAR: Serial = Serial(0x4000_0E22);
+        const CORPSE_GRAPHIC: u16 = 0x2006;
+        let mut inner = named_by_ann(false, "hi");
+        let here = inner.world.read().self_state.location;
+        for (serial, dx) in [(NEAR, 2u16), (FAR, 9)] {
+            inner.world.write().items.insert(
+                serial,
+                uoterm_world::Item {
+                    serial,
+                    graphic: CORPSE_GRAPHIC,
+                    amount: 1,
+                    hue: 0,
+                    location: Point3::new(here.x + dx, here.y, here.z),
+                    parent: None,
+                    layer: None,
+                    grid: 0,
+                    name: String::new(),
+                },
+            );
+        }
+        let found = answer_agent(
+            &mut inner,
+            call(
+                TOOL_FIND_ITEMS,
+                json!({ "graphic": CORPSE_GRAPHIC, "distance": 5 }),
+            ),
+        );
+        let items = found.result.as_array().expect("a list");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["serial"], NEAR.0);
+        assert_eq!(items[0]["dist"], 2);
+        assert_eq!(items[0]["location"]["x"], here.x + 2);
+    }
+
     /// An agent can start a line to the party, guild or alliance, not only
     /// answer one.
     #[test]
@@ -8141,19 +8180,29 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             // way every other serial argument is.
             let container = arg_serial_opt(args, "container");
             let name = args.get("name").and_then(|v| v.as_str());
-            let found: Vec<_> = inner
-                .world
-                .read()
+            let within = arg_number(args, "distance");
+            let world = inner.world.read();
+            let here = world.self_state.location;
+            // Each item with the map tile it is on (its own, or its holder's)
+            // and how far that is, so an agent can walk to it.
+            let found: Vec<_> = world
                 .find_items(graphic, container, name)
                 .iter()
-                .map(|i| {
-                    json!({
+                .filter_map(|i| {
+                    let at = world.map_location(i.serial);
+                    let dist = at.map(|at| here.chebyshev(at));
+                    if within.is_some_and(|w| dist.map_or(true, |d| d > w)) {
+                        return None;
+                    }
+                    Some(json!({
                         "serial": i.serial,
                         "graphic": i.graphic,
                         "amount": i.amount,
                         "name": i.name,
                         "container": i.parent,
-                    })
+                        "location": at,
+                        "dist": dist,
+                    }))
                 })
                 .collect();
             ToolResult::ok(json!(found))

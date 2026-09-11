@@ -866,15 +866,26 @@ fn move_one(
     offset: bool,
     ctx: &Ctx,
 ) -> std::result::Result<Step, String> {
-    let (stack, here) = {
+    let (stack, here, reach) = {
         let w = game.world();
         let stack = w
             .items
             .get(&serial)
             .map(|i| i.amount)
             .ok_or_else(|| format!("no item {serial}"))?;
-        (stack, w.self_state.location)
+        let here = w.self_state.location;
+        // Where the item is on the map: its own tile, or the tile of the
+        // corpse, bag or mobile that holds it.
+        let reach = w.map_location(serial).map(|at| here.chebyshev(at));
+        (stack, here, reach)
     };
+    // The shard ignores a lift from farther than it lets a player reach,
+    // and says nothing, so the script is told instead.
+    if let Some(d) = reach.filter(|&d| d > u32::from(RANGE_LOOT)) {
+        return Err(format!(
+            "{serial} is {d} tiles away; a move reaches {RANGE_LOOT}"
+        ));
+    }
     let destination = if dest.is(SOURCE_GROUND) {
         let at = match (place, offset) {
             (Some((x, y, z)), true) => offset_point(here, x, y, z)?,

@@ -8,8 +8,9 @@ use uoterm_protocol::Serial;
 
 /// How many lines spoken to the character the world keeps.
 pub const SPOKEN_TO_KEEP: usize = 5;
-/// How long a line spoken to the character stays in the observation.
-pub const SPOKEN_TO_FRESH_MS: u64 = 60_000;
+/// How long a line spoken to the character waits for an answer. A player
+/// who is busy often answers a few minutes late ("sorry, was skinning").
+pub const SPOKEN_TO_FRESH_MS: u64 = 180_000;
 /// The agent answers in a few friendly words and says no to every plan.
 pub const CHAT_MODE_BASIC: &str = "basic";
 /// The agent may also party up with, follow and fight beside a player who

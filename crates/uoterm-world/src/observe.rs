@@ -146,7 +146,8 @@ pub struct Observe {
     pub prompt: bool,
     /// The question of an open one-field text dialog.
     pub text_entry: Option<String>,
-    /// Lines other characters said to this one by name in the last minute,
+    /// Lines other characters said to this one by name in the last three
+    /// minutes,
     /// oldest first. Empty when the `answer_when_named` switch is off.
     pub spoken_to: Vec<SpokenTo>,
     /// `basic` or `play_along`: what the agent may agree to in chat. None

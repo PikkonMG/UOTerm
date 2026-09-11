@@ -205,7 +205,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_FIND_MOBILES, "Filter nearby mobiles.", "in world"),
     (
         TOOL_FIND_ITEMS,
-        "Filter items on the ground and inside containers. Args: graphic, name (part of the display name), container (a container serial, to search only that one).",
+        "Filter items on the ground and inside containers. Args: graphic, name (part of the display name), container (a container serial, to search only that one), distance (tiles). Each item has its map location and dist.",
         "in world",
     ),
     (

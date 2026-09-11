@@ -903,6 +903,54 @@ mod tests {
         assert_eq!(status(&inner)["status"], "done");
     }
 
+    /// The shard says nothing when a lift is out of reach, so the script
+    /// must: a move from a corpse eight tiles away stops with the distance.
+    #[test]
+    fn a_move_out_of_reach_stops_the_script_and_says_why() {
+        const CORPSE: Serial = Serial(0x4000_0C0C);
+        const HIDES: Serial = Serial(0x4000_0C0D);
+        const FAR_TILES: u16 = 8;
+        let mut inner = player();
+        let here = inner.world.read().self_state.location;
+        {
+            let mut w = inner.world.write();
+            for (serial, parent, at) in [
+                (
+                    CORPSE,
+                    None,
+                    Point3::new(here.x + FAR_TILES, here.y, here.z),
+                ),
+                (HIDES, Some(CORPSE), Point3::new(0, 0, 0)),
+            ] {
+                w.items.insert(
+                    serial,
+                    uoterm_world::Item {
+                        serial,
+                        graphic: 0x1079,
+                        amount: 1,
+                        hue: PLAIN_HUE,
+                        location: at,
+                        parent,
+                        layer: None,
+                        grid: 0,
+                        name: String::new(),
+                    },
+                );
+            }
+        }
+        start(&mut inner, "moveitem 0x40000C0D 'backpack'");
+        tick(&mut inner, 1);
+        let s = status(&inner);
+        assert_eq!(s["status"], "failed");
+        assert!(
+            s["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("8 tiles away"),
+            "{s}"
+        );
+    }
+
     #[test]
     fn findtype_sets_found_for_the_next_line() {
         let mut inner = player();
