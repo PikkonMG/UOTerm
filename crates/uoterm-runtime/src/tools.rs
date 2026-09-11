@@ -225,7 +225,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_SAY,
-        "Speak. Persona blocks *emotes* and rate-limits.",
+        "Speak. channel: say (default), party, guild or alliance. Persona blocks *emotes* and rate-limits.",
         "in world",
     ),
     (TOOL_WHISPER, "Whisper.", "in world"),
@@ -402,6 +402,7 @@ pub fn mcp_tool_list() -> Value {
                         "session_id": {"type": "string"},
                         "text": {"type": "string"},
                         "to": {"type": "string"},
+                        "channel": {"type": "string"},
                         "serial": {"type": "string"},
                         "x": {"type": "integer"},
                         "y": {"type": "integer"},

@@ -4906,6 +4906,34 @@ mod relay_tests {
         assert_eq!(nothing.error.as_deref(), Some(NOTHING_TO_ANSWER));
     }
 
+    /// An agent can start a line to the party, guild or alliance, not only
+    /// answer one.
+    #[test]
+    fn say_goes_to_the_channel_it_names() {
+        let mut inner = named_by_ann(false, "hi");
+        inner.persona.typo_rate = 0.0;
+        let say = |inner: &mut Inner, channel: &str, text: &str| {
+            inner.speech.last_reply = None;
+            inner.outbound.clear();
+            answer_agent(
+                inner,
+                call(TOOL_SAY, json!({ "text": text, "channel": channel })),
+            )
+        };
+        assert!(say(&mut inner, "party", "heading out").ok);
+        assert!(inner
+            .outbound
+            .contains(&encode::party_message(None, "heading out")));
+        assert!(say(&mut inner, "guild", "guild meet soon").ok);
+        assert!(inner.outbound.contains(&encode::keyword_speech(
+            SPEECH_GUILD,
+            DEFAULT_SPEECH_HUE,
+            &[],
+            "guild meet soon"
+        )));
+        assert!(!say(&mut inner, "faction", "hm").ok);
+    }
+
     /// A walk the agent asks for wins over standing still in a fight: a
     /// character told to run from a foe, or to go to the bank, must go.
     #[test]
@@ -8174,7 +8202,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             inner.ensure_facet();
             ToolResult::ok(json!(inner.tiles().can_walk_from(z, x, y)))
         }
-        TOOL_SAY => speak(inner, args, SPEECH_REGULAR),
+        TOOL_SAY => say_in_channel(inner, args),
         TOOL_REPLY => reply(inner, args),
         TOOL_WHISPER => speak(inner, args, SPEECH_WHISPER),
         TOOL_EMOTE => {
@@ -9000,6 +9028,37 @@ fn send_party_line(
 }
 
 const NOTHING_TO_ANSWER: &str = "no line said to the character waits for an answer";
+
+/// Says a line out loud, or to the party, guild or alliance when `channel`
+/// names one.
+fn say_in_channel(inner: &mut Inner, args: &Value) -> ToolResult {
+    let channel = args
+        .get(ARG_CHANNEL)
+        .and_then(|v| v.as_str())
+        .unwrap_or(CHANNEL_SAY);
+    match channel {
+        CHANNEL_SAY => speak(inner, args, SPEECH_REGULAR),
+        CHANNEL_GUILD => speak(inner, args, SPEECH_GUILD),
+        CHANNEL_ALLIANCE => speak(inner, args, SPEECH_ALLIANCE),
+        CHANNEL_PARTY => {
+            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            match send_party_line(inner, None, text) {
+                Ok(()) => {
+                    answer_group(inner, uoterm_world::ChannelGroup::Party);
+                    ToolResult::action(TOOL_SAY)
+                }
+                Err(e) => ToolResult::err(e),
+            }
+        }
+        other => ToolResult::err(format!("'{other}' is not say, party, guild or alliance")),
+    }
+}
+
+const ARG_CHANNEL: &str = "channel";
+const CHANNEL_SAY: &str = "say";
+const CHANNEL_PARTY: &str = "party";
+const CHANNEL_GUILD: &str = "guild";
+const CHANNEL_ALLIANCE: &str = "alliance";
 
 fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");

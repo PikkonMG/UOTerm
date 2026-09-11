@@ -173,6 +173,21 @@ fn take_events(inner: &mut Inner) -> Option<ToolResult> {
     (!events.is_empty()).then(|| event_answer(inner, events, missed))
 }
 
+/// What the character is doing now, so an agent's words match its acts:
+/// its goal, where it walks, whom it follows or plays along with, and a
+/// loot or bank job under way.
+fn doing(inner: &Inner, world: &World) -> Value {
+    json!({
+        "goal": inner.goal.name(),
+        "walking_to": inner.movement.goal,
+        "following": inner.follow.map(|s| world.name_of(s)),
+        "playing_along_with": inner.play_along.map(|run| world.name_of(run.with)),
+        "looting": inner.loot.as_ref().map(|job| job.corpse),
+        "banking": inner.deposit.is_some(),
+        "script": scripting::running_name(inner),
+    })
+}
+
 /// The events, and the state an agent needs to act on them.
 fn event_answer(inner: &Inner, events: Vec<Event>, missed: u64) -> ToolResult {
     let world = inner.world.read();
@@ -200,6 +215,7 @@ fn event_answer(inner: &Inner, events: Vec<Event>, missed: u64) -> ToolResult {
         "chat_mode": world.chat_mode(),
         "target_cursor": world.pending_target.is_some(),
         "pack": { "items": pack_items, "weight": s.weight, "weight_max": s.weight_max },
+        "doing": doing(inner, &world),
     });
     ToolResult::ok(json!({ "events": events, "missed": missed, "state": state }))
 }
@@ -278,8 +294,10 @@ mod tests {
             name: "Ann".into(),
             text: "mara, hi".into(),
         }));
+        inner.follow = Some(ANN);
         let answer = next_event(&mut inner).expect("an answer at once");
         assert_eq!(kinds(&answer), vec!["spoken_to"]);
+        assert_eq!(answer.result["state"]["doing"]["following"], "Ann");
         assert_eq!(answer.result["state"]["unanswered"][0]["name"], "Ann");
         assert_eq!(answer.result["state"]["hits"], FULL_HEALTH);
         assert!(next_event(&mut inner).is_none(), "the event is given once");

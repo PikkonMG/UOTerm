@@ -1,3 +1,7 @@
+// The tool list is one large json! block; the default macro depth is too
+// shallow for it.
+#![recursion_limit = "256"]
+
 pub mod api;
 pub mod building;
 pub mod config;
