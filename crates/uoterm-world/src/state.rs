@@ -564,6 +564,11 @@ impl World {
                 }
             }
             Inbound::Delete(serial) => {
+                // A slain foe leaves a corpse and its mobile is deleted; the
+                // shard may never say the fight is over.
+                if self.combatant == Some(*serial) {
+                    self.end_fight();
+                }
                 self.detach(*serial);
                 self.names.forget(*serial);
                 if let Some(mobile) = self.mobiles.remove(serial) {
@@ -775,24 +780,15 @@ impl World {
                     at: Instant::now(),
                 });
             }
-            Inbound::CombatantChanged { serial } => {
-                if serial.is_valid() {
-                    self.combatant = Some(*serial);
-                } else {
-                    self.combatant = None;
-                    self.last_swing = None;
-                    self.last_swing_gap = None;
-                }
+            Inbound::CombatantChanged { serial } if serial.is_valid() => {
+                self.combatant = Some(*serial);
                 self.push_event(Event::new(
                     EventKind::CombatantChanged,
                     self.combatant,
-                    if serial.is_valid() {
-                        format!("{serial}")
-                    } else {
-                        "ended".into()
-                    },
+                    format!("{serial}"),
                 ));
             }
+            Inbound::CombatantChanged { .. } => self.end_fight(),
             Inbound::LiftRejected { reason } => {
                 self.holding = None;
                 self.push_event(Event::new(
@@ -1414,6 +1410,14 @@ impl World {
         self.equipped_weapon_graphic()
             .map(weapon_range)
             .unwrap_or(RANGE_MELEE)
+    }
+
+    /// The character has no combat target any more.
+    fn end_fight(&mut self) {
+        self.combatant = None;
+        self.last_swing = None;
+        self.last_swing_gap = None;
+        self.push_event(Event::new(EventKind::CombatantChanged, None, "ended"));
     }
 
     pub fn fighting(&self) -> bool {

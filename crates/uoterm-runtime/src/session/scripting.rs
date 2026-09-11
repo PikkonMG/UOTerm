@@ -861,6 +861,48 @@ mod tests {
         assert_eq!(said, 1, "a pack is worn, no bank box is open");
     }
 
+    /// `while movetype` keeps moving while items are left, even when the
+    /// character must wait a moment before each move. A check that read the
+    /// wait as false ended the loop before the first move.
+    #[test]
+    fn a_movetype_loop_waits_for_pacing_and_moves_every_item() {
+        const BAG: Serial = Serial(0x4000_0C09);
+        const FIRST: Serial = Serial(0x4000_0C0A);
+        const SECOND: Serial = Serial(0x4000_0C0B);
+        const GRAPHIC_HIDES: u16 = 0x1079;
+        let mut inner = player();
+        put_in_pack(&mut inner, FIRST, GRAPHIC_HIDES);
+        put_in_pack(&mut inner, SECOND, GRAPHIC_HIDES);
+        start(
+            &mut inner,
+            "while movetype 0x1079 'backpack' 0x40000C09\n  sysmsg 'moved'\nendwhile",
+        );
+        let lifted = |inner: &Inner, item: Serial| {
+            inner
+                .outbound
+                .iter()
+                .any(|p| p.first() == Some(&PKT_LIFT) && p[1..5] == item.0.to_be_bytes())
+        };
+        // The first tick is too soon to act: the check must wait, not end.
+        inner.next_action_at = Instant::now() + Duration::from_secs(1);
+        pump_script(&mut inner, Instant::now());
+        assert_eq!(status(&inner)["status"], "running", "the loop waits");
+        for item in [FIRST, SECOND] {
+            ready_to_act(&mut inner);
+            pump_script(&mut inner, Instant::now());
+            assert!(lifted(&inner, item), "moved {item}");
+            inner
+                .world
+                .write()
+                .items
+                .get_mut(&item)
+                .expect("an item")
+                .parent = Some(BAG);
+        }
+        tick(&mut inner, 3);
+        assert_eq!(status(&inner)["status"], "done");
+    }
+
     #[test]
     fn findtype_sets_found_for_the_next_line() {
         let mut inner = player();

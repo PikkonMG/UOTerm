@@ -297,7 +297,7 @@ yourself when you give none.
 | `findalias 'pet'`, `listexists 'fruit'`, `list 'fruit' > 2`, `inlist 'fruit' 'apple'` | Aliases and lists. `findalias` also knows the game's own names, such as `'bank'` once the bank box is open. |
 | `timer 'band' > 10000`, `timerexists 'band'` | Timers. |
 | `organizing`, `restocking`, `dressing` | True while that agent job runs. |
-| `usetype`, `useobject`, `useonce`, `moveitem`, `movetype`, `clearhands` | These commands also work as checks: true when they found what they look for and did it. |
+| `usetype`, `useobject`, `useonce`, `moveitem`, `movetype`, `clearhands` | These commands also work as checks: true when they found what they look for and did it. When the character must wait a moment to act, the check waits (up to 5 seconds), so `while movetype ...` moves every item. |
 
 ## Running scripts
 

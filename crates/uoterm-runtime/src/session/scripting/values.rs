@@ -505,9 +505,14 @@ fn target_exists(game: &Game, call: &Call) -> Read {
     }))
 }
 
+/// The longest a check that found its item waits for the character to be
+/// allowed to act. Then it reads false.
+const CHECK_WAIT_MAX: Duration = Duration::from_secs(5);
+
 /// Runs a command that doubles as a condition. It is true when the command
 /// found what it looks for and did it, and false when there was nothing to
-/// do or the character must wait to act.
+/// do. When it found its item but the character must wait to act, the
+/// line waits and is asked again, up to [`CHECK_WAIT_MAX`].
 fn act_as_condition(game: &mut Game, call: &Call, ctx: &mut Ctx) -> Read {
     let found = match call.name.as_str() {
         "usetype" => super::commands::use_type_pick(game, call, ctx)?.is_some(),
@@ -542,7 +547,12 @@ fn act_as_condition(game: &mut Game, call: &Call, ctx: &mut Ctx) -> Read {
             ctx.mark_acted();
             Ok(ScriptValue::Bool(true))
         }
-        Step::Wait => Ok(ScriptValue::Bool(false)),
+        Step::Wait => {
+            if ctx.waited() < CHECK_WAIT_MAX {
+                ctx.mark_wait();
+            }
+            Ok(ScriptValue::Bool(false))
+        }
         Step::Fail(message) => Err(message),
     }
 }

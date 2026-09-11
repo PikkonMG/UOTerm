@@ -4906,6 +4906,30 @@ mod relay_tests {
         assert_eq!(nothing.error.as_deref(), Some(NOTHING_TO_ANSWER));
     }
 
+    /// A walk the agent asks for wins over standing still in a fight: a
+    /// character told to run from a foe, or to go to the bank, must go.
+    #[test]
+    fn an_asked_walk_is_kept_during_a_fight() {
+        let mut inner = named_by_ann(false, "hi");
+        inner
+            .world
+            .write()
+            .apply(&Inbound::CombatantChanged { serial: ANN });
+        let from = inner.world.read().self_state.location;
+        let dest = Point3::new(from.x + 3, from.y, from.z);
+        let walk = answer_agent(
+            &mut inner,
+            call(TOOL_MOVE_TO, json!({ "x": dest.x, "y": dest.y })),
+        );
+        assert!(walk.ok, "{:?}", walk.error);
+        reflex_tick(&mut inner);
+        assert_eq!(
+            inner.movement.goal,
+            Some(dest),
+            "the walk survives the fight"
+        );
+    }
+
     /// A player's party line, then a greeting from someone in the square:
     /// the reply picked by name goes to the party, and the greeting still
     /// waits for its own answer.
@@ -7493,7 +7517,7 @@ fn pump_loot(inner: &mut Inner) {
     };
     // Read first, then match: a guard in the match head would live through
     // the arms, and they take the write lock.
-    let step = job.step(&inner.world.read(), action_ready(inner));
+    let step = job.step(&inner.world.read(), action_ready(inner), Instant::now());
     match step {
         LootStep::Walk { x, y, z } => {
             let _ = queue_move(inner, Point3::new(x, y, z));
@@ -7502,6 +7526,9 @@ fn pump_loot(inner: &mut Inner) {
             send_double_click(inner, serial);
         }
         LootStep::Lift { serial, amount } => {
+            if let Some(job) = inner.loot.as_mut() {
+                job.limits.note_lift(serial);
+            }
             send_lift(inner, serial, amount);
             inner.world.write().holding = Some(serial);
             inner.sent_drop = None;
@@ -7518,8 +7545,10 @@ fn pump_loot(inner: &mut Inner) {
             }
         }
         LootStep::Wait => {}
-        LootStep::Done | LootStep::Fail(_) => {
+        LootStep::Done => inner.loot = None,
+        LootStep::Fail(why) => {
             inner.loot = None;
+            job_failed(inner, "loot", why);
         }
     }
 }
@@ -7532,12 +7561,15 @@ fn pump_deposit(inner: &mut Inner) {
     };
     // Read first, then match: a guard in the match head would live through
     // the arms, and they take the write lock.
-    let step = job.step(&inner.world.read(), action_ready(inner));
+    let step = job.step(&inner.world.read(), action_ready(inner), Instant::now());
     match step {
         DepositStep::Open(serial) => {
             send_double_click(inner, serial);
         }
         DepositStep::Lift { serial, amount } => {
+            if let Some(job) = inner.deposit.as_mut() {
+                job.limits.note_lift(serial);
+            }
             send_lift(inner, serial, amount);
             inner.world.write().holding = Some(serial);
             inner.sent_drop = None;
@@ -7554,10 +7586,23 @@ fn pump_deposit(inner: &mut Inner) {
             }
         }
         DepositStep::Wait => {}
-        DepositStep::Done | DepositStep::Fail(_) => {
+        DepositStep::Done => inner.deposit = None,
+        DepositStep::Fail(why) => {
             inner.deposit = None;
+            job_failed(inner, "deposit", why);
         }
     }
+}
+
+/// Tells the agent a loot or bank job gave up, and why, so it can try
+/// another way.
+fn job_failed(inner: &Inner, job: &str, why: &str) {
+    tracing::info!(job, why, "a job gave up");
+    inner.world.write().push_event(uoterm_world::Event::new(
+        uoterm_world::EventKind::JobFailed,
+        None,
+        format!("{job}: {why}"),
+    ));
 }
 
 fn send_bandage_self(inner: &mut Inner) {
@@ -8196,7 +8241,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let Some(pack) = backpack_serial(&inner.world.read()) else {
                 return ToolResult::err("no backpack");
             };
-            inner.loot = Some(LootJob::new(serial, pack));
+            inner.loot = Some(LootJob::new(serial, pack, Instant::now()));
             inner.sent_drop = None;
             pump_loot(inner);
             ToolResult::action(TOOL_LOOT)
@@ -8212,7 +8257,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .get("graphic")
                 .and_then(|v| v.as_u64())
                 .map(|graphic| graphic as u16);
-            inner.deposit = Some(DepositJob::new(pack, only));
+            inner.deposit = Some(DepositJob::new(pack, only, Instant::now()));
             inner.sent_drop = None;
             pump_deposit(inner);
             ToolResult::action(TOOL_DEPOSIT)

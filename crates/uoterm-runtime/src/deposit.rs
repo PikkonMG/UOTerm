@@ -1,8 +1,12 @@
 //! Put things in the bank: open the bank box, lift each stack out of the pack
 //! and drop it in the box.
 
+use std::time::Instant;
+
 use uoterm_protocol::Serial;
 use uoterm_world::World;
+
+use crate::loot::{MoveLimits, JOB_LIFTS_REFUSED, JOB_TOOK_TOO_LONG};
 
 /// A lift of nothing takes one item, not the stack. Send at least this.
 const LIFT_AT_LEAST: u16 = 1;
@@ -12,6 +16,7 @@ pub struct DepositJob {
     pub backpack: Serial,
     /// The one graphic to bank, or every graphic in the pack when it is None.
     pub only: Option<u16>,
+    pub limits: MoveLimits,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,8 +30,12 @@ pub enum DepositStep {
 }
 
 impl DepositJob {
-    pub fn new(backpack: Serial, only: Option<u16>) -> Self {
-        Self { backpack, only }
+    pub fn new(backpack: Serial, only: Option<u16>, now: Instant) -> Self {
+        Self {
+            backpack,
+            only,
+            limits: MoveLimits::new(now),
+        }
     }
 
     /// The next thing to do to move the pack into the bank box.
@@ -34,7 +43,10 @@ impl DepositJob {
     /// The character wears his bank box on a layer of its own, and the server
     /// only fills and opens it beside a banker. So the box is opened first:
     /// nothing can go into a container the server has not handed over.
-    pub fn step(&self, world: &World, action_ready: bool) -> DepositStep {
+    pub fn step(&self, world: &World, action_ready: bool, now: Instant) -> DepositStep {
+        if self.limits.timed_out(now) {
+            return DepositStep::Fail(JOB_TOOK_TOO_LONG);
+        }
         let Some(bank) = world.bank_box() else {
             return DepositStep::Fail("no bank box");
         };
@@ -53,17 +65,18 @@ impl DepositJob {
         let Some(pack) = world.containers.get(&self.backpack) else {
             return DepositStep::Done;
         };
-        let Some(item) = pack.items.iter().find_map(|serial| {
-            world
-                .items
-                .get(serial)
-                .filter(|item| item.parent == Some(self.backpack))
-                .filter(|item| match self.only {
-                    Some(graphic) => item.graphic == graphic,
-                    None => true,
-                })
-        }) else {
+        let left: Vec<_> = pack
+            .items
+            .iter()
+            .filter_map(|serial| world.items.get(serial))
+            .filter(|item| item.parent == Some(self.backpack))
+            .filter(|item| self.only.map_or(true, |graphic| item.graphic == graphic))
+            .collect();
+        if left.is_empty() {
             return DepositStep::Done;
+        }
+        let Some(item) = left.into_iter().find(|i| self.limits.may_lift(i.serial)) else {
+            return DepositStep::Fail(JOB_LIFTS_REFUSED);
         };
         if !action_ready {
             return DepositStep::Wait;
@@ -78,6 +91,7 @@ impl DepositJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::loot::JOB_TIME_LIMIT;
     use uoterm_protocol::{
         ContainerItem, EquipItem, Inbound, Point3, GRAPHIC_BACKPACK, LAYER_BACKPACK, LAYER_BANK,
     };
@@ -148,27 +162,47 @@ mod tests {
         });
     }
 
+    /// A bank job that cannot finish gives up at its time limit, so the
+    /// character is free to walk again.
+    #[test]
+    fn a_bank_job_that_runs_too_long_gives_up() {
+        let w = world_with_pack(true);
+        let now = Instant::now();
+        let job = DepositJob::new(BACKPACK, EVERYTHING, now);
+        assert_ne!(
+            job.step(&w, READY, now),
+            DepositStep::Fail(JOB_TOOK_TOO_LONG)
+        );
+        assert_eq!(
+            job.step(&w, READY, now + JOB_TIME_LIMIT),
+            DepositStep::Fail(JOB_TOOK_TOO_LONG)
+        );
+    }
+
     #[test]
     fn deposit_fails_when_the_server_has_sent_no_bank_box() {
         let w = world_with_pack(false);
-        let job = DepositJob::new(BACKPACK, EVERYTHING);
-        assert_eq!(job.step(&w, READY), DepositStep::Fail("no bank box"));
+        let job = DepositJob::new(BACKPACK, EVERYTHING, Instant::now());
+        assert_eq!(
+            job.step(&w, READY, Instant::now()),
+            DepositStep::Fail("no bank box")
+        );
     }
 
     #[test]
     fn deposit_opens_the_bank_box_before_anything_goes_in() {
         let w = world_with_pack(true);
-        let job = DepositJob::new(BACKPACK, EVERYTHING);
-        assert_eq!(job.step(&w, NOT_READY), DepositStep::Wait);
-        assert_eq!(job.step(&w, READY), DepositStep::Open(BANK));
+        let job = DepositJob::new(BACKPACK, EVERYTHING, Instant::now());
+        assert_eq!(job.step(&w, NOT_READY, Instant::now()), DepositStep::Wait);
+        assert_eq!(job.step(&w, READY, Instant::now()), DepositStep::Open(BANK));
     }
 
     #[test]
     fn deposit_lifts_the_stack_amount_not_zero() {
         let mut w = world_with_pack(true);
         open_bank(&mut w);
-        let job = DepositJob::new(BACKPACK, EVERYTHING);
-        match job.step(&w, READY) {
+        let job = DepositJob::new(BACKPACK, EVERYTHING, Instant::now());
+        match job.step(&w, READY, Instant::now()) {
             DepositStep::Lift { serial, amount } => {
                 assert_eq!(serial, GOLD);
                 assert_eq!(amount, GOLD_AMOUNT);
@@ -183,9 +217,9 @@ mod tests {
         let mut w = world_with_pack(true);
         open_bank(&mut w);
         w.holding = Some(GOLD);
-        let job = DepositJob::new(BACKPACK, EVERYTHING);
+        let job = DepositJob::new(BACKPACK, EVERYTHING, Instant::now());
         assert_eq!(
-            job.step(&w, NOT_READY),
+            job.step(&w, NOT_READY, Instant::now()),
             DepositStep::Drop {
                 serial: GOLD,
                 dest: BANK
@@ -197,8 +231,8 @@ mod tests {
     fn deposit_banks_only_the_graphic_it_was_asked_for() {
         let mut w = world_with_pack(true);
         open_bank(&mut w);
-        let job = DepositJob::new(BACKPACK, Some(GRAPHIC_BONE));
-        match job.step(&w, READY) {
+        let job = DepositJob::new(BACKPACK, Some(GRAPHIC_BONE), Instant::now());
+        match job.step(&w, READY, Instant::now()) {
             DepositStep::Lift { serial, .. } => assert_eq!(serial, BONE, "the gold stays put"),
             other => panic!("{other:?}"),
         }
@@ -209,7 +243,7 @@ mod tests {
         let mut w = world_with_pack(true);
         open_bank(&mut w);
         const NOT_IN_THE_PACK: u16 = 0x1234;
-        let job = DepositJob::new(BACKPACK, Some(NOT_IN_THE_PACK));
-        assert_eq!(job.step(&w, READY), DepositStep::Done);
+        let job = DepositJob::new(BACKPACK, Some(NOT_IN_THE_PACK), Instant::now());
+        assert_eq!(job.step(&w, READY, Instant::now()), DepositStep::Done);
     }
 }

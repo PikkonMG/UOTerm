@@ -36,6 +36,8 @@ pub enum EventKind {
     PromptOpened,
     /// Another player opened a trade window with the character.
     TradeOpened,
+    /// A loot or bank job gave up, and why.
+    JobFailed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

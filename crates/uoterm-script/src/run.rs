@@ -85,6 +85,9 @@ pub struct Ctx<'a> {
     output: &'a mut Vec<String>,
     /// A condition word that acted in the game sets this, so the tick ends.
     acted: bool,
+    /// A condition word that must wait before it can answer sets this, so
+    /// the line is asked again at the next tick.
+    wait: bool,
 }
 
 impl Ctx<'_> {
@@ -101,6 +104,12 @@ impl Ctx<'_> {
     /// A condition word calls this when it sent something to the shard.
     pub fn mark_acted(&mut self) {
         self.acted = true;
+    }
+
+    /// A condition word calls this when it cannot answer yet, such as a
+    /// move that must wait for the character. The line is asked again.
+    pub fn mark_wait(&mut self) {
+        self.wait = true;
     }
 }
 
@@ -207,6 +216,7 @@ impl Script {
                 line_started: started,
                 output: &mut self.output,
                 acted: false,
+                wait: false,
             };
             let flow = match op {
                 Op::Command(call) => match expand_list_items(&call, &self.loops, ctx.vars) {
@@ -221,11 +231,13 @@ impl Script {
                     },
                 },
                 Op::If { cond, jump, line } => match eval(&cond, host, &mut ctx, &self.loops) {
+                    _ if ctx.wait => return,
                     Ok(true) => after(Flow::Next, ctx.acted),
                     Ok(false) => after(Flow::Goto(jump), ctx.acted),
                     Err(message) => Flow::Fail(line, message),
                 },
                 Op::While { cond, exit, line } => match eval(&cond, host, &mut ctx, &self.loops) {
+                    _ if ctx.wait => return,
                     Ok(true) => after(Flow::Next, ctx.acted),
                     Ok(false) => after(Flow::Goto(exit), ctx.acted),
                     Err(message) => Flow::Fail(line, message),
@@ -959,6 +971,47 @@ mod tests {
         let mut s = script("if findalias 'pet' and listexists 'l' and list 'l' == 1 and inlist 'l' 'X'\n  say 'ok'\nendif");
         run(&mut s, &mut host, &mut vars, 2);
         assert_eq!(host.ran, vec!["say ok"]);
+    }
+
+    /// A game side whose `ready` check must wait twice before it answers.
+    struct SlowCheck {
+        asked: usize,
+        ran: Vec<String>,
+    }
+
+    impl Host for SlowCheck {
+        fn command(&mut self, call: &Call, _ctx: &mut Ctx) -> Step {
+            self.ran.push(call.name.clone());
+            Step::Done
+        }
+
+        fn value(&mut self, _call: &Call, ctx: &mut Ctx) -> Result<Value, String> {
+            self.asked += 1;
+            if self.asked <= 2 {
+                ctx.mark_wait();
+                return Ok(Value::Bool(false));
+            }
+            Ok(Value::Bool(self.asked == 3))
+        }
+    }
+
+    /// A check that must wait is asked again at the next tick; it is not
+    /// read as false, which would end a `while` before it began.
+    #[test]
+    fn a_check_that_must_wait_is_asked_again() {
+        let mut host = SlowCheck {
+            asked: 0,
+            ran: Vec::new(),
+        };
+        let mut vars = Vars::default();
+        let mut s = script("while ready\n  say 'moved'\nendwhile");
+        let mut now = Instant::now();
+        for _ in 0..6 {
+            s.tick(&mut host, &mut vars, now);
+            now += TICK;
+        }
+        assert_eq!(host.ran, vec!["say"], "the loop ran once, after two waits");
+        assert_eq!(*s.status(), Status::Done);
     }
 
     #[test]

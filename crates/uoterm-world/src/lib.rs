@@ -1558,6 +1558,19 @@ mod tests {
         assert_eq!(w.observe_default().spoken_to[0].name, "Ann");
     }
 
+    /// A combat target that is gone from the world is no fight: a slain
+    /// cow leaves a corpse and its mobile is deleted, and a character that
+    /// still counts it as a foe never walks again.
+    #[test]
+    fn a_deleted_combatant_ends_the_fight() {
+        let mut w = mara_and_ann(true);
+        w.apply(&Inbound::CombatantChanged { serial: TALKER });
+        assert!(w.fighting());
+        w.apply(&Inbound::Delete(TALKER));
+        assert!(!w.fighting(), "the foe is gone");
+        assert_eq!(w.combatant, None);
+    }
+
     #[test]
     fn the_switch_off_tells_the_agent_nothing() {
         let mut w = mara_and_ann(false);
