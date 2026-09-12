@@ -3352,6 +3352,44 @@ mod relay_tests {
         );
     }
 
+    /// The server refuses a player's diagonal step when either corner
+    /// beside it blocks, even when the tile ahead is open. With one corner
+    /// known shut, two refusals of the diagonal block that one move and not
+    /// the tile: a straight step onto it still goes.
+    #[test]
+    fn a_refused_diagonal_past_a_shut_corner_blocks_the_move_not_the_tile() {
+        let mut inner = test_session();
+        let mut now = Instant::now();
+        let diagonal = Point3::new(REFUSED_FROM.x + 1, REFUSED_FROM.y + 1, REFUSED_FROM.z);
+        walks_from(&mut inner, REFUSED_FROM, vec![diagonal]);
+        let corner = Point3::new(REFUSED_FROM.x, diagonal.y, REFUSED_FROM.z);
+        inner.movement.blocked.refuse(corner, now);
+        for _ in 0..2 {
+            let step = step_onto_the_wire(&mut inner, &mut now);
+            assert_eq!(step.arrives_at, diagonal, "the diagonal step goes out");
+            ingest(
+                &mut inner,
+                &refusal_at(step.sequence, REFUSED_FROM, step.direction),
+            );
+            now += DOOR_RETRY_WAIT + STEP_PACE;
+        }
+        assert!(
+            !inner.movement.blocked.tiles().contains(&diagonal),
+            "the tile ahead is not marked shut"
+        );
+        assert!(
+            inner
+                .movement
+                .refused_edges
+                .moves()
+                .iter()
+                .any(|m| m.from.x == REFUSED_FROM.x
+                    && m.to.x == diagonal.x
+                    && m.to.y == diagonal.y),
+            "the diagonal move itself is shut"
+        );
+    }
+
     /// A refused tile blocks every route the character plans, and stops
     /// blocking them once its time is up.
     #[test]
@@ -3453,21 +3491,29 @@ mod relay_tests {
             PAST_THE_HOUSE,
             "she walks around the house and arrives; refused at {refused:?}"
         );
-        assert_cell_asked_at_most_twice(&refused);
+        assert_cell_asked_at_most_four_times(&refused);
         assert!(
             refused.len() <= HOUSE_WALL_TILES * ASKS_PER_CELL,
             "and no more of the wall is met than it holds: {refused:?}"
         );
     }
 
-    /// How often one cell may be asked for before it is proven shut: once to
-    /// try the door that may be standing in it, and once to prove there is
-    /// none. The second refusal is the one that marks the cell, and nothing
-    /// asks for it again after that.
-    const ASKS_PER_CELL: usize = 2;
+    /// How often one cell may be asked for before it is proven shut. Each
+    /// way in is asked twice: once to try the door that may be standing in
+    /// it, and once to prove there is none. A diagonal refused past a shut
+    /// corner proves nothing about the cell (the server refuses a player's
+    /// diagonal when either corner blocks), so a straight way in may be
+    /// asked twice more; that second refusal marks the cell.
+    const ASKS_PER_CELL: usize = WAYS_IN_ASKED * ASKS_PER_WAY_IN;
+    /// How often one way into a cell is asked for: once for a door, once to
+    /// prove there is none.
+    const ASKS_PER_WAY_IN: usize = 2;
+    /// The ways into one cell a walk may ask before it is marked: a diagonal
+    /// past a shut corner, then a straight step.
+    const WAYS_IN_ASKED: usize = 2;
 
     /// Checks that no cell was asked for more often than that.
-    fn assert_cell_asked_at_most_twice(refused: &[Point3]) {
+    fn assert_cell_asked_at_most_four_times(refused: &[Point3]) {
         for cell in refused {
             let asks = refused
                 .iter()
@@ -3523,7 +3569,7 @@ mod relay_tests {
             PAST_THE_LONG_WALL,
             "she gets past the wall; refused at {refused:?}"
         );
-        assert_cell_asked_at_most_twice(&refused);
+        assert_cell_asked_at_most_four_times(&refused);
         assert!(
             refused.len() < LONG_WALL_TILES * ASKS_PER_CELL,
             "and she does not feel along every tile of it: {refused:?}"
@@ -3621,10 +3667,10 @@ mod relay_tests {
                 accept_move_ack(&mut inner, step.sequence);
             }
         }
-        assert_cell_asked_at_most_twice(&asked);
+        assert_cell_asked_at_most_four_times(&asked);
         assert_eq!(
             asked.len(),
-            ASKS_PER_CELL,
+            ASKS_PER_WAY_IN,
             "she asks for that tile once to try a door and once to prove there is none, \
              and then never again: {asked:?}"
         );
@@ -6929,7 +6975,14 @@ fn refuse_step(
             inner.movement.wait(now, DOOR_RETRY_WAIT);
         }
         Refusal::Shut => {
-            remember_refused_tile(inner, cell, now);
+            // A player's diagonal is refused when either corner beside it
+            // blocks, whatever stands on the tile ahead. Then the refused
+            // move is kept in `refused_edges`, and the tile stays open to a
+            // straight step. With both corners open, the tile ahead is what
+            // is shut.
+            if !a_corner_is_shut(inner, at, cell) {
+                remember_refused_tile(inner, cell, now);
+            }
             let resume = rand::thread_rng().gen_range(SHUT_RESUME_MIN_MS..=SHUT_RESUME_MAX_MS);
             inner.movement.wait(now, Duration::from_millis(resume));
             replan_the_route(inner);
@@ -6971,6 +7024,28 @@ fn judge_refusal(inner: &mut Inner, at: Point3, cell: Point3, now: Instant) -> R
     } else {
         Refusal::Shut
     }
+}
+
+/// True for a diagonal step with a corner tile that blocks the character:
+/// the map says so, a mobile stands there, or the server refused it already.
+/// A server refuses a player's diagonal when either corner blocks (ModernUO
+/// `Movement.CheckMovement`). False for a straight step, which has no corners.
+fn a_corner_is_shut(inner: &mut Inner, at: Point3, cell: Point3) -> bool {
+    if at.x == cell.x || at.y == cell.y {
+        return false;
+    }
+    let refused = inner.movement.blocked.tiles();
+    let corners = [
+        Point3::new(at.x, cell.y, at.z),
+        Point3::new(cell.x, at.y, at.z),
+    ];
+    let occupied = corners.iter().any(|&c| somebody_stands_on(inner, c));
+    inner.ensure_facet();
+    let tiles = inner.tiles();
+    occupied
+        || corners.iter().any(|c| {
+            !tiles.can_walk_from(at.z, c.x, c.y) || refused.iter().any(|t| t.x == c.x && t.y == c.y)
+        })
 }
 
 /// True while another mobile stands on that cell on the character's own floor.
