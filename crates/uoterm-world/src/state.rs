@@ -4,11 +4,11 @@ use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
     weapon_range, BuffEntry, ContainerItem, EquipItem, GroundItem, HealthBarStatus, Inbound,
-    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, Serial, StatusExtra,
-    TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN,
-    FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED,
-    LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD, SPEECH_REGULAR,
-    SPEECH_WHISPER, SPEECH_YELL, TRADE_DISPLAY,
+    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, SecureTrade, Serial,
+    StatusExtra, TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN,
+    FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK,
+    LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD,
+    SPEECH_REGULAR, SPEECH_WHISPER, SPEECH_YELL, TRADE_CLOSE, TRADE_DISPLAY, TRADE_UPDATE,
 };
 
 use crate::addressed::{
@@ -213,6 +213,18 @@ pub struct Container {
     pub items: Vec<Serial>,
 }
 
+/// A secure trade window: the other player, and the two containers the
+/// shard made for it. `mine` holds what this character offers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Trade {
+    pub with: Serial,
+    pub name: String,
+    pub mine: Serial,
+    pub theirs: Serial,
+    pub i_accept: bool,
+    pub they_accept: bool,
+}
+
 /// A door the server sent as an item.
 ///
 /// Only such a door can be opened: it has a serial to click, and the server
@@ -405,6 +417,8 @@ pub struct World {
     pub play_along: bool,
     /// The lines other characters said to this one by name.
     pub spoken_to: SpokenToLog,
+    /// The secure trade window open with another player.
+    pub trade: Option<Trade>,
     /// The names of mobiles that went out of sight. A party or guild line
     /// can come from far away, and it names its speaker by serial only.
     pub gone_names: HashMap<Serial, String>,
@@ -832,13 +846,7 @@ impl World {
                     dialog.description.clone(),
                 ));
             }
-            Inbound::Trade(trade) if trade.kind == TRADE_DISPLAY => {
-                self.push_event(Event::new(
-                    EventKind::TradeOpened,
-                    Some(trade.serial),
-                    trade.name.clone(),
-                ));
-            }
+            Inbound::Trade(trade) => self.apply_trade(trade),
             Inbound::Party(event) => self.apply_party(event),
             Inbound::Unknown { id, .. } => {
                 tracing::debug!(packet = format!("{id:#04x}"), "unhandled inbound packet");
@@ -1411,6 +1419,35 @@ impl World {
         self.equipped_weapon_graphic()
             .map(weapon_range)
             .unwrap_or(RANGE_MELEE)
+    }
+
+    /// Opens, updates and closes the secure trade window.
+    fn apply_trade(&mut self, trade: &SecureTrade) {
+        match trade.kind {
+            TRADE_DISPLAY => {
+                self.trade = Some(Trade {
+                    with: trade.serial,
+                    name: trade.name.clone(),
+                    mine: Serial(trade.first),
+                    theirs: Serial(trade.second),
+                    i_accept: false,
+                    they_accept: false,
+                });
+                self.push_event(Event::new(
+                    EventKind::TradeOpened,
+                    Some(trade.serial),
+                    trade.name.clone(),
+                ));
+            }
+            TRADE_UPDATE => {
+                if let Some(open) = self.trade.as_mut() {
+                    open.i_accept = trade.first != 0;
+                    open.they_accept = trade.second != 0;
+                }
+            }
+            TRADE_CLOSE => self.trade = None,
+            _ => {}
+        }
     }
 
     /// The character has no combat target any more.

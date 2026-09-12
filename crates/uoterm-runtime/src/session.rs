@@ -4945,6 +4945,45 @@ mod relay_tests {
         assert_eq!(items[0]["location"]["x"], here.x + 2);
     }
 
+    /// A trade window opens, the agent sees it and ticks accept for the
+    /// character's own trade container; a closed trade leaves nothing.
+    #[test]
+    fn a_trade_is_seen_accepted_and_closed() {
+        const MINE: u32 = 0x4000_0E31;
+        const THEIRS: u32 = 0x4000_0E32;
+        let mut inner = named_by_ann(false, "hi");
+        let trade = |kind: u8, serial: Serial, first: u32, second: u32| {
+            Inbound::Trade(uoterm_protocol::SecureTrade {
+                kind,
+                serial,
+                first,
+                second,
+                name: "Ann".into(),
+            })
+        };
+        inner
+            .world
+            .write()
+            .apply(&trade(uoterm_protocol::TRADE_DISPLAY, ANN, MINE, THEIRS));
+        assert_eq!(observe_value(&inner)["trade"]["with"], "Ann");
+        let accept = answer_agent(&mut inner, call(TOOL_TRADE_ACCEPT, json!({})));
+        assert!(accept.ok, "{:?}", accept.error);
+        assert!(inner
+            .outbound
+            .contains(&encode::trade_accept(Serial(MINE), true)));
+        inner
+            .world
+            .write()
+            .apply(&trade(uoterm_protocol::TRADE_UPDATE, Serial(MINE), 1, 1));
+        assert_eq!(observe_value(&inner)["trade"]["they_accept"], true);
+        inner
+            .world
+            .write()
+            .apply(&trade(uoterm_protocol::TRADE_CLOSE, Serial(MINE), 0, 0));
+        assert!(observe_value(&inner)["trade"].is_null());
+        assert!(!answer_agent(&mut inner, call(TOOL_TRADE_ACCEPT, json!({}))).ok);
+    }
+
     /// An agent can start a line to the party, guild or alliance, not only
     /// answer one.
     #[test]
@@ -8613,6 +8652,23 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 inner.last_weapon = Some(eq.serial);
             }
             ToolResult::action(TOOL_UNEQUIP)
+        }
+        TOOL_TRADE_ACCEPT | TOOL_TRADE_CANCEL => {
+            let Some(mine) = inner.world.read().trade.as_ref().map(|t| t.mine) else {
+                return ToolResult::err("no trade window is open");
+            };
+            let accept = args.get("accept").and_then(|v| v.as_bool()).unwrap_or(true);
+            let cancel = call.name == TOOL_TRADE_CANCEL;
+            inner.outbound.push_back(if cancel {
+                encode::trade_cancel(mine)
+            } else {
+                encode::trade_accept(mine, accept)
+            });
+            ToolResult::action(if cancel {
+                TOOL_TRADE_CANCEL
+            } else {
+                TOOL_TRADE_ACCEPT
+            })
         }
         TOOL_TRADE_OFFER => {
             let serial = arg_serial(args, "serial");

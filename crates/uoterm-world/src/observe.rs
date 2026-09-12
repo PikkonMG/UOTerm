@@ -159,6 +159,20 @@ pub struct Observe {
     /// The player the character plays along with now. The runtime fills
     /// this in.
     pub playing_along: Option<PlayingAlong>,
+    /// The secure trade window open with another player.
+    pub trade: Option<TradeView>,
+}
+
+/// A secure trade as an agent reads it: who, what each side offers, and
+/// who has ticked accept.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TradeView {
+    pub with: String,
+    pub serial: String,
+    pub theirs: Vec<ContainedItem>,
+    pub mine: Vec<ContainedItem>,
+    pub i_accept: bool,
+    pub they_accept: bool,
 }
 
 /// The player the character plays along with, and how long it has left.
@@ -262,6 +276,22 @@ impl Observe {
             chat_mode: world.chat_mode().map(String::from),
             reply_style: None,
             playing_along: None,
+            trade: world.trade.as_ref().map(|t| TradeView {
+                with: t.name.clone(),
+                serial: t.with.to_string(),
+                theirs: world
+                    .items_inside(t.theirs, true)
+                    .into_iter()
+                    .map(ContainedItem::from)
+                    .collect(),
+                mine: world
+                    .items_inside(t.mine, true)
+                    .into_iter()
+                    .map(ContainedItem::from)
+                    .collect(),
+                i_accept: t.i_accept,
+                they_accept: t.they_accept,
+            }),
         }
     }
 }

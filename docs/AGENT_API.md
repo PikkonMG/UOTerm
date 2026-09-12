@@ -2,6 +2,10 @@
 
 Tools return immediately with `action_id`. Completion is an event (`arrived`, `target_requested`, `speech`, and others).
 
+## Trades
+
+When another player opens a secure trade, you get a `trade_opened` event, and `observe` shows `trade`: the player, what `theirs` and `mine` hold, and `i_accept` and `they_accept`. Read what they offer before you agree. `trade_accept` ticks your accept box (`accept: false` unticks it); `trade_cancel` closes the trade. A change to either side clears both accept boxes, so accept again after it.
+
 ## The agent loop
 
 An agent that drives a character must not miss what happens between its calls. Run one loop:

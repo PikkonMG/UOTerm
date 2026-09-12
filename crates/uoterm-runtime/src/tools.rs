@@ -36,6 +36,8 @@ pub const TOOL_OPEN_CONTAINER: &str = "open_container";
 pub const TOOL_LOOT: &str = "loot";
 pub const TOOL_DEPOSIT: &str = "deposit";
 pub const TOOL_TRADE_OFFER: &str = "trade_offer";
+pub const TOOL_TRADE_ACCEPT: &str = "trade_accept";
+pub const TOOL_TRADE_CANCEL: &str = "trade_cancel";
 pub const TOOL_VENDOR_SELL: &str = "vendor_sell";
 pub const TOOL_VENDOR_BUY: &str = "vendor_buy";
 pub const TOOL_CONTEXT_MENU: &str = "context_menu";
@@ -298,6 +300,12 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "at a banker",
     ),
     (TOOL_TRADE_OFFER, "Secure trade offer.", "mobile serial"),
+    (
+        TOOL_TRADE_ACCEPT,
+        "Tick the accept box of the open trade (accept: true, the default), or untick it (accept: false). Read observe.trade first: what they offer, and who has accepted.",
+        "a trade window open",
+    ),
+    (TOOL_TRADE_CANCEL, "Close the open trade.", "a trade window open"),
     (
         TOOL_VENDOR_SELL,
         "Ask a named nearby NPC vendor for its sell list and sell every listed backpack item matching the required graphic.",

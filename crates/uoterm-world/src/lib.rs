@@ -20,7 +20,7 @@ pub use journal::{
 };
 pub use names::{display_name, NameBook};
 pub use observe::{
-    ContainedItem, NearbyDoor, NearbyItem, Observe, OpenContainer, PlayingAlong,
+    ContainedItem, NearbyDoor, NearbyItem, Observe, OpenContainer, PlayingAlong, TradeView,
     OBSERVE_CONTAINER_CAP, OBSERVE_CONTAINER_ITEM_CAP, OBSERVE_DOOR_RADIUS, OBSERVE_FACT_CAP,
     OBSERVE_ITEM_CAP, OBSERVE_MOBILE_CAP,
 };
@@ -29,9 +29,10 @@ pub use radar::{
 };
 pub use state::{
     facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem, DoorUpdate, Harm,
-    Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, World, BODY_GHOST_ELF_FEMALE,
-    BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_MALE, FACET_RULES_FELUCCA,
-    FACET_RULES_TRAMMEL, MAP_RULE_FREE_MOVEMENT, SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE,
+    Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Trade, World,
+    BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_MALE,
+    FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, MAP_RULE_FREE_MOVEMENT, SPEECH_KIND_PARTY,
+    SPEECH_KIND_PARTY_PRIVATE,
 };
 
 #[cfg(test)]
