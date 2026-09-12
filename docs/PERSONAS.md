@@ -54,12 +54,12 @@ Every field above changes behaviour. A persona file carries no other field.
 | `idle` | No action |
 | `gather` | Use hatchet, then target a tree |
 | `hunt` | War mode, attack grey+, bandage when HP is low |
-| `travel` | Pathfind to dest |
+| `travel` | Pathfind to dest. With no dest, the Britain bank, when it is near |
 | `flee` | Step away |
-| `bank` | Walk toward Britain bank (1425, 1695, 0) |
-| `shop` | Use a nearby innocent mobile, else walk to the bank |
+| `bank` | Walk toward the Britain bank (1425, 1695, 0). It is the one bank the client knows, so this works only on Felucca or Trammel within 400 tiles of it; elsewhere `set_goal` refuses and the agent must find a banker |
+| `shop` | Use a nearby innocent mobile, else walk to the bank when it is near |
 | `social` | Say `yo` |
-| `ress` | If dead, walk toward the bank |
+| `ress` | If dead, walk toward the bank when it is near |
 
 Speech rules in code: reject empty text; reject `*…*` unless `allow_emote`; shorten lines over 18 words; apply `typo_rate`.
 

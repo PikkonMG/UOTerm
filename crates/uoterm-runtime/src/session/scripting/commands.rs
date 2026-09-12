@@ -1949,8 +1949,7 @@ fn auto_target_type(
 /// The height of the ground at a tile, from the map.
 fn ground_z(game: &mut Game, x: u16, y: u16) -> i8 {
     let from = game.world().self_state.location.z;
-    game.inner.ensure_facet();
-    game.inner.tiles().tile_from(from, x, y).z
+    surface_z(game.inner, from, x, y)
 }
 
 fn static_graphic(call: &Call, i: usize) -> std::result::Result<u16, String> {

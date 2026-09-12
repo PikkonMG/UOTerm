@@ -1593,6 +1593,48 @@ mod tests {
         assert_eq!(w.door_tiles(), vec![at], "shut again, it blocks again");
     }
 
+    /// A moongate to another map: the shard sends no delete for what was
+    /// in sight on the old one, so the world drops all she does not carry.
+    /// Her pack stays, and so do the names she learned.
+    #[test]
+    fn a_map_change_drops_what_she_left_behind() {
+        const OTHER_MAP: u8 = 1;
+        let mut w = World::new();
+        corpse_and_pack(&mut w);
+        w.apply(&Inbound::MobileIncoming(MobileView {
+            serial: TALKER,
+            body: 0x191,
+            x: 11,
+            y: 20,
+            z: 0,
+            direction: 0,
+            hue: 0,
+            flags: 0,
+            notoriety: NOTO_INNOCENT,
+            hits: None,
+            hits_max: None,
+            equipment: Vec::new(),
+        }));
+        w.mobiles.get_mut(&TALKER).expect("a mobile").name = "Ann".into();
+        let map = w.self_state.map;
+        w.apply(&Inbound::MapChange { map });
+        assert!(
+            w.items.contains_key(&CORPSE),
+            "the same map keeps the world"
+        );
+
+        w.apply(&Inbound::MapChange { map: OTHER_MAP });
+        assert!(w.mobiles.is_empty());
+        assert!(!w.items.contains_key(&CORPSE), "the corpse stayed behind");
+        assert!(w.items.contains_key(&BACKPACK), "her pack goes with her");
+        assert!(
+            w.items.values().any(|i| i.parent == Some(BACKPACK)),
+            "and what is in it"
+        );
+        assert_eq!(w.name_of(TALKER), "Ann");
+        assert!(w.events.iter().any(|e| e.kind == EventKind::MapChanged));
+    }
+
     #[test]
     fn the_switch_off_tells_the_agent_nothing() {
         let mut w = mara_and_ann(false);

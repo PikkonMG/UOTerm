@@ -531,6 +531,10 @@ impl World {
                 }
             }
             Inbound::MapChange { map } => {
+                if *map != self.self_state.map {
+                    self.leave_map();
+                    self.push_event(Event::new(EventKind::MapChanged, None, format!("{map}")));
+                }
                 self.self_state.map = *map;
             }
             Inbound::Damage { serial, amount } => {
@@ -1469,6 +1473,36 @@ impl World {
             }
             TRADE_CLOSE => self.trade = None,
             _ => {}
+        }
+    }
+
+    /// The character went to another map. Nothing seen on the old one is in
+    /// sight any more, and the shard sends no delete for it, so everything
+    /// she does not carry is dropped. The names learned are kept.
+    fn leave_map(&mut self) {
+        let me = self.self_state.serial;
+        let carried: HashSet<Serial> = self
+            .items
+            .keys()
+            .copied()
+            .filter(|&item| self.is_inside(item, me))
+            .collect();
+        for (serial, mobile) in self.mobiles.drain() {
+            if !mobile.name.is_empty() {
+                self.gone_names.insert(serial, mobile.name);
+            }
+        }
+        self.items.retain(|serial, _| carried.contains(serial));
+        self.containers.retain(|serial, _| carried.contains(serial));
+        self.doors.clear();
+        self.doors_open_in_place.clear();
+        self.multis.clear();
+        self.bars.clear();
+        self.trade = None;
+        self.harmed_by = None;
+        self.nav_goal = None;
+        if self.combatant.is_some() {
+            self.end_fight();
         }
     }
 

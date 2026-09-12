@@ -1,7 +1,7 @@
 //! Compiled reflex tick. Combat and gather do not wait on an LLM.
 
 use crate::persona::Persona;
-use crate::tools::{Goal, BANK_X, BANK_Y, BANK_Z};
+use crate::tools::{known_bank, Goal};
 use std::time::{Duration, Instant};
 use uoterm_protocol::types::*;
 use uoterm_world::{AssistFeature, World};
@@ -54,11 +54,9 @@ pub enum ReflexAction {
 pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
     if world.self_state.dead {
         if matches!(goal, Goal::Ress) {
-            return ReflexAction::MoveTo {
-                x: BANK_X,
-                y: BANK_Y,
-                z: BANK_Z,
-            };
+            if let Some(bank) = bank_near(world) {
+                return bank;
+            }
         }
         return ReflexAction::Say(SAY_DEAD);
     }
@@ -88,11 +86,7 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
         Goal::Idle => ReflexAction::None,
         Goal::Social => ReflexAction::Say(SAY_SOCIAL),
         Goal::Shop => shop_action(world),
-        Goal::Ress => ReflexAction::MoveTo {
-            x: BANK_X,
-            y: BANK_Y,
-            z: BANK_Z,
-        },
+        Goal::Ress | Goal::Bank => bank_near(world).unwrap_or(ReflexAction::None),
         Goal::Travel { dest } => ReflexAction::MoveTo {
             x: dest.x,
             y: dest.y,
@@ -105,11 +99,6 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
         },
         Goal::Hunt => hunt_action(world),
         Goal::Gather => gather_action(world),
-        Goal::Bank => ReflexAction::MoveTo {
-            x: BANK_X,
-            y: BANK_Y,
-            z: BANK_Z,
-        },
     }
 }
 
@@ -312,11 +301,18 @@ fn shop_action(world: &World) -> ReflexAction {
     {
         return ReflexAction::Use(vendor.serial);
     }
-    ReflexAction::MoveTo {
-        x: BANK_X,
-        y: BANK_Y,
-        z: BANK_Z,
-    }
+    bank_near(world).unwrap_or(ReflexAction::None)
+}
+
+/// A walk to the bank, when the client knows one near the character. Far
+/// from it, or on a map without it, there is none: the search for a way
+/// that is not there costs seconds.
+fn bank_near(world: &World) -> Option<ReflexAction> {
+    known_bank(world.self_state.map, world.self_state.location).map(|bank| ReflexAction::MoveTo {
+        x: bank.x,
+        y: bank.y,
+        z: bank.z,
+    })
 }
 
 #[cfg(test)]
@@ -588,19 +584,54 @@ mod tests {
         ));
     }
 
+    /// A spot in Britain, a short walk from its bank.
+    const IN_BRITAIN: Point3 = Point3 {
+        x: 1430,
+        y: 1700,
+        z: 0,
+    };
+
     #[test]
     fn shop_social_ress_return_actions() {
-        let w = World::new();
+        let mut w = World::new();
+        w.self_state.location = IN_BRITAIN;
         let p = Persona::lumberjack_yew();
         assert!(matches!(
             tick(&w, &p, &Goal::Shop),
             ReflexAction::MoveTo { .. }
         ));
         assert!(matches!(tick(&w, &p, &Goal::Social), ReflexAction::Say(_)));
-        let mut dead = World::new();
+        let mut dead = w.clone();
         dead.self_state.dead = true;
         assert!(matches!(
             tick(&dead, &p, &Goal::Ress),
+            ReflexAction::MoveTo { .. }
+        ));
+    }
+
+    /// Far from the one bank the client knows, or on a map without it, no
+    /// walk to it is started: a search for a way that is not there costs
+    /// seconds.
+    #[test]
+    fn no_walk_to_a_bank_that_is_not_near() {
+        const MOONGLOW: Point3 = Point3 {
+            x: 4474,
+            y: 1285,
+            z: 0,
+        };
+        const ILSHENAR: u8 = 2;
+        let p = Persona::lumberjack_yew();
+        let mut far = World::new();
+        far.self_state.location = MOONGLOW;
+        assert_eq!(tick(&far, &p, &Goal::Bank), ReflexAction::None);
+        let mut other_map = World::new();
+        other_map.self_state.location = IN_BRITAIN;
+        other_map.self_state.map = ILSHENAR;
+        assert_eq!(tick(&other_map, &p, &Goal::Bank), ReflexAction::None);
+        let mut near = World::new();
+        near.self_state.location = IN_BRITAIN;
+        assert!(matches!(
+            tick(&near, &p, &Goal::Bank),
             ReflexAction::MoveTo { .. }
         ));
     }

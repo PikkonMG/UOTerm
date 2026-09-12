@@ -61,9 +61,27 @@ pub const TOOL_HOTKEYS: &str = "hotkeys";
 pub const TOOL_HOTKEY: &str = "hotkey";
 pub const TOOL_RECORD_MACRO: &str = "record_macro";
 
+/// The Britain bank, the one bank the client knows. It stands on Felucca
+/// (map 0) and Trammel (map 1) at the same tile.
 pub const BANK_X: u16 = 1425;
 pub const BANK_Y: u16 = 1695;
 pub const BANK_Z: i8 = 0;
+/// The maps the Britain bank stands on.
+const BANK_MAPS: [u8; 2] = [0, 1];
+/// The farthest the client sends a character to that bank on foot. Past
+/// this it is another town, an island or another map, and the one search
+/// that finds no way costs seconds.
+const BANK_WALK_RANGE: u32 = 400;
+
+/// The bank the character can walk to from `at` on `map`, when the client
+/// knows one there.
+pub fn known_bank(map: u8, at: Point3) -> Option<Point3> {
+    let bank = Point3::new(BANK_X, BANK_Y, BANK_Z);
+    (BANK_MAPS.contains(&map) && at.chebyshev(bank) <= BANK_WALK_RANGE).then_some(bank)
+}
+
+pub const NO_BANK_KNOWN: &str =
+    "no bank is known near here; find a banker in observe and walk to it";
 
 pub fn new_action_id() -> String {
     uuid::Uuid::new_v4().to_string()

@@ -15,7 +15,7 @@ An agent that drives a character must not miss what happens between its calls. R
    1. Danger: `died`, `low_health`, `damaged`, `enemy_near`, `combatant_changed`, `pk_flag`.
    2. Something waits for an answer: `target_requested`, `gump_opened`, `prompt_opened`, `trade_opened`, `party_invite`.
    3. Chat: `spoken_to`, and `state.unanswered`. Answer with `reply`.
-   4. Your own task: `item_added`, `arrived`, `path_failed`, `lift_rejected`, `play_along_ended`.
+   4. Your own task: `item_added`, `arrived`, `path_failed`, `lift_rejected`, `play_along_ended`, `map_changed` (a moongate or recall took her to another map; the old map's mobiles and items are gone, and a walk or follow there is dropped).
 3. Go back to 1.
 
 Events wait in the session for you. When you are slow, the next call gives you all of them, in order, 50 at most per call. `missed` counts events that were dropped before you asked; the session keeps the last 256.

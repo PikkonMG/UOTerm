@@ -764,6 +764,14 @@ impl Movement {
     }
 
     /// Ends the trip: nothing of it is carried into the next one.
+    /// Drops the walk and every mark made on the map the character has just
+    /// left: none of those tiles is on the new one.
+    pub fn leave_map(&mut self) {
+        self.clear();
+        self.refused_edges.clear();
+        self.blocked.clear();
+    }
+
     pub fn end_trip(&mut self) {
         self.trip_dest = None;
         self.replans = 0;

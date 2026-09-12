@@ -38,6 +38,8 @@ pub enum EventKind {
     TradeOpened,
     /// A loot or bank job gave up, and why.
     JobFailed,
+    /// The character went to another map (facet), named by its number.
+    MapChanged,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

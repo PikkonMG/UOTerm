@@ -69,6 +69,7 @@ const WHO_LAST: &str = "last";
 /// Worn things are lifted one at a time.
 const ONE_WORN_ITEM: u16 = 1;
 const MUST_WAIT: &str = "must wait to perform another action";
+const TRAVEL_NEEDS_A_SPOT: &str = "travel needs x and y here; no bank is known near";
 /// The basic chat mode says no to a player's plans; see `play_along`.
 const CHAT_SAYS_NO: &str =
     "chat mode is basic: the character does not join or follow a player who asked in chat";
@@ -2707,6 +2708,8 @@ mod relay_tests {
     const HILLSIDE_TOP_Z: i8 = 20;
 
     /// A session standing on the Felucca hillside, with the client files open.
+    /// She faces south, up the climb, so each request is a step and not the
+    /// turn a walker in another facing sends first.
     fn on_the_hillside_above_the_bank(dir: PathBuf, at: Point3) -> Inner {
         let mut inner = test_session();
         inner.uopath = Some(dir);
@@ -2714,9 +2717,38 @@ mod relay_tests {
             let mut world = inner.world.write();
             world.self_state.map = FELUCCA_MAP_INDEX;
             world.self_state.location = at;
+            world.self_state.direction = Direction::South as u8;
         }
         inner.ensure_facet();
         inner
+    }
+
+    /// A person clicks a spot and names no height. A walk to a hillside
+    /// tile goes to its ground, not to the height she stands at below it.
+    #[test]
+    fn move_to_with_no_height_goes_to_the_ground_there() {
+        let Some(dir) = client_data_dir_from_env() else {
+            return;
+        };
+        let below = Point3::new(
+            HILLSIDE_ABOVE_THE_BANK_X,
+            HILLSIDE_NORTH_Y,
+            HILLSIDE_GROUND_Z,
+        );
+        let mut inner = on_the_hillside_above_the_bank(dir, below);
+        let walk = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_MOVE_TO.into(),
+                args: json!({ "x": HILLSIDE_ABOVE_THE_BANK_X, "y": HILLSIDE_NEXT_Y }),
+            },
+        );
+        assert!(walk.ok, "{:?}", walk.error);
+        assert_eq!(
+            inner.movement.goal.map(|g| g.z),
+            Some(HILLSIDE_NEXT_Z),
+            "the goal is the ground of that tile"
+        );
     }
 
     #[test]
@@ -5052,6 +5084,40 @@ mod relay_tests {
         assert_eq!(inner.movement.goal, Some(elsewhere));
     }
 
+    /// Far from the one bank the client knows, the bank goal and a travel
+    /// with no spot are refused with words an agent can act on.
+    #[test]
+    fn a_bank_goal_far_from_the_bank_is_refused() {
+        let mut inner = named_by_ann(false, "hi");
+        inner.world.write().self_state.location = Point3::new(4474, 1285, 0);
+        let bank = answer_agent(&mut inner, call(TOOL_SET_GOAL, json!({ "goal": "bank" })));
+        assert_eq!(bank.error.as_deref(), Some(NO_BANK_KNOWN));
+        let travel = answer_agent(&mut inner, call(TOOL_SET_GOAL, json!({ "goal": "travel" })));
+        assert_eq!(travel.error.as_deref(), Some(TRAVEL_NEEDS_A_SPOT));
+        assert_eq!(inner.goal, Goal::Idle, "no goal was set");
+    }
+
+    /// Leaving a map drops the walk, the follow and the travel goal: their
+    /// tiles and their leader are on the map she left.
+    #[test]
+    fn leaving_a_map_drops_what_belonged_to_it() {
+        let mut inner = named_by_ann(false, "hi");
+        let from = inner.world.read().self_state.location;
+        let dest = Point3::new(from.x + 5, from.y, from.z);
+        assert!(
+            answer_agent(
+                &mut inner,
+                call(TOOL_MOVE_TO, json!({ "x": dest.x, "y": dest.y }))
+            )
+            .ok
+        );
+        inner.follow = Some(ANN);
+        leave_map(&mut inner);
+        assert_eq!(inner.movement.goal, None);
+        assert_eq!(inner.follow, None);
+        assert_eq!(inner.goal, Goal::Idle);
+    }
+
     /// A goal whose route just failed is not searched again at once: the
     /// travel reflex asks every tick, and each failed search is costly.
     #[test]
@@ -6412,7 +6478,10 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         }
                         _ => {}
                     }
-                    let stood_at = inner.world.read().self_state.location;
+                    let (stood_at, map_before) = {
+                        let s = &inner.world.read().self_state;
+                        (s.location, s.map)
+                    };
                     {
                         let mut world = inner.world.write();
                         world.apply(&msg);
@@ -6527,7 +6596,10 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         note_multi_item(inner, item);
                     }
                     harvest_new_events(inner);
-                    if matches!(&msg, Inbound::MapChange { .. }) {
+                    if let Inbound::MapChange { map } = &msg {
+                        if *map != map_before {
+                            leave_map(inner);
+                        }
                         inner.ensure_facet();
                     }
                     out.push(msg);
@@ -6537,6 +6609,24 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
         }
     }
     out
+}
+
+/// Drops what belongs to the map the character has just left: the walk and
+/// its marks, a door attempt, a follow, a loot or bank job, and a travel
+/// goal, whose tile is on the old map.
+fn leave_map(inner: &mut Inner) {
+    inner.movement.leave_map();
+    inner.doors.give_up();
+    inner.door_macro = None;
+    inner.follow = None;
+    inner.play_along = None;
+    inner.loot = None;
+    inner.deposit = None;
+    inner.last_path_fail = None;
+    if matches!(inner.goal, Goal::Travel { .. }) {
+        inner.goal = Goal::Idle;
+        inner.world.write().goal = inner.goal.name().into();
+    }
 }
 
 /// Puts the character on the tile the server has just confirmed.
@@ -8379,8 +8469,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let Some(y) = args.get("y").and_then(|v| v.as_u64()) else {
                 return ToolResult::err("move_to needs y");
             };
+            // A person clicks a spot and names no height: the walk goes to the
+            // surface there nearest the height asked, or her own.
             let z = asked_z(args, inner.world.read().self_state.location.z);
-            let dest = Point3::new(x as u16, y as u16, z);
+            let dest = Point3::new(x as u16, y as u16, surface_z(inner, z, x as u16, y as u16));
             inner.goal = Goal::Travel { dest };
             inner.world.write().goal = Goal::Travel { dest }.name().into();
             if queue_move(inner, dest) {
@@ -8650,15 +8742,27 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .and_then(|v| v.as_str())
                 .unwrap_or(Goal::Idle.name());
             let mut g = Goal::parse(raw);
+            let (map, at) = {
+                let s = &inner.world.read().self_state;
+                (s.map, s.location)
+            };
+            let spot = (
+                args.get("x").and_then(|v| v.as_u64()),
+                args.get("y").and_then(|v| v.as_u64()),
+            );
             if let Goal::Travel { dest } = &mut g {
-                if let (Some(x), Some(y)) = (
-                    args.get("x").and_then(|v| v.as_u64()),
-                    args.get("y").and_then(|v| v.as_u64()),
-                ) {
+                if let (Some(x), Some(y)) = spot {
                     dest.x = x as u16;
                     dest.y = y as u16;
-                    dest.z = asked_z(args, inner.world.read().self_state.location.z);
+                    let z = asked_z(args, at.z);
+                    dest.z = surface_z(inner, z, dest.x, dest.y);
+                } else if known_bank(map, at).is_none() {
+                    // With no spot, travel means the bank, and none is near.
+                    return ToolResult::err(TRAVEL_NEEDS_A_SPOT);
                 }
+            }
+            if matches!(g, Goal::Bank | Goal::Ress) && known_bank(map, at).is_none() {
+                return ToolResult::err(NO_BANK_KNOWN);
             }
             inner.follow = None;
             inner.goal = g.clone();
@@ -9250,6 +9354,13 @@ fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
 /// `standing_z`, the height the character is at. A building with more than one
 /// floor gives a different answer for each floor, so a caller that names no
 /// height must get its own floor and not the one above.
+/// The height of the surface at `x`, `y` that a walker at height `from`
+/// reaches: the ground, a floor or a roof.
+fn surface_z(inner: &mut Inner, from: i8, x: u16, y: u16) -> i8 {
+    inner.ensure_facet();
+    inner.tiles().tile_from(from, x, y).z
+}
+
 fn asked_z(args: &Value, standing_z: i8) -> i8 {
     args.get("z")
         .and_then(|v| v.as_i64())
