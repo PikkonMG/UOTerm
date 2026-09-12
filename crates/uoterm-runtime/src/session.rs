@@ -338,6 +338,8 @@ struct Inner {
     follow_state: FollowState,
     /// The player the character plays along with, and when it stops.
     play_along: Option<PlayAlongRun>,
+    /// A walk that stands still short of its goal was logged already.
+    stall_logged: bool,
     cliloc: Option<Arc<ClilocData>>,
     /// The client's own table of command phrases and the keyword number each
     /// stands for. A shard's NPCs obey those numbers, not the words.
@@ -782,6 +784,7 @@ async fn run_session(
         follow: None,
         follow_state: FollowState::default(),
         play_along: None,
+        stall_logged: false,
         cliloc,
         speech_data,
         next_action_at: Instant::now() - ACTION_BUDGET,
@@ -1591,6 +1594,7 @@ mod relay_tests {
             follow: None,
             follow_state: FollowState::default(),
             play_along: None,
+            stall_logged: false,
             cliloc: None,
             speech_data: None,
             next_action_at: now - ACTION_BUDGET,
@@ -4942,6 +4946,21 @@ mod relay_tests {
         assert_eq!(nothing.error.as_deref(), Some(NOTHING_TO_ANSWER));
     }
 
+    /// A mobile found by name says where it stands, so an agent can walk to
+    /// a banker it has spotted.
+    #[test]
+    fn find_mobiles_gives_each_mobiles_place() {
+        let mut inner = named_by_ann(false, "hi");
+        let found = answer_agent(
+            &mut inner,
+            call(TOOL_FIND_MOBILES, json!({ "name": "ann" })),
+        );
+        let mobiles = found.result.as_array().expect("a list");
+        assert_eq!(mobiles.len(), 1);
+        assert_eq!(mobiles[0]["location"]["x"], 1);
+        assert!(mobiles[0]["dist"].is_u64());
+    }
+
     /// A found corpse says where it lies, so an agent can walk to it, and
     /// `distance` leaves out what is farther.
     #[test]
@@ -5116,6 +5135,24 @@ mod relay_tests {
         assert_eq!(inner.movement.goal, None);
         assert_eq!(inner.follow, None);
         assert_eq!(inner.goal, Goal::Idle);
+    }
+
+    /// A walk that stands still short of its goal is noted once, and the
+    /// note is ready again once she walks.
+    #[test]
+    fn a_stalled_walk_is_noted_once() {
+        let mut inner = named_by_ann(false, "hi");
+        let at = inner.world.read().self_state.location;
+        inner
+            .movement
+            .set_path(Vec::new(), Point3::new(at.x + 4, at.y, at.z));
+        note_a_stall(&mut inner, at);
+        assert!(inner.stall_logged, "the stall is noted");
+        note_a_stall(&mut inner, at);
+        assert!(inner.stall_logged, "and not noted again");
+        inner.movement.goal = None;
+        note_a_stall(&mut inner, at);
+        assert!(!inner.stall_logged, "no goal, no stall");
     }
 
     /// A goal whose route just failed is not searched again at once: the
@@ -6591,6 +6628,13 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                             "a packet moved the character"
                         );
                     }
+                    if let Inbound::Gump(gump) = &msg {
+                        tracing::info!(
+                            gump = gump.gump_id,
+                            title = gump.text.first().map(String::as_str).unwrap_or_default(),
+                            "a gump opened"
+                        );
+                    }
                     if let Inbound::WorldItem(item) = &msg {
                         note_door_item(inner, item);
                         note_multi_item(inner, item);
@@ -6609,6 +6653,52 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
         }
     }
     out
+}
+
+/// Logs once when a walk stands still short of its goal, and why it may:
+/// a door attempt waiting, or a route that failed moments ago waiting to be
+/// searched again. A stall with neither is one to look into.
+fn note_a_stall(inner: &mut Inner, at: Point3) {
+    let stalled = inner
+        .movement
+        .goal
+        .is_some_and(|g| g.x != at.x || g.y != at.y)
+        && !inner.movement.walking();
+    if !stalled {
+        inner.stall_logged = false;
+        return;
+    }
+    if inner.stall_logged {
+        return;
+    }
+    inner.stall_logged = true;
+    tracing::info!(
+        at = %at,
+        goal = ?inner.movement.goal,
+        door_waiting = inner.doors.waiting(),
+        route_failed_lately = inner.last_path_fail.is_some_and(|(_, when)| when.elapsed() < PATH_FAIL_WAIT),
+        "the walk stands still short of its goal"
+    );
+}
+
+/// Answers an open gump with a button and its switches, and closes it. The
+/// log names both, so a choice such as a moongate's destination can be seen
+/// afterwards.
+fn answer_gump(inner: &mut Inner, gump: &uoterm_protocol::OpenGump, button: u32, switches: &[u32]) {
+    tracing::info!(
+        gump = gump.gump_id,
+        title = gump.text.first().map(String::as_str).unwrap_or_default(),
+        button,
+        ?switches,
+        "a gump was answered"
+    );
+    inner.outbound.push_back(encode::gump_response(
+        gump.serial,
+        gump.gump_id,
+        button,
+        switches,
+    ));
+    inner.world.write().close_gump(gump.gump_id);
 }
 
 /// Drops what belongs to the map the character has just left: the walk and
@@ -8276,6 +8366,7 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
         && inner.movement.run_override.unwrap_or_else(|| {
             movement::should_run(false, danger || travel, false, stam, stam_max)
         });
+    note_a_stall(inner, from);
     if inner.movement.arrived(from) && inner.movement.goal.is_some() {
         inner.world.write().push_event(uoterm_world::Event::new(
             uoterm_world::EventKind::Arrived,
@@ -8363,12 +8454,20 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .get("distance")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u16);
-            let found: Vec<_> = inner
-                .world
-                .read()
+            let world = inner.world.read();
+            let here = world.self_state.location;
+            let found: Vec<_> = world
                 .find_mobiles(name, graphic, dist)
                 .iter()
-                .map(|m| json!({"serial": m.serial, "name": m.name, "body": m.body}))
+                .map(|m| {
+                    json!({
+                        "serial": m.serial,
+                        "name": m.name,
+                        "body": m.body,
+                        "location": m.location,
+                        "dist": here.chebyshev(m.location),
+                    })
+                })
                 .collect();
             ToolResult::ok(json!(found))
         }
@@ -8720,10 +8819,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                         })
                         .unwrap_or_default()
                 };
-                inner.outbound.push_back(encode::gump_response(
-                    g.serial, g.gump_id, button, &switches,
-                ));
-                inner.world.write().close_gump(g.gump_id);
+                answer_gump(inner, &g, button, &switches);
                 let mut answered = ToolResult::action(if call.name == TOOL_GUMP_CLOSE {
                     TOOL_GUMP_CLOSE
                 } else {

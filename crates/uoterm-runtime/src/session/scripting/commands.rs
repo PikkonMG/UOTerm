@@ -1419,13 +1419,7 @@ fn reply_gump(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Resul
         Game::note(call, ctx, "no such gump is open");
         return Ok(Step::Done);
     };
-    game.inner.outbound.push_back(encode::gump_response(
-        gump.serial,
-        gump.gump_id,
-        button,
-        &switches,
-    ));
-    game.inner.world.write().close_gump(gump.gump_id);
+    answer_gump(game.inner, &gump, button, &switches);
     Ok(Step::Acted)
 }
 

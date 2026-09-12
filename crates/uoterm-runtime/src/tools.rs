@@ -222,7 +222,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Describe the surroundings in words: the surface underfoot, named furniture and walls from the map files, loose items, and people. Takes an optional radius in tiles.",
         "in world",
     ),
-    (TOOL_FIND_MOBILES, "Filter nearby mobiles.", "in world"),
+    (TOOL_FIND_MOBILES, "Filter nearby mobiles. Args: name (part of the name), graphic, distance. Each mobile has its location and dist.", "in world"),
     (
         TOOL_FIND_ITEMS,
         "Filter items on the ground and inside containers. Args: graphic, name (part of the display name), container (a container serial, to search only that one), distance (tiles). Each item has its map location and dist.",
