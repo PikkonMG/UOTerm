@@ -1572,6 +1572,27 @@ mod tests {
         assert_eq!(w.combatant, None);
     }
 
+    /// Some doors open without leaving their tile: only the graphic moves
+    /// to the open one of its pair, one higher. That open door must not
+    /// block a route, and the same door shut again must.
+    #[test]
+    fn a_door_that_opens_in_place_stops_blocking() {
+        const DOOR: Serial = Serial(0x4002_0AF4);
+        const SHUT: u16 = 1665;
+        const OPEN: u16 = 1666;
+        let at = Point3::new(1429, 1684, 0);
+        let mut w = World::new();
+        w.note_door(DOOR, SHUT, at);
+        assert_eq!(w.door_tiles(), vec![at], "a shut door blocks");
+        w.note_door(DOOR, OPEN, at);
+        assert!(
+            w.door_tiles().is_empty(),
+            "open in place, it lets him through"
+        );
+        w.note_door(DOOR, SHUT, at);
+        assert_eq!(w.door_tiles(), vec![at], "shut again, it blocks again");
+    }
+
     #[test]
     fn the_switch_off_tells_the_agent_nothing() {
         let mut w = mara_and_ann(false);

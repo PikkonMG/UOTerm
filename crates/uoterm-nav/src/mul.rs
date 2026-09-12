@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -71,6 +72,13 @@ pub fn client_data_dir_from_env() -> Option<PathBuf> {
 /// each of those reads its three neighbours, so a search that walks from one
 /// tile to the next asks again for tiles it has only just read.
 pub(crate) const COLUMN_CACHE_CAP: usize = 16;
+/// How many 8x8 blocks of the map a map keeps in memory. A path search
+/// crosses the same blocks thousands of times; each is read from disk once.
+/// A block is a few hundred bytes, so this is a few megabytes at most. When
+/// full, the store starts again.
+const BLOCK_CACHE_CAP: usize = 4096;
+/// The tiles in one block of the map, eight by eight.
+const CELLS_PER_BLOCK: usize = (CELL_PER_BLOCK_EDGE as usize) * (CELL_PER_BLOCK_EDGE as usize);
 
 #[derive(Debug, Error)]
 pub enum MapError {
@@ -343,6 +351,15 @@ struct MulHandles {
     uop_cache: Vec<(u32, Vec<u8>)>,
     /// The last tiles read, oldest first, each under its packed x,y.
     columns: Vec<(u32, TileColumn)>,
+    /// Whole blocks read from disk, under their block index.
+    blocks: HashMap<u64, MapBlock>,
+}
+
+/// One 8x8 block of the map in memory: the ground of each tile, and the
+/// statics standing on each tile, both in row order.
+struct MapBlock {
+    cells: Vec<(u16, i8)>,
+    statics: Vec<Vec<StaticPiece>>,
 }
 
 pub struct MulMap {
@@ -372,6 +389,7 @@ impl MulMap {
                 staidx: File::open(&files.staidx)?,
                 uop_cache: Vec::new(),
                 columns: Vec::new(),
+                blocks: HashMap::new(),
             }),
             flags: TileFlags::load(&files.tiledata)?,
             blocks_w: files.blocks_w,
@@ -399,17 +417,13 @@ impl MulMap {
         Ok((land, buf[2] as i8))
     }
 
-    fn read_statics(
+    /// The statics of one whole block, each under the tile it stands on.
+    fn read_block_statics(
         handles: &mut MulHandles,
         flags: &TileFlags,
-        blocks_h: u16,
-        x: u16,
-        y: u16,
-    ) -> Result<Vec<StaticPiece>, MapError> {
-        let edge = CELL_PER_BLOCK_EDGE;
-        let cx = (x % edge) as u8;
-        let cy = (y % edge) as u8;
-        let block = block_index(blocks_h, x / edge, y / edge);
+        block: u64,
+    ) -> Result<Vec<Vec<StaticPiece>>, MapError> {
+        let mut out = vec![Vec::new(); CELLS_PER_BLOCK];
         handles
             .staidx
             .seek(SeekFrom::Start(block * STAIDX_RECORD as u64))?;
@@ -418,39 +432,85 @@ impl MulMap {
         let lookup = u32::from_le_bytes([idx[0], idx[1], idx[2], idx[3]]);
         let length = u32::from_le_bytes([idx[4], idx[5], idx[6], idx[7]]);
         if lookup == IDX_EMPTY || length == 0 || length == IDX_EMPTY {
-            return Ok(Vec::new());
+            return Ok(out);
         }
         let offset = u64::from(lookup);
         let file_len = handles.statics.metadata()?.len();
         let n = capped_len(file_len, offset, length);
         if n == 0 {
-            return Ok(Vec::new());
+            return Ok(out);
         }
         handles.statics.seek(SeekFrom::Start(offset))?;
         let mut data = vec![0u8; n];
         handles.statics.read_exact(&mut data)?;
-        let mut out = Vec::new();
+        let edge = usize::from(CELL_PER_BLOCK_EDGE);
         for chunk in data.chunks(STATIC_RECORD) {
             if chunk.len() < STATIC_RECORD {
                 break;
             }
             let graphic = u16::from_le_bytes([chunk[0], chunk[1]]);
-            let sx = chunk[2];
-            let sy = chunk[3];
-            let z = chunk[4] as i8;
-            if sx == cx && sy == cy {
-                let (st_flags, height) = flags.stat(graphic);
-                out.push(StaticPiece {
-                    graphic,
-                    piece: TilePiece {
-                        z,
-                        height,
-                        flags: st_flags,
-                    },
-                });
+            let (sx, sy) = (usize::from(chunk[2]), usize::from(chunk[3]));
+            if sx >= edge || sy >= edge {
+                continue;
             }
+            let (st_flags, height) = flags.stat(graphic);
+            out[sy * edge + sx].push(StaticPiece {
+                graphic,
+                piece: TilePiece {
+                    z: chunk[4] as i8,
+                    height,
+                    flags: st_flags,
+                },
+            });
         }
         Ok(out)
+    }
+
+    /// The block that holds tile `x`, `y`, read from disk the first time it
+    /// is asked for, and the tile's place in it.
+    fn block_of<'h>(
+        &self,
+        handles: &'h mut MulHandles,
+        x: u16,
+        y: u16,
+    ) -> Result<(&'h MapBlock, usize), MapError> {
+        let edge = CELL_PER_BLOCK_EDGE;
+        let (bx, by) = (x / edge, y / edge);
+        let key = block_index(self.blocks_h, bx, by);
+        if !handles.blocks.contains_key(&key) {
+            let uop = self.uop.as_deref();
+            let mut cells = Vec::with_capacity(CELLS_PER_BLOCK);
+            for cy in 0..edge {
+                for cx in 0..edge {
+                    let at = (bx * edge + cx, by * edge + cy);
+                    cells.push(Self::read_cell(handles, uop, self.blocks_h, at.0, at.1)?);
+                }
+            }
+            let statics = Self::read_block_statics(handles, &self.flags, key)?;
+            if handles.blocks.len() >= BLOCK_CACHE_CAP {
+                handles.blocks.clear();
+            }
+            handles.blocks.insert(key, MapBlock { cells, statics });
+        }
+        let i = usize::from(y % edge) * usize::from(edge) + usize::from(x % edge);
+        Ok((&handles.blocks[&key], i))
+    }
+
+    /// The ground graphic and height of one tile.
+    fn cell(&self, handles: &mut MulHandles, x: u16, y: u16) -> Result<(u16, i8), MapError> {
+        let (block, i) = self.block_of(handles, x, y)?;
+        Ok(block.cells[i])
+    }
+
+    /// The statics standing on one tile.
+    fn statics(
+        &self,
+        handles: &mut MulHandles,
+        x: u16,
+        y: u16,
+    ) -> Result<Vec<StaticPiece>, MapError> {
+        let (block, i) = self.block_of(handles, x, y)?;
+        Ok(block.statics[i].clone())
     }
 
     /// The column of one tile, off the last few read when it is one of them.
@@ -483,9 +543,8 @@ impl MulMap {
         x: u16,
         y: u16,
     ) -> Result<TileColumn, MapError> {
-        let uop = self.uop.as_deref();
-        let (land_id, land_z) = Self::read_cell(handles, uop, self.blocks_h, x, y)?;
-        let statics = Self::read_statics(handles, &self.flags, self.blocks_h, x, y)?;
+        let (land_id, land_z) = self.cell(handles, x, y)?;
+        let statics = self.statics(handles, x, y)?;
         // The height of a corner cell. A cell off the south or east edge of
         // the map has no corner of its own, so the cell that asked for it
         // lends its own height and the four corners come out flat.
@@ -494,7 +553,7 @@ impl MulMap {
             if !self.in_bounds(cx, cy) {
                 return land_z;
             }
-            Self::read_cell(handles, uop, self.blocks_h, cx, cy).map_or(land_z, |(_, z)| z)
+            self.cell(handles, cx, cy).map_or(land_z, |(_, z)| z)
         };
         Ok(TileColumn {
             land_id,
@@ -599,7 +658,7 @@ impl MulMap {
             Ok(h) => h,
             Err(_) => return Vec::new(),
         };
-        Self::read_statics(&mut handles, &self.flags, self.blocks_h, x, y).unwrap_or_default()
+        self.statics(&mut handles, x, y).unwrap_or_default()
     }
 
     pub fn doors_near(&self, cx: u16, cy: u16, radius: u16) -> Vec<DoorTile> {
@@ -665,8 +724,7 @@ impl TileQuery for MulMap {
         let Ok(mut handles) = self.inner.lock() else {
             return String::new();
         };
-        let uop = self.uop.as_deref();
-        match Self::read_cell(&mut handles, uop, self.blocks_h, x, y) {
+        match self.cell(&mut handles, x, y) {
             Ok((land, _)) => self.flags.land_name(land).to_string(),
             Err(_) => String::new(),
         }

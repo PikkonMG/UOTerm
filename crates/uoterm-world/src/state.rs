@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
@@ -293,6 +293,8 @@ pub enum MultiUpdate {
 /// Journal kinds for party lines. Party chat comes in its own packet, not as
 /// speech, so these numbers never come from the wire; they sit above every
 /// speech kind a shard sends.
+/// A door's open graphic is this far above its shut one.
+const DOOR_OPEN_STEP: u16 = 1;
 /// The most names of mobiles out of sight the world keeps. When it is full
 /// it starts again: a name comes back the next time its mobile is seen.
 const GONE_NAMES_KEEP: usize = 1024;
@@ -419,6 +421,8 @@ pub struct World {
     pub spoken_to: SpokenToLog,
     /// The secure trade window open with another player.
     pub trade: Option<Trade>,
+    /// The doors seen to open without leaving their doorway.
+    pub doors_open_in_place: HashSet<Serial>,
     /// The names of mobiles that went out of sight. A party or guild line
     /// can come from far away, and it names its speaker by serial only.
     pub gone_names: HashMap<Serial, String>,
@@ -1217,7 +1221,19 @@ impl World {
         match self.doors.insert(serial, door) {
             None => DoorUpdate::Learned,
             Some(known) if known == door => DoorUpdate::Unchanged,
-            Some(_) => DoorUpdate::Swung,
+            Some(known) => {
+                // A door's graphics come in shut and open pairs, the open one
+                // a step higher. Most leaves swing off the doorway and block
+                // the tile they swing to; some open in place, and only then
+                // is the doorway clear with the leaf still on it.
+                let opened = graphic == known.graphic.wrapping_add(DOOR_OPEN_STEP);
+                if opened && location == known.location {
+                    self.doors_open_in_place.insert(serial);
+                } else {
+                    self.doors_open_in_place.remove(&serial);
+                }
+                DoorUpdate::Swung
+            }
         }
     }
 
@@ -1225,16 +1241,22 @@ impl World {
     /// a door graphic.
     pub fn forget_door(&mut self, serial: Serial) {
         self.doors.remove(&serial);
+        self.doors_open_in_place.remove(&serial);
     }
 
-    /// Every tile a door item stands on.
+    /// Every tile a door leaf stands on.
     ///
-    /// A shut door stands in its own doorway and an open one has swung off it,
-    /// so a route that goes around these tiles stops in front of a shut door
-    /// and walks straight through an open one. No graphic is read to tell the
-    /// two apart.
+    /// A shut door stands in its own doorway and most open ones have swung
+    /// off it, so a route that goes around these tiles stops in front of a
+    /// shut door and walks straight through an open doorway. A door that
+    /// opens in place only changes graphic; once seen to open, its tile is
+    /// left out.
     pub fn door_tiles(&self) -> Vec<Point3> {
-        self.doors.values().map(|door| door.location).collect()
+        self.doors
+            .values()
+            .filter(|door| !self.doors_open_in_place.contains(&door.serial))
+            .map(|door| door.location)
+            .collect()
     }
 
     /// Records a building the server sent and says what it did to the record.

@@ -51,3 +51,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Path searches read thousands of map tiles. Unoptimized, one search that
+# cannot finish took seconds and froze a debug client; optimized, it takes a
+# fraction of a second. The rest of a debug build stays unoptimized.
+[profile.dev.package.uoterm-nav]
+opt-level = 3

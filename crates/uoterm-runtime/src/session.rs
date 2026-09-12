@@ -142,7 +142,11 @@ const MOCK_GRID: u16 = 2048;
 const GREEDY_STEP_CAP: usize = 64;
 #[cfg(test)]
 const PLAYER_STEP_CAP: usize = 256;
-const PATH_FAIL_LOG_EVERY: Duration = Duration::from_secs(5);
+/// How long a failed route stands. The failure is logged at most this often,
+/// and the same goal is not searched again sooner: a search for a goal that
+/// cannot be reached covers a wide area, and one on every tick froze the
+/// session.
+const PATH_FAIL_WAIT: Duration = Duration::from_secs(5);
 const HOLD_STEP_CAP: usize = 50;
 const HOLD_MS_NONE: u64 = 0;
 const WALK_STEPS_ONE: usize = 1;
@@ -5012,6 +5016,59 @@ mod relay_tests {
         assert!(!say(&mut inner, "faction", "hm").ok);
     }
 
+    /// While a door attempt waits, a walk to the same place plans nothing
+    /// new: each search toward a goal behind a shut door covers a wide
+    /// area, and one on every tick froze the whole session. A walk to a
+    /// new place gives the door up.
+    #[test]
+    fn a_waiting_door_attempt_is_not_planned_again() {
+        let mut inner = named_by_ann(false, "hi");
+        let from = inner.world.read().self_state.location;
+        let dest = Point3::new(from.x + 20, from.y, from.z);
+        let stand_on = Point3::new(from.x + 1, from.y, from.z);
+        let door = uoterm_world::DoorItem {
+            serial: Serial(0x4000_0E41),
+            graphic: 1665,
+            location: Point3::new(from.x + 2, from.y, from.z),
+        };
+        inner.movement.set_path(vec![stand_on], dest);
+        let plan = inner.doors.plan(
+            crate::movement::DoorApproach {
+                door,
+                stand_on,
+                steps: vec![stand_on],
+            },
+            Instant::now(),
+        );
+        assert!(matches!(plan, crate::movement::DoorPlan::Approach(_)));
+        // He stands in front of the door now, with no steps left to walk.
+        inner.movement.path.clear();
+        assert!(queue_move(&mut inner, dest));
+        assert!(inner.movement.path.is_empty(), "no new search");
+        assert!(inner.doors.waiting());
+        let elsewhere = Point3::new(from.x, from.y + 3, from.z);
+        queue_move(&mut inner, elsewhere);
+        assert!(!inner.doors.waiting(), "a new goal gives the door up");
+        assert_eq!(inner.movement.goal, Some(elsewhere));
+    }
+
+    /// A goal whose route just failed is not searched again at once: the
+    /// travel reflex asks every tick, and each failed search is costly.
+    #[test]
+    fn a_failed_goal_waits_before_it_is_searched_again() {
+        let mut inner = named_by_ann(false, "hi");
+        let from = inner.world.read().self_state.location;
+        let dest = Point3::new(from.x + 5, from.y, from.z);
+        inner.last_path_fail = Some((dest, Instant::now()));
+        assert!(!queue_move(&mut inner, dest));
+        assert_eq!(inner.movement.goal, None, "no trip was started");
+        inner.last_path_fail = Some((dest, Instant::now() - PATH_FAIL_WAIT));
+        assert!(
+            queue_move(&mut inner, dest),
+            "after the wait it is tried again"
+        );
+    }
+
     /// A walk the agent asks for wins over standing still in a fight: a
     /// character told to run from a foe, or to go to the bank, must go.
     #[test]
@@ -7816,7 +7873,7 @@ fn reflex_tick(inner: &mut Inner) {
     }
 }
 
-/// Warns and records a path failure at most once per `PATH_FAIL_LOG_EVERY`
+/// Warns and records a path failure at most once per `PATH_FAIL_WAIT`
 /// for the same point, so a walker that has nowhere to go cannot flood the
 /// log. `at` is the point that stays the same while the failure lasts: the
 /// destination of a move, and the follower's own tile for a follow.
@@ -7824,7 +7881,7 @@ fn note_path_failure(inner: &mut Inner, at: Point3, reason: String) {
     let now = Instant::now();
     let quiet = matches!(
         inner.last_path_fail,
-        Some((prev, when)) if prev == at && now.duration_since(when) < PATH_FAIL_LOG_EVERY
+        Some((prev, when)) if prev == at && now.duration_since(when) < PATH_FAIL_WAIT
     );
     if quiet {
         return;
@@ -7844,6 +7901,22 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     // the route with itself.
     if inner.movement.goal == Some(dest) && inner.movement.walking() {
         return true;
+    }
+    // A door on the way is being opened. The route to it is planned already,
+    // and a search toward a goal behind a shut door covers a wide area: one
+    // on every tick froze the whole session. A new goal gives the door up.
+    if inner.doors.waiting() {
+        if inner.movement.goal == Some(dest) {
+            return true;
+        }
+        inner.doors.give_up();
+        inner.door_macro = None;
+    }
+    if inner
+        .last_path_fail
+        .is_some_and(|(at, when)| at == dest && when.elapsed() < PATH_FAIL_WAIT)
+    {
+        return false;
     }
     // A new destination is a new journey, so the marks made on the way
     // somewhere else are dropped. A minute is a long time to plan around a
