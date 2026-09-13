@@ -5191,6 +5191,49 @@ mod relay_tests {
         assert_eq!(inner.movement.goal, Some(elsewhere));
     }
 
+    /// A bank goal ends when she reaches the bank, as a travel goal does.
+    /// Left standing, it planned an empty walk every tick and sent an
+    /// arrived event ten times a second.
+    #[test]
+    fn reaching_the_bank_ends_the_bank_goal() {
+        let mut inner = named_by_ann(false, "hi");
+        let bank = Point3::new(BANK_X, BANK_Y, BANK_Z);
+        inner.world.write().self_state.location = bank;
+        inner.goal = Goal::Bank;
+        for _ in 0..5 {
+            reflex_tick(&mut inner);
+            pump_movement(&mut inner, Instant::now());
+        }
+        let arrived = inner
+            .world
+            .read()
+            .events
+            .iter()
+            .filter(|e| e.kind == uoterm_world::EventKind::Arrived)
+            .count();
+        assert_eq!(arrived, 1, "one arrival, not one a tick");
+        assert_eq!(inner.goal, Goal::Idle);
+
+        // A shop goal with no vendor near falls back to the bank, where she
+        // already stands: nothing more arrives.
+        inner.goal = Goal::Shop;
+        for _ in 0..5 {
+            reflex_tick(&mut inner);
+            pump_movement(&mut inner, Instant::now());
+        }
+        let arrived_after = inner
+            .world
+            .read()
+            .events
+            .iter()
+            .filter(|e| e.kind == uoterm_world::EventKind::Arrived)
+            .count();
+        assert_eq!(
+            arrived_after, 1,
+            "no arrival spam from a goal she stands on"
+        );
+    }
+
     /// Far from the one bank the client knows, the bank goal and a travel
     /// with no spot are refused with words an agent can act on.
     #[test]
@@ -6743,6 +6786,28 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
     out
 }
 
+/// The goals that are a place to reach, and end there.
+fn goal_is_a_place(goal: &Goal) -> bool {
+    matches!(goal, Goal::Travel { .. } | Goal::Bank | Goal::Ress)
+}
+
+/// She reached the place she walked to: the agent hears of it, and a goal
+/// that is a place ends. Left standing, the reflex planned an empty walk to
+/// it every tick and she arrived ten times a second.
+fn arrive(inner: &mut Inner, at: Point3) {
+    inner.world.write().push_event(uoterm_world::Event::new(
+        uoterm_world::EventKind::Arrived,
+        None,
+        format!("{at}"),
+    ));
+    inner.movement.goal = None;
+    inner.movement.run_override = None;
+    if goal_is_a_place(&inner.goal) {
+        inner.goal = Goal::Idle;
+        inner.world.write().goal = Goal::Idle.name().into();
+    }
+}
+
 /// Logs once when a walk stands still short of its goal, and why it may:
 /// a door attempt waiting, or a route that failed moments ago waiting to be
 /// searched again. A stall with neither is one to look into.
@@ -8199,6 +8264,20 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     if inner.movement.goal == Some(dest) && inner.movement.walking() {
         return true;
     }
+    // She stands there already, with nothing owed: there is no walk to plan,
+    // and one would only arrive again on every tick. A goal that is this
+    // place is reached.
+    let here = inner.world.read().self_state.location;
+    if here.x == dest.x
+        && here.y == dest.y
+        && !inner.movement.walking()
+        && inner.movement.goal.is_none()
+    {
+        if goal_is_a_place(&inner.goal) {
+            arrive(inner, here);
+        }
+        return true;
+    }
     // A door on the way is being opened. The route to it is planned already,
     // and a search toward a goal behind a shut door covers a wide area: one
     // on every tick froze the whole session. A new goal gives the door up.
@@ -8480,17 +8559,7 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
         });
     note_a_stall(inner, from);
     if inner.movement.arrived(from) && inner.movement.goal.is_some() {
-        inner.world.write().push_event(uoterm_world::Event::new(
-            uoterm_world::EventKind::Arrived,
-            None,
-            format!("{from}"),
-        ));
-        inner.movement.goal = None;
-        inner.movement.run_override = None;
-        if travel {
-            inner.goal = Goal::Idle;
-            inner.world.write().goal = Goal::Idle.name().into();
-        }
+        arrive(inner, from);
     }
     if let Goal::Travel { dest } = inner.goal {
         // Not while the walk is still under way: the queued route already
