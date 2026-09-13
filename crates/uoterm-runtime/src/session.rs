@@ -5556,6 +5556,46 @@ mod relay_tests {
         assert_eq!(line, SENTENCE);
     }
 
+    /// The start of the moongate gump Mara got at the Britain gate, read
+    /// with the real client files: an agent sees the town and the map, not
+    /// their text numbers, and the gump shows in `observe` and in the
+    /// `next_event` state.
+    #[test]
+    fn a_gump_reads_in_the_words_of_the_client_files() {
+        const MOONGATE_GUMP: u32 = 585180759;
+        const MOONGATE_LAYOUT: &str = "{ page 0 }{ resizepic 0 0 5054 380 280 }\
+            { button 10 210 4005 4007 1 0 1 }{ xmfhtmlgump 45 210 140 25 1011036 0 0 }\
+            { button 10 35 2117 2118 0 1 0 }{ xmfhtmlgump 30 35 150 20 1012000 0 0 }\
+            { page 1 }{ radio 200 35 210 211 0 0 }{ xmfhtmlgump 225 35 150 20 1012003 0 0 }";
+        let Some(dir) = uoterm_nav::client_data_dir_from_env() else {
+            return;
+        };
+        let mut inner = test_session();
+        inner.cliloc = Some(Arc::new(
+            ClilocData::open(&dir).expect("read the client text database"),
+        ));
+        inner
+            .world
+            .write()
+            .apply(&Inbound::Gump(uoterm_protocol::OpenGump {
+                serial: Serial(1),
+                gump_id: MOONGATE_GUMP,
+                x: 0,
+                y: 0,
+                layout: MOONGATE_LAYOUT.into(),
+                text: Vec::new(),
+            }));
+        let views = gump_views(&inner);
+        let gate = &views[0];
+        assert_eq!(gate.buttons[0].id, Some(1));
+        assert_eq!(gate.buttons[0].label.to_uppercase(), "OKAY");
+        assert_eq!(gate.choices[0].switch, 0);
+        assert_eq!(gate.choices[0].label, "Moonglow");
+        assert_eq!(gate.choices[0].section, "Trammel");
+        let observed = observe_value(&inner);
+        assert_eq!(observed["gumps"][0]["choices"][0]["label"], "Moonglow");
+    }
+
     #[test]
     fn attack_is_sent_once_until_the_fight_ends() {
         const ENEMY: Serial = Serial(0x0000_1234);
@@ -6840,6 +6880,29 @@ fn note_a_stall(inner: &mut Inner, at: Point3) {
         route_failed_lately = inner.last_path_fail.is_some_and(|(_, when)| when.elapsed() < PATH_FAIL_WAIT),
         "the walk stands still short of its goal"
     );
+}
+
+/// One gump in words, with the text numbers read from the client files
+/// when the session has them.
+fn gump_view(inner: &Inner, gump: &uoterm_protocol::OpenGump) -> uoterm_world::GumpView {
+    let words = |number: u32, arguments: &str| {
+        inner
+            .cliloc
+            .as_ref()
+            .and_then(|table| table.render(number, arguments))
+    };
+    uoterm_world::read_gump(gump, &words)
+}
+
+/// The open gumps in words.
+fn gump_views(inner: &Inner) -> Vec<uoterm_world::GumpView> {
+    inner
+        .world
+        .read()
+        .gumps
+        .iter()
+        .map(|gump| gump_view(inner, gump))
+        .collect()
 }
 
 /// Answers an open gump with a button and its switches, and closes it. The
@@ -9274,6 +9337,7 @@ fn observe_value(inner: &Inner) -> Value {
         }
     }
     obs.buffs = scripting::buff_names(inner);
+    obs.gumps = gump_views(inner);
     obs.nearest_bank = crate::banks::nearest_bank(idx, loc).map(|bank| uoterm_world::BankView {
         town: bank.town.to_string(),
         location: bank.at,

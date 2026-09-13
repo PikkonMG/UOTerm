@@ -6,6 +6,16 @@ Tools return immediately with `action_id`. Completion is an event (`arrived`, `t
 
 `observe` shows `nearest_bank`: the town, the `location` where its banker stands, and the `dist`, for the nearest bank on this map within 400 tiles. The banks are those of the standard towns on every map; a shard with its own towns has others, which you find by their bankers (`find_mobiles` with `name` `banker`). The `bank` goal walks to `nearest_bank` and ends there.
 
+## Gumps
+
+A gump is a window the shard opens: a moongate, a bank question, a vendor menu. `observe` `gumps` and the `next_event` state show each open gump in words, with the text numbers read from the client files:
+
+- `texts`: the words that are not a label.
+- `buttons`: each `id` with the `label` beside it. A button with `to_page` only shows another page.
+- `choices`: each round or square button with its `switch`, its `label`, and the `section`, the label of the page it is on.
+
+To take the moongate to Moonglow on Trammel, tick the choice with that label and section and press OKAY: `gump_respond` with `button` 1 and `switches` [0].
+
 ## Trades
 
 When another player opens a secure trade, you get a `trade_opened` event, and `observe` shows `trade`: the player, what `theirs` and `mine` hold, and `i_accept` and `they_accept`. Read what they offer before you agree. `trade_accept` ticks your accept box (`accept: false` unticks it); `trade_cancel` closes the trade. A change to either side clears both accept boxes, so accept again after it.
@@ -72,7 +82,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `wait_target` | none |
 | `target` | a target cursor must be pending |
 | `open_container` / `loot` / `trade_offer` | serial |
-| `gump_respond` / `gump_close` | open gump. button `0` closes |
+| `gump_respond` / `gump_close` | open gump. `button` is a button id, `switches` the choices to tick; button `0` closes |
 | `set_goal` | in world; `idle` `travel` `hunt` `gather` `bank` `shop` `social` `flee` `ress` |
 | `set_persona` | session exists; JSON persona body. `typo_rate` is clamped to `0.0..=1.0` |
 | `cancel_goal` | session exists |

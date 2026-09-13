@@ -322,7 +322,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_GUMP_RESPOND,
-        "Click a gump button. button 0 closes.",
+        "Click a gump button. Args: button (a button id), switches (the choices to tick). button 0 closes. observe gumps shows each button id and choice switch with its words.",
         "open gump",
     ),
     (TOOL_GUMP_CLOSE, "Close gump.", "open gump"),

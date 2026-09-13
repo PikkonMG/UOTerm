@@ -819,10 +819,12 @@ impl World {
             Inbound::Gump(gump) => {
                 self.gumps.retain(|g| g.gump_id != gump.gump_id);
                 self.gumps.push(gump.clone());
+                // The layout is commands and text numbers; `observe` and the
+                // `next_event` state show the gump in words.
                 self.push_event(Event::new(
                     EventKind::GumpOpened,
                     Some(gump.serial),
-                    gump.layout.clone(),
+                    format!("gump {}", gump.gump_id),
                 ));
             }
             Inbound::Death { serial, corpse } => {

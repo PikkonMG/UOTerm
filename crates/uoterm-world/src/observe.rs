@@ -127,6 +127,10 @@ pub struct Observe {
     pub doors: Vec<NearbyDoor>,
     pub pending_target: bool,
     pub open_gumps: usize,
+    /// The open gumps in words: their texts, buttons and choices. The
+    /// runtime fills this in, because many words live in the client text
+    /// files.
+    pub gumps: Vec<crate::GumpView>,
     pub holding: Option<String>,
     pub combatant: Option<String>,
     pub goal: String,
@@ -269,6 +273,7 @@ impl Observe {
             doors: Vec::new(),
             pending_target: world.pending_target.is_some(),
             open_gumps: world.gumps.len(),
+            gumps: Vec::new(),
             holding: world.holding.map(|serial| serial.to_string()),
             combatant: world.combatant.map(|serial| serial.to_string()),
             goal: world.goal.clone(),

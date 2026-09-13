@@ -190,6 +190,8 @@ fn doing(inner: &Inner, world: &World) -> Value {
 
 /// The events, and the state an agent needs to act on them.
 fn event_answer(inner: &Inner, events: Vec<Event>, missed: u64) -> ToolResult {
+    // Read before the guard below: the world lock is not reentrant.
+    let gumps = super::gump_views(inner);
     let world = inner.world.read();
     let s = &world.self_state;
     let enemies: Vec<Value> = enemies_near(inner, &world)
@@ -199,7 +201,7 @@ fn event_answer(inner: &Inner, events: Vec<Event>, missed: u64) -> ToolResult {
         .collect();
     let pack = backpack_serial(&world);
     let pack_items = pack.map_or(0, |p| world.items_inside(p, true).len());
-    let state = json!({
+    let mut state = json!({
         "hits": s.hits,
         "hits_max": s.hits_max,
         "mana": s.mana,
@@ -217,6 +219,9 @@ fn event_answer(inner: &Inner, events: Vec<Event>, missed: u64) -> ToolResult {
         "pack": { "items": pack_items, "weight": s.weight, "weight_max": s.weight_max },
         "doing": doing(inner, &world),
     });
+    if !gumps.is_empty() {
+        state["gumps"] = json!(gumps);
+    }
     ToolResult::ok(json!({ "events": events, "missed": missed, "state": state }))
 }
 

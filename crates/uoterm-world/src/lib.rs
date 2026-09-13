@@ -3,6 +3,7 @@
 mod addressed;
 mod assist;
 mod events;
+mod gump;
 mod journal;
 mod names;
 mod observe;
@@ -15,6 +16,7 @@ pub use addressed::{
 };
 pub use assist::{AssistFeature, AssistRules};
 pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
+pub use gump::{read_gump, ChoiceKind, GumpButton, GumpChoice, GumpText, GumpView};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
 };
@@ -668,8 +670,18 @@ mod tests {
             hue: 0,
             multi: false,
         }));
-        w.apply(&Inbound::AddItem(in_container(CHEST, IN_CHEST, GRAPHIC_GOLD, GOLD_AMOUNT)));
-        w.apply(&Inbound::AddItem(in_container(BACKPACK, IN_PACK, GRAPHIC_BONE, ONE_OF_IT)));
+        w.apply(&Inbound::AddItem(in_container(
+            CHEST,
+            IN_CHEST,
+            GRAPHIC_GOLD,
+            GOLD_AMOUNT,
+        )));
+        w.apply(&Inbound::AddItem(in_container(
+            BACKPACK,
+            IN_PACK,
+            GRAPHIC_BONE,
+            ONE_OF_IT,
+        )));
         w.apply(&Inbound::DrawPlayer {
             serial: Serial(0xAB),
             body: 0x190,

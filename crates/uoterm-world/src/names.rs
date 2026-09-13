@@ -179,7 +179,10 @@ mod tests {
         assert_eq!(display_title(&props).as_deref(), Some("the banker"));
         let untitled = vec![property(CLILOC_NAME_WITH_AFFIX, "\ta cow\t")];
         assert_eq!(display_title(&untitled), None);
-        assert_eq!(display_title(&[property(CLILOC_PLAIN_NAME, "Pikkon")]), None);
+        assert_eq!(
+            display_title(&[property(CLILOC_PLAIN_NAME, "Pikkon")]),
+            None
+        );
     }
 
     #[test]

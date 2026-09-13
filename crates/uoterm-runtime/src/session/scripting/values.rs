@@ -570,29 +570,14 @@ fn property_value(game: &Game, serial: Serial, prop: &str) -> ScriptValue {
     }
 }
 
-/// All the words of a gump, lower case: its text lines and the client text
-/// its layout names.
+/// All the words of a gump, lower case: its texts and the labels of its
+/// buttons and choices, with text numbers read from the client files.
 fn gump_text(game: &Game, gump: &uoterm_protocol::OpenGump) -> String {
-    let mut all = gump.text.join("\n");
-    if let Some(table) = game.inner.cliloc.as_ref() {
-        for number in gump
-            .layout
-            .split(|c: char| !c.is_ascii_digit())
-            .filter_map(|n| n.parse::<u32>().ok())
-            .filter(|&n| n >= CLILOC_FIRST)
-        {
-            if let Some(text) = table.text(number) {
-                all.push('\n');
-                all.push_str(text);
-            }
-        }
-    }
-    all.to_lowercase()
+    crate::session::gump_view(game.inner, gump)
+        .words()
+        .join("\n")
+        .to_lowercase()
 }
-
-/// The lowest client text number. A layout number below it is a place or a
-/// size, not text.
-const CLILOC_FIRST: u32 = 500_000;
 
 /// True when a journal line since the last `clearjournal` holds the words,
 /// said by `author` or by the shard itself for `system`.
