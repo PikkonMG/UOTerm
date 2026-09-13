@@ -167,6 +167,12 @@ pub trait TileQuery {
         String::new()
     }
 
+    /// The tiledata name of an item graphic, such as "barrel". Maps without
+    /// tiledata report blank.
+    fn item_name(&self, _graphic: u16) -> String {
+        String::new()
+    }
+
     fn in_bounds(&self, x: u16, y: u16) -> bool {
         x < self.width() && y < self.height()
     }
@@ -181,6 +187,28 @@ pub trait TileQuery {
     /// floor answers the same as `tile`.
     fn tile_from(&self, from_z: i8, x: u16, y: u16) -> TileInfo {
         resolve_tile(&self.column(x, y), Some(from_z))
+    }
+
+    /// The height of the walkable surface on the tile nearest to `near_z`,
+    /// at any height: the ground, a floor, a porch or a roof. A person who
+    /// points at a spot names no height; this is the spot he means. None
+    /// when nothing on the tile can be stood on.
+    fn surface_near(&self, near_z: i8, x: u16, y: u16) -> Option<i8> {
+        if !self.in_bounds(x, y) {
+            return None;
+        }
+        let column = self.column(x, y);
+        let tops = column
+            .pieces
+            .iter()
+            .map(|p| i16::from(p.z) + i16::from(p.height));
+        std::iter::once(column.land.center())
+            .chain(tops)
+            .filter_map(|top| {
+                let tile = resolve_tile(&column, Some(clamp_z(top)));
+                tile.walkable().then_some(tile.z)
+            })
+            .min_by_key(|z| (i16::from(*z) - i16::from(near_z)).abs())
     }
 
     fn can_walk(&self, x: u16, y: u16) -> bool {

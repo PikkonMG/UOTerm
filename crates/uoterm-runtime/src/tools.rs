@@ -240,7 +240,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_CAN_WALK,
-        "True if the tile is walkable.",
+        "True if the tile has a walkable surface. With z, only at that height; with none, at any height (ground, floor, porch, roof).",
         "map loaded or mock grid",
     ),
     (

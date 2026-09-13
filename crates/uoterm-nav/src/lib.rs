@@ -1740,6 +1740,41 @@ mod tests {
     /// cell of the file over and over. A tile answered out of that store must
     /// answer exactly as one read afresh, and a run of tiles longer than the
     /// store holds must push the oldest out without spoiling one answer.
+    /// On a flat test map the surface of an open tile is its ground, at any
+    /// height asked, and a blocked tile has none.
+    #[test]
+    fn a_flat_map_offers_its_ground_as_the_surface() {
+        const RAISED_Z: i8 = 7;
+        const FAR_ABOVE: i8 = 60;
+        let mut map = MockMap::new(4, 4);
+        map.set_z(1, 1, RAISED_Z);
+        map.set_block(2, 2, true);
+        assert_eq!(map.surface_near(FAR_ABOVE, 1, 1), Some(RAISED_Z));
+        assert_eq!(map.surface_near(0, 2, 2), None);
+        assert_eq!(map.surface_near(0, 9, 9), None, "off the map");
+    }
+
+    /// Spots an agent pointed at in Britain with no height. One has a raised
+    /// surface a step from the ground cannot reach, which must still be
+    /// found; one is a wall at every height.
+    #[test]
+    fn a_surface_is_found_at_any_height_and_a_wall_has_none() {
+        const RAISED: (u16, u16) = (1436, 1730);
+        const WALL: (u16, u16) = (1410, 1700);
+        const GROUND_Z: i8 = 0;
+        let Some(dir) = client_data_dir_from_env() else {
+            return;
+        };
+        let map = MulMap::open(&dir, FELUCCA_MAP_INDEX).expect("open felucca map 0");
+        assert!(
+            !map.can_walk_from(GROUND_Z, RAISED.0, RAISED.1),
+            "one step from the ground does not reach it"
+        );
+        let raised = map.surface_near(GROUND_Z, RAISED.0, RAISED.1);
+        assert!(raised.is_some_and(|z| z > GROUND_Z), "{raised:?}");
+        assert_eq!(map.surface_near(GROUND_Z, WALL.0, WALL.1), None);
+    }
+
     #[test]
     fn a_tile_answers_the_same_whether_it_is_kept_or_read_again() {
         let Some(dir) = client_data_dir_from_env() else {

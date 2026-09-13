@@ -736,23 +736,18 @@ impl Movement {
         self.next_step_due = Some(now + pause);
     }
 
-    /// Starts the trip to `dest`, and gives back the refused tiles forgotten
-    /// because of it.
-    ///
-    /// A new destination is a new journey. The tiles and crossings the server
-    /// refused on the way somewhere else say nothing about this way, and a
-    /// minute is a long time to hold a mark made for another walk. Nothing is
-    /// forgotten while the destination is the one the trip is already aimed at,
-    /// or a walk planned again on every tick would remember nothing at all.
-    pub fn begin_trip(&mut self, dest: Point3) -> Vec<Point3> {
+    /// Starts the trip to `dest`: the count of routes and the waits start
+    /// again. The tiles and crossings the server refused are kept until their
+    /// time runs out, whatever the destination: a wall is a wall on the way
+    /// anywhere, and an agent that names a new spot every few steps walked
+    /// into the same refused tile again and again when they were dropped.
+    pub fn begin_trip(&mut self, dest: Point3) {
         if self.trip_dest.map(|held| same_tile(held, dest)) == Some(true) {
-            return Vec::new();
+            return;
         }
         self.trip_dest = Some(dest);
         self.replans = 0;
         self.clear_waits();
-        self.refused_edges.clear();
-        self.blocked.clear()
     }
 
     /// Counts one more route for this trip, and says whether the character may
@@ -2253,35 +2248,23 @@ pub(crate) mod tests {
         assert_eq!(blocked.tiles(), vec![wall_north_south(0)]);
     }
 
-    /// A new destination is a new journey, and the marks made on the way
-    /// somewhere else say nothing about this way.
+    /// A wall is a wall on the way anywhere: a new destination keeps the
+    /// tiles and crossings refused on the way to the old one until their time
+    /// runs out.
     #[test]
-    fn a_new_destination_forgets_every_refused_tile() {
+    fn a_new_destination_keeps_every_refused_tile() {
         const MET_ON_THE_WAY: usize = 3;
         let mut m = Movement::default();
         let now = Instant::now();
-        assert!(
-            m.begin_trip(REFUSED_35_TIMES).is_empty(),
-            "the first trip starts with nothing to forget"
-        );
+        m.begin_trip(REFUSED_35_TIMES);
         for met in 0..MET_ON_THE_WAY as i32 {
             m.blocked.refuse(wall_north_south(met), now);
         }
         m.refused_edges
             .refuse(wall_north_south(0), wall_north_south(1), now);
-        assert!(
-            m.begin_trip(REFUSED_35_TIMES).is_empty(),
-            "the same destination is the same trip, so nothing is forgotten"
-        );
+        m.begin_trip(REFUSED_23_TIMES);
         assert_eq!(m.blocked.tiles().len(), MET_ON_THE_WAY);
-        let forgotten = m.begin_trip(REFUSED_23_TIMES);
-        assert_eq!(
-            forgotten.len(),
-            MET_ON_THE_WAY,
-            "every mark goes with the old journey"
-        );
-        assert!(m.blocked.tiles().is_empty());
-        assert!(m.refused_edges.moves().is_empty());
+        assert_eq!(m.refused_edges.moves().len(), 1);
     }
 
     /// A trip that has been planned again this often is going nowhere, and it

@@ -730,6 +730,10 @@ impl TileQuery for MulMap {
         }
     }
 
+    fn item_name(&self, graphic: u16) -> String {
+        self.flags.static_name(graphic).to_string()
+    }
+
     fn width(&self) -> u16 {
         self.blocks_w.saturating_mul(CELL_PER_BLOCK_EDGE)
     }

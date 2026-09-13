@@ -137,7 +137,6 @@ const FORGOT_HE_STANDS_ON_IT: &str = "he stands on it";
 /// Why a refused tile is forgotten: the character has been told to walk
 /// somewhere else, and the mark was made on the way to somewhere he is no
 /// longer going.
-const FORGOT_NEW_DESTINATION: &str = "a new destination was set";
 const MOCK_GRID: u16 = 2048;
 #[cfg(test)]
 const GREEDY_STEP_CAP: usize = 64;
@@ -2727,6 +2726,49 @@ mod relay_tests {
         inner
     }
 
+    /// An item the shard never named shows the name the client files give
+    /// its graphic, as a real client shows it.
+    #[test]
+    fn a_nameless_item_takes_the_name_of_its_graphic() {
+        const BARREL: Serial = Serial(0x4000_0E51);
+        const GRAPHIC_BARREL: u16 = 0x0E77;
+        let Some(dir) = client_data_dir_from_env() else {
+            return;
+        };
+        let at = Point3::new(
+            HILLSIDE_ABOVE_THE_BANK_X,
+            HILLSIDE_NORTH_Y,
+            HILLSIDE_GROUND_Z,
+        );
+        let inner = on_the_hillside_above_the_bank(dir, at);
+        inner.world.write().items.insert(
+            BARREL,
+            uoterm_world::Item {
+                serial: BARREL,
+                graphic: GRAPHIC_BARREL,
+                amount: 1,
+                hue: 0,
+                location: Point3::new(at.x + 1, at.y, at.z),
+                parent: None,
+                layer: None,
+                grid: 0,
+                name: String::new(),
+            },
+        );
+        let obs = observe_value(&inner);
+        let barrel = obs["nearby_items"]
+            .as_array()
+            .and_then(|items| items.iter().find(|i| i["graphic"] == GRAPHIC_BARREL))
+            .expect("the barrel is in sight");
+        assert!(
+            barrel["name"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("barrel"),
+            "{barrel}"
+        );
+    }
+
     /// A person clicks a spot and names no height. A walk to a hillside
     /// tile goes to its ground, not to the height she stands at below it.
     #[test]
@@ -3282,11 +3324,10 @@ mod relay_tests {
         );
     }
 
-    /// A new destination is a new journey. The tiles the server refused on the
-    /// way somewhere else say nothing about this way, and a minute is a long
-    /// time to plan around a mark made for a walk he is no longer making.
+    /// A new destination keeps the tiles the server refused on the way to
+    /// the old one: a wall is a wall on the way anywhere.
     #[test]
-    fn a_new_destination_forgets_the_tiles_refused_on_the_way_to_the_old_one() {
+    fn a_new_destination_keeps_the_tiles_refused_on_the_way_to_the_old_one() {
         let mut inner = test_session();
         let now = Instant::now();
         inner.world.write().self_state.location = REFUSED_FROM;
@@ -3303,9 +3344,10 @@ mod relay_tests {
         ready_to_plan_again(&mut inner);
 
         queue_move(&mut inner, IN_THE_WAY);
-        assert!(
-            inner.movement.blocked.tiles().is_empty(),
-            "and a new destination drops it"
+        assert_eq!(
+            inner.movement.blocked.tiles(),
+            vec![THE_HOUSE_WALL],
+            "and a new destination keeps it too"
         );
     }
 
@@ -8173,12 +8215,7 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     {
         return false;
     }
-    // A new destination is a new journey, so the marks made on the way
-    // somewhere else are dropped. A minute is a long time to plan around a
-    // tile that was in the way of another walk.
-    for forgotten in inner.movement.begin_trip(dest) {
-        log_forgotten(forgotten, FORGOT_NEW_DESTINATION);
-    }
+    inner.movement.begin_trip(dest);
     // The tile the steps already on the wire leave him on, which is the tile
     // the server last put him on whenever it owes him nothing. A route
     // planned from anywhere else is a route from a tile he is not going to be
@@ -8570,11 +8607,16 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     if within.is_some_and(|w| dist.map_or(true, |d| d > w)) {
                         return None;
                     }
+                    let name = if i.name.is_empty() {
+                        inner.tiles().item_name(i.graphic)
+                    } else {
+                        i.name.clone()
+                    };
                     Some(json!({
                         "serial": i.serial,
                         "graphic": i.graphic,
                         "amount": i.amount,
-                        "name": i.name,
+                        "name": name,
                         "container": i.parent,
                         "location": at,
                         "dist": dist,
@@ -8623,9 +8665,15 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_CAN_WALK => {
             let x = args.get("x").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
             let y = args.get("y").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-            let z = asked_z(args, inner.world.read().self_state.location.z);
+            let standing = inner.world.read().self_state.location.z;
             inner.ensure_facet();
-            ToolResult::ok(json!(inner.tiles().can_walk_from(z, x, y)))
+            // With a height, that height; with none, any surface there, as a
+            // person pointing at the spot means.
+            let walkable = match args.get("z").and_then(|v| v.as_i64()) {
+                Some(_) => inner.tiles().can_walk_from(asked_z(args, standing), x, y),
+                None => inner.tiles().surface_near(standing, x, y).is_some(),
+            };
+            ToolResult::ok(json!(walkable))
         }
         TOOL_SAY => say_in_channel(inner, args),
         TOOL_REPLY => reply(inner, args),
@@ -9121,6 +9169,24 @@ fn observe_value(inner: &Inner) -> Value {
         None => radar_from_floor(&w, &inner.map, loc.z),
     };
     drop(w);
+    // The shard names an item only when asked, and some never get an answer.
+    // The client files name every graphic, as a real client shows them.
+    {
+        let tiles = inner.tiles();
+        let named = |name: &mut String, graphic: u16| {
+            if name.is_empty() {
+                *name = tiles.item_name(graphic);
+            }
+        };
+        for item in &mut obs.nearby_items {
+            named(&mut item.name, item.graphic);
+        }
+        for container in &mut obs.containers {
+            for item in &mut container.contents {
+                named(&mut item.name, item.graphic);
+            }
+        }
+    }
     obs.buffs = scripting::buff_names(inner);
     obs.reply_style = reply_style(inner);
     obs.playing_along = inner.play_along.map(|run| uoterm_world::PlayingAlong {
@@ -9525,11 +9591,15 @@ fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
 /// `standing_z`, the height the character is at. A building with more than one
 /// floor gives a different answer for each floor, so a caller that names no
 /// height must get its own floor and not the one above.
-/// The height of the surface at `x`, `y` that a walker at height `from`
-/// reaches: the ground, a floor or a roof.
+/// The height of the walkable surface at `x`, `y` nearest to `from`: the
+/// ground, a floor or a roof. A tile with none keeps the height a walker at
+/// `from` would meet there, and the route to it fails.
 fn surface_z(inner: &mut Inner, from: i8, x: u16, y: u16) -> i8 {
     inner.ensure_facet();
-    inner.tiles().tile_from(from, x, y).z
+    let tiles = inner.tiles();
+    tiles
+        .surface_near(from, x, y)
+        .unwrap_or_else(|| tiles.tile_from(from, x, y).z)
 }
 
 fn asked_z(args: &Value, standing_z: i8) -> i8 {
