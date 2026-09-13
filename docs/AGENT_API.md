@@ -4,7 +4,7 @@ Tools return immediately with `action_id`. Completion is an event (`arrived`, `t
 
 ## Banks
 
-`observe` shows `nearest_bank`: the town, the `location` where its banker stands, and the `dist`, for the nearest bank on this map within 400 tiles. The banks are those of the standard towns on every map; a shard with its own towns has others, which you find by their bankers (`find_mobiles`). The `bank` goal walks to `nearest_bank` and ends there.
+`observe` shows `nearest_bank`: the town, the `location` where its banker stands, and the `dist`, for the nearest bank on this map within 400 tiles. The banks are those of the standard towns on every map; a shard with its own towns has others, which you find by their bankers (`find_mobiles` with `name` `banker`). The `bank` goal walks to `nearest_bank` and ends there.
 
 ## Trades
 
@@ -51,7 +51,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | Tool | Precondition | Result |
 | --- | --- | --- |
 | `observe` | session exists | self, radar, journal, mobiles, items, target, gumps, doors, buffs, party, prompt, forbidden (assistant features the shard forbids) |
-| `find_mobiles` | in world | filter name / graphic / distance |
+| `find_mobiles` | in world | filter name / graphic / distance; `name` also matches the title, so `banker` finds "Kate the banker"; each has its title |
 | `find_items` | in world | filter graphic / container / name |
 | `journal_search` | session exists | matching lines |
 | `map_tile` / `can_walk` | map or mock grid | walkable, z, door |

@@ -563,6 +563,7 @@ pub(crate) mod tests {
             Mobile {
                 serial: Serial(7),
                 name: "Pikkon".into(),
+                title: String::new(),
                 body: 400,
                 hue: 0,
                 location: Point3::new(4, 4, 0),
@@ -594,6 +595,7 @@ pub(crate) mod tests {
             Mobile {
                 serial: Serial(100),
                 name: "Mara".into(),
+                title: String::new(),
                 body: 401,
                 hue: 0,
                 location: Point3::new(5, 5, 0),

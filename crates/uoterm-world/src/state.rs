@@ -18,7 +18,7 @@ use crate::addressed::{
 use crate::assist::AssistRules;
 use crate::events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 use crate::journal::{Journal, JournalEntry};
-use crate::names::{display_name, NameBook};
+use crate::names::{display_name, display_title, NameBook};
 use crate::observe::Observe;
 use crate::radar::{default_tile, render_radar, RadarOptions, TileKind, RADAR_DEFAULT};
 
@@ -161,6 +161,10 @@ impl Default for SelfState {
 pub struct Mobile {
     pub serial: Serial,
     pub name: String,
+    /// The title after the name, such as "the banker", from the property
+    /// list. Empty when the shard sends none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     pub body: u16,
     pub hue: u16,
     pub location: Point3,
@@ -173,11 +177,21 @@ pub struct Mobile {
     pub equipment: Vec<EquipItem>,
 }
 
+impl Mobile {
+    /// True when `words` is part of the name or of the title, in any case:
+    /// "kate" and "banker" both find Kate the banker.
+    pub fn answers_to(&self, words: &str) -> bool {
+        let words = words.to_lowercase();
+        self.name.to_lowercase().contains(&words) || self.title.to_lowercase().contains(&words)
+    }
+}
+
 impl From<&MobileView> for Mobile {
     fn from(v: &MobileView) -> Self {
         Self {
             serial: v.serial,
             name: String::new(),
+            title: String::new(),
             body: v.body,
             hue: v.hue,
             location: Point3::new(v.x, v.y, v.z),
@@ -975,6 +989,9 @@ impl World {
         if let Some(name) = display_name(properties) {
             self.set_object_name(serial, name);
         }
+        if let Some(mob) = self.mobiles.get_mut(&serial) {
+            mob.title = display_title(properties).unwrap_or_default();
+        }
     }
 
     fn apply_mobile_view(&mut self, view: &MobileView) {
@@ -1000,12 +1017,16 @@ impl World {
             self.refresh_dead_from_body(view.body);
             return;
         }
-        let old_name = self.mobiles.get(&view.serial).map(|m| m.name.clone());
+        let known = self
+            .mobiles
+            .get(&view.serial)
+            .map(|m| (m.name.clone(), m.title.clone()));
         let mut mob = Mobile::from(view);
-        if mob.name.is_empty() {
-            if let Some(name) = old_name {
+        if let Some((name, title)) = known {
+            if mob.name.is_empty() {
                 mob.name = name;
             }
+            mob.title = title;
         }
         if mob.name.is_empty() {
             self.names.want(view.serial);
@@ -1330,7 +1351,7 @@ impl World {
     ) -> Vec<&Mobile> {
         self.mobiles
             .values()
-            .filter(|m| name.map(|n| m.name.eq_ignore_ascii_case(n)).unwrap_or(true))
+            .filter(|m| name.map(|n| m.answers_to(n)).unwrap_or(true))
             .filter(|m| graphic.map(|g| m.body == g).unwrap_or(true))
             .filter(|m| {
                 max_dist

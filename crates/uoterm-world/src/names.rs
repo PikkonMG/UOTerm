@@ -15,6 +15,13 @@ use uoterm_protocol::{ObjectProperty, Serial};
 /// arrives as `"\ta wooden chair\t"` because the cliloc format has a prefix and
 /// a suffix field around the name.
 const ARGUMENT_SEPARATOR: char = '\t';
+/// A name line in the prefix, name and suffix form has this many fields.
+const AFFIXED_NAME_FIELDS: usize = 3;
+/// Where the name stands in that form. The prefix before it is a fame
+/// title such as "Lord".
+const AFFIXED_NAME_AT: usize = 1;
+/// Where the suffix stands in that form: a title such as "the banker".
+const AFFIXED_SUFFIX_AT: usize = 2;
 
 /// What we know, and what we still have to ask, about object names.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -100,18 +107,46 @@ impl NameBook {
     }
 }
 
+/// The trimmed fields of the first line of a property list, the line that
+/// holds the name.
+fn name_line_fields(properties: &[ObjectProperty]) -> Option<Vec<&str>> {
+    let first = properties.first()?;
+    Some(
+        first
+            .arguments
+            .split(ARGUMENT_SEPARATOR)
+            .map(str::trim)
+            .collect(),
+    )
+}
+
 /// The display name carried by a property list, if it has one.
 ///
 /// The first line of the list is the name. Its arguments are tab separated
-/// because the cliloc format wraps the name in a prefix and a suffix field.
+/// because the cliloc format wraps the name in a prefix and a suffix field;
+/// a line in another form gives its first field that is not empty.
 pub fn display_name(properties: &[ObjectProperty]) -> Option<String> {
-    let first = properties.first()?;
-    let name = first
-        .arguments
-        .split(ARGUMENT_SEPARATOR)
-        .map(str::trim)
-        .find(|part| !part.is_empty())?;
-    Some(name.to_string())
+    let fields = name_line_fields(properties)?;
+    let name = if fields.len() == AFFIXED_NAME_FIELDS {
+        fields.get(AFFIXED_NAME_AT).copied()
+    } else {
+        fields.iter().copied().find(|field| !field.is_empty())
+    };
+    name.filter(|name| !name.is_empty()).map(str::to_string)
+}
+
+/// The title after the name, such as "the banker", when the name line has
+/// the prefix, name and suffix form and the suffix is not empty. A player
+/// looks for a banker or a healer by this title.
+pub fn display_title(properties: &[ObjectProperty]) -> Option<String> {
+    let fields = name_line_fields(properties)?;
+    if fields.len() != AFFIXED_NAME_FIELDS {
+        return None;
+    }
+    fields
+        .get(AFFIXED_SUFFIX_AT)
+        .filter(|title| !title.is_empty())
+        .map(|title| title.to_string())
 }
 
 #[cfg(test)]
@@ -133,6 +168,18 @@ mod tests {
     fn display_name_strips_the_prefix_and_suffix_fields() {
         let props = vec![property(CLILOC_NAME_WITH_AFFIX, "\ta wooden chair\t")];
         assert_eq!(display_name(&props).as_deref(), Some("a wooden chair"));
+    }
+
+    /// A fame title stands before the name and a job title after it; the
+    /// name is the middle field, and the job title is the title.
+    #[test]
+    fn a_title_on_either_side_is_not_the_name() {
+        let props = vec![property(CLILOC_NAME_WITH_AFFIX, "Lady\tKate\t the banker")];
+        assert_eq!(display_name(&props).as_deref(), Some("Kate"));
+        assert_eq!(display_title(&props).as_deref(), Some("the banker"));
+        let untitled = vec![property(CLILOC_NAME_WITH_AFFIX, "\ta cow\t")];
+        assert_eq!(display_title(&untitled), None);
+        assert_eq!(display_title(&[property(CLILOC_PLAIN_NAME, "Pikkon")]), None);
     }
 
     #[test]

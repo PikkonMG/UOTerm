@@ -2919,6 +2919,7 @@ mod relay_tests {
         uoterm_world::Mobile {
             serial: SOMEBODY_ELSE,
             name: String::new(),
+            title: String::new(),
             body: PLAYER_BODY,
             hue: NO_HUE,
             location: at,
@@ -8648,13 +8649,17 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .find_mobiles(name, graphic, dist)
                 .iter()
                 .map(|m| {
-                    json!({
+                    let mut found = json!({
                         "serial": m.serial,
                         "name": m.name,
                         "body": m.body,
                         "location": m.location,
                         "dist": here.chebyshev(m.location),
-                    })
+                    });
+                    if !m.title.is_empty() {
+                        found["title"] = json!(m.title);
+                    }
+                    found
                 })
                 .collect();
             ToolResult::ok(json!(found))

@@ -338,6 +338,7 @@ mod tests {
             uoterm_world::Mobile {
                 serial: TARGET,
                 name: String::new(),
+                title: String::new(),
                 body: 3,
                 hue: 0,
                 location: Point3::new(101, 100, 0),
@@ -683,6 +684,7 @@ mod tests {
             uoterm_world::Mobile {
                 serial: OTHER,
                 name: String::new(),
+                title: String::new(),
                 body: 3,
                 hue: 0,
                 location: Point3::new(101, 101, 0),

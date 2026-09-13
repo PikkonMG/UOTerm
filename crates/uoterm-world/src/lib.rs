@@ -18,7 +18,7 @@ pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
 };
-pub use names::{display_name, NameBook};
+pub use names::{display_name, display_title, NameBook};
 pub use observe::{
     BankView, ContainedItem, NearbyDoor, NearbyItem, Observe, OpenContainer, PlayingAlong,
     TradeView, OBSERVE_CONTAINER_CAP, OBSERVE_CONTAINER_ITEM_CAP, OBSERVE_DOOR_RADIUS,
@@ -122,6 +122,7 @@ mod tests {
             Mobile {
                 serial: LEADER,
                 name: "Rowan".into(),
+                title: String::new(),
                 body: 0x0190,
                 hue: 0,
                 location: Point3::new(0, 0, 0),
@@ -583,6 +584,47 @@ mod tests {
             .iter()
             .all(|m| m.serial == Serial(0x51)));
         assert_eq!(w.find_items(None, None, Some("unused")).len(), 0);
+    }
+
+    /// A banker is a person called Kate to the eye; "banker" is only in her
+    /// title, so the title must stay, survive a move, and be searchable.
+    #[test]
+    fn a_banker_is_found_by_her_title() {
+        const KATE: Serial = Serial(0x61);
+        let mut w = World::new();
+        login(&mut w);
+        let kate = |x: u16| {
+            Inbound::MobileIncoming(MobileView {
+                serial: KATE,
+                body: 0x191,
+                x,
+                y: 20,
+                z: 1,
+                direction: 0,
+                hue: 0,
+                flags: 0,
+                notoriety: 1,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            })
+        };
+        w.apply(&kate(11));
+        w.apply(&Inbound::ObjectPropertyList {
+            serial: KATE,
+            hash: NAME_REVISION,
+            properties: vec![ObjectProperty {
+                cliloc: CLILOC_NAME_WITH_AFFIX,
+                arguments: "\tKate\t the banker".into(),
+            }],
+        });
+        w.apply(&kate(12));
+        let found = w.find_mobiles(Some("Banker"), None, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Kate");
+        assert_eq!(found[0].title, "the banker");
+        assert_eq!(w.find_mobiles(Some("kat"), None, None).len(), 1);
+        assert!(w.find_mobiles(Some("healer"), None, None).is_empty());
     }
 
     #[test]
