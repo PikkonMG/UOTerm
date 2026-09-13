@@ -20,9 +20,9 @@ pub use journal::{
 };
 pub use names::{display_name, NameBook};
 pub use observe::{
-    ContainedItem, NearbyDoor, NearbyItem, Observe, OpenContainer, PlayingAlong, TradeView,
-    OBSERVE_CONTAINER_CAP, OBSERVE_CONTAINER_ITEM_CAP, OBSERVE_DOOR_RADIUS, OBSERVE_FACT_CAP,
-    OBSERVE_ITEM_CAP, OBSERVE_MOBILE_CAP,
+    BankView, ContainedItem, NearbyDoor, NearbyItem, Observe, OpenContainer, PlayingAlong,
+    TradeView, OBSERVE_CONTAINER_CAP, OBSERVE_CONTAINER_ITEM_CAP, OBSERVE_DOOR_RADIUS,
+    OBSERVE_FACT_CAP, OBSERVE_ITEM_CAP, OBSERVE_MOBILE_CAP,
 };
 pub use radar::{
     default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT, RADAR_SIZE,

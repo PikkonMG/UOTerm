@@ -54,9 +54,9 @@ Every field above changes behaviour. A persona file carries no other field.
 | `idle` | No action |
 | `gather` | Use hatchet, then target a tree |
 | `hunt` | War mode, attack grey+, bandage when HP is low |
-| `travel` | Pathfind to dest. With no dest, the Britain bank, when it is near |
+| `travel` | Pathfind to dest. With no dest, the nearest bank |
 | `flee` | Step away |
-| `bank` | Walk toward the Britain bank (1425, 1695, 0). It is the one bank the client knows, so this works only on Felucca or Trammel within 400 tiles of it; elsewhere `set_goal` refuses and the agent must find a banker |
+| `bank` | Walk to the nearest bank within 400 tiles, from the banks of the standard towns on every map; the goal ends there. With none that near, or on a shard with its own towns, `set_goal` refuses and the agent must find a banker |
 | `shop` | Use a nearby innocent mobile, else walk to the bank when it is near |
 | `social` | Say `yo` |
 | `ress` | If dead, walk toward the bank when it is near |

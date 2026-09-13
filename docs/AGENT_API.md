@@ -2,6 +2,10 @@
 
 Tools return immediately with `action_id`. Completion is an event (`arrived`, `target_requested`, `speech`, and others).
 
+## Banks
+
+`observe` shows `nearest_bank`: the town, the `location` where its banker stands, and the `dist`, for the nearest bank on this map within 400 tiles. The banks are those of the standard towns on every map; a shard with its own towns has others, which you find by their bankers (`find_mobiles`). The `bank` goal walks to `nearest_bank` and ends there.
+
 ## Trades
 
 When another player opens a secure trade, you get a `trade_opened` event, and `observe` shows `trade`: the player, what `theirs` and `mine` hold, and `i_accept` and `they_accept`. Read what they offer before you agree. `trade_accept` ticks your accept box (`accept: false` unticks it); `trade_cancel` closes the trade. A change to either side clears both accept boxes, so accept again after it.

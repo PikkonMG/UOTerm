@@ -5197,7 +5197,9 @@ mod relay_tests {
     #[test]
     fn reaching_the_bank_ends_the_bank_goal() {
         let mut inner = named_by_ann(false, "hi");
-        let bank = Point3::new(BANK_X, BANK_Y, BANK_Z);
+        let bank = crate::banks::nearest_bank(0, Point3::new(1430, 1700, 0))
+            .expect("the Britain bank")
+            .at;
         inner.world.write().self_state.location = bank;
         inner.goal = Goal::Bank;
         for _ in 0..5 {
@@ -5234,12 +5236,17 @@ mod relay_tests {
         );
     }
 
-    /// Far from the one bank the client knows, the bank goal and a travel
+    /// Far from every bank the client knows, the bank goal and a travel
     /// with no spot are refused with words an agent can act on.
     #[test]
     fn a_bank_goal_far_from_the_bank_is_refused() {
+        const OPEN_SEA: Point3 = Point3 {
+            x: 2000,
+            y: 3900,
+            z: 0,
+        };
         let mut inner = named_by_ann(false, "hi");
-        inner.world.write().self_state.location = Point3::new(4474, 1285, 0);
+        inner.world.write().self_state.location = OPEN_SEA;
         let bank = answer_agent(&mut inner, call(TOOL_SET_GOAL, json!({ "goal": "bank" })));
         assert_eq!(bank.error.as_deref(), Some(NO_BANK_KNOWN));
         let travel = answer_agent(&mut inner, call(TOOL_SET_GOAL, json!({ "goal": "travel" })));
@@ -9044,12 +9051,16 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     dest.y = y as u16;
                     let z = asked_z(args, at.z);
                     dest.z = surface_z(inner, z, dest.x, dest.y);
-                } else if known_bank(map, at).is_none() {
-                    // With no spot, travel means the bank, and none is near.
-                    return ToolResult::err(TRAVEL_NEEDS_A_SPOT);
+                } else {
+                    // With no spot, travel means the nearest bank.
+                    match crate::banks::nearest_bank(map, at) {
+                        Some(bank) => *dest = bank.at,
+                        None => return ToolResult::err(TRAVEL_NEEDS_A_SPOT),
+                    }
                 }
             }
-            if matches!(g, Goal::Bank | Goal::Ress) && known_bank(map, at).is_none() {
+            if matches!(g, Goal::Bank | Goal::Ress) && crate::banks::nearest_bank(map, at).is_none()
+            {
                 return ToolResult::err(NO_BANK_KNOWN);
             }
             inner.follow = None;
@@ -9257,6 +9268,11 @@ fn observe_value(inner: &Inner) -> Value {
         }
     }
     obs.buffs = scripting::buff_names(inner);
+    obs.nearest_bank = crate::banks::nearest_bank(idx, loc).map(|bank| uoterm_world::BankView {
+        town: bank.town.to_string(),
+        location: bank.at,
+        dist: loc.chebyshev(bank.at),
+    });
     obs.reply_style = reply_style(inner);
     obs.playing_along = inner.play_along.map(|run| uoterm_world::PlayingAlong {
         name: inner.world.read().name_of(run.with),

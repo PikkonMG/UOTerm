@@ -161,6 +161,18 @@ pub struct Observe {
     pub playing_along: Option<PlayingAlong>,
     /// The secure trade window open with another player.
     pub trade: Option<TradeView>,
+    /// The nearest bank on this map within walking range, when the client
+    /// knows one. The runtime fills this in.
+    pub nearest_bank: Option<BankView>,
+}
+
+/// A bank an agent can walk to: its town, where its banker stands, and how
+/// far that is.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BankView {
+    pub town: String,
+    pub location: uoterm_protocol::Point3,
+    pub dist: u32,
 }
 
 /// A secure trade as an agent reads it: who, what each side offers, and
@@ -292,6 +304,7 @@ impl Observe {
                 i_accept: t.i_accept,
                 they_accept: t.they_accept,
             }),
+            nearest_bank: None,
         }
     }
 }

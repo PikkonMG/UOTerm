@@ -1,7 +1,8 @@
 //! Compiled reflex tick. Combat and gather do not wait on an LLM.
 
+use crate::banks::nearest_bank;
 use crate::persona::Persona;
-use crate::tools::{known_bank, Goal};
+use crate::tools::Goal;
 use std::time::{Duration, Instant};
 use uoterm_protocol::types::*;
 use uoterm_world::{AssistFeature, World};
@@ -308,10 +309,10 @@ fn shop_action(world: &World) -> ReflexAction {
 /// from it, or on a map without it, there is none: the search for a way
 /// that is not there costs seconds.
 fn bank_near(world: &World) -> Option<ReflexAction> {
-    known_bank(world.self_state.map, world.self_state.location).map(|bank| ReflexAction::MoveTo {
-        x: bank.x,
-        y: bank.y,
-        z: bank.z,
+    nearest_bank(world.self_state.map, world.self_state.location).map(|bank| ReflexAction::MoveTo {
+        x: bank.at.x,
+        y: bank.at.y,
+        z: bank.at.z,
     })
 }
 
@@ -609,9 +610,8 @@ mod tests {
         ));
     }
 
-    /// Far from the one bank the client knows, or on a map without it, no
-    /// walk to it is started: a search for a way that is not there costs
-    /// seconds.
+    /// Far from every bank, no walk to one is started: a search for a way
+    /// that is not there costs seconds. In a town, the walk goes to its bank.
     #[test]
     fn no_walk_to_a_bank_that_is_not_near() {
         const MOONGLOW: Point3 = Point3 {
@@ -619,11 +619,26 @@ mod tests {
             y: 1285,
             z: 0,
         };
+        const OPEN_SEA: Point3 = Point3 {
+            x: 2000,
+            y: 3900,
+            z: 0,
+        };
         const ILSHENAR: u8 = 2;
         let p = Persona::lumberjack_yew();
         let mut far = World::new();
-        far.self_state.location = MOONGLOW;
+        far.self_state.location = OPEN_SEA;
         assert_eq!(tick(&far, &p, &Goal::Bank), ReflexAction::None);
+        let mut moonglow = World::new();
+        moonglow.self_state.location = MOONGLOW;
+        assert!(matches!(
+            tick(&moonglow, &p, &Goal::Bank),
+            ReflexAction::MoveTo {
+                x: 4471,
+                y: 1156,
+                ..
+            }
+        ));
         let mut other_map = World::new();
         other_map.self_state.location = IN_BRITAIN;
         other_map.self_state.map = ILSHENAR;
