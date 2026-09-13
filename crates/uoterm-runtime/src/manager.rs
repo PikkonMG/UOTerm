@@ -246,7 +246,6 @@ mod tests {
             character: MOCK_CHAR.into(),
             version: ClientVersion::T2A,
             era: Era::T2a,
-            stay_on_socket: true,
             ..ConnectOptions::default()
         }
     }

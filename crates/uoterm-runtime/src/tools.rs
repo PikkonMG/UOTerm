@@ -434,6 +434,8 @@ pub fn mcp_tool_list() -> Value {
                         "q": {"type": "string"},
                         "since": {"type": "integer"},
                         "switches": {"type": "array", "items": {"type": "integer"}},
+                        "gump": {"type": "integer"},
+                        "button": {"type": "integer"},
                         "agent": {"type": "string"},
                         "list": {"type": "string"},
                         "on": {"type": "boolean"},

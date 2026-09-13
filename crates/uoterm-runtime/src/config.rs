@@ -67,7 +67,6 @@ pub struct AppConfig {
     pub log_level: String,
     pub api_bind: String,
     pub max_sessions: usize,
-    pub stay_on_socket: bool,
     #[serde(default = "obey_shard_rules_default")]
     pub obey_shard_rules: bool,
     #[serde(default = "answer_when_named_default")]
@@ -86,7 +85,6 @@ impl Default for AppConfig {
             log_level: "info".into(),
             api_bind: format!("127.0.0.1:{DEFAULT_API_PORT}"),
             max_sessions: DEFAULT_MAX_SESSIONS,
-            stay_on_socket: true,
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
             play_along: PLAY_ALONG_DEFAULT,
@@ -116,7 +114,6 @@ pub struct ConnectOptions {
     pub era: Era,
     pub uopath: Option<PathBuf>,
     pub persona: Option<Persona>,
-    pub stay_on_socket: bool,
     pub next_login_key: u8,
     pub encryption: EncryptionMode,
     /// Obey the shard's list of forbidden assistant features.
@@ -140,7 +137,6 @@ impl Default for ConnectOptions {
             era: Era::Modern,
             uopath: None,
             persona: None,
-            stay_on_socket: false,
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
@@ -160,13 +156,6 @@ impl ConnectOptions {
 
     pub fn cipher(&self, seed: u32) -> Box<dyn StreamCipher> {
         for_mode(self.encryption, seed, self.version)
-    }
-}
-
-pub fn stay_on_socket_for_era(era: Era, cfg_stay: bool) -> bool {
-    match era {
-        Era::T2a => cfg_stay,
-        Era::Modern => false,
     }
 }
 
@@ -259,7 +248,8 @@ mod tests {
     }
 
     /// A config file written before the setting existed still loads, and
-    /// obeys the shard's list.
+    /// obeys the shard's list. The `stay_on_socket` key of an old file is
+    /// read past: the client always opens a new socket to the game server.
     #[test]
     fn a_config_without_the_setting_obeys_the_shard() {
         const OLD_CONFIG: &str = r#"
@@ -286,7 +276,6 @@ era = "t2a"
 log_level = "info"
 api_bind = "127.0.0.1:7733"
 max_sessions = 32
-stay_on_socket = true
 obey_shard_rules = false
 "#;
         let cfg: AppConfig = toml::from_str(IGNORING).expect("the config loads");
@@ -304,7 +293,6 @@ era = "t2a"
 log_level = "info"
 api_bind = "127.0.0.1:7733"
 max_sessions = 32
-stay_on_socket = true
 answer_when_named = false
 "#;
         assert!(AppConfig::default().answer_when_named);

@@ -170,12 +170,13 @@ impl Obstacles<'_> {
         self.soft
             .iter()
             .chain(self.hard)
-            .any(|spot| same(*spot, at))
+            .any(|spot| same_spot(*spot, at))
     }
 }
 
 /// True when two spots are the one spot: the same tile, within a body height.
-fn same(a: Point3, b: Point3) -> bool {
+/// Two floors of one building share the tile and not the spot.
+pub fn same_spot(a: Point3, b: Point3) -> bool {
     a.x == b.x && a.y == b.y && within(a.z, b.z, SAME_SPOT_HEIGHT)
 }
 
@@ -379,7 +380,7 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
     if !map.can_walk_from(goal.z, goal.x, goal.y) {
         return Err(PathError::BadGoal);
     }
-    if start.x == goal.x && start.y == goal.y {
+    if same_spot(start, goal) {
         return Ok(Path { steps: Vec::new() });
     }
     // The walker stands on the start spot, so nothing recorded there stops him
@@ -388,8 +389,13 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
     // has already refused, and the caller is told so instead of walking it
     // again.
     let mut shut = ShutSpots::new();
-    for spot in obstacles.hard.iter().copied().filter(|s| !same(*s, start)) {
-        if same(spot, goal) {
+    for spot in obstacles
+        .hard
+        .iter()
+        .copied()
+        .filter(|s| !same_spot(*s, start))
+    {
+        if same_spot(spot, goal) {
             return Err(PathError::BlockedGoal);
         }
         note_shut(&mut shut, spot);
@@ -400,7 +406,7 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
         .soft
         .iter()
         .copied()
-        .filter(|s| !same(*s, start) && !same(*s, goal))
+        .filter(|s| !same_spot(*s, start) && !same_spot(*s, goal))
     {
         note_shut(&mut shut, spot);
     }
@@ -432,7 +438,14 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
             break;
         }
         let current_k = spot_key(x, y, z);
-        if x == goal.x && y == goal.y {
+        // The goal names a storey as well as a tile. The search key holds the
+        // height too, so the ground floor of an inn is popped first and must
+        // not answer for the room above it: a walk that ended there stood
+        // twenty height units under the goal and was reported as arrived. In
+        // the flat mode the node keeps the walker's own height and the ground
+        // it lands on is what the step recorded.
+        let ground = came.get(&current_k).map_or(z, |step| step.ground);
+        if same_spot(Point3::new(x, y, ground), goal) {
             return Ok(Path {
                 steps: reconstruct(&came, start_key, current_k),
             });

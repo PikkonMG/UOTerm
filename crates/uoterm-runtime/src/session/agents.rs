@@ -1234,15 +1234,15 @@ mod tests {
         const SHIELD: Serial = Serial(0x4000_0B0C);
         let mut inner = player();
         inner.agents.config.options.unequip_before_cast = true;
-        inner
-            .world
-            .write()
-            .apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
+        inner.world.write().apply(&Inbound::Equipped {
+            owner: ME,
+            item: uoterm_protocol::EquipItem {
                 serial: SHIELD,
                 graphic: 0x1B72,
                 layer: LAYER_TWO_HANDED,
                 hue: 0,
-            }));
+            },
+        });
         let cast = |inner: &mut Inner| {
             ready_to_act(inner);
             inner.outbound.clear();
@@ -1287,15 +1287,15 @@ mod tests {
         const POTION: Serial = Serial(0x4000_0B0A);
         let mut inner = player();
         inner.agents.config.options.free_hand_for_potions = true;
-        inner
-            .world
-            .write()
-            .apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
+        inner.world.write().apply(&Inbound::Equipped {
+            owner: ME,
+            item: uoterm_protocol::EquipItem {
                 serial: SHIELD,
                 graphic: 0x1B72,
                 layer: LAYER_TWO_HANDED,
                 hue: 0,
-            }));
+            },
+        });
         item(&mut inner, SHIELD, 0x1B72, Some(ME), Point3::new(0, 0, 0));
         item(
             &mut inner,
@@ -1351,12 +1351,15 @@ mod tests {
         {
             let mut w = inner.world.write();
             w.self_state.war = true;
-            w.apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
-                serial: HORSE,
-                graphic: 0x3EA0,
-                layer: LAYER_MOUNT,
-                hue: 0,
-            }));
+            w.apply(&Inbound::Equipped {
+                owner: ME,
+                item: uoterm_protocol::EquipItem {
+                    serial: HORSE,
+                    graphic: 0x3EA0,
+                    layer: LAYER_MOUNT,
+                    hue: 0,
+                },
+            });
         }
         ready_to_act(&mut inner);
         let used = handle_tool(

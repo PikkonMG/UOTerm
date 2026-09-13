@@ -139,7 +139,6 @@ async fn create_session(
         era,
         uopath: None,
         persona: None,
-        stay_on_socket: true,
         next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
         encryption: Default::default(),
         obey_shard_rules: body.obey_shard_rules,

@@ -132,19 +132,25 @@ mod tests {
         let mut w = World::new();
         w.self_state.serial = SELF;
         w.self_state.location = Point3::new(10, 20, 1);
-        w.apply(&Inbound::Equipped(EquipItem {
-            serial: BACKPACK,
-            graphic: GRAPHIC_BACKPACK,
-            layer: LAYER_BACKPACK,
-            hue: 0,
-        }));
-        if banked {
-            w.apply(&Inbound::Equipped(EquipItem {
-                serial: BANK,
-                graphic: GRAPHIC_BANK,
-                layer: LAYER_BANK,
+        w.apply(&Inbound::Equipped {
+            owner: SELF,
+            item: EquipItem {
+                serial: BACKPACK,
+                graphic: GRAPHIC_BACKPACK,
+                layer: LAYER_BACKPACK,
                 hue: 0,
-            }));
+            },
+        });
+        if banked {
+            w.apply(&Inbound::Equipped {
+                owner: SELF,
+                item: EquipItem {
+                    serial: BANK,
+                    graphic: GRAPHIC_BANK,
+                    layer: LAYER_BANK,
+                    hue: 0,
+                },
+            });
         }
         w.apply(&Inbound::ContainerContents {
             items: vec![

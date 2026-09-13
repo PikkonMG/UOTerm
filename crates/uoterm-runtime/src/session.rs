@@ -151,6 +151,10 @@ const HOLD_STEP_CAP: usize = 50;
 const HOLD_MS_NONE: u64 = 0;
 const WALK_STEPS_ONE: usize = 1;
 const SPEECH_REJECTED: &str = "speech rejected by persona policy";
+/// The most characters a shard reads from one line. It drops a longer line
+/// without a word.
+const SPEECH_MAX_CHARS: usize = 128;
+const SPEECH_TOO_LONG: &str = "a line may have at most 128 characters; say it in two";
 const SPEECH_RATE_LIMITED: &str = "persona chat rate exceeded";
 const SPEECH_REPEATED: &str = "that line was said lately; say something new";
 const SPEECH_REPLY_TOO_SOON: &str = "wait a few seconds before the next reply";
@@ -769,7 +773,7 @@ async fn run_session(
         compressed: false,
         encryption: opts.encryption,
         cipher: Box::new(IdentityCipher),
-        decoder: GameDecoder::with_version(table, opts.version),
+        decoder: GameDecoder::new(table),
         map: MockMap::new(MOCK_GRID, MOCK_GRID),
         uopath: opts.uopath.clone(),
         maps,
@@ -1044,33 +1048,32 @@ async fn login(
                     let idx = select_shard(servers, opts.shard.as_deref());
                     write_sealed(inner, &mut writer, encode::select_server(idx)).await?;
                 }
+                // The relay ends the login socket: one server family
+                // closes it, the other keeps it but reads the next bytes as
+                // a packet and drops a client that seeds it. The reference
+                // client opens a new socket to the game server, seeds it
+                // with the relay key, and logs in there; that works on both.
                 Inbound::Relay { ip, port, auth_id } => {
                     seen_relay = true;
-                    let stay = stay_on_relay(opts, *ip, *port);
                     let dest = relay_addr(opts, *ip, *port);
                     tracing::info!(
                         relay_ip = ?ip,
                         relay_port = port,
-                        stay,
                         dest = dest.as_str(),
                         "login relay 0x8C"
                     );
-                    if !stay {
-                        drop(reader);
-                        drop(writer);
-                        let stream = TcpStream::connect(&dest)
-                            .await
-                            .map_err(|e| RuntimeError::Network(e.to_string()))?;
-                        let _ = stream.set_nodelay(true);
-                        let split = stream.into_split();
-                        reader = split.0;
-                        writer = split.1;
-                        inner.decoder.reset();
-                    }
+                    drop(reader);
+                    drop(writer);
+                    let stream = TcpStream::connect(&dest)
+                        .await
+                        .map_err(|e| RuntimeError::Network(e.to_string()))?;
+                    let _ = stream.set_nodelay(true);
+                    let split = stream.into_split();
+                    reader = split.0;
+                    writer = split.1;
+                    inner.decoder.reset();
                     inner.reset_cipher_for_game(*auth_id);
-                    if game_login_needs_raw_seed(stay, opts.era) {
-                        tcp_write(&mut writer, &encode::seed(*auth_id)).await?;
-                    }
+                    tcp_write(&mut writer, &encode::seed(*auth_id)).await?;
                     write_sealed(
                         inner,
                         &mut writer,
@@ -1196,31 +1199,7 @@ fn select_shard(servers: &[uoterm_protocol::ServerEntry], wanted: Option<&str>) 
     servers.first().map(|s| s.index).unwrap_or(0)
 }
 
-fn game_login_needs_raw_seed(stay: bool, era: Era) -> bool {
-    !(stay && era == Era::Modern)
-}
-
-fn stay_on_relay(opts: &ConnectOptions, ip: [u8; 4], port: u16) -> bool {
-    if !opts.stay_on_socket {
-        return false;
-    }
-    let addr = Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]);
-    if addr.is_unspecified() {
-        return true;
-    }
-    let host_ip = opts.host.parse::<Ipv4Addr>().ok();
-    let same_host = host_ip == Some(addr) || (addr.is_loopback() && host_is_loopback(&opts.host));
-    same_host && port == opts.port
-}
-
-fn host_is_loopback(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<Ipv4Addr>()
-            .map(|a| a.is_loopback())
-            .unwrap_or(false)
-}
-
+/// Where the game server is. A relay to `0.0.0.0` means the login host.
 fn relay_addr(opts: &ConnectOptions, ip: [u8; 4], port: u16) -> String {
     let addr = Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]);
     if addr.is_unspecified() {
@@ -1576,10 +1555,7 @@ mod relay_tests {
             compressed: false,
             encryption: EncryptionMode::None,
             cipher: Box::new(IdentityCipher),
-            decoder: GameDecoder::with_version(
-                PacketTable::for_era(Era::Modern),
-                ClientVersion::MODERN,
-            ),
+            decoder: GameDecoder::new(PacketTable::for_era(Era::Modern)),
             map: MockMap::new(MOCK_GRID, MOCK_GRID),
             uopath: None,
             maps: HashMap::new(),
@@ -4567,9 +4543,8 @@ mod relay_tests {
     const TEST_PORT: u16 = 2593;
     const UNSPECIFIED: [u8; 4] = [0, 0, 0, 0];
     const LAN_IP: [u8; 4] = [192, 168, 150, 103];
-    const SAME_IP: [u8; 4] = [10, 10, 44, 2];
 
-    fn opts(stay: bool) -> ConnectOptions {
+    fn opts() -> ConnectOptions {
         ConnectOptions {
             host: TEST_HOST.into(),
             port: TEST_PORT,
@@ -4581,7 +4556,6 @@ mod relay_tests {
             era: Era::Modern,
             uopath: None,
             persona: None,
-            stay_on_socket: stay,
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
@@ -4592,12 +4566,12 @@ mod relay_tests {
 
     #[test]
     fn encryption_default_is_none() {
-        assert_eq!(opts(false).encryption, EncryptionMode::None);
+        assert_eq!(opts().encryption, EncryptionMode::None);
     }
 
     #[test]
     fn osi_mode_is_stored() {
-        let mut o = opts(false);
+        let mut o = opts();
         o.encryption = EncryptionMode::Osi;
         assert_eq!(o.encryption, EncryptionMode::Osi);
     }
@@ -4720,39 +4694,19 @@ mod relay_tests {
     }
 
     #[test]
-    fn unspecified_reconnects_when_stay_off() {
-        let o = opts(false);
-        assert!(!stay_on_relay(&o, UNSPECIFIED, TEST_PORT));
+    fn an_unspecified_relay_means_the_login_host() {
         assert_eq!(
-            relay_addr(&o, UNSPECIFIED, TEST_PORT),
+            relay_addr(&opts(), UNSPECIFIED, TEST_PORT),
             format!("{TEST_HOST}:{TEST_PORT}")
         );
     }
 
     #[test]
-    fn unspecified_stays_when_stay_on() {
-        let o = opts(true);
-        assert!(stay_on_relay(&o, UNSPECIFIED, TEST_PORT));
-    }
-
-    #[test]
-    fn other_lan_ip_reconnects_when_stay_off() {
-        let o = opts(false);
-        assert!(!stay_on_relay(&o, LAN_IP, TEST_PORT));
-        assert_eq!(relay_addr(&o, LAN_IP, TEST_PORT), "192.168.150.103:2593");
-    }
-
-    #[test]
-    fn same_host_stays_when_stay_on() {
-        let o = opts(true);
-        assert!(stay_on_relay(&o, SAME_IP, TEST_PORT));
-    }
-
-    #[test]
-    fn modern_stay_skips_raw_game_seed() {
-        assert!(!game_login_needs_raw_seed(true, Era::Modern));
-        assert!(game_login_needs_raw_seed(false, Era::Modern));
-        assert!(game_login_needs_raw_seed(true, Era::T2a));
+    fn a_named_relay_is_where_the_game_server_is() {
+        assert_eq!(
+            relay_addr(&opts(), LAN_IP, TEST_PORT),
+            "192.168.150.103:2593"
+        );
     }
 
     #[test]
@@ -5596,6 +5550,150 @@ mod relay_tests {
         assert_eq!(observed["gumps"][0]["choices"][0]["label"], "Moonglow");
     }
 
+    /// A gump reply that presses a button the gump does not have is dropped
+    /// by one server family and closes the connection on another. The tool
+    /// refuses it instead, and names the gump it answers.
+    #[test]
+    fn a_gump_reply_presses_only_what_the_gump_has() {
+        const OKAY: u32 = 1;
+        const NOT_A_BUTTON: u32 = 99;
+        const MOONGLOW: u32 = 0;
+        const NOT_A_SWITCH: u32 = 7;
+        const GATE_GUMP: u32 = 585180759;
+        const OTHER_GUMP: u32 = 4242;
+        const LAYOUT: &str = "{ page 0 }{ button 10 210 4005 4007 1 0 1 }\
+            { radio 200 35 210 211 0 0 }";
+        let mut inner = test_session();
+        for id in [OTHER_GUMP, GATE_GUMP] {
+            inner
+                .world
+                .write()
+                .apply(&Inbound::Gump(uoterm_protocol::OpenGump {
+                    serial: Serial(1),
+                    gump_id: id,
+                    x: 0,
+                    y: 0,
+                    layout: LAYOUT.into(),
+                    text: Vec::new(),
+                }));
+        }
+        let wrong_button = handle_tool(
+            &mut inner,
+            call(
+                TOOL_GUMP_RESPOND,
+                json!({ "gump": GATE_GUMP, "button": NOT_A_BUTTON }),
+            ),
+        );
+        assert!(!wrong_button.ok, "{:?}", wrong_button.error);
+        let wrong_switch = handle_tool(
+            &mut inner,
+            call(
+                TOOL_GUMP_RESPOND,
+                json!({ "gump": GATE_GUMP, "button": OKAY, "switches": [NOT_A_SWITCH] }),
+            ),
+        );
+        assert!(!wrong_switch.ok, "{:?}", wrong_switch.error);
+        assert!(
+            inner.outbound.is_empty(),
+            "nothing was sent for a bad reply"
+        );
+        assert_eq!(inner.world.read().gumps.len(), 2, "both gumps stay open");
+
+        let fine = handle_tool(
+            &mut inner,
+            call(
+                TOOL_GUMP_RESPOND,
+                json!({ "gump": GATE_GUMP, "button": OKAY, "switches": [MOONGLOW] }),
+            ),
+        );
+        assert!(fine.ok, "{:?}", fine.error);
+        assert_eq!(
+            fine.result["gump"], GATE_GUMP,
+            "the named gump was answered, not the oldest"
+        );
+        assert!(inner.outbound.contains(&encode::gump_response(
+            Serial(1),
+            GATE_GUMP,
+            OKAY,
+            &[MOONGLOW]
+        )));
+        assert!(inner
+            .world
+            .read()
+            .gumps
+            .iter()
+            .all(|g| g.gump_id == OTHER_GUMP));
+        let closed = handle_tool(
+            &mut inner,
+            call(
+                TOOL_GUMP_RESPOND,
+                json!({ "gump": GATE_GUMP, "button": OKAY }),
+            ),
+        );
+        assert!(!closed.ok, "an answered gump is not open");
+    }
+
+    /// The shard reads at most 128 characters of a line and drops a longer
+    /// one without a word. The tool says so instead.
+    #[test]
+    fn a_line_the_shard_would_drop_is_refused() {
+        let mut inner = test_session();
+        inner.world.write().logged_in = true;
+        let too_long = "a".repeat(SPEECH_MAX_CHARS + 1);
+        let refused = handle_tool(&mut inner, call(TOOL_SAY, json!({ "text": too_long })));
+        assert!(!refused.ok);
+        assert_eq!(refused.error.as_deref(), Some(SPEECH_TOO_LONG));
+        assert!(inner.outbound.is_empty());
+        let just_fits = "b".repeat(SPEECH_MAX_CHARS);
+        let said = handle_tool(&mut inner, call(TOOL_SAY, json!({ "text": just_fits })));
+        assert!(said.ok, "{:?}", said.error);
+    }
+
+    /// The server starts its walk count again whenever it redraws the
+    /// player, which it does on every harvest strike. A step sent with the
+    /// old count is refused for the count alone, so the client starts again
+    /// too and puts the steps on the wire back on the route.
+    #[test]
+    fn a_redraw_of_the_player_starts_the_walk_count_again() {
+        const HIM: Serial = Serial(0x0000_0AB1);
+        let here = Point3::new(10, 10, 0);
+        let mut inner = test_session();
+        {
+            let mut world = inner.world.write();
+            world.self_state.serial = HIM;
+            world.self_state.location = here;
+        }
+        let east = here.neighbour(Direction::East).unwrap();
+        let further = east.neighbour(Direction::East).unwrap();
+        inner.movement.set_path(vec![east, further], further);
+        let now = Instant::now();
+        let step = inner.movement.pop_next_step(here).unwrap();
+        inner.movement.build_step(step, false, now);
+        assert_ne!(inner.movement.sequence, 0);
+
+        let mut redraw =
+            uoterm_protocol::buf::PacketWriter::new(uoterm_protocol::types::PKT_DRAW_PLAYER);
+        redraw
+            .serial(HIM)
+            .u16(0x0190)
+            .u8(0)
+            .u16(0)
+            .u8(0)
+            .u16(here.x)
+            .u16(here.y)
+            .u16(0)
+            .u8(Direction::North as u8)
+            .i8(here.z);
+        ingest(&mut inner, &redraw.finish());
+        assert_eq!(inner.movement.sequence, 0, "the count starts at zero again");
+        assert!(inner.movement.in_flight.is_empty());
+        assert_eq!(
+            inner.movement.path.front().copied(),
+            Some(east),
+            "the step the server will refuse goes back on the route"
+        );
+    }
+
     #[test]
     fn attack_is_sent_once_until_the_fight_ends() {
         const ENEMY: Serial = Serial(0x0000_1234);
@@ -5804,18 +5902,25 @@ mod relay_tests {
         let mut inner = test_session();
         {
             let mut world = inner.world.write();
-            world.apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
-                serial: PACK,
-                graphic: GRAPHIC_BACKPACK,
-                layer: LAYER_BACKPACK,
-                hue: 0,
-            }));
-            world.apply(&Inbound::Equipped(uoterm_protocol::EquipItem {
-                serial: SWORD,
-                graphic: GRAPHIC_SWORD,
-                layer: LAYER_ONE_HANDED,
-                hue: 0,
-            }));
+            let me = world.self_state.serial;
+            world.apply(&Inbound::Equipped {
+                owner: me,
+                item: uoterm_protocol::EquipItem {
+                    serial: PACK,
+                    graphic: GRAPHIC_BACKPACK,
+                    layer: LAYER_BACKPACK,
+                    hue: 0,
+                },
+            });
+            world.apply(&Inbound::Equipped {
+                owner: me,
+                item: uoterm_protocol::EquipItem {
+                    serial: SWORD,
+                    graphic: GRAPHIC_SWORD,
+                    layer: LAYER_ONE_HANDED,
+                    hue: 0,
+                },
+            });
         }
         inner.outbound.clear();
         inner
@@ -6608,6 +6713,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
         Err(e) => {
             tracing::warn!(error = %e, "decoder reset after framing error");
             inner.decoder.reset();
+            inner.movement.refused();
             inner.outbound.push_back(encode::resync());
             return Vec::new();
         }
@@ -6673,8 +6779,13 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         Inbound::Speech(line) if says_action_too_soon(&line.text) => {
                             inner.next_action_at = Instant::now() + ACTION_BUDGET;
                         }
+                        // The server starts its walk count again whenever it
+                        // redraws the player: a turn to a tree, a recall, a
+                        // death. Every step still on the wire is refused for
+                        // its number, so those steps did not happen and go
+                        // back on the route, and the count starts at zero.
                         Inbound::DrawPlayer { serial, .. } if *serial == self_serial => {
-                            inner.movement.clear_in_flight();
+                            inner.movement.refused();
                         }
                         Inbound::CombatantChanged { serial } if !serial.is_valid() => {
                             inner.attack_sent = None;
@@ -6903,6 +7014,29 @@ fn gump_views(inner: &Inner) -> Vec<uoterm_world::GumpView> {
         .iter()
         .map(|gump| gump_view(inner, gump))
         .collect()
+}
+
+/// The button that closes a gump with no answer. Every gump has it.
+const GUMP_BUTTON_CLOSE: u32 = 0;
+
+/// Says whether a reply presses only what the gump has. A shard that gets a
+/// button or a switch that is not on the gump drops the reply, and one
+/// server family closes the connection; neither tells the agent.
+fn gump_answer_fits(
+    view: &uoterm_world::GumpView,
+    button: u32,
+    switches: &[u32],
+) -> std::result::Result<(), String> {
+    if button != GUMP_BUTTON_CLOSE && !view.buttons.iter().any(|b| b.id == Some(button)) {
+        return Err(format!("button {button} is not on that gump"));
+    }
+    if let Some(unknown) = switches
+        .iter()
+        .find(|s| !view.choices.iter().any(|c| c.switch == **s))
+    {
+        return Err(format!("switch {unknown} is not on that gump"));
+    }
+    Ok(())
 }
 
 /// Answers an open gump with a button and its switches, and closes it. The
@@ -8340,8 +8474,7 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     // and one would only arrive again on every tick. A goal that is this
     // place is reached.
     let here = inner.world.read().self_state.location;
-    if here.x == dest.x
-        && here.y == dest.y
+    if uoterm_nav::same_spot(here, dest)
         && !inner.movement.walking()
         && inner.movement.goal.is_none()
     {
@@ -9067,12 +9200,21 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             }
         }
         TOOL_GUMP_RESPOND | TOOL_GUMP_CLOSE => {
-            let gump = inner.world.read().gumps.first().cloned();
+            let wanted = arg_number(args, "gump");
+            let gump = {
+                let world = inner.world.read();
+                match wanted {
+                    Some(id) => world.gumps.iter().find(|g| g.gump_id == id).cloned(),
+                    None => world.gumps.first().cloned(),
+                }
+            };
             if let Some(g) = gump {
                 let button = if call.name == TOOL_GUMP_CLOSE {
-                    0
+                    GUMP_BUTTON_CLOSE
                 } else {
-                    args.get("button").and_then(|v| v.as_u64()).unwrap_or(0) as u32
+                    args.get("button")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(u64::from(GUMP_BUTTON_CLOSE)) as u32
                 };
                 let switches = if call.name == TOOL_GUMP_CLOSE {
                     Vec::new()
@@ -9087,6 +9229,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                         })
                         .unwrap_or_default()
                 };
+                if let Err(why) = gump_answer_fits(&gump_view(inner, &g), button, &switches) {
+                    return ToolResult::err(why);
+                }
                 answer_gump(inner, &g, button, &switches);
                 let mut answered = ToolResult::action(if call.name == TOOL_GUMP_CLOSE {
                     TOOL_GUMP_CLOSE
@@ -9096,6 +9241,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 // The gump it answered, so a recording can name it.
                 answered.result["gump"] = json!(g.gump_id);
                 answered
+            } else if wanted.is_some() {
+                ToolResult::err("that gump is not open")
             } else {
                 ToolResult::err("no open gump")
             }
@@ -9436,6 +9583,9 @@ fn speech_allowed(
     reply: bool,
 ) -> std::result::Result<String, &'static str> {
     let t = persona.filter_speech(text).ok_or(SPEECH_REJECTED)?;
+    if t.chars().count() > SPEECH_MAX_CHARS {
+        return Err(SPEECH_TOO_LONG);
+    }
     // A repeat is refused before the budget is charged, so the agent can
     // try new words at once.
     if speech.said_lately(&t) {

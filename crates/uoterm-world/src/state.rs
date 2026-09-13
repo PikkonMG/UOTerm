@@ -334,6 +334,9 @@ const FLAG_POISONED_OR_FLYING: u8 = FLAG_POISONED;
 /// A party list this short is no party.
 const PARTY_OF_ONE: usize = 1;
 
+/// Bit 1 of the paperdoll (`0x88`) flags byte: the mobile is in war mode.
+const PAPERDOLL_FLAG_WAR: u8 = 0x01;
+
 /// The health bar colours of one mobile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BarState {
@@ -611,20 +614,23 @@ impl World {
                     self.apply_self_flags(*flags);
                     self.refresh_dead_from_body(*body);
                 } else {
-                    self.apply_mobile_view(&MobileView {
-                        serial: *serial,
-                        body: *body,
-                        x: *x,
-                        y: *y,
-                        z: *z,
-                        direction: *direction,
-                        hue: *hue,
-                        flags: *flags,
-                        notoriety: 0,
-                        hits: None,
-                        hits_max: None,
-                        equipment: Vec::new(),
-                    });
+                    self.apply_mobile_view(
+                        &MobileView {
+                            serial: *serial,
+                            body: *body,
+                            x: *x,
+                            y: *y,
+                            z: *z,
+                            direction: *direction,
+                            hue: *hue,
+                            flags: *flags,
+                            notoriety: 0,
+                            hits: None,
+                            hits_max: None,
+                            equipment: Vec::new(),
+                        },
+                        false,
+                    );
                 }
             }
             Inbound::MapChange { map } => {
@@ -689,8 +695,13 @@ impl World {
                 // the item on the cursor is the lift itself. The hold ends when
                 // the item lands (an add into a container, or a lift refused).
             }
-            Inbound::MobileMoving(view) | Inbound::MobileIncoming(view) => {
-                self.apply_mobile_view(view);
+            // A step (`0x77`) carries no worn list; only the full view
+            // (`0x78`) replaces what a mobile wears.
+            Inbound::MobileMoving(view) => {
+                self.apply_mobile_view(view, false);
+            }
+            Inbound::MobileIncoming(view) => {
+                self.apply_mobile_view(view, true);
             }
             Inbound::WorldItem(item) => {
                 self.upsert_ground(item);
@@ -837,12 +848,18 @@ impl World {
                     format!("corpse {corpse}"),
                 ));
             }
-            Inbound::Equipped(eq) => {
-                self.wear(eq);
+            Inbound::Equipped { owner, item } => {
+                if *owner == self.self_state.serial {
+                    self.wear(item);
+                } else {
+                    self.dress(*owner, item);
+                }
             }
             Inbound::Season { season, .. } => {
                 self.season = *season;
             }
+            // The paperdoll byte is not the mobile flags byte: bit 1 is war
+            // mode and bit 2 says the viewer may lift from the doll.
             Inbound::Paperdoll {
                 serial,
                 text,
@@ -854,12 +871,11 @@ impl World {
                     if !name.is_empty() {
                         self.self_state.name = name.to_string();
                     }
-                    self.apply_self_flags(*flags);
+                    self.self_state.war = flags & PAPERDOLL_FLAG_WAR != 0;
                 } else if let Some(mob) = self.mobiles.get_mut(serial) {
                     if !name.is_empty() {
                         mob.name = name.to_string();
                     }
-                    mob.flags = *flags;
                 }
             }
             Inbound::Swing { attacker, .. } if *attacker == self.self_state.serial => {
@@ -1058,7 +1074,10 @@ impl World {
         }
     }
 
-    fn apply_mobile_view(&mut self, view: &MobileView) {
+    /// `worn_list_is_complete` is true for the full view (`0x78`), whose
+    /// worn list replaces the old one. A step (`0x77`) and a draw (`0x20`)
+    /// carry no list, so what the mobile wore stays on.
+    fn apply_mobile_view(&mut self, view: &MobileView, worn_list_is_complete: bool) {
         if view.serial == self.self_state.serial {
             self.self_state.location = Point3::new(view.x, view.y, view.z);
             self.self_state.direction = view.direction;
@@ -1081,21 +1100,53 @@ impl World {
             self.refresh_dead_from_body(view.body);
             return;
         }
-        let known = self
-            .mobiles
-            .get(&view.serial)
-            .map(|m| (m.name.clone(), m.title.clone()));
+        let known = self.mobiles.remove(&view.serial);
         let mut mob = Mobile::from(view);
-        if let Some((name, title)) = known {
+        if let Some(known) = known {
             if mob.name.is_empty() {
-                mob.name = name;
+                mob.name = known.name;
             }
-            mob.title = title;
+            mob.title = known.title;
+            // No view packet carries a health bar; the bar packets do. What
+            // the bar last said stays true until the next bar.
+            if mob.hits.is_none() {
+                mob.hits = known.hits;
+                mob.hits_max = known.hits_max;
+            }
+            if !worn_list_is_complete {
+                mob.equipment = known.equipment;
+            }
         }
         if mob.name.is_empty() {
             self.names.want(view.serial);
         }
         self.mobiles.insert(view.serial, mob);
+    }
+
+    /// Someone else put an item on. The row goes on that mobile and the item
+    /// is filed under it, so a delete or a walk out of view takes both away.
+    fn dress(&mut self, owner: Serial, eq: &EquipItem) {
+        let Some(mob) = self.mobiles.get_mut(&owner) else {
+            return;
+        };
+        mob.equipment.retain(|e| e.layer != eq.layer);
+        mob.equipment.push(eq.clone());
+        let location = mob.location;
+        let name = self.name_or_ask(eq.serial);
+        self.items.insert(
+            eq.serial,
+            Item {
+                serial: eq.serial,
+                graphic: eq.graphic,
+                amount: 1,
+                hue: eq.hue,
+                location,
+                parent: Some(owner),
+                layer: Some(eq.layer),
+                grid: 0,
+                name,
+            },
+        );
     }
 
     fn apply_self_flags(&mut self, flags: u8) {

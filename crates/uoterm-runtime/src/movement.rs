@@ -2,7 +2,7 @@ use crate::config::{JITTER_PCT, STEP_MOUNT_RUN_MS, STEP_MOUNT_WALK_MS, STEP_RUN_
 use rand::Rng;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use uoterm_nav::{pathfind, BlockedMove, Obstacles, TileQuery, SAME_MOVE_HEIGHT};
+use uoterm_nav::{pathfind, same_spot, BlockedMove, Obstacles, TileQuery, SAME_MOVE_HEIGHT};
 use uoterm_protocol::encode;
 use uoterm_protocol::types::{Direction, Point3, Serial};
 use uoterm_protocol::EquipItem;
@@ -761,10 +761,13 @@ impl Movement {
     /// Ends the trip: nothing of it is carried into the next one.
     /// Drops the walk and every mark made on the map the character has just
     /// left: none of those tiles is on the new one.
+    /// The server starts the walk count again on a map change, so the
+    /// client does too.
     pub fn leave_map(&mut self) {
         self.clear();
         self.refused_edges.clear();
         self.blocked.clear();
+        self.reset_sequence();
     }
 
     pub fn end_trip(&mut self) {
@@ -833,9 +836,13 @@ impl Movement {
             .in_flight
             .front()
             .is_some_and(|p| now.duration_since(p.sent_at) >= STEP_ACK_TIMEOUT);
+        // The session answers a stale step with a resync, and the server
+        // starts its walk count again on a resync. So does the client, or
+        // the next step it sends is refused for its number alone.
         if stale {
             self.in_flight.clear();
             self.path.clear();
+            self.reset_sequence();
         }
         stale
     }
@@ -910,10 +917,10 @@ impl Movement {
         Some(step)
     }
 
-    /// True when the character stands on the tile he was walking to and no
-    /// step of that walk is still owed an answer.
+    /// True when the character stands on the spot he was walking to, on its
+    /// storey, and no step of that walk is still owed an answer.
     pub fn arrived(&self, at: Point3) -> bool {
-        self.goal.map(|g| same_tile(g, at)).unwrap_or(false) && !self.walking()
+        self.goal.map(|g| same_spot(g, at)).unwrap_or(false) && !self.walking()
     }
 }
 
@@ -1673,6 +1680,41 @@ pub(crate) mod tests {
             start,
             "and he aims again from the tile the server put him on"
         );
+    }
+
+    /// A step the server never answers ends in a resync, and the server
+    /// counts from zero after a resync. The client must count from zero too.
+    #[test]
+    fn a_resync_starts_the_count_again() {
+        let mut m = Movement::default();
+        let now = Instant::now();
+        let start = AT_THE_INN_DOOR_CORNER;
+        for _ in 0..IN_FLIGHT_MAX {
+            let from = m.stepping_from(start);
+            m.build_step(step_across_level_ground(from, Direction::East), false, now);
+        }
+        assert_ne!(m.sequence, SEQ_FIRST);
+        assert!(m.expire_stale(now + STEP_ACK_TIMEOUT));
+        assert_eq!(m.sequence, SEQ_FIRST);
+        m.build_step(
+            step_across_level_ground(start, Direction::East),
+            false,
+            now + STEP_ACK_TIMEOUT,
+        );
+        assert_eq!(in_flight(&m).sequence, SEQ_FIRST);
+    }
+
+    /// The goal of a walk is a spot with a storey. Standing on the taproom
+    /// floor under the room he walked to is not arriving.
+    #[test]
+    fn the_floor_under_the_goal_is_not_the_goal() {
+        /// One storey up: more than a person is tall.
+        const A_STOREY: i8 = 20;
+        let mut m = Movement::default();
+        let goal = Point3::new(INN_DOORWAY.x, INN_DOORWAY.y, INN_DOORWAY.z + A_STOREY);
+        m.goal = Some(goal);
+        assert!(!m.arrived(INN_DOORWAY));
+        assert!(m.arrived(goal));
     }
 
     #[test]

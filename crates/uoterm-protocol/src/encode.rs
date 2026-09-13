@@ -371,8 +371,7 @@ fn target_answer(
         .serial(serial)
         .u16(x)
         .u16(y)
-        .u8(0)
-        .i8(z)
+        .i16(i16::from(z))
         .u16(graphic);
     w.finish()
 }
@@ -385,8 +384,7 @@ pub fn cancel_target(cursor_id: u32) -> Vec<u8> {
         .u32(0)
         .u16(0xFFFF)
         .u16(0xFFFF)
-        .u8(0)
-        .i8(0)
+        .i16(0)
         .u16(0);
     w.finish()
 }
@@ -1323,8 +1321,15 @@ mod tests {
         assert_eq!(&p[7..11], &[0, 0, 0, 0], "the ground is no object");
         assert_eq!(&p[11..13], &X.to_be_bytes());
         assert_eq!(&p[13..15], &Y.to_be_bytes());
-        assert_eq!(p[16] as i8, Z);
+        assert_eq!(&p[15..17], &i16::from(Z).to_be_bytes());
         assert_eq!(&p[17..19], &ROCK.to_be_bytes());
+    }
+
+    #[test]
+    fn a_target_below_sea_level_keeps_its_sign() {
+        const WATER_Z: i8 = -5;
+        let p = target_ground(1, 100, 100, WATER_Z, 0x1797);
+        assert_eq!(&p[15..17], &[0xFF, 0xFB], "z is a signed 16-bit word");
     }
 
     #[test]

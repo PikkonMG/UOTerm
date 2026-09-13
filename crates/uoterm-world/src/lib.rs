@@ -735,22 +735,132 @@ mod tests {
     fn equipped_attaches_to_self() {
         let mut w = World::new();
         login(&mut w);
-        w.apply(&Inbound::Equipped(EquipItem {
-            serial: Serial(0x4000_00AA),
-            graphic: 0x0F49,
-            layer: 1,
-            hue: 0,
-        }));
+        w.apply(&Inbound::Equipped {
+            owner: Serial(0xAB),
+            item: EquipItem {
+                serial: Serial(0x4000_00AA),
+                graphic: 0x0F49,
+                layer: 1,
+                hue: 0,
+            },
+        });
         assert_eq!(w.self_state.equipment.len(), 1);
         assert_eq!(w.items[&Serial(0x4000_00AA)].parent, Some(Serial(0xAB)));
-        w.apply(&Inbound::Equipped(EquipItem {
-            serial: Serial(0x4000_00BB),
-            graphic: 0x0F4B,
-            layer: 1,
-            hue: 0,
-        }));
+        w.apply(&Inbound::Equipped {
+            owner: Serial(0xAB),
+            item: EquipItem {
+                serial: Serial(0x4000_00BB),
+                graphic: 0x0F4B,
+                layer: 1,
+                hue: 0,
+            },
+        });
         assert_eq!(w.self_state.equipment.len(), 1);
         assert_eq!(w.self_state.equipment[0].serial, Serial(0x4000_00BB));
+    }
+
+    const STRANGER: Serial = Serial(0x0000_0777);
+    const LAYER_TWO_HANDED: u8 = 2;
+    const LAYER_MOUNT: u8 = 25;
+
+    fn stranger_view(equipment: Vec<EquipItem>) -> MobileView {
+        MobileView {
+            serial: STRANGER,
+            body: 0x190,
+            x: 12,
+            y: 20,
+            z: 1,
+            direction: 0,
+            hue: 0,
+            flags: 0,
+            notoriety: NOTO_INNOCENT,
+            hits: None,
+            hits_max: None,
+            equipment,
+        }
+    }
+
+    /// The shard tells everyone in range when a mobile puts something on.
+    /// A stranger's bow is his, not ours.
+    #[test]
+    fn gear_worn_by_someone_else_stays_on_them() {
+        const BOW: Serial = Serial(0x4000_0B00);
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::MobileIncoming(stranger_view(Vec::new())));
+        w.apply(&Inbound::Equipped {
+            owner: STRANGER,
+            item: EquipItem {
+                serial: BOW,
+                graphic: 0x13B2,
+                layer: LAYER_TWO_HANDED,
+                hue: 0,
+            },
+        });
+        assert!(w.self_state.equipment.is_empty(), "we wear nothing");
+        assert_eq!(w.mobiles[&STRANGER].equipment[0].serial, BOW);
+        assert_eq!(w.items[&BOW].parent, Some(STRANGER));
+    }
+
+    /// A step packet carries no health bar and no worn list. What the bars
+    /// and the full view said before stays true until the shard says
+    /// otherwise, so a fight can read the target's health.
+    #[test]
+    fn a_step_keeps_what_the_mobile_wears_and_its_health() {
+        const HORSE: Serial = Serial(0x4000_0C00);
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::MobileIncoming(stranger_view(vec![EquipItem {
+            serial: HORSE,
+            graphic: 0x3EA2,
+            layer: LAYER_MOUNT,
+            hue: 0,
+        }])));
+        w.apply(&Inbound::UpdateHealth {
+            serial: STRANGER,
+            current: 7,
+            max: 25,
+        });
+        w.apply(&Inbound::MobileMoving(stranger_view(Vec::new())));
+        let m = &w.mobiles[&STRANGER];
+        assert_eq!(m.hits, Some(7));
+        assert_eq!(m.hits_max, Some(25));
+        assert_eq!(m.equipment.len(), 1, "he is still mounted");
+
+        w.apply(&Inbound::MobileIncoming(stranger_view(Vec::new())));
+        let m = &w.mobiles[&STRANGER];
+        assert!(
+            m.equipment.is_empty(),
+            "the full view says he wears nothing"
+        );
+        assert_eq!(m.hits, Some(7), "no view packet carries a bar");
+    }
+
+    /// The paperdoll byte has two bits: war mode and "may lift". It is not
+    /// the mobile flags byte, so opening the doll must not paralyze anyone.
+    #[test]
+    fn the_paperdoll_byte_is_only_war_mode() {
+        const PAPERDOLL_WAR: u8 = 0x01;
+        let mut w = World::new();
+        login(&mut w);
+        draw_me(&mut w, FLAG_HIDDEN);
+        w.apply(&Inbound::Paperdoll {
+            serial: w.self_state.serial,
+            text: "Aldreth the Bold".into(),
+            flags: PAPERDOLL_WAR,
+        });
+        assert!(w.self_state.war);
+        assert!(w.self_state.hidden, "the doll says nothing about hiding");
+        assert!(!w.self_state.paralyzed);
+
+        w.apply(&Inbound::MobileIncoming(stranger_view(Vec::new())));
+        w.apply(&Inbound::Paperdoll {
+            serial: STRANGER,
+            text: "Someone".into(),
+            flags: PAPERDOLL_WAR,
+        });
+        assert_eq!(w.mobiles[&STRANGER].flags, 0);
+        assert_eq!(w.mobiles[&STRANGER].name, "Someone");
     }
 
     #[test]
@@ -759,12 +869,15 @@ mod tests {
         login(&mut w);
         assert_eq!(w.bank_box(), None, "no bank box before the server sends it");
         const BANK: Serial = Serial(0x4000_0B0B);
-        w.apply(&Inbound::Equipped(EquipItem {
-            serial: BANK,
-            graphic: 0x2436,
-            layer: LAYER_BANK,
-            hue: 0,
-        }));
+        w.apply(&Inbound::Equipped {
+            owner: Serial(0xAB),
+            item: EquipItem {
+                serial: BANK,
+                graphic: 0x2436,
+                layer: LAYER_BANK,
+                hue: 0,
+            },
+        });
         assert_eq!(
             w.bank_box(),
             Some(BANK),
@@ -817,12 +930,15 @@ mod tests {
         const BANDAGE: Serial = Serial(0x4000_0101);
         const GRAPHIC_BANDAGE: u16 = 0x0E21;
         login(w);
-        w.apply(&Inbound::Equipped(EquipItem {
-            serial: BACKPACK,
-            graphic: GRAPHIC_BACKPACK,
-            layer: LAYER_BACKPACK,
-            hue: 0,
-        }));
+        w.apply(&Inbound::Equipped {
+            owner: Serial(0xAB),
+            item: EquipItem {
+                serial: BACKPACK,
+                graphic: GRAPHIC_BACKPACK,
+                layer: LAYER_BACKPACK,
+                hue: 0,
+            },
+        });
         w.apply(&Inbound::AddItem(in_container(
             BACKPACK,
             BANDAGE,

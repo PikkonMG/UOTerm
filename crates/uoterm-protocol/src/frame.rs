@@ -2,17 +2,8 @@
 
 use crate::error::{ProtocolError, Result};
 use crate::lengths::PacketTable;
-use crate::types::{
-    ClientVersion, MAX_PACKET_LEN, PKT_MOBILE_INCOMING, UNKNOWN_VAR_MAX, UNKNOWN_VAR_MIN,
-    VARIABLE_LEN_FLAG,
-};
+use crate::types::{MAX_PACKET_LEN, UNKNOWN_VAR_MAX, UNKNOWN_VAR_MIN, VARIABLE_LEN_FLAG};
 
-const MOBILE_INCOMING_HEADER: usize = 17;
-const EQUIP_SERIAL_LEN: usize = 4;
-const EQUIP_GRAPHIC_LAYER: usize = 3;
-const EQUIP_HUE_LEN: usize = 2;
-const EQUIP_HUE_BIT: u16 = 0x8000;
-const MOBILE_INCOMING_MAX: usize = 512;
 const PKT_HEALTHBAR_EC: u8 = 0x16;
 const HEALTHBAR_EC_HIDE_LEN: usize = 9;
 const VARIABLE_LEN_MIN: usize = 3;
@@ -28,20 +19,13 @@ pub struct RawPacket {
 pub struct FrameDecoder {
     table: PacketTable,
     buf: Vec<u8>,
-    version: ClientVersion,
 }
 
 impl FrameDecoder {
     pub fn new(table: PacketTable) -> Self {
-        let version = table.era().default_version();
-        Self::with_version(table, version)
-    }
-
-    pub fn with_version(table: PacketTable, version: ClientVersion) -> Self {
         Self {
             table,
             buf: Vec::new(),
-            version,
         }
     }
 
@@ -78,12 +62,7 @@ impl FrameDecoder {
         }
         let id = self.buf[0];
         let slot = self.table.get(id);
-        let needed = if id == PKT_MOBILE_INCOMING && !self.version.has_prefixed_mobile_incoming() {
-            match mobile_incoming_len(&self.buf) {
-                None => return Ok(None),
-                Some(n) => n,
-            }
-        } else if slot == 0 {
+        let needed = if slot == 0 {
             match guess_unknown(&self.buf, id)? {
                 None => return Ok(None),
                 Some(n) => n,
@@ -137,15 +116,10 @@ pub struct GameDecoder {
 
 impl GameDecoder {
     pub fn new(table: PacketTable) -> Self {
-        let version = table.era().default_version();
-        Self::with_version(table, version)
-    }
-
-    pub fn with_version(table: PacketTable, version: ClientVersion) -> Self {
         let tree = crate::huffman::Huffman::new();
         Self {
             huffman: crate::huffman::HuffmanDecoder::new(tree),
-            frame: FrameDecoder::with_version(table, version),
+            frame: FrameDecoder::new(table),
         }
     }
 
@@ -165,42 +139,6 @@ impl GameDecoder {
     pub fn reset(&mut self) {
         self.huffman.reset();
         self.frame.reset();
-    }
-}
-
-fn capped_scan(buf_len: usize, pos: usize) -> Option<usize> {
-    if buf_len >= MOBILE_INCOMING_MAX {
-        Some(pos.max(MOBILE_INCOMING_HEADER))
-    } else {
-        None
-    }
-}
-
-fn mobile_incoming_len(buf: &[u8]) -> Option<usize> {
-    if buf.len() < MOBILE_INCOMING_HEADER + EQUIP_SERIAL_LEN {
-        return None;
-    }
-    let mut i = MOBILE_INCOMING_HEADER;
-    loop {
-        if buf.len() < i + EQUIP_SERIAL_LEN {
-            return capped_scan(buf.len(), i);
-        }
-        let serial = u32::from_be_bytes(buf[i..i + EQUIP_SERIAL_LEN].try_into().ok()?);
-        i += EQUIP_SERIAL_LEN;
-        if serial == 0 {
-            return Some(i);
-        }
-        if buf.len() < i + EQUIP_GRAPHIC_LAYER {
-            return capped_scan(buf.len(), i);
-        }
-        let graphic = u16::from_be_bytes([buf[i], buf[i + 1]]);
-        i += EQUIP_GRAPHIC_LAYER;
-        if graphic & EQUIP_HUE_BIT != 0 {
-            if buf.len() < i + EQUIP_HUE_LEN {
-                return capped_scan(buf.len(), i);
-            }
-            i += EQUIP_HUE_LEN;
-        }
     }
 }
 
@@ -260,65 +198,6 @@ mod tests {
         assert_eq!(pkts[1].bytes, vec![0x55]);
     }
 
-    fn mobile_incoming_packet() -> Vec<u8> {
-        let mut p = vec![PKT_MOBILE_INCOMING];
-        p.extend_from_slice(&0x0000_1234u32.to_be_bytes());
-        p.extend_from_slice(&0x0190u16.to_be_bytes());
-        p.extend_from_slice(&100u16.to_be_bytes());
-        p.extend_from_slice(&200u16.to_be_bytes());
-        p.push(0);
-        p.push(0);
-        p.extend_from_slice(&0u16.to_be_bytes());
-        p.push(0);
-        p.push(1);
-        p.extend_from_slice(&0x4000_0001u32.to_be_bytes());
-        p.extend_from_slice(&0x8001u16.to_be_bytes());
-        p.push(1);
-        p.extend_from_slice(&0x0021u16.to_be_bytes());
-        p.extend_from_slice(&0u32.to_be_bytes());
-        p
-    }
-
-    #[test]
-    fn frames_mobile_incoming_without_length_prefix() {
-        let pkt = mobile_incoming_packet();
-        let expected = pkt.len();
-        let mut d = FrameDecoder::new(PacketTable::t2a());
-        let mut bytes = vec![0x73, 0x01];
-        bytes.extend_from_slice(&pkt);
-        let pkts = d.push(&bytes).unwrap();
-        assert_eq!(pkts.len(), 2);
-        assert_eq!(pkts[0].id, 0x73);
-        assert_eq!(pkts[1].id, PKT_MOBILE_INCOMING);
-        assert_eq!(pkts[1].bytes.len(), expected);
-    }
-
-    #[test]
-    fn unprefixed_mobile_incoming_ignores_serial_bytes_as_length() {
-        let mut pkt = vec![PKT_MOBILE_INCOMING];
-        pkt.extend_from_slice(&0x0040_0001u32.to_be_bytes());
-        pkt.extend_from_slice(&0x0190u16.to_be_bytes());
-        pkt.extend_from_slice(&100u16.to_be_bytes());
-        pkt.extend_from_slice(&200u16.to_be_bytes());
-        pkt.push(0);
-        pkt.push(0);
-        pkt.extend_from_slice(&0u16.to_be_bytes());
-        pkt.push(0);
-        pkt.push(1);
-        pkt.extend_from_slice(&0u32.to_be_bytes());
-        let mut d = FrameDecoder::new(PacketTable::t2a());
-        let pkts = d.push(&pkt).unwrap();
-        assert_eq!(pkts.len(), 1);
-        assert_eq!(pkts[0].bytes.len(), pkt.len());
-    }
-
-    #[test]
-    fn mobile_incoming_len_waits_for_terminator() {
-        let pkt = mobile_incoming_packet();
-        assert_eq!(mobile_incoming_len(&pkt[..pkt.len() - 1]), None);
-        assert_eq!(mobile_incoming_len(&pkt), Some(pkt.len()));
-    }
-
     #[test]
     fn unknown_opcode_skips_one_byte() {
         let mut d = FrameDecoder::new(PacketTable::t2a());
@@ -326,9 +205,11 @@ mod tests {
         assert!(pkts.iter().any(|p| p.id == 0x73));
     }
 
+    /// Every server writes `0x78` with a length word, in every era. The
+    /// 2.0.7 client table already lists it as variable.
     #[test]
-    fn modern_mobile_incoming_uses_length_prefix() {
-        let mut pkt = vec![PKT_MOBILE_INCOMING, 0, 0];
+    fn mobile_incoming_uses_length_prefix_in_every_era() {
+        let mut pkt = vec![crate::types::PKT_MOBILE_INCOMING, 0, 0];
         pkt.extend_from_slice(&0x0000_00AAu32.to_be_bytes());
         pkt.extend_from_slice(&0x0190u16.to_be_bytes());
         pkt.extend_from_slice(&100u16.to_be_bytes());
@@ -341,10 +222,12 @@ mod tests {
         pkt.extend_from_slice(&0u32.to_be_bytes());
         let n = pkt.len() as u16;
         pkt[1..3].copy_from_slice(&n.to_be_bytes());
-        let mut d = FrameDecoder::new(PacketTable::modern());
-        let pkts = d.push(&pkt).unwrap();
-        assert_eq!(pkts.len(), 1);
-        assert_eq!(pkts[0].bytes.len(), pkt.len());
+        for table in [PacketTable::t2a(), PacketTable::modern()] {
+            let mut d = FrameDecoder::new(table);
+            let pkts = d.push(&pkt).unwrap();
+            assert_eq!(pkts.len(), 1);
+            assert_eq!(pkts[0].bytes.len(), pkt.len());
+        }
     }
 
     #[test]
@@ -377,7 +260,7 @@ mod tests {
     fn pre_high_seas_world_items_frame_whole() {
         const VERSION_PRE_HIGH_SEAS: &str = "7.0.8.2";
         const WORLD_ITEM_PRE_HIGH_SEAS_LEN: usize = 24;
-        let version: ClientVersion = VERSION_PRE_HIGH_SEAS.parse().unwrap();
+        let version: crate::types::ClientVersion = VERSION_PRE_HIGH_SEAS.parse().unwrap();
         let table = PacketTable::for_version(crate::types::Era::Modern, version);
         let mut stream = Vec::new();
         for serial in 0u32..3 {
@@ -388,7 +271,7 @@ mod tests {
         }
         stream.extend_from_slice(&[0x73, 0x01]);
 
-        let mut d = FrameDecoder::with_version(table, version);
+        let mut d = FrameDecoder::new(table);
         let pkts = d.push(&stream).unwrap();
         let ids: Vec<u8> = pkts.iter().map(|p| p.id).collect();
         assert_eq!(

@@ -17,8 +17,8 @@ pub use mul::{
 };
 pub use multi::{MultiData, MultiFiles, MultiPiece};
 pub use path::{
-    pathfind, pathfind_flat, BlockedMove, Obstacles, Path, PathError, Step, SAME_MOVE_HEIGHT,
-    SAME_SPOT_HEIGHT,
+    pathfind, pathfind_flat, same_spot, BlockedMove, Obstacles, Path, PathError, Step,
+    SAME_MOVE_HEIGHT, SAME_SPOT_HEIGHT,
 };
 pub use skills::{read_skills, SkillEntry};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};
@@ -1914,6 +1914,35 @@ mod tests {
     }
 
     const EAST_OF_START: u16 = 1;
+
+    /// An inn has a room over its taproom on the very same tiles. A walk to
+    /// the room must end in the room, not on the floor under it, and with no
+    /// stair it must say so.
+    #[test]
+    fn a_goal_on_the_upper_floor_is_not_reached_on_the_ground_floor() {
+        const UPPER_FLOOR_Z: i8 = 20;
+        const ACROSS: u16 = 2;
+        let mut inn = ColumnMap::flat(3, 1, 0);
+        inn.put(ACROSS, 0, floor_at(UPPER_FLOOR_Z));
+        let start = Point3::new(0, 0, 0);
+        let upstairs = Point3::new(ACROSS, 0, UPPER_FLOOR_Z);
+        assert!(
+            inn.can_walk_from(UPPER_FLOOR_Z, ACROSS, 0),
+            "the room is a place a person can stand"
+        );
+        assert_eq!(
+            pathfind(&inn, start, upstairs, &Obstacles::NONE).unwrap_err(),
+            PathError::Unreachable,
+            "with no stair the ground floor under the room is not the room"
+        );
+        let downstairs = Point3::new(ACROSS, 0, 0);
+        let taproom = pathfind(&inn, start, downstairs, &Obstacles::NONE).unwrap();
+        assert_eq!(taproom.steps.last().map(|s| s.z), Some(0));
+        assert!(
+            !same_spot(upstairs, downstairs),
+            "the two floors share a tile and not a spot"
+        );
+    }
 
     /// A person climbs [`STEP_HEIGHT`] in one step and no more.
     #[test]

@@ -9,6 +9,7 @@ const SKILL_TYPE_LIST: u8 = 0x00;
 const SKILL_TYPE_LIST_CAP: u8 = 0x02;
 const SKILL_TYPE_UPDATE_CAP: u8 = 0xDF;
 const SKILL_CAP_DEFAULT: u16 = 1000;
+const SKILL_LIST_ID_OFFSET: u16 = 1;
 /// Status levels: each one adds a block of fields to the one below it.
 /// An extended packet opens with its id, its length and its sub-command.
 const EXTENDED_HEADER_LEN: usize = 5;
@@ -467,7 +468,12 @@ pub enum Inbound {
         play_sound: bool,
     },
     VersionRequest,
-    Equipped(EquipItem),
+    /// `0x2E`. A mobile put an item on. The shard sends it to everyone in
+    /// range, so `owner` says who wears it.
+    Equipped {
+        owner: Serial,
+        item: EquipItem,
+    },
     Swing {
         flag: u8,
         attacker: Serial,
@@ -1030,9 +1036,7 @@ fn parse_mobile_moving(packet: &[u8]) -> Result<Inbound> {
 fn parse_mobile_incoming(packet: &[u8], version: ClientVersion) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
-    if version.has_prefixed_mobile_incoming() {
-        r.u16()?;
-    }
+    r.u16()?;
     let serial = r.serial()?;
     let body = r.u16()?;
     let x = r.u16()?;
@@ -1418,10 +1422,13 @@ fn parse_skills(packet: &[u8]) -> Result<Inbound> {
             if r.remaining() < 2 {
                 break;
             }
-            let id = r.u16()?;
-            if id == 0 {
+            let wire_id = r.u16()?;
+            if wire_id == 0 {
                 break;
             }
+            // The list numbers skills from 1 so that 0 can end the list. A
+            // single update numbers them from 0, as the client files do.
+            let id = wire_id - SKILL_LIST_ID_OFFSET;
             let value = r.u16().unwrap_or(0);
             let base = r.u16().unwrap_or(value);
             let lock = r.u8().unwrap_or(0);
@@ -1490,12 +1497,11 @@ fn inflate_zlib(src: &[u8], dest_len: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn parse_gump_text_block(r: &mut PacketReader<'_>) -> Result<Vec<String>> {
-    if r.remaining() < 2 {
-        return Ok(Vec::new());
-    }
-    let count = r.u16()? as usize;
-    let mut text = Vec::with_capacity(count);
+/// The text lines of a gump: `count` pairs of a length word and UTF-16BE
+/// units. The plain `0xB0` gump puts the count word in front of the pairs;
+/// the packed `0xDD` gump carries the count outside the packed block.
+fn parse_gump_text_lines(r: &mut PacketReader<'_>, count: usize) -> Result<Vec<String>> {
+    let mut text = Vec::with_capacity(count.min(r.remaining() / 2));
     for _ in 0..count {
         let units = r.u16()? as usize;
         let mut buf = Vec::with_capacity(units);
@@ -1521,7 +1527,12 @@ fn parse_gump(packet: &[u8]) -> Result<Inbound> {
     let layout_len = r.u16()? as usize;
     let layout_bytes = r.take(layout_len).unwrap_or(&[]);
     let layout = String::from_utf8_lossy(layout_bytes).into_owned();
-    let text = parse_gump_text_block(&mut r)?;
+    let text = if r.remaining() < 2 {
+        Vec::new()
+    } else {
+        let count = r.u16()? as usize;
+        parse_gump_text_lines(&mut r, count)?
+    };
     Ok(Inbound::Gump(OpenGump {
         serial,
         gump_id,
@@ -1543,7 +1554,7 @@ fn parse_compressed_gump(r: &mut PacketReader<'_>) -> Result<Inbound> {
     let layout_src = r.take(layout_src_len)?;
     let layout_bytes = inflate_zlib(layout_src, layout_plain)?;
     let layout = String::from_utf8_lossy(&layout_bytes).into_owned();
-    let _lines = r.u32()?;
+    let lines = r.u32()? as usize;
     let text_packed = r.u32()? as usize;
     // Some shards write a single zero length word when a compressed gump has
     // no text strings. There is no following uncompressed-length word in that
@@ -1563,7 +1574,7 @@ fn parse_compressed_gump(r: &mut PacketReader<'_>) -> Result<Inbound> {
     let text_src = r.take(text_src_len)?;
     let text_bytes = inflate_zlib(text_src, text_plain)?;
     let mut text_reader = PacketReader::new(&text_bytes);
-    let text = parse_gump_text_block(&mut text_reader)?;
+    let text = parse_gump_text_lines(&mut text_reader, lines)?;
     Ok(Inbound::Gump(OpenGump {
         serial,
         gump_id,
@@ -1599,14 +1610,17 @@ fn parse_equipped(packet: &[u8]) -> Result<Inbound> {
     let graphic = r.u16()?;
     let _unk = r.u8()?;
     let layer = r.u8()?;
-    let _parent = r.serial()?;
+    let owner = r.serial()?;
     let hue = r.u16().unwrap_or(0);
-    Ok(Inbound::Equipped(EquipItem {
-        serial,
-        graphic,
-        layer,
-        hue,
-    }))
+    Ok(Inbound::Equipped {
+        owner,
+        item: EquipItem {
+            serial,
+            graphic,
+            layer,
+            hue,
+        },
+    })
 }
 
 fn parse_extended(packet: &[u8]) -> Result<Inbound> {
@@ -2562,10 +2576,11 @@ mod tests {
             .u16(0);
         let pkt = w.finish();
         match parse(&pkt).unwrap() {
-            Inbound::Equipped(eq) => {
-                assert_eq!(eq.serial, Serial(0x4000_0001));
-                assert_eq!(eq.graphic, 0x0F43);
-                assert_eq!(eq.layer, LAYER_ONE_HANDED);
+            Inbound::Equipped { owner, item } => {
+                assert_eq!(owner, Serial(0xAA), "the wearer is the sixth field");
+                assert_eq!(item.serial, Serial(0x4000_0001));
+                assert_eq!(item.graphic, 0x0F43);
+                assert_eq!(item.layer, LAYER_ONE_HANDED);
             }
             other => panic!("{other:?}"),
         }
@@ -2998,11 +3013,42 @@ mod tests {
         match parse(&p).unwrap() {
             Inbound::Skills { skills } => {
                 assert_eq!(skills.len(), 1);
-                assert_eq!(skills[0].id, 1);
+                assert_eq!(skills[0].id, 0, "the list counts from 1 on the wire");
                 assert_eq!(skills[0].cap, SKILL_CAP_DEFAULT);
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn skill_list_and_single_update_share_one_numbering() {
+        const MINING_SERVER_ID: u16 = 45;
+        let mut list = crate::buf::PacketWriter::with_variable(PKT_SKILLS);
+        list.u8(SKILL_TYPE_LIST_CAP)
+            .u16(MINING_SERVER_ID + 1)
+            .u16(500)
+            .u16(500)
+            .u8(0)
+            .u16(1000)
+            .u16(0);
+        let mut single = crate::buf::PacketWriter::with_variable(PKT_SKILLS);
+        single
+            .u8(SKILL_TYPE_UPDATE_CAP)
+            .u16(MINING_SERVER_ID)
+            .u16(501)
+            .u16(501)
+            .u8(0)
+            .u16(1000);
+        let from_list = match parse(&list.finish_variable().unwrap()).unwrap() {
+            Inbound::Skills { skills } => skills[0].id,
+            other => panic!("{other:?}"),
+        };
+        let from_single = match parse(&single.finish_variable().unwrap()).unwrap() {
+            Inbound::Skills { skills } => skills[0].id,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(from_list, MINING_SERVER_ID);
+        assert_eq!(from_single, MINING_SERVER_ID);
     }
 
     #[test]
@@ -3124,8 +3170,9 @@ mod tests {
             enc.finish().unwrap()
         }
         let layout_z = z(b"{page 0}");
+        // The packed block holds only (length, text) pairs. The line count
+        // is the plain word before the packed text.
         let mut text_plain = Vec::new();
-        text_plain.extend_from_slice(&1u16.to_be_bytes());
         text_plain.extend_from_slice(&1u16.to_be_bytes());
         text_plain.extend_from_slice(&(b'A' as u16).to_be_bytes());
         let text_z = z(&text_plain);

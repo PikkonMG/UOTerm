@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use uoterm_protocol::types::{ClientVersion, Era, Point3, EXIT_OK, EXIT_USAGE};
 use uoterm_runtime::config::{
-    load_app_config, load_persona, load_profile, password_from_env, stay_on_socket_for_era,
-    ConnectOptions,
+    load_app_config, load_persona, load_profile, password_from_env, ConnectOptions,
 };
 use uoterm_runtime::mock;
 use uoterm_runtime::persona::Persona;
@@ -424,7 +423,6 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         era,
         uopath,
         persona: Some(persona),
-        stay_on_socket: stay_on_socket_for_era(era, cfg.stay_on_socket),
         next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
         encryption: match encryption {
             EncryptionMode::None => uoterm_runtime::EncryptionMode::None,

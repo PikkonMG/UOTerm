@@ -967,7 +967,6 @@ mod tests {
             era: Era::T2a,
             uopath: None,
             persona: Some(Persona::lumberjack_yew()),
-            stay_on_socket: true,
             next_login_key: 0xFF,
             encryption: Default::default(),
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
@@ -1021,7 +1020,6 @@ mod tests {
             era: Era::T2a,
             uopath: None,
             persona: Some(Persona::lumberjack_yew()),
-            stay_on_socket: true,
             next_login_key: 0xFF,
             encryption: crate::config::EncryptionMode::None,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
@@ -1043,7 +1041,6 @@ mod tests {
 
     fn connect_opts(
         server: &MockServer,
-        stay: bool,
         encryption: crate::config::EncryptionMode,
     ) -> ConnectOptions {
         ConnectOptions {
@@ -1057,7 +1054,6 @@ mod tests {
             era: Era::T2a,
             uopath: None,
             persona: Some(Persona::lumberjack_yew()),
-            stay_on_socket: stay,
             next_login_key: 0xFF,
             encryption,
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
@@ -1082,7 +1078,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn login_path_relay_reconnect() {
         let server = MockServer::start().await.unwrap();
-        let opts = connect_opts(&server, false, crate::config::EncryptionMode::None);
+        let opts = connect_opts(&server, crate::config::EncryptionMode::None);
         let handle = Runtime::new(2).connect(opts).await.unwrap();
         assert_character_list(&handle).await;
     }
@@ -1090,7 +1086,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn login_path_modern_relay_reconnect() {
         let server = MockServer::start().await.unwrap();
-        let mut opts = connect_opts(&server, false, crate::config::EncryptionMode::None);
+        let mut opts = connect_opts(&server, crate::config::EncryptionMode::None);
         opts.era = Era::Modern;
         opts.version = ClientVersion::MODERN;
         let handle = Runtime::new(2).connect(opts).await.unwrap();
@@ -1098,17 +1094,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn login_path_osi_stay_on_socket() {
-        let server = MockServer::start_osi(ClientVersion::T2A).await.unwrap();
-        let opts = connect_opts(&server, true, crate::config::EncryptionMode::Osi);
-        let handle = Runtime::new(2).connect(opts).await.unwrap();
-        assert_character_list(&handle).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn login_path_osi_relay() {
         let server = MockServer::start_osi(ClientVersion::T2A).await.unwrap();
-        let opts = connect_opts(&server, false, crate::config::EncryptionMode::Osi);
+        let opts = connect_opts(&server, crate::config::EncryptionMode::Osi);
         let handle = Runtime::new(2).connect(opts).await.unwrap();
         assert_character_list(&handle).await;
     }

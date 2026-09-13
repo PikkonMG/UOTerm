@@ -82,7 +82,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `wait_target` | none |
 | `target` | a target cursor must be pending |
 | `open_container` / `loot` / `trade_offer` | serial |
-| `gump_respond` / `gump_close` | open gump. `button` is a button id, `switches` the choices to tick; button `0` closes |
+| `gump_respond` / `gump_close` | open gump. `gump` names the gump id to answer (the oldest open one when omitted). `button` is a button id, `switches` the choices to tick; button `0` closes. A button or switch that is not on the gump is refused, because a shard drops or disconnects on it |
 | `set_goal` | in world; `idle` `travel` `hunt` `gather` `bank` `shop` `social` `flee` `ress` |
 | `set_persona` | session exists; JSON persona body. `typo_rate` is clamped to `0.0..=1.0` |
 | `cancel_goal` | session exists |

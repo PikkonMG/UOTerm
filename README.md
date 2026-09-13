@@ -87,7 +87,7 @@ Load order for `uoterm.toml`:
 1. `./uoterm.toml` in the current working directory.
 2. Linux: `~/.config/uoterm/uoterm.toml`. Windows: `%APPDATA%\uoterm\uoterm.toml`.
 
-Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `connect` uses this file for `host`, `port`, `era`, `uopath`, `api_bind`, `max_sessions`, and `stay_on_socket` when the matching CLI flag is omitted.
+Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `connect` uses this file for `host`, `port`, `era`, `uopath`, `api_bind`, and `max_sessions` when the matching CLI flag is omitted.
 
 `obey_shard_rules` (default `true`): some shards send a list of assistant features they forbid, such as auto-open doors, auto-bandage, and auto-potions. With `true`, the character does not use those features by itself on that shard. With `false`, it ignores the list. The client answers the shard in both cases. A session made with `POST /v1/sessions` takes the same `obey_shard_rules` field.
 
@@ -298,7 +298,7 @@ Notes:
 - `--era modern` is the CLI default. Use `--era t2a` for 1.26–2.0.x style packets.
 - `--era modern` sends the 21-byte `0xEF` seed. `--era t2a` sends a 4-byte seed.
 - `--uopath` is optional. If you pass it and the directory is unreadable, `connect` fails with that error.
-- `--era modern` opens a new TCP connection after `0x8C`. If the packet IP is `0.0.0.0`, it reconnects to `--host`. `--era t2a` may stay on the login socket when `stay_on_socket` is set (mock shard).
+- Both eras open a new TCP connection to the game server after `0x8C`. If the packet IP is `0.0.0.0`, it reconnects to `--host`.
 
 ## Tests
 

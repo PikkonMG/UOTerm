@@ -4,7 +4,6 @@ era = "t2a"
 log_level = "info"
 api_bind = "127.0.0.1:7733"
 max_sessions = 32
-stay_on_socket = true
 # Some shards send a list of assistant features they forbid, such as
 # auto-open doors, auto-bandage, and auto-potions.
 # true  = obey the list (default).

@@ -743,10 +743,6 @@ impl ClientVersion {
         })
     }
 
-    pub fn has_prefixed_mobile_incoming(self) -> bool {
-        self.has_sa_item_packet()
-    }
-
     /// Clients from 5.0.0a up read the `0x16` health bar packet as `0x17`.
     pub fn reads_old_health_bar(self) -> bool {
         self.at_least(Self {
@@ -915,10 +911,8 @@ mod tests {
     fn version_parses() {
         let v: ClientVersion = "7.0.102.3".parse().unwrap();
         assert!(v.has_sa_item_packet());
-        assert!(v.has_prefixed_mobile_incoming());
         assert!(v.has_container_grid());
         assert!(v.has_feature_uint32());
-        assert!(!ClientVersion::T2A.has_prefixed_mobile_incoming());
     }
 
     #[test]

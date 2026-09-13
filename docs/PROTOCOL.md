@@ -40,7 +40,7 @@ Login server:
 seed (t2a: 4 bytes) or 0xEF (modern) → 0x80 account login → 0xA8 server list → 0xA0 select → 0x8C relay
 ```
 
-After `0x8C` the client either stays on the socket or opens a new TCP connection (the Classic Client reconnect-to-relay behaviour). `--era modern` reconnects. `--era t2a` may stay when `stay_on_socket` is set. If the relay IP is `0.0.0.0`, a reconnect uses `--host`.
+After `0x8C` the client opens a new TCP connection to the game server (the Classic Client reconnect-to-relay behaviour) and seeds it with the relay key. It never stays on the login socket: one server family closes that socket after `0xA0`, and the other reads the seed as a packet and drops the client. If the relay IP is `0.0.0.0`, the reconnect uses `--host`.
 
 Game server:
 

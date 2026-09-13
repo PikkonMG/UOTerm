@@ -162,12 +162,15 @@ mod tests {
         let mut w = World::new();
         w.self_state.serial = SELF;
         w.self_state.location = Point3::new(10, 20, 1);
-        w.apply(&Inbound::Equipped(EquipItem {
-            serial: BACKPACK,
-            graphic: GRAPHIC_BACKPACK,
-            layer: LAYER_BACKPACK,
-            hue: 0,
-        }));
+        w.apply(&Inbound::Equipped {
+            owner: SELF,
+            item: EquipItem {
+                serial: BACKPACK,
+                graphic: GRAPHIC_BACKPACK,
+                layer: LAYER_BACKPACK,
+                hue: 0,
+            },
+        });
         w.apply(&Inbound::WorldItem(GroundItem {
             serial: CORPSE,
             graphic: 0x2006,
