@@ -6910,6 +6910,7 @@ fn accept_move_ack(inner: &mut Inner, sequence: u8) {
         let mut w = inner.world.write();
         w.self_state.location = step.arrives_at;
         w.self_state.direction = step.direction as u8;
+        w.forget_out_of_view();
     }
     if step.turn {
         return;

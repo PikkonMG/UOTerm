@@ -627,6 +627,67 @@ mod tests {
         assert!(w.find_mobiles(Some("healer"), None, None).is_empty());
     }
 
+    /// A gate on the same map sends no deletes. What is left behind is out of
+    /// view and must go, with what it holds; the character's own pack stays.
+    #[test]
+    fn a_gate_jump_forgets_what_is_left_behind() {
+        const COW: Serial = Serial(0x71);
+        const NEAR_COW: Serial = Serial(0x72);
+        const CHEST: Serial = Serial(0x4000_0301);
+        const IN_CHEST: Serial = Serial(0x4000_0302);
+        const IN_PACK: Serial = Serial(0x4000_0303);
+        const FAR_X: u16 = 3000;
+        let mut w = World::new();
+        login(&mut w);
+        let mobile_at = |serial: Serial, x: u16| {
+            Inbound::MobileIncoming(MobileView {
+                serial,
+                body: 0xD8,
+                x,
+                y: 20,
+                z: 1,
+                direction: 0,
+                hue: 0,
+                flags: 0,
+                notoriety: 1,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            })
+        };
+        w.apply(&mobile_at(COW, 12));
+        w.apply(&named(COW, "a cow"));
+        w.apply(&mobile_at(NEAR_COW, FAR_X + 2));
+        w.apply(&Inbound::WorldItem(GroundItem {
+            serial: CHEST,
+            graphic: 0x0E43,
+            amount: 1,
+            x: 13,
+            y: 20,
+            z: 1,
+            hue: 0,
+            multi: false,
+        }));
+        w.apply(&Inbound::AddItem(in_container(CHEST, IN_CHEST, GRAPHIC_GOLD, GOLD_AMOUNT)));
+        w.apply(&Inbound::AddItem(in_container(BACKPACK, IN_PACK, GRAPHIC_BONE, ONE_OF_IT)));
+        w.apply(&Inbound::DrawPlayer {
+            serial: Serial(0xAB),
+            body: 0x190,
+            hue: 0,
+            flags: 0,
+            x: FAR_X,
+            y: 20,
+            direction: 4,
+            z: 1,
+        });
+        assert!(!w.mobiles.contains_key(&COW), "the cow is out of view");
+        assert!(w.mobiles.contains_key(&NEAR_COW), "the cow here stays");
+        assert!(!w.items.contains_key(&CHEST));
+        assert!(!w.items.contains_key(&IN_CHEST), "the chest takes its gold");
+        assert!(w.items.contains_key(&IN_PACK), "her own pack stays");
+        assert_eq!(w.name_of(COW), "a cow", "the name is kept");
+    }
+
     #[test]
     fn frozen_flag_sets_paralyzed() {
         let mut w = World::new();

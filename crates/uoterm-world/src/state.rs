@@ -312,6 +312,12 @@ const DOOR_OPEN_STEP: u16 = 1;
 /// The most names of mobiles out of sight the world keeps. When it is full
 /// it starts again: a name comes back the next time its mobile is seen.
 const GONE_NAMES_KEEP: usize = 1024;
+/// Farther than this many tiles, nothing a shard sent is in view any more.
+/// A shard sends an object as it comes within its update range, and sends
+/// nothing when the character walks or gates away from it, so the client
+/// must forget it. 24 is the largest view range a client can ask for, so no
+/// shard keeps an object up to date past it.
+pub const VIEW_RANGE_MAX: u32 = 24;
 pub const SPEECH_KIND_PARTY: u8 = 0xF0;
 pub const SPEECH_KIND_PARTY_PRIVATE: u8 = 0xF1;
 /// The hue party lines are filed with. The shard sends none.
@@ -485,7 +491,84 @@ impl World {
         ));
     }
 
+    /// Takes one packet into the world. When the packet moves the
+    /// character, what is now out of view is forgotten.
     pub fn apply(&mut self, msg: &Inbound) {
+        let was_at = self.self_state.location;
+        self.apply_packet(msg);
+        if self.self_state.location != was_at {
+            self.forget_out_of_view();
+        }
+    }
+
+    /// Forgets every mobile and ground item farther than [`VIEW_RANGE_MAX`]
+    /// from the character, with all it holds or wears. Without this, a walk
+    /// or a gate leaves the world full of things far away that the shard no
+    /// longer updates: a bear 3000 tiles off still looks near.
+    pub fn forget_out_of_view(&mut self) {
+        let here = self.self_state.location;
+        let me = self.self_state.serial;
+        let mut gone: Vec<Serial> = self
+            .mobiles
+            .values()
+            .filter(|m| m.serial != me && here.chebyshev(m.location) > VIEW_RANGE_MAX)
+            .map(|m| m.serial)
+            .collect();
+        gone.extend(
+            self.items
+                .values()
+                .filter(|i| i.parent.is_none() && here.chebyshev(i.location) > VIEW_RANGE_MAX)
+                .map(|i| i.serial),
+        );
+        if gone.is_empty() {
+            return;
+        }
+        let mut held: HashMap<Serial, Vec<Serial>> = HashMap::new();
+        for item in self.items.values() {
+            if let Some(parent) = item.parent {
+                held.entry(parent).or_default().push(item.serial);
+            }
+        }
+        let mut next = 0;
+        while let Some(&holder) = gone.get(next) {
+            if let Some(inside) = held.remove(&holder) {
+                gone.extend(inside);
+            }
+            next += 1;
+        }
+        for serial in gone {
+            self.forget_object(serial);
+        }
+    }
+
+    /// Drops every record of one object, and keeps a mobile's name so a
+    /// party line or a journal line can still name it.
+    fn forget_object(&mut self, serial: Serial) {
+        // A slain foe leaves a corpse and its mobile is deleted; the shard
+        // may never say the fight is over.
+        if self.combatant == Some(serial) {
+            self.end_fight();
+        }
+        self.detach(serial);
+        self.names.forget(serial);
+        if let Some(mobile) = self.mobiles.remove(&serial) {
+            if !mobile.name.is_empty() {
+                if self.gone_names.len() >= GONE_NAMES_KEEP {
+                    self.gone_names.clear();
+                }
+                self.gone_names.insert(serial, mobile.name);
+            }
+        }
+        self.items.remove(&serial);
+        self.containers.remove(&serial);
+        self.doors.remove(&serial);
+        self.multis.remove(&serial);
+        self.self_state.equipment.retain(|e| e.serial != serial);
+        self.bars.remove(&serial);
+        self.properties.remove(&serial);
+    }
+
+    fn apply_packet(&mut self, msg: &Inbound) {
         match msg {
             Inbound::LoginConfirm {
                 serial,
@@ -600,28 +683,7 @@ impl World {
                 }
             }
             Inbound::Delete(serial) => {
-                // A slain foe leaves a corpse and its mobile is deleted; the
-                // shard may never say the fight is over.
-                if self.combatant == Some(*serial) {
-                    self.end_fight();
-                }
-                self.detach(*serial);
-                self.names.forget(*serial);
-                if let Some(mobile) = self.mobiles.remove(serial) {
-                    if !mobile.name.is_empty() {
-                        if self.gone_names.len() >= GONE_NAMES_KEEP {
-                            self.gone_names.clear();
-                        }
-                        self.gone_names.insert(*serial, mobile.name);
-                    }
-                }
-                self.items.remove(serial);
-                self.containers.remove(serial);
-                self.doors.remove(serial);
-                self.multis.remove(serial);
-                self.self_state.equipment.retain(|e| e.serial != *serial);
-                self.bars.remove(serial);
-                self.properties.remove(serial);
+                self.forget_object(*serial);
                 // The held item is left held. Lifting takes an item off the
                 // map and the shard reports that with a delete, so a delete of
                 // the item on the cursor is the lift itself. The hold ends when
