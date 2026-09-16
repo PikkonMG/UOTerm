@@ -6,7 +6,7 @@
 //! wait, decide, act. Events wait in the world's event log, so an agent that
 //! is slow gets them all, in order, the next time it asks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use uoterm_world::{Event, EventKind};
 
@@ -17,6 +17,11 @@ const LOW_HEALTH_PCT: u32 = 50;
 const PERCENT: u32 = 100;
 /// A mobile the character may fight counts as near within this many tiles.
 const ENEMY_NEAR_TILES: u32 = 10;
+/// How long an enemy_near for one creature is not raised again after it fires.
+/// A creature that drifts in and out across the near edge, as a swarm does,
+/// then fires once and not on every crossing, so a dense room cannot flood the
+/// event log with the same creatures over and over.
+const ENEMY_NEAR_COOLDOWN: Duration = Duration::from_secs(10);
 /// The most events one `next_event` answer carries. The rest wait for the
 /// next call.
 const NEXT_EVENT_BATCH: usize = 50;
@@ -27,7 +32,11 @@ const STATE_ENEMIES: usize = 5;
 #[derive(Default)]
 pub(super) struct Awareness {
     low_health: bool,
+    /// The enemies near at the last tick, to fire only on the crossing in.
     enemies_near: HashSet<Serial>,
+    /// When each enemy last raised an event, so one that flaps across the near
+    /// edge is not announced again until the cooldown passes.
+    enemies_announced: HashMap<Serial, Instant>,
     /// The last event a `next_event` answer carried.
     delivered: u64,
 }
@@ -57,16 +66,32 @@ pub(super) fn pump_awareness(inner: &mut Inner) {
         events.push(Event::new(EventKind::LowHealth, None, names));
     }
     inner.aware.low_health = low;
+    let now = Instant::now();
     for (serial, name) in &near {
-        if !inner.aware.enemies_near.contains(serial) {
+        let newly_near = !inner.aware.enemies_near.contains(serial);
+        let off_cooldown = inner
+            .aware
+            .enemies_announced
+            .get(serial)
+            .map_or(true, |&when| {
+                now.duration_since(when) >= ENEMY_NEAR_COOLDOWN
+            });
+        if newly_near && off_cooldown {
             events.push(Event::new(
                 EventKind::EnemyNear,
                 Some(*serial),
                 name.clone(),
             ));
+            inner.aware.enemies_announced.insert(*serial, now);
         }
     }
-    inner.aware.enemies_near = near.into_iter().map(|(s, _)| s).collect();
+    let near_now: HashSet<Serial> = near.iter().map(|(s, _)| *s).collect();
+    // Forget cooldowns for enemies gone from range whose window has passed, so
+    // the map cannot grow without bound in a room that churns through mobiles.
+    inner.aware.enemies_announced.retain(|serial, when| {
+        near_now.contains(serial) || now.duration_since(*when) < ENEMY_NEAR_COOLDOWN
+    });
+    inner.aware.enemies_near = near_now;
     if !events.is_empty() {
         let mut world = inner.world.write();
         for event in events {
@@ -325,6 +350,27 @@ mod tests {
             .clone();
         assert_eq!(enemies.len(), 1, "an innocent is no enemy");
         assert_eq!(enemies[0]["serial"], RAT.0);
+    }
+
+    /// A creature that leaves the near ring and comes back within the cooldown
+    /// does not raise a second enemy_near, so a swarm churning at the edge does
+    /// not flood the event log.
+    #[test]
+    fn a_flapping_enemy_is_announced_once_within_the_cooldown() {
+        let mut inner = player();
+        mobile(&inner, RAT, NOTO_GREY, 3);
+        pump_awareness(&mut inner);
+        let first = next_event(&mut inner).expect("the first enemy_near");
+        assert_eq!(kinds(&first), vec!["enemy_near"]);
+        // It drifts out of range and back in, all inside the cooldown.
+        mobile(&inner, RAT, NOTO_GREY, 50);
+        pump_awareness(&mut inner);
+        mobile(&inner, RAT, NOTO_GREY, 3);
+        pump_awareness(&mut inner);
+        assert!(
+            next_event(&mut inner).is_none(),
+            "the same creature is not announced again within the cooldown"
+        );
     }
 
     #[test]
