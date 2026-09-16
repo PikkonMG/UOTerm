@@ -83,6 +83,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `walk` | in world. `direction` (`n`/`ne`/`e`/`se`/`s`/`sw`/`w`/`nw`), `running`, `hold_ms` (0 = one step) |
 | `open_door` | in world; stand next to the door and face it (`0x12`/`0x58`) |
 | `follow` / `stop` | `follow` needs a mobile serial |
+| `logout` | in world. Sends the logout request; a shard may hold it until she is somewhere it allows, such as an inn or a house |
 | `use` / `single_click` / `attack` / `war_mode` | serial / in world |
 | `lift` / `drop` / `equip` / `unequip` | item serial. `drop` takes `dest`: a container, or a mobile to give to; none drops at your feet. `unequip` needs a valid `layer`. Empty layer returns `layer empty`. It does not unequip the backpack |
 | `cast` / `use_skill` | in world; `spell` or `skill` number is required |

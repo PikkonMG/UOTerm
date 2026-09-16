@@ -6691,6 +6691,20 @@ mod relay_tests {
         assert!(!res.ok, "{res:?}");
     }
 
+    /// The agent can ask to log out. The shard decides whether to honour it,
+    /// but the request must reach the wire; without this tool a character told
+    /// to log out could reach the inn and then do nothing.
+    #[test]
+    fn logout_sends_the_logout_packet() {
+        let mut inner = test_session();
+        let res = answer_agent(&mut inner, call(TOOL_LOGOUT, json!({})));
+        assert!(res.ok, "{res:?}");
+        assert!(
+            inner.outbound.iter().any(|pkt| *pkt == encode::logout()),
+            "the logout packet goes out"
+        );
+    }
+
     fn with_speech_table(inner: &mut Inner) {
         inner.speech_data = Some(speech_table(&[
             (KEYWORD_BANK, PHRASE_BANK),
@@ -9115,6 +9129,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             inner.movement.clear();
             inner.world.write().goal = Goal::Idle.name().into();
             ToolResult::ok(json!(Goal::Idle.name()))
+        }
+        TOOL_LOGOUT => {
+            inner.outbound.push_back(encode::logout());
+            ToolResult::action(TOOL_LOGOUT)
         }
         TOOL_USE | TOOL_OPEN_CONTAINER => {
             let serial = if args.get("who").and_then(|v| v.as_str()) == Some(WHO_LAST) {

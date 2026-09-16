@@ -19,6 +19,7 @@ pub const TOOL_WALK: &str = "walk";
 pub const TOOL_OPEN_DOOR: &str = "open_door";
 pub const TOOL_FOLLOW: &str = "follow";
 pub const TOOL_STOP: &str = "stop";
+pub const TOOL_LOGOUT: &str = "logout";
 pub const TOOL_USE: &str = "use";
 pub const TOOL_SINGLE_CLICK: &str = "single_click";
 pub const TOOL_ATTACK: &str = "attack";
@@ -266,6 +267,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (TOOL_FOLLOW, "Follow a mobile serial.", "mobile in range"),
     (TOOL_STOP, "Clear path and set idle.", "session exists"),
+    (TOOL_LOGOUT, "Ask the shard to log the character out. A shard may hold the request until she is somewhere it allows it, such as an inn or a house.", "in world"),
     (TOOL_USE, "Double-click serial.", "serial exists"),
     (TOOL_SINGLE_CLICK, "Single-click for name.", "serial exists"),
     (TOOL_ATTACK, "Attack mobile.", "mobile serial"),
