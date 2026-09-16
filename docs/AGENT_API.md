@@ -12,6 +12,8 @@ Tools return immediately with `action_id`. Completion is an event (`arrived`, `t
 
 A town moongate is not in the map files: the shard drops it in as a live item. So walk to the landmark, then `find_items` with the gate graphic (blue `0x0F6C`, red `0x0DDA`) to lock the exact gate that stands there, step onto it, and answer the moongate gump. With no marker file loaded, `find_landmarks` fails with a message that says so.
 
+A moongate is triggered by stepping onto its tile, not by `use`. A second `use` while already standing on the gate does nothing on most shards, so if the gump did not open, step off the tile and back onto it rather than calling `use` again.
+
 Dungeon teleporter pads are not in the map files either. The character learns a pad the first time she uses one: stepping onto a tile and being teleported at once on the same map records that tile and where she landed. After that, a `move_to` whose goal is reachable only across a learned pad routes to the pad on its own (`{partial:true, via:"teleporter"}`); step on it and call `move_to` again from the far side. Moongates are told apart from pads and are not learned as pads.
 
 ## Gumps
