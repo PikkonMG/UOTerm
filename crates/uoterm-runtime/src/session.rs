@@ -18,6 +18,7 @@ use crate::movement::{
 use crate::persona::{Persona, Plan, SpeechPolicy};
 use crate::reflex::{self, bandage_self_ms, heal_potion_lock_ms, ReflexAction};
 use crate::scene;
+use crate::teleporters::TeleportMemory;
 use crate::tools::*;
 use parking_lot::RwLock;
 use rand::Rng;
@@ -148,6 +149,19 @@ const PLAYER_STEP_CAP: usize = 256;
 /// cannot be reached covers a wide area, and one on every tick froze the
 /// session.
 const PATH_FAIL_WAIT: Duration = Duration::from_secs(5);
+
+/// How soon after a step lands a teleport must come for the tile she stepped
+/// on to count as a pad. A pad fires at once; a moongate waits on the player
+/// answering its gump, which is far longer.
+const TELEPORT_LEARN_WINDOW: Duration = Duration::from_millis(700);
+
+/// A gump this recently open means a teleport is a moongate the player
+/// answered, not a pad, and it is not learned.
+const GUMP_QUIET_FOR_LEARN: Duration = Duration::from_secs(3);
+
+/// The least a teleport moves the character, in tiles, for it to be a pad and
+/// not the ordinary one-tile confirm of a step.
+const TELEPORT_MIN_JUMP: u32 = 3;
 const HOLD_STEP_CAP: usize = 50;
 const HOLD_MS_NONE: u64 = 0;
 const WALK_STEPS_ONE: usize = 1;
@@ -405,6 +419,15 @@ struct Inner {
     /// Why the last route could not be planned, kept so the move_to tool can
     /// tell the agent the reason instead of a bare "path failed".
     last_path_fail_reason: Option<String>,
+    /// Teleporter pads the character has learned by using them, so a later
+    /// walk can leg through one to reach a chamber no path crosses.
+    teleporters: TeleportMemory,
+    /// The tile the last confirmed step landed on, and when. A teleport that
+    /// follows a step onto a tile is what marks that tile a pad.
+    last_step_landed: Option<(Point3, Instant)>,
+    /// When a gump last opened. A teleport soon after one is a moongate the
+    /// player answered, not a pad she stepped on, and is not learned.
+    last_gump_at: Option<Instant>,
     /// When the server last said the character was too tired to move. A
     /// refusal that close behind it is about his stamina and about nothing in
     /// the way.
@@ -837,6 +860,9 @@ async fn run_session(
         pending_context_menu: None,
         last_path_fail: None,
         last_path_fail_reason: None,
+        teleporters: TeleportMemory::default(),
+        last_step_landed: None,
+        last_gump_at: None,
         last_fatigued: None,
         last_event_seq: 0,
         last_name_retry: Instant::now(),
@@ -1621,6 +1647,9 @@ mod relay_tests {
             pending_context_menu: None,
             last_path_fail: None,
             last_path_fail_reason: None,
+            teleporters: TeleportMemory::default(),
+            last_step_landed: None,
+            last_gump_at: None,
             last_fatigued: None,
             last_event_seq: 0,
             last_name_retry: now,
@@ -6775,6 +6804,71 @@ mod relay_tests {
         );
     }
 
+    /// Stepping onto a tile and being teleported at once teaches that tile as
+    /// a pad, with where she landed as its far side.
+    #[test]
+    fn a_teleport_right_after_a_step_is_learned_as_a_pad() {
+        let mut inner = test_session();
+        let pad = Point3::new(200, 200, 0);
+        let far = Point3::new(260, 260, 10);
+        inner.last_step_landed = Some((pad, Instant::now()));
+        learn_teleporter(
+            &mut inner,
+            uoterm_protocol::types::PKT_DRAW_PLAYER,
+            pad,
+            0,
+            far,
+            0,
+        );
+        let edges: Vec<_> = inner.teleporters.on_map(0).collect();
+        assert_eq!(edges.len(), 1, "the pad is learned");
+        assert_eq!(edges[0].from, pad);
+        assert_eq!(edges[0].to, far);
+    }
+
+    /// A teleport that follows a gump is a moongate the player answered, not a
+    /// pad she stepped on; it is not learned.
+    #[test]
+    fn a_teleport_after_a_gump_is_not_learned_as_a_pad() {
+        let mut inner = test_session();
+        let gate = Point3::new(200, 200, 0);
+        let far = Point3::new(600, 600, 0);
+        inner.last_step_landed = Some((gate, Instant::now()));
+        inner.last_gump_at = Some(Instant::now());
+        learn_teleporter(
+            &mut inner,
+            uoterm_protocol::types::PKT_DRAW_PLAYER,
+            gate,
+            0,
+            far,
+            0,
+        );
+        assert!(inner.teleporters.is_empty(), "a gated teleport is no pad");
+    }
+
+    /// A goal walled off from the character, reachable only across a learned
+    /// pad, routes to the pad instead of failing.
+    #[test]
+    fn move_to_across_a_wall_legs_through_a_learned_pad() {
+        let mut inner = test_session();
+        // A full wall down x=150 leaves no way around: the far side is reached
+        // only by the pad.
+        for y in 0..MOCK_GRID {
+            inner.map.set_block(150, y, true);
+        }
+        inner.world.write().self_state.location = Point3::new(120, 150, 0);
+        inner
+            .teleporters
+            .learn(0, Point3::new(140, 150, 0), Point3::new(160, 150, 0));
+        let res = answer_agent(
+            &mut inner,
+            call(TOOL_MOVE_TO, json!({ "x": 180, "y": 150 })),
+        );
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.result["via"], json!("teleporter"), "{res:?}");
+        assert_eq!(res.result["heading_to"]["x"], json!(140), "{res:?}");
+    }
+
     fn with_speech_table(inner: &mut Inner) {
         inner.speech_data = Some(speech_table(&[
             (KEYWORD_BANK, PHRASE_BANK),
@@ -7058,6 +7152,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     // worth naming. Without this a wrong position has no author and
                     // the fault can only be guessed at.
                     let stands_at = inner.world.read().self_state.location;
+                    let map_after = inner.world.read().self_state.map;
                     if stands_at != stood_at {
                         tracing::debug!(
                             packet = format!("{:#04x}", pkt.id),
@@ -7065,8 +7160,10 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                             to = %stands_at,
                             "a packet moved the character"
                         );
+                        learn_teleporter(inner, pkt.id, stood_at, map_before, stands_at, map_after);
                     }
                     if let Inbound::Gump(gump) = &msg {
+                        inner.last_gump_at = Some(Instant::now());
                         tracing::info!(
                             gump = gump.gump_id,
                             title = gump.text.first().map(String::as_str).unwrap_or_default(),
@@ -7260,6 +7357,9 @@ fn accept_move_ack(inner: &mut Inner, sequence: u8) {
     if step.turn {
         return;
     }
+    // The tile this step lands on, so a teleport that follows at once marks it
+    // a pad. A turn lands nowhere new and marks nothing.
+    inner.last_step_landed = Some((step.arrives_at, Instant::now()));
     // The server has just walked him onto that tile, so whatever it refused
     // him there before is over.
     forget_refused_tile(inner, step.arrives_at, FORGOT_HE_STANDS_ON_IT);
@@ -8626,6 +8726,74 @@ fn note_path_failure(inner: &mut Inner, at: Point3, reason: String) {
     inner.last_path_fail = Some((at, now));
 }
 
+/// Learns a pad when a teleport follows a step onto a tile. The teleport must
+/// be the draw-player packet, stay on the same map, jump at least
+/// [`TELEPORT_MIN_JUMP`] tiles, come within [`TELEPORT_LEARN_WINDOW`] of a
+/// step landing on the tile she left, and not follow a gump (a moongate).
+fn learn_teleporter(
+    inner: &mut Inner,
+    pkt_id: u8,
+    from: Point3,
+    map_before: u8,
+    to: Point3,
+    map_after: u8,
+) {
+    if pkt_id != uoterm_protocol::types::PKT_DRAW_PLAYER || map_before != map_after {
+        return;
+    }
+    if from.chebyshev(to) < TELEPORT_MIN_JUMP {
+        return;
+    }
+    let now = Instant::now();
+    let stepped_onto_it = inner.last_step_landed.is_some_and(|(tile, when)| {
+        uoterm_nav::same_spot(tile, from) && now.duration_since(when) <= TELEPORT_LEARN_WINDOW
+    });
+    if !stepped_onto_it {
+        return;
+    }
+    if inner
+        .last_gump_at
+        .is_some_and(|when| now.duration_since(when) < GUMP_QUIET_FOR_LEARN)
+    {
+        return;
+    }
+    inner.teleporters.learn(map_after, from, to);
+    inner.last_step_landed = None;
+    tracing::info!(from = %from, to = %to, map = map_after, "learned a teleporter pad");
+}
+
+/// When a goal cannot be reached on foot, routes through a learned pad whose
+/// far side can reach the goal: walks to the pad so that stepping on it lands
+/// her where a plan to the goal works. Picks the pad whose far side is nearest
+/// the goal. Returns the pad tile the walk heads to, or `None`.
+fn leg_route_through_pad(inner: &mut Inner, here: Point3, dest: Point3) -> Option<Point3> {
+    let map = inner.world.read().self_state.map;
+    inner.ensure_facet();
+    let in_the_way = inner.blockers();
+    let obstacles = in_the_way.obstacles();
+    let edges: Vec<_> = inner.teleporters.on_map(map).copied().collect();
+    let mut best: Option<(Point3, u32)> = None;
+    for edge in edges {
+        if uoterm_nav::same_spot(edge.from, here) {
+            continue;
+        }
+        if pathfind(inner.tiles(), edge.to, dest, &obstacles).is_err() {
+            continue;
+        }
+        if pathfind(inner.tiles(), here, edge.from, &obstacles).is_err() {
+            continue;
+        }
+        let to_goal = edge.to.chebyshev(dest);
+        if best.map_or(true, |(_, best_dist)| to_goal < best_dist) {
+            best = Some((edge.from, to_goal));
+        }
+    }
+    // The obstacle borrows end here; the walk to the pad needs the mutable
+    // session again.
+    let pad = best?.0;
+    queue_move(inner, pad).then_some(pad)
+}
+
 /// The fractions of the way to a goal, farthest first, that a walk tries when
 /// the goal itself cannot be reached: three quarters, half, a quarter.
 const PARTWAY_QUARTERS: [i32; 3] = [3, 2, 1];
@@ -9220,6 +9388,20 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .last_path_fail_reason
                 .clone()
                 .unwrap_or_else(|| "path failed".into());
+            // A learned teleporter pad whose far side reaches the goal beats a
+            // blind partial walk: stepping on it puts her where a plan works.
+            if let Some(pad) = leg_route_through_pad(inner, here, dest) {
+                inner.goal = Goal::Travel { dest: pad };
+                inner.world.write().goal = Goal::Travel { dest: pad }.name().into();
+                return ToolResult::ok(json!({
+                    "partial": true,
+                    "goal": dest,
+                    "heading_to": pad,
+                    "via": "teleporter",
+                    "reason": reason,
+                    "hint": "walking to a known teleporter pad toward the goal; step on it, then call move_to again",
+                }));
+            }
             match walk_partway(inner, here, dest) {
                 Some(waypoint) => {
                     inner.goal = Goal::Travel { dest: waypoint };

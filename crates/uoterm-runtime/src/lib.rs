@@ -20,6 +20,7 @@ pub mod populate;
 pub mod reflex;
 pub mod scene;
 pub mod session;
+pub mod teleporters;
 pub mod tools;
 
 pub use config::{parse_encryption_mode, AppConfig, ConnectOptions, EncryptionMode, Profile};
