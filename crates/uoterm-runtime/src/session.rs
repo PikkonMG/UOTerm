@@ -5373,6 +5373,44 @@ mod relay_tests {
         assert!(to_olin.unanswered.is_empty());
     }
 
+    /// A reply with no `to` answers the newest speaker still waiting, not an
+    /// older one. Two players named the character; the answer goes to the one
+    /// who spoke last.
+    #[test]
+    fn a_reply_with_no_target_answers_the_newest_speaker() {
+        const DUNN: Serial = Serial(0x0000_0D02);
+        let mut inner = named_by_ann(false, "Mara, you there?");
+        inner.persona.typo_rate = 0.0;
+        {
+            let mut w = inner.world.write();
+            w.apply(&Inbound::MobileIncoming(uoterm_protocol::MobileView {
+                serial: DUNN,
+                body: 0x190,
+                x: 2,
+                y: 2,
+                z: 0,
+                direction: 0,
+                hue: 0,
+                flags: 0,
+                notoriety: 1,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            }));
+            w.apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                serial: DUNN,
+                graphic: 0x190,
+                kind: SPEECH_REGULAR,
+                hue: 0,
+                name: "Dunn".into(),
+                text: "Mara, wait up".into(),
+            }));
+        }
+        let res = answer_agent(&mut inner, call(TOOL_REPLY, json!({ "text": "yes?" })));
+        assert!(res.ok, "{:?}", res.error);
+        assert_eq!(res.result["to"], "Dunn", "the newest speaker is answered");
+    }
+
     /// In the basic mode the character answers but says no to plans: it
     /// neither follows nor joins the party of a player who asked in chat.
     #[test]
