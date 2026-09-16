@@ -6,6 +6,7 @@ pub const TOOL_OBSERVE: &str = "observe";
 pub const TOOL_LOOK_AROUND: &str = "look_around";
 pub const TOOL_FIND_MOBILES: &str = "find_mobiles";
 pub const TOOL_FIND_ITEMS: &str = "find_items";
+pub const TOOL_FIND_LANDMARKS: &str = "find_landmarks";
 pub const TOOL_JOURNAL_SEARCH: &str = "journal_search";
 pub const TOOL_MAP_TILE: &str = "map_tile";
 pub const TOOL_CAN_WALK: &str = "can_walk";
@@ -63,6 +64,9 @@ pub const TOOL_RECORD_MACRO: &str = "record_macro";
 
 pub const NO_BANK_KNOWN: &str =
     "no bank is known near here; find a banker in observe and walk to it";
+
+pub const NO_MARKERS_LOADED: &str =
+    "no marker file is loaded; set 'markers' in the config to a UO Auto Map .map or Ultima Mapper Waypoints.lua file";
 
 /// A travel goal before its destination is set: `set_goal` fills it with
 /// the spot asked, or the nearest bank.
@@ -207,6 +211,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (
         TOOL_FIND_ITEMS,
         "Filter items on the ground and inside containers. Args: graphic, name (part of the display name), container (a container serial, to search only that one), distance (tiles). Each item has its map location and dist.",
+        "in world",
+    ),
+    (
+        TOOL_FIND_LANDMARKS,
+        "Named places from the marker file: gates, banks, towns. Args: name (part of the place name, e.g. \"new haven moongate\"), map (a map index; the one underfoot by default), distance (tiles). Each place has its map, location, dist (only on the current map) and kind. Walk to the place, then find_items to lock the live thing that stands there.",
         "in world",
     ),
     (
@@ -422,6 +431,7 @@ pub fn mcp_tool_list() -> Value {
                         "radius": {"type": "integer"},
                         "name": {"type": "string"},
                         "graphic": {"type": "integer"},
+                        "map": {"type": "integer"},
                         "container": {"type": "string"},
                         "distance": {"type": "integer"},
                         "vendor_name": {"type": "string"},

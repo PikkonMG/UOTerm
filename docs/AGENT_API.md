@@ -6,6 +6,12 @@ Tools return immediately with `action_id`. Completion is an event (`arrived`, `t
 
 `observe` shows `nearest_bank`: the town, the `location` where its banker stands, and the `dist`, for the nearest bank on this map within 400 tiles. The banks are those of the standard towns on every map; a shard with its own towns has others, which you find by their bankers (`find_mobiles` with `name` `banker`). The `bank` goal walks to `nearest_bank` and ends there.
 
+## Landmarks
+
+`find_landmarks` reads named places from the marker file the runner set in the config (`markers`): gates, banks, towns. Filter by `name` (part of the place name), `map` (the one underfoot by default), and `distance`. Each place has its `map`, `location`, `dist` (only on the current map) and `kind`.
+
+A town moongate is not in the map files: the shard drops it in as a live item. So walk to the landmark, then `find_items` with the gate graphic (blue `0x0F6C`, red `0x0DDA`) to lock the exact gate that stands there, step onto it, and answer the moongate gump. With no marker file loaded, `find_landmarks` fails with a message that says so.
+
 ## Gumps
 
 A gump is a window the shard opens: a moongate, a bank question, a vendor menu. `observe` `gumps` and the `next_event` state show each open gump in words, with the text numbers read from the client files:
@@ -63,6 +69,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `observe` | session exists | self, radar, journal, mobiles, items, target, gumps, doors, buffs, party, prompt, forbidden (assistant features the shard forbids) |
 | `find_mobiles` | in world | filter name / graphic / distance; `name` also matches the title, so `banker` finds "Kate the banker"; each has its title |
 | `find_items` | in world | filter graphic / container / name |
+| `find_landmarks` | in world | named places from the marker file (gates, banks, towns); filter name / map / distance; each has its map, location, dist (on the current map) and kind |
 | `journal_search` | session exists | matching lines |
 | `map_tile` / `can_walk` | map or mock grid | walkable, z, door |
 

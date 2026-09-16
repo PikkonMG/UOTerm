@@ -63,6 +63,10 @@ pub struct AppConfig {
     pub host: String,
     pub port: u16,
     pub uopath: Option<PathBuf>,
+    /// A marker file of named places to travel to (UO Auto Map `.map` or
+    /// Ultima Mapper `Waypoints.lua`). The user supplies it; none ships.
+    #[serde(default)]
+    pub markers: Option<PathBuf>,
     pub era: Era,
     pub log_level: String,
     pub api_bind: String,
@@ -81,6 +85,7 @@ impl Default for AppConfig {
             host: "127.0.0.1".into(),
             port: DEFAULT_LOGIN_PORT,
             uopath: None,
+            markers: None,
             era: Era::Modern,
             log_level: "info".into(),
             api_bind: format!("127.0.0.1:{DEFAULT_API_PORT}"),
@@ -113,6 +118,8 @@ pub struct ConnectOptions {
     pub version: ClientVersion,
     pub era: Era,
     pub uopath: Option<PathBuf>,
+    /// A marker file of named places to travel to. See [`AppConfig::markers`].
+    pub markers: Option<PathBuf>,
     pub persona: Option<Persona>,
     pub next_login_key: u8,
     pub encryption: EncryptionMode,
@@ -136,6 +143,7 @@ impl Default for ConnectOptions {
             version: ClientVersion::MODERN,
             era: Era::Modern,
             uopath: None,
+            markers: None,
             persona: None,
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,

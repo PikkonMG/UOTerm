@@ -138,6 +138,7 @@ async fn create_session(
         version,
         era,
         uopath: None,
+        markers: None,
         persona: None,
         next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
         encryption: Default::default(),

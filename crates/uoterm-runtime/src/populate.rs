@@ -17,6 +17,10 @@ pub struct Manifest {
     pub era: Option<String>,
     #[serde(default)]
     pub uopath: Option<PathBuf>,
+    /// A marker file of named places to travel to, shared by every agent this
+    /// manifest starts. See [`crate::config::AppConfig::markers`].
+    #[serde(default)]
+    pub markers: Option<PathBuf>,
     pub agents: Vec<ManifestAgent>,
 }
 
@@ -54,6 +58,7 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
             version,
             era,
             uopath: man.uopath.clone(),
+            markers: man.markers.clone(),
             persona: Some(persona),
             next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
             encryption: Default::default(),

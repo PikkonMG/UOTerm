@@ -20,3 +20,8 @@ answer_when_named = true
 # true  = play along.
 play_along = false
 # uopath = "/path/to/uo"
+# A marker file of named places the agent can travel to (gates, banks, towns).
+# You supply your own; none ships with the client. Two formats are read:
+# a UO Auto Map ".map" file, or an Ultima Mapper "Waypoints.lua" file. The
+# agent reaches them with the find_landmarks tool.
+# markers = "/path/to/Waypoints.lua"

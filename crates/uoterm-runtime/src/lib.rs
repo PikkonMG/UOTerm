@@ -9,6 +9,7 @@ pub mod config;
 pub mod deposit;
 pub mod error;
 pub mod harvest;
+pub mod landmarks;
 pub mod loot;
 pub mod manager;
 pub mod mcp;
@@ -51,6 +52,7 @@ mod tests {
             version: uoterm_protocol::types::ClientVersion::T2A,
             era: uoterm_protocol::types::Era::T2a,
             uopath: None,
+            markers: None,
             persona: None,
             next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
             encryption: Default::default(),

@@ -99,6 +99,9 @@ enum Commands {
         encryption: EncryptionMode,
         #[arg(long)]
         uopath: Option<PathBuf>,
+        /// A marker file of named places to travel to (UO Auto Map .map or Ultima Mapper Waypoints.lua).
+        #[arg(long)]
+        markers: Option<PathBuf>,
         #[arg(long)]
         profile: Option<PathBuf>,
         #[arg(long)]
@@ -358,6 +361,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         era,
         encryption,
         uopath,
+        markers,
         profile,
         persona,
         api_bind,
@@ -406,6 +410,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     let host = host.unwrap_or(cfg.host);
     let port = port.unwrap_or(cfg.port);
     let uopath = uopath.or(cfg.uopath);
+    let markers = markers.or(cfg.markers);
     tracing::info!(
         encryption = encryption.as_str(),
         era = ?era,
@@ -422,6 +427,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         version,
         era,
         uopath,
+        markers,
         persona: Some(persona),
         next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
         encryption: match encryption {

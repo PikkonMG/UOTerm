@@ -8,6 +8,7 @@ use crate::config::{
 use crate::deposit::{DepositJob, DepositStep};
 use crate::error::{Result, RuntimeError};
 use crate::harvest;
+use crate::landmarks::Landmarks;
 use crate::loot::{LootJob, LootStep};
 use crate::manager::{shared_multi_shapes, FacetCache};
 use crate::movement::{
@@ -347,6 +348,9 @@ struct Inner {
     /// The client's own table of command phrases and the keyword number each
     /// stands for. A shard's NPCs obey those numbers, not the words.
     speech_data: Option<Arc<SpeechData>>,
+    /// Named places to travel to, read from the user's marker file. `None`
+    /// when no marker file was given, or when the one given would not open.
+    landmarks: Option<Arc<Landmarks>>,
     next_action_at: Instant,
     /// When the next double-click may go out. It is a limit of its own on top
     /// of the action budget: see [`DOUBLE_CLICK_INTERVAL`].
@@ -763,6 +767,18 @@ async fn run_session(
                 None
             }
         });
+    let landmarks = opts.markers.as_deref().and_then(|path| {
+        match Landmarks::load(path) {
+            Ok(marks) => {
+                tracing::info!(places = marks.len(), "landmark markers ready");
+                Some(Arc::new(marks))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "failed to read the marker file");
+                None
+            }
+        }
+    });
     let mut inner = Inner {
         id,
         world,
@@ -790,6 +806,7 @@ async fn run_session(
         stall_logged: false,
         cliloc,
         speech_data,
+        landmarks,
         next_action_at: Instant::now() - ACTION_BUDGET,
         next_double_click_at: Instant::now() - DOUBLE_CLICK_INTERVAL,
         next_bandage_at: Instant::now() - ACTION_BUDGET,
@@ -1572,6 +1589,7 @@ mod relay_tests {
             stall_logged: false,
             cliloc: None,
             speech_data: None,
+            landmarks: None,
             next_action_at: now - ACTION_BUDGET,
             next_double_click_at: now - DOUBLE_CLICK_INTERVAL,
             next_bandage_at: now - ACTION_BUDGET,
@@ -4555,6 +4573,7 @@ mod relay_tests {
             version: ClientVersion::MODERN,
             era: Era::Modern,
             uopath: None,
+            markers: None,
             persona: None,
             next_login_key: LOGIN_NEXT_KEY_DEFAULT,
             encryption: EncryptionMode::None,
@@ -6625,6 +6644,51 @@ mod relay_tests {
         let table = SpeechData::from_file(&path).expect("the test speech table reads back");
         let _ = std::fs::remove_file(&path);
         Arc::new(table)
+    }
+
+    /// The agent asks for a place by name and gets its spot on the map it
+    /// stands on, with the distance measured. This is how the character learns
+    /// where the New Haven moongate is, since the gate is a live item and not
+    /// in the map files.
+    #[test]
+    fn find_landmarks_returns_the_named_place_on_the_current_map() {
+        const TRAMMEL: u8 = 1;
+        let mut inner = test_session();
+        {
+            let mut w = inner.world.write();
+            w.self_state.map = TRAMMEL;
+            w.self_state.location = Point3 {
+                x: 3440,
+                y: 2670,
+                z: 0,
+            };
+        }
+        inner.landmarks = Some(Arc::new(Landmarks::parse_uoam_map(
+            "+MOONGATE: 3450 2677 1 New Haven Moongate \n",
+        )));
+        let res = answer_agent(
+            &mut inner,
+            call(TOOL_FIND_LANDMARKS, json!({ "name": "new haven moongate" })),
+        );
+        assert!(res.ok, "{res:?}");
+        let arr = res.result.as_array().expect("an array of places");
+        assert_eq!(arr.len(), 1, "one place: {arr:?}");
+        assert_eq!(arr[0]["location"]["x"], 3450);
+        assert_eq!(arr[0]["location"]["y"], 2677);
+        assert_eq!(arr[0]["map"], TRAMMEL);
+        assert!(arr[0]["dist"].is_u64(), "a distance on this map: {arr:?}");
+    }
+
+    /// With no marker file loaded the tool says why, instead of answering an
+    /// empty list that reads as "no such place".
+    #[test]
+    fn find_landmarks_without_a_marker_file_reports_the_gap() {
+        let mut inner = test_session();
+        let res = answer_agent(
+            &mut inner,
+            call(TOOL_FIND_LANDMARKS, json!({ "name": "moongate" })),
+        );
+        assert!(!res.ok, "{res:?}");
     }
 
     fn with_speech_table(inner: &mut Inner) {
@@ -8902,6 +8966,46 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 })
                 .collect();
             ToolResult::ok(json!(found))
+        }
+        TOOL_FIND_LANDMARKS => {
+            let Some(marks) = inner.landmarks.clone() else {
+                return ToolResult::err(NO_MARKERS_LOADED);
+            };
+            let name = args.get("name").and_then(|v| v.as_str());
+            let within = arg_number(args, "distance");
+            let world = inner.world.read();
+            let here = world.self_state.location;
+            let here_map = world.self_state.map;
+            // Search the map asked for, or the one underfoot when none is given.
+            let map = args
+                .get("map")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u8)
+                .unwrap_or(here_map);
+            // A distance only means something on the map the character stands
+            // on; a landmark on another map has none, so a distance filter
+            // drops it, the same way find_items drops an item it cannot place.
+            let mut found: Vec<(&crate::landmarks::Landmark, Option<u32>)> = marks
+                .find(name, Some(map))
+                .into_iter()
+                .map(|m| (m, (m.map == here_map).then(|| here.chebyshev(m.at))))
+                .filter(|(_, dist)| !within.is_some_and(|w| dist.map_or(true, |d| d > w)))
+                .collect();
+            // Nearest first, then the ones off this map that have no distance.
+            found.sort_by_key(|(_, dist)| dist.unwrap_or(u32::MAX));
+            let out: Vec<_> = found
+                .iter()
+                .map(|(m, dist)| {
+                    json!({
+                        "name": m.name,
+                        "map": m.map,
+                        "location": m.at,
+                        "dist": dist,
+                        "kind": m.kind,
+                    })
+                })
+                .collect();
+            ToolResult::ok(json!(out))
         }
         TOOL_JOURNAL_SEARCH => {
             let q = args
