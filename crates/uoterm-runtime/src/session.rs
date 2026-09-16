@@ -7309,6 +7309,19 @@ fn refuse_step(
     // The tile he was trying to enter, at the height the step was aimed at,
     // and the tile he was stepping from, which is the one the refusal carries.
     let cell = Point3::new(refused.arrives_at.x, refused.arrives_at.y, at.z);
+    // The requests on the wire when the refusal came, so a position that turns
+    // out to have drifted from the server's has an author: whether an answer
+    // credited a tile it should not have, or the server moved him with no
+    // answer at all. Each is its step number and the tile it was aimed at.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let in_flight: Vec<_> = inner
+            .movement
+            .in_flight
+            .iter()
+            .map(|s| format!("seq={} to={} turn={}", s.sequence, s.arrives_at, s.turn))
+            .collect();
+        tracing::debug!(believed = %at, in_flight = ?in_flight, "the wire at the refusal");
+    }
     inner.movement.refused();
     inner.outbound.push_back(encode::resync());
     tracing::debug!(at = %at, cell = %cell, direction = ?refused.direction, "the server refused a step");
