@@ -1391,6 +1391,32 @@ pub fn follow_plan<M: TileQuery + ?Sized>(
     target_running: bool,
     obstacles: &Obstacles,
 ) -> Option<FollowPlan> {
+    if let Some(plan) = follow_plan_with(map, self_at, target_at, target_running, obstacles) {
+        return Some(plan);
+    }
+    // Every tile beside the target is blocked, and if it is a crowd of mobiles
+    // and not walls that block them, they move off in a moment. Try again with
+    // the mobiles ignored, so the follower pushes in toward the target; the
+    // server refuses each step onto an occupied tile until it clears, and the
+    // refusal ladder waits it out rather than giving up.
+    if obstacles.soft.is_empty() {
+        return None;
+    }
+    let firm = Obstacles {
+        soft: &[],
+        hard: obstacles.hard,
+        moves: obstacles.moves,
+    };
+    follow_plan_with(map, self_at, target_at, target_running, &firm)
+}
+
+fn follow_plan_with<M: TileQuery + ?Sized>(
+    map: &M,
+    self_at: Point3,
+    target_at: Point3,
+    target_running: bool,
+    obstacles: &Obstacles,
+) -> Option<FollowPlan> {
     let mut slots: Vec<Point3> = ADJACENT_DIRS
         .iter()
         .filter_map(|&dir| target_at.neighbour(dir))
@@ -3106,6 +3132,25 @@ pub(crate) mod tests {
         assert_eq!(
             follow_plan(&map, me(), target(), false, &standing_on(&[target()])),
             None
+        );
+    }
+
+    /// A crowd of mobiles on every tile beside the target, and no wall, no
+    /// longer stops a follow: the follower pushes in, since the mobiles clear
+    /// in a moment and the server gates the occupied steps meanwhile.
+    #[test]
+    fn follow_pushes_through_a_crowd_beside_the_target() {
+        let map = MockMap::new(GRID, GRID);
+        let mut crowd = vec![target()];
+        for dir in ADJACENT_DIRS {
+            crowd.push(target().neighbour(dir).expect("neighbour on the grid"));
+        }
+        let plan = follow_plan(&map, me(), target(), false, &standing_on(&crowd))
+            .expect("pushes in through the crowd instead of giving up");
+        assert_eq!(
+            plan.dest.chebyshev(target()),
+            1,
+            "still aims for a tile beside the target: {plan:?}"
         );
     }
 
