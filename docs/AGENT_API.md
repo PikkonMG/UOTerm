@@ -79,7 +79,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | --- | --- |
 | `say` / `whisper` | in world; persona rejects `*emotes*` and empty text; `say` is rate-limited |
 | `emote` | `persona.allow_emote` |
-| `move_to` | in world; args `x` and `y` are required |
+| `move_to` | in world; args `x` and `y` are required. When the goal cannot be reached in one route (a wall or up-high spot, a gate/teleporter gap, or too far), it walks to the nearest reachable spot on the way and returns `{partial:true, goal, heading_to, reason}` instead of a bare failure; call `move_to` again from there |
 | `walk` | in world. `direction` (`n`/`ne`/`e`/`se`/`s`/`sw`/`w`/`nw`), `running`, `hold_ms` (0 = one step) |
 | `open_door` | in world; stand next to the door and face it (`0x12`/`0x58`) |
 | `follow` / `stop` | `follow` needs a mobile serial |

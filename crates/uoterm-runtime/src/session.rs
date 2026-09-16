@@ -402,6 +402,9 @@ struct Inner {
     last_event_seq: u64,
     last_name_retry: Instant,
     last_path_fail: Option<(Point3, Instant)>,
+    /// Why the last route could not be planned, kept so the move_to tool can
+    /// tell the agent the reason instead of a bare "path failed".
+    last_path_fail_reason: Option<String>,
     /// When the server last said the character was too tired to move. A
     /// refusal that close behind it is about his stamina and about nothing in
     /// the way.
@@ -833,6 +836,7 @@ async fn run_session(
         pending_vendor_sell_graphic: None,
         pending_context_menu: None,
         last_path_fail: None,
+        last_path_fail_reason: None,
         last_fatigued: None,
         last_event_seq: 0,
         last_name_retry: Instant::now(),
@@ -1616,6 +1620,7 @@ mod relay_tests {
             pending_vendor_sell_graphic: None,
             pending_context_menu: None,
             last_path_fail: None,
+            last_path_fail_reason: None,
             last_fatigued: None,
             last_event_seq: 0,
             last_name_retry: now,
@@ -6743,6 +6748,33 @@ mod relay_tests {
         );
     }
 
+    /// A goal that cannot be reached in one route no longer fails flat: the
+    /// character walks to the nearest reachable spot on the way and the tool
+    /// says why, so the agent can go on from there.
+    #[test]
+    fn move_to_an_unreachable_goal_walks_partway_and_reports_why() {
+        let mut inner = test_session();
+        inner.world.write().self_state.location = Point3::new(100, 100, 0);
+        // The goal tile itself is a wall, so no route can end there.
+        inner.map.set_block(140, 140, true);
+        let res = answer_agent(
+            &mut inner,
+            call(TOOL_MOVE_TO, json!({ "x": 140, "y": 140 })),
+        );
+        assert!(res.ok, "a partial walk reports ok: {res:?}");
+        assert_eq!(res.result["partial"], json!(true));
+        assert!(
+            !res.result["reason"].as_str().unwrap_or("").is_empty(),
+            "the reason is given: {res:?}"
+        );
+        let hx = res.result["heading_to"]["x"].as_u64().unwrap();
+        let hy = res.result["heading_to"]["y"].as_u64().unwrap();
+        assert!(
+            (100..140).contains(&hx) && (100..140).contains(&hy),
+            "she heads partway to the goal: {res:?}"
+        );
+    }
+
     fn with_speech_table(inner: &mut Inner) {
         inner.speech_data = Some(speech_table(&[
             (KEYWORD_BANK, PHRASE_BANK),
@@ -8576,6 +8608,8 @@ fn reflex_tick(inner: &mut Inner) {
 /// destination of a move, and the follower's own tile for a follow.
 fn note_path_failure(inner: &mut Inner, at: Point3, reason: String) {
     let now = Instant::now();
+    // Kept for the move_to tool to report, even on a quiet repeat.
+    inner.last_path_fail_reason = Some(reason.clone());
     let quiet = matches!(
         inner.last_path_fail,
         Some((prev, when)) if prev == at && now.duration_since(when) < PATH_FAIL_WAIT
@@ -8590,6 +8624,34 @@ fn note_path_failure(inner: &mut Inner, at: Point3, reason: String) {
         reason,
     ));
     inner.last_path_fail = Some((at, now));
+}
+
+/// The fractions of the way to a goal, farthest first, that a walk tries when
+/// the goal itself cannot be reached: three quarters, half, a quarter.
+const PARTWAY_QUARTERS: [i32; 3] = [3, 2, 1];
+const PARTWAY_WHOLE: i32 = 4;
+
+/// Walks toward `dest` as far as a route can be planned, when `dest` itself
+/// cannot be reached. Tries points along the straight line to the goal,
+/// farthest first, and starts the walk to the first one a route reaches.
+/// Returns that waypoint, or `None` when not even a step of the way can be
+/// planned.
+fn walk_partway(inner: &mut Inner, here: Point3, dest: Point3) -> Option<Point3> {
+    let dx = i32::from(dest.x) - i32::from(here.x);
+    let dy = i32::from(dest.y) - i32::from(here.y);
+    for quarters in PARTWAY_QUARTERS {
+        let wx = (i32::from(here.x) + dx * quarters / PARTWAY_WHOLE).clamp(0, i32::from(u16::MAX));
+        let wy = (i32::from(here.y) + dy * quarters / PARTWAY_WHOLE).clamp(0, i32::from(u16::MAX));
+        let (wx, wy) = (wx as u16, wy as u16);
+        let waypoint = Point3::new(wx, wy, surface_z(inner, here.z, wx, wy));
+        if uoterm_nav::same_spot(waypoint, here) {
+            continue;
+        }
+        if queue_move(inner, waypoint) {
+            return Some(waypoint);
+        }
+    }
+    None
 }
 
 fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
@@ -9141,13 +9203,36 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             // A person clicks a spot and names no height: the walk goes to the
             // surface there nearest the height asked, or her own.
             let z = asked_z(args, inner.world.read().self_state.location.z);
+            let here = inner.world.read().self_state.location;
             let dest = Point3::new(x as u16, y as u16, surface_z(inner, z, x as u16, y as u16));
             inner.goal = Goal::Travel { dest };
             inner.world.write().goal = Goal::Travel { dest }.name().into();
             if queue_move(inner, dest) {
-                ToolResult::action(TOOL_MOVE_TO)
-            } else {
-                ToolResult::err("path failed")
+                return ToolResult::action(TOOL_MOVE_TO);
+            }
+            // The goal could not be reached in one route: a wall or an up-high
+            // spot with no way to it, a gap only a gate or teleporter crosses,
+            // or ground too far past what one search covers. Rather than a bare
+            // failure, walk to the nearest spot on the way and tell the agent
+            // the reason, so it can call move_to again from there or pick
+            // another goal.
+            let reason = inner
+                .last_path_fail_reason
+                .clone()
+                .unwrap_or_else(|| "path failed".into());
+            match walk_partway(inner, here, dest) {
+                Some(waypoint) => {
+                    inner.goal = Goal::Travel { dest: waypoint };
+                    inner.world.write().goal = Goal::Travel { dest: waypoint }.name().into();
+                    ToolResult::ok(json!({
+                        "partial": true,
+                        "goal": dest,
+                        "heading_to": waypoint,
+                        "reason": reason,
+                        "hint": "could not reach the goal; walking to the nearest reachable spot, then call move_to again from there",
+                    }))
+                }
+                None => ToolResult::err(reason),
             }
         }
         TOOL_WALK => walk_hold(inner, args),
