@@ -2,7 +2,7 @@
 
 UOTerm is a headless Ultima Online client. Its main purpose is to let AI agents control player characters and play the game the way a human player does: see the world, walk, fight, gather, talk, use items, and answer gumps. A second purpose is testing and debugging by humans.
 
-It speaks the Ultima Online wire protocol. Headless `connect` is the default. Optional `--view` is a 2D radar watch in the same process, not an isometric game window and not a second login.
+It speaks the Ultima Online wire protocol. Headless `connect` is the default. Optional `--view` opens a watch window. It draws the real map from your client files. It only looks, until you press "Take control". It is not a second login.
 
 Ultima Online is a trademark of its owners. UOTerm is independent and unaffiliated. This repository does not ship MUL, UOP, or other client data. You supply a legitimate client directory when you need walkability from map files.
 
@@ -21,7 +21,7 @@ Treat every capability as unproven until a test in this tree proves it.
 
 ## What it is not
 
-- Not an isometric graphical client. `--view` / `uoterm watch` is a 2D radar.
+- Not a full graphical client. `--view` / `uoterm watch` is a monitor with a way to step in: click to walk, double-click to use or attack, a chat box, the open containers and gumps. It has no paperdoll, no drag and drop, no vendor windows, no spell book, and no sound. It draws the land, the items, and the mobiles from your client files. Each mobile shows with its mount and worn items, and it walks, runs, or stands by how fast its tiles change. A mobile with no picture in the classic `anim*.mul` files shows as a plain colored figure.
 - Not a click-macro overlay.
 - Not an official-server farm bot.
 - Not a cheat tool for EA or Broadsword shards.
@@ -29,7 +29,8 @@ Treat every capability as unproven until a test in this tree proves it.
 
 ## Requirements
 
-- Rust 1.80 or later (stable). `rust-toolchain.toml` pins `stable`.
+- Rust 1.87 or later (stable). `rust-toolchain.toml` pins `stable`.
+- On Linux, the ALSA developer package for the sound of the watch window: `sudo apt install libasound2-dev` (Debian, Ubuntu) or `alsa-lib-devel` (Fedora).
 - Linux or Windows. macOS is untested.
 - A TCP port for the private shard (default `2593`). The mock demo uses the same default; run only one of them.
 - A TCP port for the local HTTP API (default `127.0.0.1:7733`).
@@ -119,7 +120,7 @@ uoterm connect \
 
 Expected line: `session s1 started; api 127.0.0.1:7733; encryption none`. Leave this process running.
 
-Optional `--view` opens the 2D watch window in the same process. Optional `--text-view` prints the radar in that terminal. Those flags conflict with each other.
+Optional `--view` opens the watch window as a child process. `view = true` in `uoterm.toml` does the same on each `connect`. Optional `--text-view` prints the radar in that terminal. Those flags conflict with each other.
 
 Password is `UO_PASS`. Never put it in a file.
 
@@ -189,7 +190,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `uoterm walk --dir DIR [--run] [--hold-ms N]` | Client | Tool `walk`. One step or a hold stream of `0x02`. |
 | `uoterm open-door` | Client | Tool `open_door` (`0x12`/`0x58`). |
 | `uoterm look` | Client | Radar. `--json` prints full observe JSON. |
-| `uoterm watch [--text]` | Client | Live 2D window of the running session (larger radar, named mobiles, dest `X`). `--text` prints the radar in the terminal. |
+| `uoterm watch [--text] [--uopath DIR] [--snapshot FILE.png]` | Client | Live window of the running session: the map, vitals, what the agent does, who is near, the journal, the pack. With client files (`--uopath`, or `uopath` in `uoterm.toml`) it draws the real map. Without them it draws flat colors from the radar. Scroll to zoom. "Take control" stops the agent and lets you click: the ground to walk, a double-click to use (or to attack in war mode), one click to look, and the target cursor. The chat box says words. In Order mode it takes a plain order such as `attack the orc`; TypeSafe's Jev model picks the act and the target, and the order and the names of the things near go to `api.typesafe.ai`. Order mode is on only when `TYPESAFE_API_KEY` is set (environment or `.env`). "Give back", or 90 s with no act, returns the character to the agent. The "Options" button opens the sound panel: a master volume, and one volume each for music, sound effects, and footsteps, with a switch for silence. The sounds and the music come from your client files. The settings are saved in `watch-audio.toml` in the UOTerm config folder. `--snapshot` saves one PNG picture and closes. `--text` prints the radar in the terminal. |
 | `uoterm state` | Client | YAML. `--json` for JSON. Field name is `self_state`. |
 | `uoterm agent run --persona FILE [--goal NAME]` | Client | `set_persona` then `set_goal`. |
 | `uoterm agent stop` | Client | `cancel_goal`. |

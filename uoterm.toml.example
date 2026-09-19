@@ -27,6 +27,12 @@ answer_when_named = true
 # true  = play along.
 play_along = false
 
+# Open the watch window each time `connect` starts, as `--view` does.
+# The window only looks. If you close it, the character stays logged in.
+# false = no window (default).
+# true  = open the window.
+view = false
+
 # Client data directory (map, statics, tiledata). Needed for walkability
 # on a live shard. For the mock demo you may delete these two lines.
 uopath = "/path/to/uo"

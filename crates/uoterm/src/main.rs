@@ -111,7 +111,7 @@ enum Commands {
         persona: Option<PathBuf>,
         #[arg(long)]
         api_bind: Option<String>,
-        /// Open a 2D watch window on this session.
+        /// Open the watch window on this session. `view = true` in uoterm.toml does the same.
         #[arg(long, conflicts_with = "text_view")]
         view: bool,
         /// Print a live radar in this terminal while the API runs.
@@ -169,6 +169,12 @@ enum Commands {
         /// Print the radar in the terminal instead of opening a window
         #[arg(long)]
         text: bool,
+        /// The client files for the real map. The default is `uopath` in uoterm.toml.
+        #[arg(long)]
+        uopath: Option<PathBuf>,
+        /// Save one picture of the window to this PNG file, then close
+        #[arg(long, conflicts_with = "text")]
+        snapshot: Option<PathBuf>,
     },
 }
 
@@ -359,7 +365,14 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
                 .map_err(|e| RuntimeError::Network(e.to_string()))?;
             Ok(EXIT_OK as u8)
         }
-        Commands::Watch { text } => watch_session(api, session, text).await,
+        Commands::Watch {
+            text,
+            uopath,
+            snapshot,
+        } => {
+            let uopath = uopath.or_else(|| load_app_config(None).uopath);
+            watch_session(api, session, text, uopath, snapshot).await
+        }
         Commands::Mcp => mcp::run_stdio(api).await,
     }
 }
@@ -428,6 +441,9 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     let host = host.unwrap_or(cfg.host);
     let port = port.unwrap_or(cfg.port);
     let uopath = uopath.or(cfg.uopath);
+    let view_uopath = uopath.clone();
+    // The file may ask for the window. The terminal view takes its place.
+    let view = view || (cfg.view && !text_view);
     let markers = markers.or(cfg.markers);
     tracing::info!(
         encryption = encryption.as_str(),
@@ -488,13 +504,17 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     }
     if view {
         start_api(rt.clone(), bind.clone());
-        spawn_watch_window(remote::normalize_base(&bind), handle.id.clone());
+        spawn_watch_window(
+            remote::normalize_base(&bind),
+            handle.id.clone(),
+            view_uopath,
+        );
         return wait_ctrl_c().await;
     }
     serve_until_ctrl_c(rt, bind).await
 }
 
-fn spawn_watch_window(api: String, session: String) {
+fn spawn_watch_window(api: String, session: String, uopath: Option<PathBuf>) {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
         Err(e) => {
@@ -503,11 +523,15 @@ fn spawn_watch_window(api: String, session: String) {
         }
     };
     std::thread::spawn(move || {
-        let status = std::process::Command::new(exe)
+        let mut command = std::process::Command::new(exe);
+        command
             .env("UOTERM_API", api)
             .env("UOTERM_SESSION", session)
-            .arg("watch")
-            .status();
+            .arg("watch");
+        if let Some(uopath) = uopath {
+            command.arg("--uopath").arg(uopath);
+        }
+        let status = command.status();
         if let Err(e) = status {
             tracing::error!(error = %e, "watch window");
         }
@@ -541,6 +565,8 @@ async fn watch_session(
     api: Option<&str>,
     session: Option<&str>,
     text: bool,
+    uopath: Option<PathBuf>,
+    snapshot: Option<PathBuf>,
 ) -> Result<u8, RuntimeError> {
     let base = remote::api_base(api);
     let id = remote::resolve_session(&base, session).await?;
@@ -561,7 +587,13 @@ async fn watch_session(
         }
         return Ok(EXIT_OK as u8);
     }
-    window::open(base, id).map_err(RuntimeError::Network)?;
+    window::open(window::WatchOptions {
+        api: base,
+        session: id,
+        uopath,
+        snapshot,
+    })
+    .map_err(RuntimeError::Network)?;
     Ok(EXIT_OK as u8)
 }
 
@@ -843,10 +875,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_watch_snapshot() {
+        let cli = Cli::try_parse_from([
+            "uoterm",
+            "watch",
+            "--snapshot",
+            "out.png",
+            "--uopath",
+            "/uo",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Watch {
+                snapshot, uopath, ..
+            } => {
+                assert_eq!(snapshot, Some(PathBuf::from("out.png")));
+                assert_eq!(uopath, Some(PathBuf::from("/uo")));
+            }
+            _ => panic!("expected watch"),
+        }
+        assert!(Cli::try_parse_from(["uoterm", "watch", "--text", "--snapshot", "o.png"]).is_err());
+    }
+
+    #[test]
     fn parses_watch_text() {
         let cli = Cli::try_parse_from(["uoterm", "watch", "--text"]).unwrap();
         match cli.command {
-            Commands::Watch { text } => assert!(text),
+            Commands::Watch { text, .. } => assert!(text),
             _ => panic!("expected watch"),
         }
     }
