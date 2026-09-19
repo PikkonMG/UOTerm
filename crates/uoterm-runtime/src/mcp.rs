@@ -1,4 +1,5 @@
 use crate::manager::Runtime;
+use crate::playbooks;
 use crate::tools::{mcp_tool_list, ToolCall, TOOL_OBSERVE};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -59,42 +60,41 @@ async fn handle_line(runtime: &Runtime, line: &str) -> Option<Value> {
             }
         }
         "resources/list" => {
-            let resources: Vec<Value> = runtime
-                .list()
-                .into_iter()
-                .map(|sid| {
-                    json!({
-                        "uri": format!("uo://session/{sid}/state"),
-                        "name": format!("session {sid} state"),
-                        "mimeType": "application/json"
-                    })
-                })
-                .collect();
-            json!({ "resources": resources })
+            json!({ "resources": playbooks::mcp_resources(runtime.list()) })
         }
         "resources/read" => {
             let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
-            let sid = uri
-                .strip_prefix("uo://session/")
-                .and_then(|s| s.strip_suffix("/state"))
-                .unwrap_or("");
-            match runtime.get(sid) {
-                Some(h) => {
-                    let obs = h
-                        .call(ToolCall {
-                            name: TOOL_OBSERVE.into(),
-                            args: json!({}),
+            if let Some((mime, text)) = playbooks::read_playbook(uri) {
+                json!({
+                    "contents": [{
+                        "uri": uri,
+                        "mimeType": mime,
+                        "text": text
+                    }]
+                })
+            } else {
+                let sid = uri
+                    .strip_prefix("uo://session/")
+                    .and_then(|s| s.strip_suffix("/state"))
+                    .unwrap_or("");
+                match runtime.get(sid) {
+                    Some(h) => {
+                        let obs = h
+                            .call(ToolCall {
+                                name: TOOL_OBSERVE.into(),
+                                args: json!({}),
+                            })
+                            .await;
+                        json!({
+                            "contents": [{
+                                "uri": uri,
+                                "mimeType": playbooks::SESSION_MIME,
+                                "text": serde_json::to_string(&obs.result).unwrap_or_default()
+                            }]
                         })
-                        .await;
-                    json!({
-                        "contents": [{
-                            "uri": uri,
-                            "mimeType": "application/json",
-                            "text": serde_json::to_string(&obs.result).unwrap_or_default()
-                        }]
-                    })
+                    }
+                    None => json!({ "contents": [] }),
                 }
-                None => json!({ "contents": [] }),
             }
         }
         "ping" => json!({}),
@@ -109,4 +109,36 @@ async fn handle_line(runtime: &Runtime, line: &str) -> Option<Value> {
         }
     };
     id.map(|id| json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lists_and_reads_playbook_resources() {
+        let rt = Runtime::new(1);
+        let listed = handle_line(&rt, r#"{"jsonrpc":"2.0","id":1,"method":"resources/list"}"#)
+            .await
+            .unwrap();
+        let resources = listed["result"]["resources"].as_array().unwrap();
+        assert!(
+            resources
+                .iter()
+                .any(|r| r["uri"] == "uo://playbook/hunt"
+                    && r["mimeType"] == playbooks::PLAYBOOK_MIME)
+        );
+        let read = handle_line(
+            &rt,
+            r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"uo://playbook/driver"}}"#,
+        )
+        .await
+        .unwrap();
+        let text = read["result"]["contents"][0]["text"].as_str().unwrap();
+        assert!(text.contains("next_event"));
+        assert_eq!(
+            read["result"]["contents"][0]["mimeType"],
+            playbooks::PLAYBOOK_MIME
+        );
+    }
 }

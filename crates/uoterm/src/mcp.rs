@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use uoterm_protocol::types::EXIT_OK;
 use uoterm_runtime::error::{Result, RuntimeError};
+use uoterm_runtime::playbooks;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const HEADER_CONTENT_LENGTH: &str = "content-length";
@@ -174,29 +175,17 @@ async fn handle(base: &str, msg: Value) -> Option<Value> {
                 "isError": true
             }),
         },
-        "resources/list" => match remote::list_sessions(base).await {
-            Ok(ids) => {
-                let resources: Vec<Value> = ids
-                    .into_iter()
-                    .map(|sid| {
-                        json!({
-                            "uri": format!("uo://session/{sid}/state"),
-                            "name": format!("session {sid} state"),
-                            "mimeType": "application/json"
-                        })
-                    })
-                    .collect();
-                json!({ "resources": resources })
-            }
-            Err(e) => return id.map(|i| rpc_err(i, e.to_string())),
-        },
+        "resources/list" => {
+            let ids = remote::list_sessions(base).await.unwrap_or_default();
+            json!({ "resources": playbooks::mcp_resources(ids) })
+        }
         "resources/read" => {
             let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
             match read_resource(base, uri).await {
-                Ok(text) => json!({
+                Ok((mime, text)) => json!({
                     "contents": [{
                         "uri": uri,
-                        "mimeType": "application/json",
+                        "mimeType": mime,
                         "text": text
                     }]
                 }),
@@ -231,13 +220,22 @@ async fn tools_call(base: &str, params: &Value) -> Result<Value> {
     remote::call_tool(base, &sid, name, args).await
 }
 
-async fn read_resource(base: &str, uri: &str) -> Result<String> {
-    let rest = uri
-        .strip_prefix("uo://session/")
-        .ok_or_else(|| RuntimeError::Usage("uri must be uo://session/{id}/state".into()))?;
+async fn read_resource(base: &str, uri: &str) -> Result<(String, String)> {
+    if let Some(name) = playbooks::parse_uri(uri) {
+        return match playbooks::get(name) {
+            Some(book) => Ok((playbooks::PLAYBOOK_MIME.into(), book.body.to_string())),
+            None => Err(RuntimeError::Usage(format!("unknown playbook {name}"))),
+        };
+    }
+    let rest = uri.strip_prefix("uo://session/").ok_or_else(|| {
+        RuntimeError::Usage("uri must be uo://session/{id}/state or uo://playbook/{name}".into())
+    })?;
     let id = rest.trim_end_matches("/state");
     let state = remote::session_state(base, id).await?;
-    Ok(serde_json::to_string_pretty(&state)?)
+    Ok((
+        playbooks::SESSION_MIME.into(),
+        serde_json::to_string_pretty(&state)?,
+    ))
 }
 
 #[cfg(test)]
@@ -260,5 +258,20 @@ mod tests {
         assert!(content_length_allowed(MAX_RPC_BODY));
         assert!(!content_length_allowed(MAX_RPC_BODY + 1));
         assert!(parse_content_length("Content-Length: 12").is_some());
+    }
+
+    #[test]
+    fn playbook_resources_are_listed() {
+        let listed = playbooks::mcp_resources(Vec::<String>::new());
+        assert!(
+            listed
+                .iter()
+                .any(|r| r["uri"] == "uo://playbook/hunt"
+                    && r["mimeType"] == playbooks::PLAYBOOK_MIME)
+        );
+        assert!(playbooks::read_playbook("uo://playbook/driver")
+            .unwrap()
+            .1
+            .contains("next_event"));
     }
 }
