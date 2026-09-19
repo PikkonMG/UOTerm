@@ -36,6 +36,7 @@ An agent that drives a character must not miss what happens between its calls. R
 
 1. Call `next_event`. It returns the moment something important happens, or after `timeout_ms` (default 5000, max 7000) with no events.
 2. Read `events` and `state`. Act on them in this order:
+   0. `control_taken`: a human took the character through the watch window. Your goal, job and script are stopped. Each acting tool is refused with `a human has control of the character`. Look only (`observe`, `look_around`, `find_*`, `next_event`), and wait. `control_released` gives the character back: read `observe` again, because the human may have moved her. `state.human_control` and `observe.human_control` say which it is now.
    1. Danger: `died`, `low_health`, `damaged`, `enemy_near`, `combatant_changed`, `pk_flag`.
    2. Something waits for an answer: `target_requested`, `gump_opened`, `prompt_opened`, `trade_opened`, `party_invite`.
    3. Chat: `spoken_to`, and `state.unanswered`. Answer with `reply`.
@@ -100,6 +101,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `set_goal` | in world; `idle` `travel` `hunt` `gather` `bank` `shop` `social` `flee` `ress`. `hunt` starts the hunt job with empty lists |
 | `set_persona` | session exists; JSON persona body. `typo_rate` is clamped to `0.0..=1.0` |
 | `cancel_goal` | session exists; also stops a hunt or walk job (`job_ended` reason `stopped`) |
+| `take_control` / `release_control` | For the watch window, not for an agent. While a human has control, only a call with `human` true acts. Control goes back by itself after 90 s with no human act |
 | `jobs` / `job_start` / `job_stop` | session exists / in world / a job is running. Hunt: `job` `hunt`, optional `include` and `avoid`. Walk: `job` `walk`, `x` and `y` or `name`, `watch`. `replace` true stops the old job (`job_ended` `stopped`) then starts the new one. Hands back with `job_ended`. See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md) |
 
 ## Scripts, agents, hotkeys and macros
@@ -167,6 +169,10 @@ Playbooks:
 | `talk` | `reply` and `unanswered` |
 | `inspect` | Names, `look_around`, `find_*` |
 | `equip` | Wear and take off |
+
+### The `screenshot` tool
+
+The MCP server adds one tool that is not a session tool: `screenshot`. It opens the watch window for one picture and gives it back as a JPEG image (at most 1024 px on its long side). A vision model then sees what a human sees: the real map, the mobiles with their names, and the panels. Use it when the text radar is not enough, for example in a crowd or in a dungeon. It needs a desktop, and it takes some seconds. It is not on the HTTP API.
 
 ## CLI against a running process
 

@@ -65,6 +65,10 @@ pub const TOOL_RECORD_MACRO: &str = "record_macro";
 pub const TOOL_JOBS: &str = "jobs";
 pub const TOOL_JOB_START: &str = "job_start";
 pub const TOOL_JOB_STOP: &str = "job_stop";
+/// The watch window puts this in the arguments of each call a human makes.
+pub const ARG_HUMAN: &str = "human";
+pub const TOOL_TAKE_CONTROL: &str = "take_control";
+pub const TOOL_RELEASE_CONTROL: &str = "release_control";
 
 pub const NO_BANK_KNOWN: &str =
     "no bank is known near here; find a banker in observe and walk to it";
@@ -423,7 +427,43 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Stop the running session job. Sends job_ended with reason stopped.",
         "a job is running",
     ),
+    (
+        TOOL_TAKE_CONTROL,
+        "For the watch window, not for an agent. A human takes the character: the goal, the job, the script and the macro agent stop, and each acting call without human=true is refused until release_control or 90 s with no human act. Sends control_taken.",
+        "session exists",
+    ),
+    (
+        TOOL_RELEASE_CONTROL,
+        "For the watch window, not for an agent. Gives the character back to the agent. Sends control_released.",
+        "session exists",
+    ),
 ];
+
+/// The tools that only look. An agent may call them while a human has the
+/// character.
+const READ_ONLY_TOOLS: [&str; 17] = [
+    TOOL_OBSERVE,
+    TOOL_LOOK_AROUND,
+    TOOL_FIND_MOBILES,
+    TOOL_FIND_ITEMS,
+    TOOL_FIND_LANDMARKS,
+    TOOL_JOURNAL_SEARCH,
+    TOOL_MAP_TILE,
+    TOOL_CAN_WALK,
+    TOOL_WAIT_JOURNAL,
+    TOOL_NEXT_EVENT,
+    TOOL_SCRIPT_STATUS,
+    TOOL_LIST_SCRIPTS,
+    TOOL_AGENTS,
+    TOOL_DAMAGE_METER,
+    TOOL_HOTKEYS,
+    TOOL_JOBS,
+    TOOL_SINGLE_CLICK,
+];
+
+pub fn is_read_only(tool: &str) -> bool {
+    READ_ONLY_TOOLS.contains(&tool)
+}
 
 pub fn mcp_tool_list() -> Value {
     let tools: Vec<Value> = TOOLS
@@ -436,6 +476,7 @@ pub fn mcp_tool_list() -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": {"type": "string"},
+                        ARG_HUMAN: {"type": "boolean"},
                         "text": {"type": "string"},
                         "to": {"type": "string"},
                         "channel": {"type": "string"},

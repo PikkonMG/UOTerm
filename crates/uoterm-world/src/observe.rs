@@ -148,6 +148,17 @@ pub struct Observe {
     pub party_invite: Option<String>,
     /// The shard waits for a line of text.
     pub prompt: bool,
+    /// The last sound effects the shard asked for, oldest first. A watch
+    /// window plays each one with a `seq` above the last it played.
+    #[serde(default)]
+    pub sounds: Vec<crate::SoundCue>,
+    /// The music the shard asked for. None for silence.
+    #[serde(default)]
+    pub music: Option<u16>,
+    /// A human has the character. The agent may look but not act. The
+    /// runtime fills this in.
+    #[serde(default)]
+    pub human_control: bool,
     /// The question of an open one-field text dialog.
     pub text_entry: Option<String>,
     /// Lines other characters said to this one by name in the last three
@@ -288,6 +299,9 @@ impl Observe {
             party: world.party.iter().map(|&m| world.name_of(m)).collect(),
             party_invite: world.party_invite.map(|leader| world.name_of(leader)),
             prompt: world.prompt.is_some(),
+            sounds: world.sounds.cues(),
+            music: world.sounds.music(),
+            human_control: false,
             text_entry: world.text_entry.as_ref().map(|d| d.description.clone()),
             spoken_to: world.spoken_to.fresh(unix_now_ms()),
             chat_mode: world.chat_mode().map(String::from),

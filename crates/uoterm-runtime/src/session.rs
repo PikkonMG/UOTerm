@@ -51,6 +51,7 @@ use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World, RADAR_DEFAULT}
 
 mod agents;
 mod awareness;
+mod control;
 mod hotkeys;
 mod recorder;
 mod scripting;
@@ -408,6 +409,7 @@ struct Inner {
     journal_waiters: Vec<JournalWaiter>,
     /// Callers of `next_event` waiting for something important.
     event_waiters: Vec<awareness::EventWaiter>,
+    human: control::HumanControl,
     aware: awareness::Awareness,
     loot: Option<LootJob>,
     /// A session job that runs on the tick and hands back with a reason.
@@ -860,6 +862,7 @@ async fn run_session(
         last_weapon: None,
         journal_waiters: Vec::new(),
         event_waiters: Vec::new(),
+        human: control::HumanControl::default(),
         aware: awareness::Awareness::default(),
         loot: None,
         hunt: None,
@@ -941,6 +944,7 @@ async fn run_session(
                 agents::pump_agents(&mut inner, Instant::now());
                 scripting::pump_script(&mut inner, Instant::now());
                 answer_journal_waiters(&mut inner, Instant::now());
+                control::pump(&mut inner, Instant::now());
                 awareness::pump_awareness(&mut inner);
                 awareness::answer_event_waiters(&mut inner, Instant::now());
             }
@@ -1649,6 +1653,7 @@ mod relay_tests {
             last_weapon: None,
             journal_waiters: Vec::new(),
             event_waiters: Vec::new(),
+            human: control::HumanControl::default(),
             aware: awareness::Awareness::default(),
             loot: None,
             hunt: None,
@@ -9205,7 +9210,7 @@ fn leg_route_through_pad(inner: &mut Inner, here: Point3, dest: Point3) -> Optio
             continue;
         }
         let to_goal = edge.to.chebyshev(dest);
-        if best.map_or(true, |(_, best_dist)| to_goal < best_dist) {
+        if best.is_none_or(|(_, best_dist)| to_goal < best_dist) {
             best = Some((edge.from, to_goal));
         }
     }
@@ -9669,7 +9674,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .filter_map(|i| {
                     let at = world.map_location(i.serial);
                     let dist = at.map(|at| here.chebyshev(at));
-                    if within.is_some_and(|w| dist.map_or(true, |d| d > w)) {
+                    if within.is_some_and(|w| dist.is_none_or(|d| d > w)) {
                         return None;
                     }
                     let name = if i.name.is_empty() {
@@ -9712,7 +9717,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .find(name, Some(map))
                 .into_iter()
                 .map(|m| (m, (m.map == here_map).then(|| here.chebyshev(m.at))))
-                .filter(|(_, dist)| !within.is_some_and(|w| dist.map_or(true, |d| d > w)))
+                .filter(|(_, dist)| !within.is_some_and(|w| dist.is_none_or(|d| d > w)))
                 .collect();
             // Nearest first, then the ones off this map that have no distance.
             found.sort_by_key(|(_, dist)| dist.unwrap_or(u32::MAX));
@@ -10313,6 +10318,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_JOBS => jobs_status(inner),
         TOOL_JOB_START => job_start(inner, args),
         TOOL_JOB_STOP => job_stop(inner),
+        TOOL_TAKE_CONTROL => control::take(inner, Instant::now()),
+        TOOL_RELEASE_CONTROL => control::release(inner),
         TOOL_RECORD_MACRO => recorder::record_macro(inner, args),
         TOOL_HOTKEYS => hotkeys::list(inner, args),
         TOOL_HOTKEY => hotkeys::press(inner, args),
@@ -10387,6 +10394,7 @@ fn observe_value(inner: &Inner, size: u16) -> Value {
         location: bank.at,
         dist: loc.chebyshev(bank.at),
     });
+    obs.human_control = inner.human.active();
     obs.reply_style = reply_style(inner);
     obs.playing_along = inner.play_along.map(|run| uoterm_world::PlayingAlong {
         name: inner.world.read().name_of(run.with),
@@ -10507,6 +10515,9 @@ fn speech_allowed(
 /// Runs an agent's tool call. The macro recorder sees it, and the result
 /// carries the lines said to the character that it has not answered.
 fn answer_agent(inner: &mut Inner, call: ToolCall) -> ToolResult {
+    if let Some(refused) = control::gate(inner, &call, Instant::now()) {
+        return refused;
+    }
     let copy = inner.recording.is_some().then(|| call.clone());
     let mut result = handle_tool(inner, call);
     if let Some(call) = copy {

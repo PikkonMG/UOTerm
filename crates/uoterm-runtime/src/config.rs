@@ -77,6 +77,9 @@ pub struct AppConfig {
     pub answer_when_named: bool,
     #[serde(default)]
     pub play_along: bool,
+    /// `connect` opens the watch window by itself, as `--view` does.
+    #[serde(default)]
+    pub view: bool,
 }
 
 impl Default for AppConfig {
@@ -93,6 +96,7 @@ impl Default for AppConfig {
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
             play_along: PLAY_ALONG_DEFAULT,
+            view: false,
         }
     }
 }
@@ -288,6 +292,23 @@ obey_shard_rules = false
 "#;
         let cfg: AppConfig = toml::from_str(IGNORING).expect("the config loads");
         assert!(!cfg.obey_shard_rules);
+    }
+
+    /// The watch window stays shut until the file asks for it.
+    #[test]
+    fn view_is_off_until_switched_on() {
+        const ON: &str = r#"
+host = "127.0.0.1"
+port = 2593
+era = "t2a"
+log_level = "info"
+api_bind = "127.0.0.1:7733"
+max_sessions = 32
+view = true
+"#;
+        assert!(!AppConfig::default().view);
+        let cfg: AppConfig = toml::from_str(ON).unwrap();
+        assert!(cfg.view);
     }
 
     /// Telling the agent when someone says the character's name is on

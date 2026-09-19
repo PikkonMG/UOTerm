@@ -8,6 +8,7 @@ mod journal;
 mod names;
 mod observe;
 mod radar;
+mod sounds;
 mod state;
 
 pub use addressed::{
@@ -30,6 +31,7 @@ pub use radar::{
     clamp_radar_size, default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT,
     RADAR_MAX, RADAR_MIN, RADAR_SIZE,
 };
+pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
 pub use state::{
     facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem, DoorUpdate, Harm,
     Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Trade, World,

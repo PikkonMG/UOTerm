@@ -42,6 +42,10 @@ pub enum EventKind {
     JobEnded,
     /// The character went to another map (facet), named by its number.
     MapChanged,
+    /// A human took the character. The agent may look but not act.
+    ControlTaken,
+    /// The agent has the character again, and why.
+    ControlReleased,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

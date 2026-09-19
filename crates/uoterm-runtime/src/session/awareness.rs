@@ -73,9 +73,7 @@ pub(super) fn pump_awareness(inner: &mut Inner) {
             .aware
             .enemies_announced
             .get(serial)
-            .map_or(true, |&when| {
-                now.duration_since(when) >= ENEMY_NEAR_COOLDOWN
-            });
+            .is_none_or(|&when| now.duration_since(when) >= ENEMY_NEAR_COOLDOWN);
         if newly_near && off_cooldown {
             events.push(Event::new(
                 EventKind::EnemyNear,
@@ -251,6 +249,7 @@ fn event_answer(inner: &Inner, events: Vec<Event>, missed: u64) -> ToolResult {
         "target_cursor": world.pending_target.is_some(),
         "pack": { "items": pack_items, "weight": s.weight, "weight_max": s.weight_max },
         "doing": doing(inner, &world),
+        "human_control": inner.human.active(),
     });
     if !gumps.is_empty() {
         state["gumps"] = json!(gumps);

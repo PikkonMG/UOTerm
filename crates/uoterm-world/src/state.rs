@@ -386,6 +386,9 @@ pub struct World {
     /// ordinary item on that serial.
     pub multis: HashMap<Serial, MultiItem>,
     pub journal: Journal,
+    /// The sound effects and the music the shard asked for.
+    #[serde(default)]
+    pub sounds: crate::Sounds,
     pub events: Vec<Event>,
     pub event_seq: u64,
     pub pending_target: Option<TargetCursor>,
@@ -923,6 +926,8 @@ impl World {
             } => {
                 self.accept_properties(*serial, *hash, properties);
             }
+            Inbound::SoundEffect { sound, x, y, .. } => self.sounds.heard(*sound, *x, *y),
+            Inbound::Music { index, stop } => self.sounds.music_changed(*index, *stop),
             Inbound::BuffDebuff {
                 serial,
                 icon,
