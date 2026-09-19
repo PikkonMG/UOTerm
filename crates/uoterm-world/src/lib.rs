@@ -27,7 +27,8 @@ pub use observe::{
     OBSERVE_FACT_CAP, OBSERVE_ITEM_CAP, OBSERVE_MOBILE_CAP,
 };
 pub use radar::{
-    default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT, RADAR_SIZE,
+    clamp_radar_size, default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT,
+    RADAR_MAX, RADAR_MIN, RADAR_SIZE,
 };
 pub use state::{
     facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem, DoorUpdate, Harm,
@@ -438,6 +439,22 @@ mod tests {
         assert!(legend().contains("self"));
         let via_api = w.radar(5, &|_, _| TileKind::Walk);
         assert!(via_api.contains('@'));
+    }
+
+    #[test]
+    fn observe_sized_clamps_and_widens() {
+        let mut w = World::new();
+        w.self_state.location = Point3::new(50, 50, 0);
+        let small = w.observe_sized(RADAR_MIN, default_tile);
+        assert_eq!(small.radar.lines().count(), RADAR_MIN as usize);
+        assert_eq!(
+            small.radar.lines().next().unwrap().chars().count(),
+            RADAR_MIN as usize
+        );
+        let huge = w.observe_sized(u16::MAX, default_tile);
+        assert_eq!(huge.radar.lines().count(), RADAR_MAX as usize);
+        let zero = w.observe_sized(0, default_tile);
+        assert_eq!(zero.radar.lines().count(), RADAR_SIZE as usize);
     }
 
     #[test]

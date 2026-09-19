@@ -4,6 +4,8 @@ use crate::state::World;
 
 pub const RADAR_SIZE: u16 = 21;
 pub const RADAR_DEFAULT: u16 = RADAR_SIZE;
+pub const RADAR_MIN: u16 = 5;
+pub const RADAR_MAX: u16 = 41;
 
 const SYM_SELF: char = '@';
 const SYM_MOBILE: char = 'm';
@@ -44,12 +46,16 @@ impl Default for RadarOptions {
     }
 }
 
-pub fn render_radar(world: &World, opts: RadarOptions, tile: impl Fn(u16, u16) -> char) -> String {
-    let size = if opts.size == 0 {
+pub fn clamp_radar_size(size: u16) -> u16 {
+    if size == 0 {
         RADAR_SIZE
     } else {
-        opts.size
-    };
+        size.clamp(RADAR_MIN, RADAR_MAX)
+    }
+}
+
+pub fn render_radar(world: &World, opts: RadarOptions, tile: impl Fn(u16, u16) -> char) -> String {
+    let size = clamp_radar_size(opts.size);
     let half = (size / 2) as i32;
     let origin_x = world.self_state.location.x as i32;
     let origin_y = world.self_state.location.y as i32;
@@ -89,4 +95,19 @@ pub fn legend() -> String {
     format!(
         "{SYM_SELF} self  {SYM_MOBILE} mobile  {SYM_ITEM} item  {SYM_BLOCK} block  {SYM_WALK} walk  {SYM_WATER} water  {SYM_DOOR} door"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_radar_size_bounds() {
+        assert_eq!(clamp_radar_size(0), RADAR_SIZE);
+        assert_eq!(clamp_radar_size(1), RADAR_MIN);
+        assert_eq!(clamp_radar_size(RADAR_MIN), RADAR_MIN);
+        assert_eq!(clamp_radar_size(RADAR_SIZE), RADAR_SIZE);
+        assert_eq!(clamp_radar_size(RADAR_MAX), RADAR_MAX);
+        assert_eq!(clamp_radar_size(u16::MAX), RADAR_MAX);
+    }
 }

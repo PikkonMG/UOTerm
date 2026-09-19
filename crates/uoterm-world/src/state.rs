@@ -1707,7 +1707,11 @@ impl World {
     }
 
     pub fn observe(&self, tile: impl Fn(u16, u16) -> char) -> Observe {
-        let radar = render_radar(self, RadarOptions::default(), tile);
+        self.observe_sized(RADAR_DEFAULT, tile)
+    }
+
+    pub fn observe_sized(&self, size: u16, tile: impl Fn(u16, u16) -> char) -> Observe {
+        let radar = render_radar(self, RadarOptions { size }, tile);
         Observe::from_world(self, radar)
     }
 
@@ -1716,7 +1720,6 @@ impl World {
     }
 
     pub fn radar<F: Fn(u16, u16) -> TileKind + ?Sized>(&self, size: u16, tile: &F) -> String {
-        let size = if size == 0 { RADAR_DEFAULT } else { size };
         render_radar(self, RadarOptions { size }, |x, y| tile(x, y).as_char())
     }
 
