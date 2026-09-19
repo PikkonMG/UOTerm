@@ -105,7 +105,12 @@ desktop.ini
 # AI coding tools: local caches, memories and session state. Machine-specific.
 # ---------------------------------------------------------------------------
 /AGENTS.md
+/CLAUDE.md
+/GEMINI.md
 /MEMORY.md
+# Local product and design notes.
+/PRODUCT.md
+/DESIGN.md
 *.pkl
 .serena/
 .claude/
