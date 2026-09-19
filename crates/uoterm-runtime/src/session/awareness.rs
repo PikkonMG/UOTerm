@@ -201,7 +201,7 @@ fn take_events(inner: &mut Inner) -> Option<ToolResult> {
 /// What the character is doing now, so an agent's words match its acts:
 /// its goal, where it walks, whom it follows or plays along with, and a
 /// loot or bank job under way.
-fn doing(inner: &Inner, world: &World) -> Value {
+pub(super) fn doing(inner: &Inner, world: &World) -> Value {
     json!({
         "goal": inner.goal.name(),
         "walking_to": inner.movement.goal,
@@ -210,6 +210,14 @@ fn doing(inner: &Inner, world: &World) -> Value {
         "looting": inner.loot.as_ref().map(|job| job.corpse),
         "banking": inner.deposit.is_some(),
         "script": scripting::running_name(inner),
+        "job": inner.hunt.as_ref().map(|job| json!({
+            "name": crate::jobs::JOB_HUNT,
+            "phase": job.phase_name(),
+        })).or_else(|| inner.walk.as_ref().map(|job| json!({
+            "name": crate::jobs::JOB_WALK,
+            "phase": job.phase_name(),
+            "watch": job.watch,
+        }))),
     })
 }
 

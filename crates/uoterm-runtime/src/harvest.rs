@@ -62,5 +62,9 @@ mod tests {
             serde_json::to_value(EventKind::LiftRejected).unwrap(),
             json!("lift_rejected")
         );
+        assert_eq!(
+            serde_json::to_value(EventKind::JobEnded).unwrap(),
+            json!("job_ended")
+        );
     }
 }

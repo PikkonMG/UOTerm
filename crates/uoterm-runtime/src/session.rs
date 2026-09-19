@@ -8,6 +8,11 @@ use crate::config::{
 use crate::deposit::{DepositJob, DepositStep};
 use crate::error::{Result, RuntimeError};
 use crate::harvest;
+use crate::jobs::{
+    lists_from_args, HuntAction, HuntJob, HuntLists, WalkAction, WalkJob, JOB_ALREADY_RUNNING,
+    JOB_HUNT, JOB_NEEDS_NAME, JOB_NONE_RUNNING, JOB_UNKNOWN, JOB_WALK, JOB_WALK_NEEDS_SPOT,
+    REASON_HOSTILE, REASON_STOPPED, REASON_UNREACHABLE,
+};
 use crate::landmarks::Landmarks;
 use crate::loot::{LootJob, LootStep};
 use crate::manager::{shared_multi_shapes, FacetCache};
@@ -42,7 +47,7 @@ use uoterm_protocol::frame::GameDecoder;
 use uoterm_protocol::lengths::PacketTable;
 use uoterm_protocol::types::*;
 use uoterm_protocol::{parse_with_version, GroundItem, Inbound};
-use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World};
+use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World, RADAR_DEFAULT};
 
 mod agents;
 mod awareness;
@@ -405,6 +410,9 @@ struct Inner {
     event_waiters: Vec<awareness::EventWaiter>,
     aware: awareness::Awareness,
     loot: Option<LootJob>,
+    /// A session job that runs on the tick and hands back with a reason.
+    hunt: Option<HuntJob>,
+    walk: Option<WalkJob>,
     deposit: Option<DepositJob>,
     sent_drop: Option<Serial>,
     /// The next server-authored sell list is filtered to this graphic, then
@@ -854,6 +862,8 @@ async fn run_session(
         event_waiters: Vec::new(),
         aware: awareness::Awareness::default(),
         loot: None,
+        hunt: None,
+        walk: None,
         deposit: None,
         sent_drop: None,
         pending_vendor_sell_graphic: None,
@@ -1262,7 +1272,7 @@ mod relay_tests {
     use crate::config::JITTER_PCT;
     use uoterm_nav::client_data_dir_from_env;
     use uoterm_protocol::types::{ClientVersion, Era, LOGIN_NEXT_KEY_DEFAULT};
-    use uoterm_world::{render_radar, RadarOptions, TileKind, RADAR_SIZE};
+    use uoterm_world::{render_radar, RadarOptions, TileKind, RADAR_MAX, RADAR_MIN, RADAR_SIZE};
 
     /// A character on the ground floor of the New Haven inn, and the floor
     /// above him. The map answers differently for each, so `map_tile` and
@@ -1440,7 +1450,7 @@ mod relay_tests {
         let mut world = World::default();
         world.self_state.location = Point3::new(INN_GROUND_X, INN_GROUND_Y, INN_GROUND_Z);
 
-        let mine = radar_from_floor(&world, &map, INN_GROUND_Z).radar;
+        let mine = radar_from_floor(&world, &map, INN_GROUND_Z, RADAR_SIZE).radar;
         let height_less = render_radar(&world, RadarOptions::default(), |x, y| {
             map.tile(x, y).radar_char()
         });
@@ -1641,6 +1651,8 @@ mod relay_tests {
             event_waiters: Vec::new(),
             aware: awareness::Awareness::default(),
             loot: None,
+            hunt: None,
+            walk: None,
             deposit: None,
             sent_drop: None,
             pending_vendor_sell_graphic: None,
@@ -2783,7 +2795,7 @@ mod relay_tests {
                 name: String::new(),
             },
         );
-        let obs = observe_value(&inner);
+        let obs = observe_value(&inner, RADAR_DEFAULT);
         let barrel = obs["nearby_items"]
             .as_array()
             .and_then(|items| items.iter().find(|i| i["graphic"] == GRAPHIC_BARREL))
@@ -5116,7 +5128,7 @@ mod relay_tests {
             .world
             .write()
             .apply(&trade(uoterm_protocol::TRADE_DISPLAY, ANN, MINE, THEIRS));
-        assert_eq!(observe_value(&inner)["trade"]["with"], "Ann");
+        assert_eq!(observe_value(&inner, RADAR_DEFAULT)["trade"]["with"], "Ann");
         let accept = answer_agent(&mut inner, call(TOOL_TRADE_ACCEPT, json!({})));
         assert!(accept.ok, "{:?}", accept.error);
         assert!(inner
@@ -5126,12 +5138,15 @@ mod relay_tests {
             .world
             .write()
             .apply(&trade(uoterm_protocol::TRADE_UPDATE, Serial(MINE), 1, 1));
-        assert_eq!(observe_value(&inner)["trade"]["they_accept"], true);
+        assert_eq!(
+            observe_value(&inner, RADAR_DEFAULT)["trade"]["they_accept"],
+            true
+        );
         inner
             .world
             .write()
             .apply(&trade(uoterm_protocol::TRADE_CLOSE, Serial(MINE), 0, 0));
-        assert!(observe_value(&inner)["trade"].is_null());
+        assert!(observe_value(&inner, RADAR_DEFAULT)["trade"].is_null());
         assert!(!answer_agent(&mut inner, call(TOOL_TRADE_ACCEPT, json!({}))).ok);
     }
 
@@ -5260,6 +5275,102 @@ mod relay_tests {
         let travel = answer_agent(&mut inner, call(TOOL_SET_GOAL, json!({ "goal": "travel" })));
         assert_eq!(travel.error.as_deref(), Some(TRAVEL_NEEDS_A_SPOT));
         assert_eq!(inner.goal, Goal::Idle, "no goal was set");
+    }
+
+    #[test]
+    fn job_start_hunt_runs_and_stop_hands_back() {
+        let mut inner = named_by_ann(false, "hi");
+        let started = answer_agent(&mut inner, call(TOOL_JOB_START, json!({ "job": "hunt" })));
+        assert!(started.ok, "{:?}", started.error);
+        assert!(inner.hunt.is_some());
+        assert_eq!(inner.goal, Goal::Hunt);
+        let listed = answer_agent(&mut inner, call(TOOL_JOBS, json!({})));
+        assert_eq!(listed.result["running"]["name"], JOB_HUNT);
+        let stopped = answer_agent(&mut inner, call(TOOL_JOB_STOP, json!({})));
+        assert!(stopped.ok, "{:?}", stopped.error);
+        assert!(inner.hunt.is_none());
+        assert_eq!(inner.goal, Goal::Idle);
+        assert!(inner
+            .world
+            .read()
+            .events
+            .iter()
+            .any(|e| e.kind == uoterm_world::EventKind::JobEnded
+                && e.text == format!("{JOB_HUNT}: {REASON_STOPPED}")));
+    }
+
+    #[test]
+    fn a_second_hunt_is_refused_unless_replaced() {
+        let mut inner = named_by_ann(false, "hi");
+        assert!(answer_agent(&mut inner, call(TOOL_JOB_START, json!({ "job": "hunt" }))).ok);
+        let twice = answer_agent(&mut inner, call(TOOL_JOB_START, json!({ "job": "hunt" })));
+        assert_eq!(twice.error.as_deref(), Some(JOB_ALREADY_RUNNING));
+        let replaced = answer_agent(
+            &mut inner,
+            call(
+                TOOL_JOB_START,
+                json!({ "job": "hunt", "replace": true, "include": ["species:zombie"] }),
+            ),
+        );
+        assert!(replaced.ok, "{:?}", replaced.error);
+        let listed = answer_agent(&mut inner, call(TOOL_JOBS, json!({})));
+        assert_eq!(listed.result["running"]["include"][0], "species:zombie");
+        assert!(inner
+            .world
+            .read()
+            .events
+            .iter()
+            .any(|e| e.kind == uoterm_world::EventKind::JobEnded
+                && e.text == format!("{JOB_HUNT}: {REASON_STOPPED}")));
+    }
+
+    #[test]
+    fn replace_walk_with_hunt_ends_the_walk() {
+        let mut inner = named_by_ann(false, "hi");
+        assert!(
+            answer_agent(
+                &mut inner,
+                call(TOOL_JOB_START, json!({ "job": "walk", "x": 120, "y": 100 }))
+            )
+            .ok
+        );
+        let replaced = answer_agent(
+            &mut inner,
+            call(TOOL_JOB_START, json!({ "job": "hunt", "replace": true })),
+        );
+        assert!(replaced.ok, "{:?}", replaced.error);
+        assert!(inner.hunt.is_some());
+        assert!(inner.walk.is_none());
+        assert!(inner
+            .world
+            .read()
+            .events
+            .iter()
+            .any(|e| e.kind == uoterm_world::EventKind::JobEnded
+                && e.text == format!("{JOB_WALK}: {REASON_STOPPED}")));
+    }
+
+    #[test]
+    fn set_goal_hunt_starts_the_same_job() {
+        let mut inner = named_by_ann(false, "hi");
+        assert!(answer_agent(&mut inner, call(TOOL_SET_GOAL, json!({ "goal": "hunt" }))).ok);
+        assert!(inner.hunt.is_some());
+        assert_eq!(inner.goal, Goal::Hunt);
+    }
+
+    #[test]
+    fn job_start_walk_needs_a_spot() {
+        let mut inner = named_by_ann(false, "hi");
+        let missing = answer_agent(&mut inner, call(TOOL_JOB_START, json!({ "job": "walk" })));
+        assert_eq!(missing.error.as_deref(), Some(JOB_WALK_NEEDS_SPOT));
+        let started = answer_agent(
+            &mut inner,
+            call(TOOL_JOB_START, json!({ "job": "walk", "x": 120, "y": 100 })),
+        );
+        assert!(started.ok, "{:?}", started.error);
+        assert!(inner.walk.is_some());
+        let listed = answer_agent(&mut inner, call(TOOL_JOBS, json!({})));
+        assert_eq!(listed.result["running"]["name"], JOB_WALK);
     }
 
     /// Leaving a map drops the walk, the follow and the travel goal: their
@@ -5510,7 +5621,10 @@ mod relay_tests {
         let follow = answer_agent(&mut inner, call(TOOL_FOLLOW, json!({ "serial": ANN.0 })));
         assert!(follow.ok, "{:?}", follow.error);
         assert_eq!(follow.reply_style.as_deref(), Some("short and warm"));
-        assert_eq!(observe_value(&inner)["playing_along"]["name"], "Ann");
+        assert_eq!(
+            observe_value(&inner, RADAR_DEFAULT)["playing_along"]["name"],
+            "Ann"
+        );
         check_play_along(&mut inner);
         assert_eq!(inner.follow, Some(ANN), "still in time and healthy");
         inner.play_along = inner.play_along.map(|run| PlayAlongRun {
@@ -5637,7 +5751,7 @@ mod relay_tests {
         assert_eq!(gate.choices[0].switch, 0);
         assert_eq!(gate.choices[0].label, "Moonglow");
         assert_eq!(gate.choices[0].section, "Trammel");
-        let observed = observe_value(&inner);
+        let observed = observe_value(&inner, RADAR_DEFAULT);
         assert_eq!(observed["gumps"][0]["choices"][0]["label"], "Moonglow");
     }
 
@@ -6015,6 +6129,46 @@ mod relay_tests {
         }
         inner.outbound.clear();
         inner
+    }
+
+    #[test]
+    fn observe_size_sets_radar_width() {
+        let mut inner = armed_session();
+        let def = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_OBSERVE.into(),
+                args: json!({}),
+            },
+        );
+        let def_radar = def.result["radar"].as_str().unwrap();
+        assert_eq!(def_radar.lines().count(), RADAR_SIZE as usize);
+
+        let small = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_OBSERVE.into(),
+                args: json!({ "size": RADAR_MIN }),
+            },
+        );
+        let small_radar = small.result["radar"].as_str().unwrap();
+        assert_eq!(small_radar.lines().count(), RADAR_MIN as usize);
+        assert_eq!(
+            small_radar.lines().next().unwrap().chars().count(),
+            RADAR_MIN as usize
+        );
+
+        let huge = handle_tool(
+            &mut inner,
+            ToolCall {
+                name: TOOL_OBSERVE.into(),
+                args: json!({ "size": u16::MAX }),
+            },
+        );
+        assert_eq!(
+            huge.result["radar"].as_str().unwrap().lines().count(),
+            RADAR_MAX as usize
+        );
     }
 
     pub(super) fn ready_to_act(inner: &mut Inner) {
@@ -8634,9 +8788,31 @@ fn reflex_tick(inner: &mut Inner) {
         follow_tick(inner, at, running);
         return;
     }
+    if inner.hunt.is_some() {
+        let care = reflex::self_care(&inner.world.read());
+        if let Some(care) = care {
+            apply_reflex_action(inner, care);
+        } else {
+            pump_hunt(inner);
+        }
+        return;
+    }
+    if inner.walk.is_some() {
+        let care = reflex::self_care(&inner.world.read());
+        if let Some(care) = care {
+            apply_reflex_action(inner, care);
+        } else {
+            pump_walk(inner);
+        }
+        return;
+    }
     // Each world read below is a short guard, never a copy of the world:
     // this runs every tick.
     let action = reflex::tick(&inner.world.read(), &inner.persona, &inner.goal);
+    apply_reflex_action(inner, action);
+}
+
+fn apply_reflex_action(inner: &mut Inner, action: ReflexAction) {
     match action {
         ReflexAction::None => {
             if inner.world.read().fighting() {
@@ -8700,6 +8876,251 @@ fn reflex_tick(inner: &mut Inner) {
         ReflexAction::Target(serial) => store_or_answer_target(inner, serial),
         ReflexAction::BandageSelf => send_bandage_self(inner),
     }
+}
+
+fn pump_hunt(inner: &mut Inner) {
+    let Some(mut job) = inner.hunt.take() else {
+        return;
+    };
+    let ready = action_ready(inner);
+    let action = job.tick(&inner.world.read(), ready, Instant::now());
+    if !matches!(action, HuntAction::End(_)) {
+        inner.hunt = Some(job);
+    }
+    match action {
+        HuntAction::None => {}
+        HuntAction::WarOn => send_war_mode(inner, true),
+        HuntAction::Attack(serial) => {
+            inner.movement.hold();
+            send_attack(inner, serial);
+        }
+        HuntAction::MoveTo { x, y, z } => {
+            let dest = Point3::new(x, y, z);
+            let target = inner.hunt.as_ref().and_then(HuntJob::target);
+            if !queue_move(inner, dest) {
+                if let (Some(serial), Some(job)) = (target, inner.hunt.as_mut()) {
+                    job.note_nopath(serial, Instant::now());
+                }
+            }
+        }
+        HuntAction::Open(serial) => {
+            send_double_click(inner, serial);
+        }
+        HuntAction::Lift { serial, amount } => {
+            send_lift(inner, serial, amount);
+            inner.world.write().holding = Some(serial);
+            inner.sent_drop = None;
+        }
+        HuntAction::Drop { serial, dest } => {
+            if inner.sent_drop != Some(serial) {
+                inner.outbound.push_back(encode::drop_into_container(
+                    serial,
+                    dest,
+                    drop_grid(inner),
+                ));
+                mark_action(inner);
+                inner.sent_drop = Some(serial);
+            }
+        }
+        HuntAction::End(reason) => end_hunt(inner, reason),
+    }
+}
+
+fn pump_walk(inner: &mut Inner) {
+    let Some(mut job) = inner.walk.take() else {
+        return;
+    };
+    let action = job.tick(&inner.world.read());
+    if !matches!(action, WalkAction::End(_)) {
+        inner.walk = Some(job);
+    }
+    match action {
+        WalkAction::None => {}
+        WalkAction::Hold => inner.movement.hold(),
+        WalkAction::MoveTo { x, y, z } => {
+            if !queue_move(inner, Point3::new(x, y, z)) {
+                let why = if inner.walk.as_ref().is_some_and(WalkJob::fleeing) {
+                    REASON_HOSTILE
+                } else {
+                    REASON_UNREACHABLE
+                };
+                end_walk(inner, why);
+            }
+        }
+        WalkAction::End(reason) => end_walk(inner, reason),
+    }
+}
+
+fn job_busy(inner: &Inner) -> bool {
+    inner.hunt.is_some() || inner.walk.is_some()
+}
+
+fn stop_running_jobs(inner: &mut Inner, why: &'static str) {
+    if inner.hunt.is_some() {
+        end_hunt(inner, why);
+    }
+    if inner.walk.is_some() {
+        end_walk(inner, why);
+    }
+}
+
+fn start_hunt(
+    inner: &mut Inner,
+    lists: HuntLists,
+    replace: bool,
+) -> std::result::Result<(), &'static str> {
+    if job_busy(inner) && !replace {
+        return Err(JOB_ALREADY_RUNNING);
+    }
+    inner.follow = None;
+    stop_running_jobs(inner, REASON_STOPPED);
+    inner.hunt = Some(HuntJob::new(lists));
+    inner.goal = Goal::Hunt;
+    inner.world.write().goal = Goal::Hunt.name().into();
+    Ok(())
+}
+
+fn start_walk(
+    inner: &mut Inner,
+    dest: Point3,
+    watch: bool,
+    replace: bool,
+) -> std::result::Result<(), &'static str> {
+    if job_busy(inner) && !replace {
+        return Err(JOB_ALREADY_RUNNING);
+    }
+    inner.follow = None;
+    stop_running_jobs(inner, REASON_STOPPED);
+    inner.walk = Some(WalkJob::new(dest, watch));
+    inner.goal = Goal::Travel { dest };
+    inner.world.write().goal = inner.goal.name().into();
+    Ok(())
+}
+
+fn end_hunt(inner: &mut Inner, reason: &'static str) {
+    inner.hunt = None;
+    inner.goal = Goal::Idle;
+    inner.world.write().goal = Goal::Idle.name().into();
+    inner.movement.hold();
+    job_ended(inner, JOB_HUNT, reason);
+}
+
+fn end_walk(inner: &mut Inner, reason: &'static str) {
+    inner.walk = None;
+    inner.goal = Goal::Idle;
+    inner.world.write().goal = Goal::Idle.name().into();
+    inner.movement.hold();
+    inner.movement.clear();
+    job_ended(inner, JOB_WALK, reason);
+}
+
+fn job_ended(inner: &Inner, job: &str, why: &str) {
+    tracing::info!(job, why, "a job ended");
+    inner.world.write().push_event(uoterm_world::Event::new(
+        uoterm_world::EventKind::JobEnded,
+        None,
+        format!("{job}: {why}"),
+    ));
+}
+
+fn jobs_status(inner: &Inner) -> ToolResult {
+    let running = if let Some(job) = inner.hunt.as_ref() {
+        Some(json!({
+            "name": JOB_HUNT,
+            "phase": job.phase_name(),
+            "include": HuntLists::as_strings(&job.lists.include),
+            "avoid": HuntLists::as_strings(&job.lists.avoid),
+        }))
+    } else {
+        inner.walk.as_ref().map(|job| {
+            json!({
+                "name": JOB_WALK,
+                "phase": job.phase_name(),
+                "dest": job.dest,
+                "watch": job.watch,
+            })
+        })
+    };
+    ToolResult::ok(json!({ "running": running }))
+}
+
+fn job_start(inner: &mut Inner, args: &Value) -> ToolResult {
+    let Some(name) = args
+        .get("job")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    else {
+        return ToolResult::err(JOB_NEEDS_NAME);
+    };
+    let replace = args
+        .get("replace")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match name {
+        n if n == JOB_HUNT => {
+            let lists = match lists_from_args(args) {
+                Ok(lists) => lists,
+                Err(why) => return ToolResult::err(why),
+            };
+            match start_hunt(inner, lists, replace) {
+                Ok(()) => ToolResult::ok(json!({ "job": JOB_HUNT })),
+                Err(why) => ToolResult::err(why),
+            }
+        }
+        n if n == JOB_WALK => {
+            let dest = match walk_dest(inner, args) {
+                Ok(dest) => dest,
+                Err(why) => return ToolResult::err(why),
+            };
+            let watch = args.get("watch").and_then(Value::as_bool).unwrap_or(false);
+            match start_walk(inner, dest, watch, replace) {
+                Ok(()) => ToolResult::ok(json!({ "job": JOB_WALK, "dest": dest, "watch": watch })),
+                Err(why) => ToolResult::err(why),
+            }
+        }
+        _ => ToolResult::err(JOB_UNKNOWN),
+    }
+}
+
+fn walk_dest(inner: &Inner, args: &Value) -> std::result::Result<Point3, &'static str> {
+    let at = inner.world.read().self_state.location;
+    if let (Some(x), Some(y)) = (
+        args.get("x").and_then(Value::as_u64),
+        args.get("y").and_then(Value::as_u64),
+    ) {
+        let z = asked_z(args, at.z);
+        return Ok(Point3::new(x as u16, y as u16, z));
+    }
+    let Some(name) = args
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+    else {
+        return Err(JOB_WALK_NEEDS_SPOT);
+    };
+    let Some(marks) = inner.landmarks.as_ref() else {
+        return Err(NO_MARKERS_LOADED);
+    };
+    let map = inner.world.read().self_state.map;
+    let found = marks.find(Some(name), Some(map));
+    let Some(place) = found.into_iter().min_by_key(|m| at.chebyshev(m.at)) else {
+        return Err(JOB_WALK_NEEDS_SPOT);
+    };
+    Ok(place.at)
+}
+
+fn job_stop(inner: &mut Inner) -> ToolResult {
+    if inner.hunt.is_some() {
+        end_hunt(inner, REASON_STOPPED);
+        return ToolResult::ok(json!({ "job": serde_json::Value::Null }));
+    }
+    if inner.walk.is_some() {
+        end_walk(inner, REASON_STOPPED);
+        return ToolResult::ok(json!({ "job": serde_json::Value::Null }));
+    }
+    ToolResult::err(JOB_NONE_RUNNING)
 }
 
 /// Warns and records a path failure at most once per `PATH_FAIL_WAIT`
@@ -9180,7 +9601,14 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
 fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
     let args = &call.args;
     match call.name.as_str() {
-        TOOL_OBSERVE => ToolResult::ok(observe_value(inner)),
+        TOOL_OBSERVE => {
+            let size = args
+                .get("size")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u16)
+                .unwrap_or(RADAR_DEFAULT);
+            ToolResult::ok(observe_value(inner, size))
+        }
         TOOL_LOOK_AROUND => {
             let radius = args
                 .get("radius")
@@ -9427,6 +9855,12 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_OPEN_DOOR)
         }
         TOOL_STOP | TOOL_CANCEL_GOAL => {
+            if inner.hunt.is_some() {
+                end_hunt(inner, REASON_STOPPED);
+            }
+            if inner.walk.is_some() {
+                end_walk(inner, REASON_STOPPED);
+            }
             inner.goal = Goal::Idle;
             inner.follow = None;
             inner.doors.give_up();
@@ -9720,6 +10154,21 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 return ToolResult::err(NO_BANK_KNOWN);
             }
             inner.follow = None;
+            if matches!(g, Goal::Hunt) {
+                if inner.walk.is_some() {
+                    end_walk(inner, REASON_STOPPED);
+                }
+                if inner.hunt.is_none() {
+                    inner.hunt = Some(HuntJob::new(HuntLists::default()));
+                }
+            } else {
+                if inner.hunt.is_some() {
+                    end_hunt(inner, REASON_STOPPED);
+                }
+                if inner.walk.is_some() {
+                    end_walk(inner, REASON_STOPPED);
+                }
+            }
             inner.goal = g.clone();
             inner.world.write().goal = g.name().into();
             if let Goal::Travel { dest } = g {
@@ -9861,6 +10310,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .push_back(encode::context_menu_request(serial));
             ToolResult::action(TOOL_CONTEXT_MENU)
         }
+        TOOL_JOBS => jobs_status(inner),
+        TOOL_JOB_START => job_start(inner, args),
+        TOOL_JOB_STOP => job_stop(inner),
         TOOL_RECORD_MACRO => recorder::record_macro(inner, args),
         TOOL_HOTKEYS => hotkeys::list(inner, args),
         TOOL_HOTKEY => hotkeys::press(inner, args),
@@ -9892,17 +10344,22 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
 /// A building with more than one floor holds one answer for each floor at the
 /// same x,y. Asked with no height, such a tile answers the floor above, and the
 /// agent then reads the layout of a room it is not standing in.
-fn radar_from_floor(world: &World, map: &dyn TileQuery, from_z: i8) -> uoterm_world::Observe {
-    world.observe(|x, y| map.tile_from(from_z, x, y).radar_char())
+fn radar_from_floor(
+    world: &World,
+    map: &dyn TileQuery,
+    from_z: i8,
+    size: u16,
+) -> uoterm_world::Observe {
+    world.observe_sized(size, |x, y| map.tile_from(from_z, x, y).radar_char())
 }
 
-fn observe_value(inner: &Inner) -> Value {
+fn observe_value(inner: &Inner, size: u16) -> Value {
     let w = inner.world.read();
     let idx = w.self_state.map;
     let loc = w.self_state.location;
     let mut obs = match inner.maps.get(&idx) {
-        Some(mul) => radar_from_floor(&w, mul.as_ref(), loc.z),
-        None => radar_from_floor(&w, &inner.map, loc.z),
+        Some(mul) => radar_from_floor(&w, mul.as_ref(), loc.z, size),
+        None => radar_from_floor(&w, &inner.map, loc.z, size),
     };
     drop(w);
     // The shard names an item only when asked, and some never get an answer.
@@ -10012,7 +10469,11 @@ fn observe_value(inner: &Inner) -> Value {
             .push_str(". no door in range (map TILE_DOOR or item with door flag)");
     }
     obs.doors = doors;
-    serde_json::to_value(obs).unwrap_or(Value::Null)
+    let mut value = serde_json::to_value(obs).unwrap_or(Value::Null);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("doing".into(), awareness::doing(inner, &inner.world.read()));
+    }
+    value
 }
 
 fn speech_allowed(

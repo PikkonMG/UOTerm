@@ -38,6 +38,8 @@ pub enum EventKind {
     TradeOpened,
     /// A loot or bank job gave up, and why.
     JobFailed,
+    /// A session job ended on purpose, and why.
+    JobEnded,
     /// The character went to another map (facet), named by its number.
     MapChanged,
 }

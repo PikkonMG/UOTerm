@@ -62,6 +62,9 @@ pub const TOOL_TARGET_FILTER: &str = "target_filter";
 pub const TOOL_HOTKEYS: &str = "hotkeys";
 pub const TOOL_HOTKEY: &str = "hotkey";
 pub const TOOL_RECORD_MACRO: &str = "record_macro";
+pub const TOOL_JOBS: &str = "jobs";
+pub const TOOL_JOB_START: &str = "job_start";
+pub const TOOL_JOB_STOP: &str = "job_stop";
 
 pub const NO_BANK_KNOWN: &str =
     "no bank is known near here; find a banker in observe and walk to it";
@@ -200,7 +203,7 @@ impl Goal {
 const TOOLS: &[(&str, &str, &str)] = &[
     (
         TOOL_OBSERVE,
-        "Compact world snapshot, ASCII radar, recent journal, and the assistant features the shard forbids.",
+        "Compact world snapshot, ASCII radar, recent journal, and the assistant features the shard forbids. Optional size (odd tiles, 5-41, default 21) sets the radar width.",
         "session exists",
     ),
     (
@@ -339,7 +342,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_GUMP_CLOSE, "Close gump.", "open gump"),
     (
         TOOL_SET_GOAL,
-        "High-level goal: idle, travel, hunt, gather, bank, shop, social, flee, ress.",
+        "High-level goal: idle, travel, hunt, gather, bank, shop, social, flee, ress. hunt starts the hunt job.",
         "in world",
     ),
     (
@@ -405,6 +408,21 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Record a macro: action start (with name), stop (saves it as a script), or cancel. While it records, tool calls and hotkeys become script lines, with waits for cursors, gumps and prompts.",
         "session exists",
     ),
+    (
+        TOOL_JOBS,
+        "The session job running now, if any: name, phase, include and avoid lists.",
+        "session exists",
+    ),
+    (
+        TOOL_JOB_START,
+        "Start a session job. Hunt: job=hunt, optional include and avoid term lists (species:, name:, graphic:, any:). Walk: job=walk, x and y or name of a landmark, watch=true to stand guard after arrival. replace=true takes over a job already running. Hands back with job_ended.",
+        "in world",
+    ),
+    (
+        TOOL_JOB_STOP,
+        "Stop the running session job. Sends job_ended with reason stopped.",
+        "a job is running",
+    ),
 ];
 
 pub fn mcp_tool_list() -> Value {
@@ -454,7 +472,13 @@ pub fn mcp_tool_list() -> Value {
                         "action": {"type": "string"},
                         "settings": {"type": "object"},
                         "group": {"type": "string"},
-                        "loop": {"type": "boolean"}
+                        "loop": {"type": "boolean"},
+                        "job": {"type": "string"},
+                        "include": {"type": "array", "items": {"type": "string"}},
+                        "avoid": {"type": "array", "items": {"type": "string"}},
+                        "replace": {"type": "boolean"},
+                        "watch": {"type": "boolean"},
+                        "size": {"type": "integer"}
                     }
                 }
             })
@@ -466,6 +490,24 @@ pub fn mcp_tool_list() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observe_describes_radar_size() {
+        let desc = TOOLS
+            .iter()
+            .find(|(name, _, _)| *name == TOOL_OBSERVE)
+            .map(|(_, desc, _)| *desc)
+            .unwrap();
+        assert!(desc.contains("size"));
+        let listed = mcp_tool_list();
+        let observe = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == TOOL_OBSERVE)
+            .unwrap();
+        assert!(observe["inputSchema"]["properties"]["size"].is_object());
+    }
 
     #[test]
     fn craft_is_not_a_goal() {

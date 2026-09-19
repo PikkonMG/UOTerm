@@ -109,7 +109,7 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
 /// stands still, and the bandage and the potion are the same two answers
 /// whatever he was told to do. A shard can forbid either one done by itself,
 /// and then it is left to the agent.
-fn self_care(world: &World) -> Option<ReflexAction> {
+pub(crate) fn self_care(world: &World) -> Option<ReflexAction> {
     let hurt = world.self_state.hits_max > 0
         && stat_pct(world.self_state.hits, world.self_state.hits_max) < BANDAGE_HP_PCT;
     if hurt
