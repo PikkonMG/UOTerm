@@ -24,6 +24,9 @@ pub const MAP_CHUNK_SLACK: u32 = 8;
 /// range. `MultiCollection.uop` leaves wide gaps between the ids it holds, so
 /// there is no shorter honest limit.
 pub const MULTI_ID_COUNT: u32 = u16::MAX as u32 + 1;
+/// Land art takes the first `0x4000` places of the art package and item art
+/// the places after them, one for each `u16` graphic.
+pub const ART_ENTRY_COUNT: u32 = 0x4000 + u16::MAX as u32 + 1;
 
 #[derive(Clone, Copy, Debug)]
 pub struct UopIndex {
@@ -39,6 +42,18 @@ pub fn map_uop_name(map_index: u8, chunk: u32) -> String {
 
 pub fn multi_uop_name(multi_id: u32) -> String {
     format!("build/multicollection/{multi_id:06}.bin")
+}
+
+/// A sound comes off the wire as a `u16`, and the package leaves gaps, so the
+/// probe covers that whole range.
+pub const SOUND_ENTRY_COUNT: u32 = u16::MAX as u32 + 1;
+
+pub fn sound_uop_name(index: u32) -> String {
+    format!("build/soundlegacymul/{index:08}.dat")
+}
+
+pub fn art_uop_name(index: u32) -> String {
+    format!("build/artlegacymul/{index:08}.tga")
 }
 
 pub fn hash_filename(s: &str) -> u64 {
@@ -215,8 +230,25 @@ pub fn load_map_entries(path: &Path, map_index: u8) -> Result<Vec<Option<UopInde
 }
 
 pub fn load_multi_entries(path: &Path) -> Result<Vec<Option<UopIndex>>, MapError> {
+    load_named_entries(path, MULTI_ID_COUNT, multi_uop_name)
+}
+
+pub fn load_sound_entries(path: &Path) -> Result<Vec<Option<UopIndex>>, MapError> {
+    load_named_entries(path, SOUND_ENTRY_COUNT, sound_uop_name)
+}
+
+pub fn load_art_entries(path: &Path) -> Result<Vec<Option<UopIndex>>, MapError> {
+    load_named_entries(path, ART_ENTRY_COUNT, art_uop_name)
+}
+
+/// The files of a package whose names count up from zero to `count`.
+fn load_named_entries(
+    path: &Path,
+    count: u32,
+    name: impl Fn(u32) -> String,
+) -> Result<Vec<Option<UopIndex>>, MapError> {
     let hashes = read_directory(path)?;
-    let entries = index_by_name(&hashes, MULTI_ID_COUNT, multi_uop_name);
+    let entries = index_by_name(&hashes, count, name);
     if entries.is_empty() {
         return Err(MapError::BadUop);
     }

@@ -45,6 +45,9 @@ pub const STATIC_GROUP: usize = 32;
 /// the name. So the height byte starts 1+1+4+2+2+2 = 12 bytes after the flags
 /// field, on High Seas files (`u64` flags) and older files (`u32` flags) alike.
 pub const STATIC_HEIGHT_BYTES_AFTER_FLAGS: usize = 12;
+/// The animation id of a worn item comes after `weight`, `layer` and `count`:
+/// 1+1+4 = 6 bytes after the flags field.
+pub const STATIC_ANIM_BYTES_AFTER_FLAGS: usize = 6;
 /// Every tiledata record ends with a NUL-padded latin1 name of this length.
 pub const TILE_NAME_LEN: usize = 20;
 /// A land record puts its texture id between the flags and the name.
@@ -175,7 +178,7 @@ pub fn infer_mul_blocks(file_len: u64, default_w: u16, default_h: u16) -> (u16, 
         MAP_TERMUR_BLOCKS_W,
     ];
     for w in widths {
-        if w > 0 && blocks % u64::from(w) == 0 {
+        if w > 0 && blocks.is_multiple_of(u64::from(w)) {
             let h = blocks / u64::from(w);
             if h > 0 && h <= u64::from(u16::MAX) {
                 return (w, h as u16);
@@ -215,6 +218,27 @@ pub(crate) fn capped_len(file_len: u64, offset: u64, want: u32) -> usize {
     (u64::from(want)).min(avail) as usize
 }
 
+/// One record of an index file such as `artidx.mul`: where a record of the
+/// data file starts, how long it is, and a number no reader here needs.
+const IDX_RECORD: usize = 12;
+
+/// The records of an index file, as places in its data file. An empty
+/// record is None.
+pub(crate) fn idx_entries(idx: &[u8]) -> Vec<Option<UopIndex>> {
+    idx.chunks_exact(IDX_RECORD)
+        .map(|rec| {
+            let offset = u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
+            let len = u32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+            (offset != IDX_EMPTY && len != 0 && len != IDX_EMPTY).then_some(UopIndex {
+                offset: u64::from(offset),
+                compressed_len: len,
+                decompressed_len: len,
+                compression: UOP_COMPRESS_NONE,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn first_existing(dir: &Path, names: &[&str]) -> Option<PathBuf> {
     names.iter().map(|n| dir.join(n)).find(|p| p.exists())
 }
@@ -243,6 +267,7 @@ pub(crate) struct TileFlags {
     land_name: Vec<String>,
     r#static: Vec<u32>,
     static_height: Vec<u8>,
+    static_anim: Vec<u16>,
     static_name: Vec<String>,
 }
 
@@ -262,6 +287,7 @@ impl TileFlags {
             TILEDATA_FLAGS_OLD
         };
         let height_off = flags_size + STATIC_HEIGHT_BYTES_AFTER_FLAGS;
+        let anim_off = flags_size + STATIC_ANIM_BYTES_AFTER_FLAGS;
         let land_name_off = flags_size + LAND_NAME_AFTER_FLAGS;
         let static_name_off = static_size - TILE_NAME_LEN;
         let mut land = vec![0u32; LAND_COUNT];
@@ -269,7 +295,7 @@ impl TileFlags {
         let mut offset = 0usize;
         let mut i = 0usize;
         while i < LAND_COUNT && offset + land_size <= data.len() {
-            if i % LAND_GROUP == 0 {
+            if i.is_multiple_of(LAND_GROUP) {
                 offset += GROUP_HEADER;
                 if offset + land_size > data.len() {
                     break;
@@ -287,6 +313,7 @@ impl TileFlags {
         }
         let mut r#static = Vec::new();
         let mut static_height = Vec::new();
+        let mut static_anim = Vec::new();
         let mut static_name = Vec::new();
         while offset + static_size <= data.len() {
             if r#static.len() % STATIC_GROUP == 0 {
@@ -302,8 +329,11 @@ impl TileFlags {
                 data[offset + 3],
             ]);
             let height = data.get(offset + height_off).copied().unwrap_or(0);
+            let anim = slice_at(&data, offset + anim_off, 2)
+                .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
             r#static.push(flags);
             static_height.push(height);
+            static_anim.push(anim);
             static_name.push(read_tile_name(&data, offset + static_name_off));
             offset += static_size;
         }
@@ -312,6 +342,7 @@ impl TileFlags {
             land_name,
             r#static,
             static_height,
+            static_anim,
             static_name,
         })
     }
@@ -341,6 +372,7 @@ impl TileFlags {
 #[derive(Clone, Copy, Debug)]
 struct StaticPiece {
     graphic: u16,
+    hue: u16,
     piece: TilePiece,
 }
 
@@ -456,6 +488,7 @@ impl MulMap {
             let (st_flags, height) = flags.stat(graphic);
             out[sy * edge + sx].push(StaticPiece {
                 graphic,
+                hue: u16::from_le_bytes([chunk[5], chunk[6]]),
                 piece: TilePiece {
                     z: chunk[4] as i8,
                     height,
@@ -650,6 +683,20 @@ impl MulMap {
         self.flags.stat(graphic).0 & TILE_DOOR != 0
     }
 
+    /// The animation a worn item shows on a body. Zero when it has none.
+    pub fn item_anim(&self, graphic: u16) -> u16 {
+        self.flags
+            .static_anim
+            .get(graphic as usize)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The tiledata flags of an item graphic.
+    pub fn item_flags(&self, graphic: u16) -> u32 {
+        self.flags.stat(graphic).0
+    }
+
     fn static_pieces_at(&self, x: u16, y: u16) -> Vec<StaticPiece> {
         if !self.in_bounds(x, y) {
             return Vec::new();
@@ -711,6 +758,7 @@ impl TileQuery for MulMap {
                 z: s.piece.z,
                 height: s.piece.height,
                 flags: s.piece.flags,
+                hue: s.hue,
             })
             .collect();
         out.sort_by_key(|s| s.z);
@@ -740,5 +788,24 @@ impl TileQuery for MulMap {
 
     fn height(&self) -> u16 {
         self.blocks_h.saturating_mul(CELL_PER_BLOCK_EDGE)
+    }
+}
+
+#[cfg(test)]
+mod idx_tests {
+    use super::*;
+
+    #[test]
+    fn idx_skips_empty_records() {
+        let mut idx = Vec::new();
+        idx.extend(IDX_EMPTY.to_le_bytes());
+        idx.extend(0u32.to_le_bytes());
+        idx.extend(0u32.to_le_bytes());
+        idx.extend(8u32.to_le_bytes());
+        idx.extend(16u32.to_le_bytes());
+        idx.extend(0u32.to_le_bytes());
+        let entries = idx_entries(&idx);
+        assert!(entries[0].is_none());
+        assert_eq!(entries[1].unwrap().offset, 8);
     }
 }

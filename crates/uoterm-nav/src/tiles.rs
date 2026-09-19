@@ -7,6 +7,7 @@ pub const TILE_IMPASSABLE: u32 = 0x0000_0040;
 pub const TILE_WET: u32 = 0x0000_0080;
 pub const TILE_SURFACE: u32 = 0x0000_0200;
 pub const TILE_BRIDGE: u32 = 0x0000_0400;
+pub const TILE_PARTIAL_HUE: u32 = 0x0004_0000;
 pub const TILE_DOOR: u32 = 0x2000_0000;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -47,6 +48,9 @@ pub struct StaticView {
     pub z: i8,
     pub height: u8,
     pub flags: u32,
+    /// The color the map files give this static. Zero is the art's own color.
+    #[serde(default)]
+    pub hue: u16,
 }
 
 impl StaticView {

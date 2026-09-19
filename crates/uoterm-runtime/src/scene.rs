@@ -427,6 +427,7 @@ pub(crate) mod tests {
     use uoterm_world::{Mobile, World};
 
     const FLOOR_HEIGHT: u8 = 0;
+    const NO_HUE: u16 = 0;
 
     fn floor(name: &str, z: i8) -> StaticView {
         StaticView {
@@ -435,6 +436,7 @@ pub(crate) mod tests {
             z,
             height: FLOOR_HEIGHT,
             flags: TILE_SURFACE,
+            hue: NO_HUE,
         }
     }
 
@@ -502,6 +504,7 @@ pub(crate) mod tests {
             z,
             height,
             flags,
+            hue: NO_HUE,
         }
     }
 

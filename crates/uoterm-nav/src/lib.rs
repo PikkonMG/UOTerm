@@ -1,16 +1,25 @@
 //! Client-side map query and A* navigation.
 
+mod anim;
+mod art;
 mod cliloc;
+mod hues;
+mod mounts;
 mod mul;
 mod multi;
 mod path;
 mod skills;
+mod sound;
 mod speech;
 mod step;
 mod tiles;
 mod uop;
 
+pub use anim::{Action, AnimData, AnimFrame, EquipConv, Facing};
+pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
 pub use cliloc::ClilocData;
+pub use hues::{HueData, HueRamp};
+pub use mounts::{mount_of, Mount};
 pub use mul::{
     client_data_dir_from_env, infer_mul_blocks, map_block_dims, DoorTile, MapError, MapFiles,
     MulMap, ENV_TEST_UOPATH, TILEDATA_NAME,
@@ -21,13 +30,15 @@ pub use path::{
     SAME_MOVE_HEIGHT, SAME_SPOT_HEIGHT,
 };
 pub use skills::{read_skills, SkillEntry};
+pub use sound::{MusicList, MusicTrack, SoundData, SOUND_SAMPLE_RATE};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};
 pub use step::{
-    is_standing_surface, LandCorners, TileColumn, TilePiece, PERSON_HEIGHT, STEP_HEIGHT,
+    is_standing_surface, land_is_ignored, LandCorners, TileColumn, TilePiece, PERSON_HEIGHT,
+    STEP_HEIGHT,
 };
 pub use tiles::{
     z_reachable, MockMap, StaticView, TileInfo, TileQuery, TILE_BRIDGE, TILE_DOOR, TILE_IMPASSABLE,
-    TILE_SURFACE, TILE_WET,
+    TILE_PARTIAL_HUE, TILE_SURFACE, TILE_WET,
 };
 pub use uop::{hash_filename, map_uop_name};
 

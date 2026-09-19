@@ -45,7 +45,7 @@ const LAND_NODRAW_ALT: u16 = 0x1DB;
 const LAND_NODRAW_RANGE: std::ops::RangeInclusive<u16> = 0x1AE..=0x1B5;
 
 /// True when the land of a cell draws nothing and holds nobody up.
-pub(crate) fn land_is_ignored(land_id: u16) -> bool {
+pub fn land_is_ignored(land_id: u16) -> bool {
     land_id == LAND_NODRAW || land_id == LAND_NODRAW_ALT || LAND_NODRAW_RANGE.contains(&land_id)
 }
 
