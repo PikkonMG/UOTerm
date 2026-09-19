@@ -39,12 +39,14 @@ An agent that drives a character must not miss what happens between its calls. R
    1. Danger: `died`, `low_health`, `damaged`, `enemy_near`, `combatant_changed`, `pk_flag`.
    2. Something waits for an answer: `target_requested`, `gump_opened`, `prompt_opened`, `trade_opened`, `party_invite`.
    3. Chat: `spoken_to`, and `state.unanswered`. Answer with `reply`.
-   4. Your own task: `item_added`, `arrived`, `path_failed`, `lift_rejected`, `play_along_ended`, `map_changed` (a moongate or recall took her to another map; the old map's mobiles and items are gone, and a walk or follow there is dropped).
+   4. A running job: read `doing.job`. Do not `move_to` or `attack` over a hunt or walk job.
+   5. `job_ended`: a hunt or walk job handed back (`hunt: <reason>` or `walk: <reason>`). See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md). Then hunt, walk, bank, or rest.
+   6. Your own task: `item_added`, `arrived`, `path_failed`, `lift_rejected`, `play_along_ended`, `map_changed` (a moongate or recall took her to another map; the old map's mobiles and items are gone, and a walk or follow there is dropped).
 3. Go back to 1.
 
 Events wait in the session for you. When you are slow, the next call gives you all of them, in order, 50 at most per call. `missed` counts events that were dropped before you asked; the session keeps the last 256.
 
-`state` holds `hits`, `mana` and `stam` with their maximums, `war`, `dead`, `location`, `combatant`, `enemies_near` (the 5 nearest mobiles you may fight, within 10 tiles, not party members or friends), `unanswered`, `chat_mode`, `target_cursor`, `pack` (`items`, `weight`, `weight_max`), and `doing`: the `goal`, the tile she is `walking_to`, whom she is `following` or `playing_along_with`, the corpse she is `looting`, whether she is `banking`, and the `script` running. Health under half is `low_health`. A loot or bank job that gives up sends `job_failed` with the reason.
+`state` holds `hits`, `mana` and `stam` with their maximums, `war`, `dead`, `location`, `combatant`, `enemies_near` (the 5 nearest mobiles you may fight, within 10 tiles, not party members or friends), `unanswered`, `chat_mode`, `target_cursor`, `pack` (`items`, `weight`, `weight_max`), and `doing`: the `goal`, the tile she is `walking_to`, whom she is `following` or `playing_along_with`, the corpse she is `looting`, whether she is `banking`, the `script` running, and `job` (hunt or walk, with phase). Health under half is `low_health`. A loot or deposit job that gives up sends `job_failed` with the reason. A hunt or walk job that ends sends `job_ended` with `hunt: <reason>` or `walk: <reason>`. `job_start` with `replace` true stops the old job first (`job_ended` reason `stopped`), then starts the new one.
 
 Read `doing` before you answer a player. Her words must match what she does: when she already follows the player, say "right behind you", not "I will stay here"; when she is already at the cows, do not say "lead the way". Never say she will do something unless you start it in the same step.
 
@@ -70,7 +72,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 
 | Tool | Precondition | Result |
 | --- | --- | --- |
-| `observe` | session exists | self, radar, journal, mobiles, items, target, gumps, doors, buffs, party, prompt, forbidden (assistant features the shard forbids) |
+| `observe` | session exists | self, radar, journal, mobiles, items, target, gumps, doors, buffs, party, prompt, forbidden (assistant features the shard forbids). Optional `size` (5-41, default 21) sets the radar width. `GET /state` stays at 21. |
 | `find_mobiles` | in world | filter name / graphic / distance; `name` also matches the title, so `banker` finds "Kate the banker"; each has its title |
 | `find_items` | in world | filter graphic / container / name |
 | `find_landmarks` | in world | named places from the marker file (gates, banks, towns); filter name / map / distance; each has its map, location, dist (on the current map) and kind |
@@ -95,9 +97,10 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `target` | a target cursor must be pending |
 | `open_container` / `loot` / `trade_offer` | serial |
 | `gump_respond` / `gump_close` | open gump. `gump` names the gump id to answer (the oldest open one when omitted). `button` is a button id, `switches` the choices to tick; button `0` closes. A button or switch that is not on the gump is refused, because a shard drops or disconnects on it |
-| `set_goal` | in world; `idle` `travel` `hunt` `gather` `bank` `shop` `social` `flee` `ress` |
+| `set_goal` | in world; `idle` `travel` `hunt` `gather` `bank` `shop` `social` `flee` `ress`. `hunt` starts the hunt job with empty lists |
 | `set_persona` | session exists; JSON persona body. `typo_rate` is clamped to `0.0..=1.0` |
-| `cancel_goal` | session exists |
+| `cancel_goal` | session exists; also stops a hunt or walk job (`job_ended` reason `stopped`) |
+| `jobs` / `job_start` / `job_stop` | session exists / in world / a job is running. Hunt: `job` `hunt`, optional `include` and `avoid`. Walk: `job` `walk`, `x` and `y` or `name`, `watch`. `replace` true stops the old job (`job_ended` `stopped`) then starts the new one. Hands back with `job_ended`. See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md) |
 
 ## Scripts, agents, hotkeys and macros
 
@@ -136,7 +139,34 @@ uoterm mcp
 
 JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`). Newline JSON and `Content-Length` framing. A blank line is skipped. Bad JSON returns `-32700`. Bodies larger than 1 MiB are rejected.
 
-Methods: `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`. Resource URI: `uo://session/{id}/state`.
+Methods: `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`.
+
+Resource URIs:
+
+- `uo://session/{id}/state` — observe JSON for that session
+- `uo://playbook/{name}` — markdown playbook (`text/markdown`)
+
+Playbooks:
+
+| Name | Use |
+| --- | --- |
+| `driver` | `next_event` loop and act order |
+| `login` | One `connect` owns the socket |
+| `hunt` | Melee job: kill, loot own kills, flee |
+| `walk` | Guarded walk; stops on a hostile |
+| `navigation` | `move_to` vs walk job, doors, pads |
+| `loot` | Corpses the hunt job did not make |
+| `bank` | Walk to a banker, open the box, deposit |
+| `death` | Ghost recover, then restock |
+| `moongate` | Step onto the gate tile, then the gump |
+| `dungeon` | Pads, stairs, z jumps |
+| `mounts` | War off, then `use`; dismount is `use` self |
+| `runebook` | Recall from the book gump |
+| `buy` / `sell` | Vendor speech keywords |
+| `containers` | Open, lift, nested bags |
+| `talk` | `reply` and `unanswered` |
+| `inspect` | Names, `look_around`, `find_*` |
+| `equip` | Wear and take off |
 
 ## CLI against a running process
 

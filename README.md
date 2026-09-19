@@ -2,7 +2,7 @@
 
 UOTerm is a headless Ultima Online client. Its main purpose is to let AI agents control player characters and play the game the way a human player does: see the world, walk, fight, gather, talk, use items, and answer gumps. A second purpose is testing and debugging by humans.
 
-It speaks the Ultima Online wire protocol. It is not a graphical client and not a click-macro overlay.
+It speaks the Ultima Online wire protocol. Headless `connect` is the default. Optional `--view` is a 2D radar watch in the same process, not an isometric game window and not a second login.
 
 Ultima Online is a trademark of its owners. UOTerm is independent and unaffiliated. This repository does not ship MUL, UOP, or other client data. You supply a legitimate client directory when you need walkability from map files.
 
@@ -13,23 +13,25 @@ Target shards you operate: your own servers, demo servers, and offline worlds. O
 UOTerm matches Classic Client packet layouts and login. It does not special-case
 a shard by name, so any server that accepts a Classic Client should work.
 
-Nothing here is verified against a live shard yet. Treat every capability as
-unproven until a test in this tree proves it.
+Treat every capability as unproven until a test in this tree proves it.
 
-The mock shard in this repository is not a real server. `cargo test --workspace` covers mock login (account `0x80` and game `0x91`), walk, speech, and a gather loop without official client files.
+`cargo test --workspace` covers mock login (account `0x80` and game `0x91`), walk, speech, and a gather loop without official client files.
+
+`uoterm mock-shard` is a local demo for those tests. It is not a live world. It binds `127.0.0.1:2593` by default. Do not start it while a private shard already uses that port. Stop the demo before you start a live shard.
 
 ## What it is not
 
-- Not a graphical client.
+- Not an isometric graphical client. `--view` / `uoterm watch` is a 2D radar.
 - Not a click-macro overlay.
 - Not an official-server farm bot.
 - Not a cheat tool for EA or Broadsword shards.
+- Not a replacement for a live shard. `mock-shard` is a demo only.
 
 ## Requirements
 
 - Rust 1.80 or later (stable). `rust-toolchain.toml` pins `stable`.
 - Linux or Windows. macOS is untested.
-- A TCP port for the mock or private shard (default `2593`).
+- A TCP port for the private shard (default `2593`). The mock demo uses the same default; run only one of them.
 - A TCP port for the local HTTP API (default `127.0.0.1:7733`).
 - Password in an environment variable. Default name: `UO_PASS`. Do not put passwords in git.
 
@@ -51,11 +53,11 @@ The examples below write `uoterm`. On a fresh machine use `./target/debug/uoterm
 
 ## How the process model works
 
-`uoterm connect` and `uoterm populate` stay in the foreground. They log in, then serve HTTP until you press Ctrl+C.
+`uoterm connect` and `uoterm populate` stay in the foreground. They log in, then serve HTTP until you press Ctrl+C. `connect --view` starts `uoterm watch` as a child process so closing the window does not drop the game socket.
 
-All other commands (`session`, `say`, `move`, `walk`, `open-door`, `look`, `state`, `agent`, `mcp`) are clients. They call that HTTP API. They do not open a second game socket.
+All other commands (`session`, `say`, `move`, `walk`, `open-door`, `look`, `state`, `agent`, `watch`, `mcp`) are clients. They call that HTTP API. They do not open a second game socket.
 
-Do not start a second `connect` on the same API port.
+Do not start a second `connect` on the same API port. Do not start `mock-shard` on the same game port as a live shard.
 
 Global flags (all commands):
 
@@ -87,7 +89,7 @@ Load order for `uoterm.toml`:
 1. `./uoterm.toml` in the current working directory.
 2. Linux: `~/.config/uoterm/uoterm.toml`. Windows: `%APPDATA%\uoterm\uoterm.toml`.
 
-Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `connect` uses this file for `host`, `port`, `era`, `uopath`, `api_bind`, and `max_sessions` when the matching CLI flag is omitted.
+Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `connect` uses this file for every `AppConfig` key when the matching CLI flag is omitted: `host`, `port`, `era`, `log_level`, `api_bind`, `max_sessions`, `obey_shard_rules`, `answer_when_named`, `play_along`, `uopath`, `markers`.
 
 `obey_shard_rules` (default `true`): some shards send a list of assistant features they forbid, such as auto-open doors, auto-bandage, and auto-potions. With `true`, the character does not use those features by itself on that shard. With `false`, it ignores the list. The client answers the shard in both cases. A session made with `POST /v1/sessions` takes the same `obey_shard_rules` field.
 
@@ -97,13 +99,35 @@ Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `conne
 
 Account profile: copy `profiles/example.toml`. Extra `profiles/*.toml` files are gitignored. `--profile` supplies account, character, password env, and shard.
 
-Persona files live in `personas/`. See `docs/PERSONAS.md`. Attach a persona with `connect --persona`. `agent run --persona` loads the persona into the session, then maps `class` to `set_goal`.
+Persona files live in `personas/`. See `docs/PERSONAS.md`. Attach a persona with `connect --persona`. `agent run --persona` loads the persona into the session, then maps `class` to `set_goal`. Extra persona and shard files are gitignored; the shipped files stay tracked.
 
 Logs: `RUST_LOG` or `log_level`. Passwords are not printed.
 
-## Quick start (mock shard, no UO data)
+## Quick start (private shard you operate)
 
-You need two terminals. The mock character name is `Mara`.
+The shard process listens on `2593`. UOTerm only logs in. Do not start `uoterm mock-shard` in this path: both want port `2593`.
+
+```bash
+export UO_PASS=your_password
+uoterm connect \
+  --host 127.0.0.1 --port 2593 \
+  --account your_account --character Mara \
+  --version 7.0.116.0 --era modern --encryption none \
+  --uopath /path/to/uo \
+  --persona personas/traveler.toml
+```
+
+Expected line: `session s1 started; api 127.0.0.1:7733; encryption none`. Leave this process running.
+
+Optional `--view` opens the 2D watch window in the same process. Optional `--text-view` prints the radar in that terminal. Those flags conflict with each other.
+
+Password is `UO_PASS`. Never put it in a file.
+
+## Quick start (mock demo, tests only)
+
+Use this only when no live shard is using `2593`. The mock is not a real world. Stop it before you start a live shard.
+
+You need two terminals. The mock character name is `Mara`. `--era t2a` matches the mock. The CLI default for `--era` is `modern`.
 
 ### 1. Start the mock shard
 
@@ -119,8 +143,6 @@ uoterm connect --host 127.0.0.1 --port 2593 --account test --character Mara --er
 ```
 
 Expected line: `session s1 started; api 127.0.0.1:7733; encryption none`. Leave this process running.
-
-`--era t2a` matches the mock. The CLI default for `--era` is `modern`.
 
 ### 3. Drive the session
 
@@ -151,14 +173,14 @@ curl -X POST http://127.0.0.1:7733/v1/sessions/s1/tools/say \
 
 If `UOTERM_API_TOKEN` is set, add `-H "Authorization: Bearer $UOTERM_API_TOKEN"` to every request except `/health`.
 
-Stop with Ctrl+C on the `connect` process, then on the mock shard.
+Stop with Ctrl+C on the `connect` process, then on the mock shard if you used one.
 
 ## Command reference
 
 | Command | Role | Notes |
 | --- | --- | --- |
-| `uoterm mock-shard [--bind HOST:PORT]` | Server | Unencrypted demo shard. Default `127.0.0.1:2593`. |
-| `uoterm connect ...` | Server | Login and HTTP API. Blocks until Ctrl+C. |
+| `uoterm mock-shard [--bind HOST:PORT]` | Demo | Unencrypted demo shard. Default `127.0.0.1:2593`. Do not run this while a live shard uses that port. |
+| `uoterm connect ...` | Server | Login and HTTP API. Blocks until Ctrl+C. `--view` starts `uoterm watch` as a child. `--text-view` prints the radar in that terminal. |
 | `uoterm populate --manifest PATH` | Server | Start many sessions, then HTTP API. |
 | `uoterm session list` | Client | Session ids on the API. |
 | `uoterm session attach <id>` | Client | Print state for one id. |
@@ -167,6 +189,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard.
 | `uoterm walk --dir DIR [--run] [--hold-ms N]` | Client | Tool `walk`. One step or a hold stream of `0x02`. |
 | `uoterm open-door` | Client | Tool `open_door` (`0x12`/`0x58`). |
 | `uoterm look` | Client | Radar. `--json` prints full observe JSON. |
+| `uoterm watch [--text]` | Client | Live 2D window of the running session (larger radar, named mobiles, dest `X`). `--text` prints the radar in the terminal. |
 | `uoterm state` | Client | YAML. `--json` for JSON. Field name is `self_state`. |
 | `uoterm agent run --persona FILE [--goal NAME]` | Client | `set_persona` then `set_goal`. |
 | `uoterm agent stop` | Client | `cancel_goal`. |
@@ -177,8 +200,8 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--host` | required | Login host |
-| `--port` | `2593` | Login port |
+| `--host` | from config, `127.0.0.1` | Login host |
+| `--port` | from config, `2593` | Login port |
 | `--account` | required unless `--profile` | Account name |
 | `--password-env` | `UO_PASS` | Env var that holds the password |
 | `--character` | required unless `--profile` | Character name on the account |
@@ -186,10 +209,12 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard.
 | `--version` | era default (`7.0.102.3` for `modern`) | Client version string (`0xBD`) |
 | `--era` | `modern` | `t2a` or `modern` |
 | `--encryption` | `none` | `none` = nocrypt. `osi` = Classic Client encryption. |
-| `--uopath` | none | Client data directory. Without it, nav uses an open mock grid |
+| `--uopath` | from config | Client data directory. Without it, nav uses an open mock grid |
 | `--profile` | none | TOML profile |
 | `--persona` | built-in lumberjack | Persona TOML used by speech and reflex |
 | `--api-bind` | from config, `127.0.0.1:7733` | HTTP listen address |
+| `--view` | off | Start `uoterm watch` as a child. Closing the window does not drop the socket. |
+| `--text-view` | off | Print a live radar in this terminal. Conflicts with `--view`. |
 
 ## MCP (LLM attach)
 
@@ -197,7 +222,7 @@ Start `connect` or `populate` first. Then point the model host at `uoterm mcp`.
 
 The process speaks JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`). It accepts newline JSON and MCP `Content-Length` framing. Bodies larger than 1 MiB are rejected. Bad JSON returns JSON-RPC error `-32700`.
 
-It lists tools and proxies `tools/call` to `POST /v1/sessions/{id}/tools/{name}`. Resource URI: `uo://session/{id}/state`.
+It lists tools and proxies `tools/call` to `POST /v1/sessions/{id}/tools/{name}`. Resources: `uo://session/{id}/state` (observe JSON) and `uo://playbook/{name}` (markdown in `docs/playbooks/`). Read `driver` first, then `hunt` or `walk`.
 
 ```json
 {
@@ -214,7 +239,7 @@ It lists tools and proxies `tools/call` to `POST /v1/sessions/{id}/tools/{name}`
 }
 ```
 
-Give the model `observe` plus `say`, `move_to`, and `set_goal`. Do not ask it to walk tile by tile. Full tool notes: `docs/AGENT_API.md`.
+Give the model `observe` plus `say`, `move_to`, `job_start`, and `next_event`. Read playbook `driver` first. Do not ask it to walk tile by tile. Full tool notes: `docs/AGENT_API.md`.
 
 ## Personas
 
@@ -229,7 +254,7 @@ Shipped files:
 
 The persona `name` is speech-policy identity. The shard character is `--character` or `profile.character`.
 
-Goals: `gather` uses the hatchet, then targets a tree. `hunt` attacks grey+ mobiles and bandages. `flee` and `travel` pathfind. `bank` walks toward Britain bank (1425, 1695). `shop` uses a nearby innocent mobile, else the bank. `social` says `yo`. `ress` walks a dead character toward the bank.
+Goals: `gather` uses the hatchet, then targets a tree. `hunt` starts the melee hunt job (kill, loot own kills, flee, then `job_ended`). `flee` and `travel` pathfind. `bank` walks toward Britain bank (1425, 1695). `shop` uses a nearby innocent mobile, else the bank. `social` says `yo`. `ress` walks a dead character toward the bank.
 
 Rules in code: reject `*emotes*` unless `allow_emote`; shorten long lines; clamp `typo_rate` to `0.0..=1.0`; skip populate agents outside `active_hours`. See `docs/PERSONAS.md`.
 
@@ -269,7 +294,7 @@ uoterm populate --manifest shards/britannia.toml
 
 Each `[[agents]]` row needs a working profile and a persona. Agents outside `active_hours` (local clock) are skipped.
 
-## Private shard you operate
+## Private shard on another host
 
 ```bash
 export UO_PASS=your_password
@@ -327,6 +352,7 @@ CI (`.github/workflows/ci.yml`) builds on Ubuntu and Windows: `cargo fmt`, `clip
 | `401 unauthorized` | Token set, header missing | Export `UOTERM_API_TOKEN` in the client shell |
 | `non-loopback --api-bind requires UOTERM_API_TOKEN` | Public bind without token | Set the token or bind `127.0.0.1` |
 | `Address already in use` on the API | Second `connect`/`populate` | Use one server process |
+| `Address already in use` on `2593` | `mock-shard` and a live shard together | Stop `mock-shard`. Start only the live shard |
 | `(no sessions)` | Client talks to empty API | Same host/port as `--api-bind` |
 | `(no harvest lines)` | No events yet, or wrong data dir | Confirm `connect` is running; Linux dir is `~/.local/share/uoterm` |
 | Populate starts 0 sessions | `active_hours` miss local time | Widen hours or run inside the window |
@@ -343,7 +369,7 @@ CI (`.github/workflows/ci.yml`) builds on Ubuntu and Windows: `cargo fmt`, `clip
 - `crates/uoterm-runtime` — session, mock shard, reflex, scripts, agents, hotkeys, HTTP
 - `crates/uoterm` — CLI binary
 
-Docs: `docs/PROTOCOL.md` (wire protocol), `docs/AGENT_API.md` (tools, HTTP, MCP), `docs/SCRIPTS.md` (script language), `docs/AGENTS.md` (agents, hotkeys, recording), `docs/PERSONAS.md` (persona files), `LEGAL.md`.
+Docs: `docs/PROTOCOL.md` (wire protocol), `docs/AGENT_API.md` (tools, HTTP, MCP), `docs/SCRIPTS.md` (script language), `docs/AGENTS.md` (agents, hotkeys, recording), `docs/PERSONAS.md` (persona files), `docs/playbooks/` (driver, login, hunt, walk, navigation, loot, bank, death, moongate, dungeon, mounts, runebook, buy, sell, containers, talk, inspect, equip), `LEGAL.md`.
 
 ## License
 

@@ -12,8 +12,9 @@ Client.exe
 client.exe
 
 # ---------------------------------------------------------------------------
-# Secrets and credentials. Passwords go in the UO_PASS environment variable,
-# API tokens in UOTERM_API_TOKEN. Never in a file.
+# Secrets and credentials. Passwords go in UO_PASS. HTTP tokens go in
+# UOTERM_API_TOKEN. TypeSafe keys go in TYPESAFE_API_KEY (local .env).
+# Never commit those values.
 # ---------------------------------------------------------------------------
 .env
 .env.*
@@ -33,6 +34,7 @@ credentials.*
 
 # ---------------------------------------------------------------------------
 # Local operator config. Each has a committed `.example` to copy from.
+# Do not commit host, uopath, markers, or account files from a live machine.
 # ---------------------------------------------------------------------------
 uoterm.toml
 !uoterm.toml.example
@@ -40,6 +42,13 @@ profiles/*.toml
 !profiles/example.toml
 !profiles/aldreth.toml
 !profiles/cedric.toml
+shards/*.toml
+!shards/britannia.toml
+personas/*.toml
+!personas/lumberjack.toml
+!personas/aldreth.toml
+!personas/cedric.toml
+!personas/traveler.toml
 
 # ---------------------------------------------------------------------------
 # Build output
@@ -62,6 +71,16 @@ flamegraph.svg
 *.profraw
 /tmp/
 .uoterm-local/
+mara.log
+feedback_drafts.json
+/*.png
+/*.jpg
+/*.jpeg
+
+# ---------------------------------------------------------------------------
+# Session and tool caches that do not belong in this tree
+# ---------------------------------------------------------------------------
+.grok/
 
 # ---------------------------------------------------------------------------
 # Editors and IDEs

@@ -53,8 +53,8 @@ Every field above changes behaviour. A persona file carries no other field.
 | --- | --- |
 | `idle` | No action |
 | `gather` | Use hatchet, then target a tree |
-| `hunt` | War mode, attack grey+, bandage when HP is low |
-| `travel` | Pathfind to dest. With no dest, the nearest bank |
+| `hunt` | Starts the hunt job: melee, loot own kills, flee, then `job_ended`. Bandage stays with the bandage agent |
+| `travel` | Pathfind to dest. With no dest, the nearest bank. For ground that may have hostiles, use the walk job instead (`docs/playbooks/walk.md`) |
 | `flee` | Step away |
 | `bank` | Walk to the nearest bank within 400 tiles, from the banks of the standard towns on every map; the goal ends there. With none that near, or on a shard with its own towns, `set_goal` refuses and the agent must find a banker |
 | `shop` | Use a nearby innocent mobile, else walk to the bank when it is near |

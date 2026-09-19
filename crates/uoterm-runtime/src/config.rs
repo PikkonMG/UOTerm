@@ -317,4 +317,28 @@ answer_when_named = false
     fn encryption_parse_rejects_unknown() {
         assert!(parse_encryption_mode("blowfish").is_err());
     }
+
+    #[test]
+    fn example_config_loads_every_app_setting() {
+        const EXAMPLE: &str = include_str!("../../../uoterm.toml.example");
+        let cfg: AppConfig = toml::from_str(EXAMPLE).expect("example loads");
+        assert_eq!(cfg.host, "127.0.0.1");
+        assert_eq!(cfg.port, DEFAULT_LOGIN_PORT);
+        assert_eq!(cfg.era, Era::Modern);
+        assert_eq!(cfg.log_level, "info");
+        assert_eq!(cfg.api_bind, format!("127.0.0.1:{DEFAULT_API_PORT}"));
+        assert_eq!(cfg.max_sessions, DEFAULT_MAX_SESSIONS);
+        assert!(cfg.obey_shard_rules);
+        assert!(cfg.answer_when_named);
+        assert!(!cfg.play_along);
+        assert_eq!(
+            cfg.uopath.as_deref(),
+            Some(std::path::Path::new("/path/to/uo"))
+        );
+        assert_eq!(
+            cfg.markers.as_deref(),
+            Some(std::path::Path::new("/path/to/Waypoints.lua"))
+        );
+        assert!(!EXAMPLE.contains("stay_on_socket"), "old key must not ship");
+    }
 }

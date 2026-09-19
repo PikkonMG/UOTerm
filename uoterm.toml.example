@@ -1,27 +1,38 @@
+# Copy to uoterm.toml (gitignored). Every AppConfig key is here.
+# Password is UO_PASS, not a key in this file.
+# Encryption is a connect flag (`none` or `osi`), not a key in this file.
+
 host = "127.0.0.1"
 port = 2593
-era = "t2a"
+era = "modern"
 log_level = "info"
 api_bind = "127.0.0.1:7733"
 max_sessions = 32
+
 # Some shards send a list of assistant features they forbid, such as
 # auto-open doors, auto-bandage, and auto-potions.
 # true  = obey the list (default).
 # false = ignore the list and use every feature on every shard.
 obey_shard_rules = true
+
 # When another character says this character's name, the agent gets a
 # spoken_to event so it can answer.
 # true  = tell the agent (default).
 # false = tell the agent nothing.
 answer_when_named = true
+
 # With answer_when_named on, lets the agent say yes to a player's plans:
 # join their party, follow them and help them fight.
 # false = answer in a few words and say no to plans (default).
 # true  = play along.
 play_along = false
-# uopath = "/path/to/uo"
-# A marker file of named places the agent can travel to (gates, banks, towns).
+
+# Client data directory (map, statics, tiledata). Needed for walkability
+# on a live shard. For the mock demo you may delete these two lines.
+uopath = "/path/to/uo"
+
+# Named places the agent can travel to (gates, banks, towns).
 # You supply your own; none ships with the client. Two formats are read:
-# a UO Auto Map ".map" file, or an Ultima Mapper "Waypoints.lua" file. The
-# agent reaches them with the find_landmarks tool.
-# markers = "/path/to/Waypoints.lua"
+# a UO Auto Map ".map" file, or an Ultima Mapper "Waypoints.lua" file.
+# The agent reaches them with the find_landmarks tool.
+markers = "/path/to/Waypoints.lua"

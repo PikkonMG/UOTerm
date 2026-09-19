@@ -5,6 +5,9 @@ pick up, bandage, remount, and more. Hotkeys are named actions you press by
 name. Both go at the pace a person plays, and both run after the
 character's own self-care on each tick.
 
+Hunt and walk are session jobs, not these agents. See `docs/playbooks/`
+and `docs/AGENT_API.md`. The bandage agent still heals while a job runs.
+
 ## Settings
 
 Each character has one settings file:
