@@ -1,5 +1,7 @@
 mod mcp;
 mod remote;
+mod view;
+mod window;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
@@ -22,6 +24,7 @@ const ENCRYPTION_NONE: &str = "none";
 const ENCRYPTION_OSI: &str = "osi";
 const ERA_T2A: &str = "t2a";
 const ERA_MODERN: &str = "modern";
+const TERM_CLEAR_HOME: &str = "\x1b[2J\x1b[H";
 
 /// Stream codec for the login and game sockets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -108,6 +111,12 @@ enum Commands {
         persona: Option<PathBuf>,
         #[arg(long)]
         api_bind: Option<String>,
+        /// Open a 2D watch window on this session.
+        #[arg(long, conflicts_with = "text_view")]
+        view: bool,
+        /// Print a live radar in this terminal while the API runs.
+        #[arg(long = "text-view", conflicts_with = "view")]
+        text_view: bool,
     },
     /// List or inspect sessions on a running process
     #[command(subcommand)]
@@ -155,6 +164,12 @@ enum Commands {
     },
     /// MCP stdio server (proxies to --api)
     Mcp,
+    /// Watch a running session: a 2D window, or --text for the terminal
+    Watch {
+        /// Print the radar in the terminal instead of opening a window
+        #[arg(long)]
+        text: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -344,6 +359,7 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
                 .map_err(|e| RuntimeError::Network(e.to_string()))?;
             Ok(EXIT_OK as u8)
         }
+        Commands::Watch { text } => watch_session(api, session, text).await,
         Commands::Mcp => mcp::run_stdio(api).await,
     }
 }
@@ -365,6 +381,8 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         profile,
         persona,
         api_bind,
+        view,
+        text_view,
         ..
     } = cli.command
     else {
@@ -463,7 +481,88 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
             encryption.as_str()
         );
     }
+    if text_view {
+        let api = remote::normalize_base(&bind);
+        let sid = handle.id.clone();
+        std::thread::spawn(move || text_watch_loop(api, sid));
+    }
+    if view {
+        start_api(rt.clone(), bind.clone());
+        spawn_watch_window(remote::normalize_base(&bind), handle.id.clone());
+        return wait_ctrl_c().await;
+    }
     serve_until_ctrl_c(rt, bind).await
+}
+
+fn spawn_watch_window(api: String, session: String) {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::error!(error = %e, "watch window");
+            return;
+        }
+    };
+    std::thread::spawn(move || {
+        let status = std::process::Command::new(exe)
+            .env("UOTERM_API", api)
+            .env("UOTERM_SESSION", session)
+            .arg("watch")
+            .status();
+        if let Err(e) = status {
+            tracing::error!(error = %e, "watch window");
+        }
+    });
+}
+
+fn text_watch_loop(api: String, session: String) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("{e}");
+            return;
+        }
+    };
+    loop {
+        let frame = rt.block_on(async {
+            match remote::session_observe(&api, &session, view::WATCH_RADAR_SIZE).await {
+                Ok(value) => view::WatchFrame::from_observe(&value),
+                Err(e) => view::WatchFrame::error_frame(e.to_string()),
+            }
+        });
+        print!("{TERM_CLEAR_HOME}{}", frame.text());
+        std::thread::sleep(std::time::Duration::from_millis(view::WATCH_POLL_MS));
+    }
+}
+
+async fn watch_session(
+    api: Option<&str>,
+    session: Option<&str>,
+    text: bool,
+) -> Result<u8, RuntimeError> {
+    let base = remote::api_base(api);
+    let id = remote::resolve_session(&base, session).await?;
+    if text {
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(view::WATCH_POLL_MS)) => {
+                    match remote::session_observe(&base, &id, view::WATCH_RADAR_SIZE).await {
+                        Ok(state) => {
+                            let frame = view::WatchFrame::from_observe(&state);
+                            print!("{TERM_CLEAR_HOME}{}", frame.text());
+                        }
+                        Err(e) => eprintln!("{e}"),
+                    }
+                }
+            }
+        }
+        return Ok(EXIT_OK as u8);
+    }
+    window::open(base, id).map_err(RuntimeError::Network)?;
+    Ok(EXIT_OK as u8)
 }
 
 async fn remote_tool(
@@ -480,18 +579,24 @@ async fn remote_tool(
     Ok(EXIT_OK as u8)
 }
 
-async fn serve_until_ctrl_c(rt: Runtime, bind: String) -> Result<u8, RuntimeError> {
-    let rt2 = rt.clone();
-    let bind2 = bind.clone();
+fn start_api(rt: Runtime, bind: String) {
     tokio::spawn(async move {
-        if let Err(e) = uoterm_runtime::api::serve(&bind2, rt2).await {
+        if let Err(e) = uoterm_runtime::api::serve(&bind, rt).await {
             tracing::error!(error = %e, "api ended");
         }
     });
+}
+
+async fn wait_ctrl_c() -> Result<u8, RuntimeError> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|e| RuntimeError::Network(e.to_string()))?;
     Ok(EXIT_OK as u8)
+}
+
+async fn serve_until_ctrl_c(rt: Runtime, bind: String) -> Result<u8, RuntimeError> {
+    start_api(rt, bind);
+    wait_ctrl_c().await
 }
 
 fn emit(as_json: bool, value: Value) {
@@ -601,12 +706,16 @@ mod tests {
                 encryption,
                 era,
                 version,
+                view,
+                text_view,
                 ..
             } => {
                 assert_eq!(encryption, EncryptionMode::None);
                 assert_eq!(encryption.as_str(), ENCRYPTION_NONE);
                 assert!(era.is_none());
                 assert!(version.is_none());
+                assert!(!view);
+                assert!(!text_view);
             }
             _ => panic!("expected connect"),
         }
@@ -668,6 +777,77 @@ mod tests {
                 assert_eq!(era.as_deref(), Some(ERA_T2A));
             }
             _ => panic!("expected connect"),
+        }
+    }
+
+    #[test]
+    fn parses_connect_view() {
+        let cli = Cli::try_parse_from([
+            "uoterm",
+            "connect",
+            "--account",
+            "test",
+            "--character",
+            "Mara",
+            "--view",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Connect {
+                view, text_view, ..
+            } => {
+                assert!(view);
+                assert!(!text_view);
+            }
+            _ => panic!("expected connect"),
+        }
+    }
+
+    #[test]
+    fn parses_connect_text_view() {
+        let cli = Cli::try_parse_from([
+            "uoterm",
+            "connect",
+            "--account",
+            "test",
+            "--character",
+            "Mara",
+            "--text-view",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Connect {
+                view, text_view, ..
+            } => {
+                assert!(!view);
+                assert!(text_view);
+            }
+            _ => panic!("expected connect"),
+        }
+    }
+
+    #[test]
+    fn rejects_connect_view_and_text_view() {
+        let err = Cli::try_parse_from([
+            "uoterm",
+            "connect",
+            "--account",
+            "test",
+            "--character",
+            "Mara",
+            "--view",
+            "--text-view",
+        ])
+        .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn parses_watch_text() {
+        let cli = Cli::try_parse_from(["uoterm", "watch", "--text"]).unwrap();
+        match cli.command {
+            Commands::Watch { text } => assert!(text),
+            _ => panic!("expected watch"),
         }
     }
 
