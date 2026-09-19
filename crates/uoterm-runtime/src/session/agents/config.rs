@@ -35,8 +35,8 @@ pub struct ItemRule {
 impl ItemRule {
     pub fn matches(&self, graphic: u16, color: u16) -> bool {
         !self.disabled
-            && self.graphic.map_or(true, |g| g == graphic)
-            && self.color.map_or(true, |c| c == color)
+            && self.graphic.is_none_or(|g| g == graphic)
+            && self.color.is_none_or(|c| c == color)
     }
 }
 

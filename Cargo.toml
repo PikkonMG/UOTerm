@@ -16,7 +16,7 @@ edition = "2021"
 license = "AGPL-3.0-only"
 repository = "https://github.com/PikkonMG/UOTerm"
 authors = ["UOTerm contributors"]
-rust-version = "1.80"
+rust-version = "1.87"
 description = "Headless Ultima Online client and agent runtime for private shards"
 
 [workspace.dependencies]

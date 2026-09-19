@@ -217,7 +217,7 @@ impl Agents {
             Job::Organize { list, .. } => c.organizer.contains_key(list),
             Job::Restock { list } => c.restock.contains_key(list),
             Job::Dress { list } => c.dress.contains_key(list),
-            Job::Undress { list } => list.as_ref().map_or(true, |l| c.dress.contains_key(l)),
+            Job::Undress { list } => list.as_ref().is_none_or(|l| c.dress.contains_key(l)),
             Job::LootOnce => true,
         };
         if !known {

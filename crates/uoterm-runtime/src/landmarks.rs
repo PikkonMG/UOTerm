@@ -87,11 +87,11 @@ impl Landmarks {
         let needle = name.map(str::to_ascii_lowercase);
         self.list
             .iter()
-            .filter(|m| map.map_or(true, |want| m.map == want))
+            .filter(|m| map.is_none_or(|want| m.map == want))
             .filter(|m| {
-                needle.as_deref().map_or(true, |n| {
-                    n.is_empty() || m.name.to_ascii_lowercase().contains(n)
-                })
+                needle
+                    .as_deref()
+                    .is_none_or(|n| n.is_empty() || m.name.to_ascii_lowercase().contains(n))
             })
             .collect()
     }
@@ -172,7 +172,7 @@ fn lua_attr(line: &str, key: &str) -> Option<String> {
     while let Some(rel) = line[from..].find(key) {
         let start = from + rel;
         let before = start.checked_sub(1).map(|i| bytes[i]);
-        let boundary = before.map_or(true, |b| !b.is_ascii_alphanumeric() && b != b'_');
+        let boundary = before.is_none_or(|b| !b.is_ascii_alphanumeric() && b != b'_');
         let after = line[start + key.len()..].strip_prefix("=\"");
         match (boundary, after) {
             (true, Some(tail)) => return tail.split_once('"').map(|(v, _)| v.to_string()),

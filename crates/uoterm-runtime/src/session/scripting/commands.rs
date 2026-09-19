@@ -718,7 +718,7 @@ pub(super) fn use_once_pick(
     Ok(backpack_serial(&w).and_then(|pack| {
         w.items_inside(pack, false)
             .into_iter()
-            .filter(|i| i.graphic == graphic && color.map_or(true, |c| i.hue == c))
+            .filter(|i| i.graphic == graphic && color.is_none_or(|c| i.hue == c))
             .filter(|i| !used.contains(&i.serial))
             .map(|i| i.serial)
             .next_back()
@@ -1394,7 +1394,7 @@ pub(super) fn find_gump(game: &Game, id: &Arg) -> Option<uoterm_protocol::OpenGu
         .gumps
         .iter()
         .rev()
-        .find(|g| want.map_or(true, |w| i64::from(g.gump_id) == w))
+        .find(|g| want.is_none_or(|w| i64::from(g.gump_id) == w))
         .cloned()
 }
 
@@ -1577,7 +1577,7 @@ fn party_message(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result
     // which party lines do not carry.
     let to = match (call.args.get(1), call.args.get(2)) {
         (_, Some(a)) => Some(game.serial(a, ctx)?),
-        (Some(a), None) if a.number().map_or(true, |n| n > i64::from(u16::MAX)) => {
+        (Some(a), None) if a.number().is_none_or(|n| n > i64::from(u16::MAX)) => {
             Some(game.serial(a, ctx)?)
         }
         _ => None,

@@ -75,7 +75,7 @@ fn passes_properties(inner: &mut Inner, item: Serial, rules: &[PropertyRule]) ->
             .find(|l| l.to_lowercase().contains(&want))
             .is_some_and(|line| {
                 let value = first_number(line).unwrap_or(1.0);
-                rule.min.map_or(true, |m| value >= m) && rule.max.map_or(true, |m| value <= m)
+                rule.min.is_none_or(|m| value >= m) && rule.max.is_none_or(|m| value <= m)
             })
     })
 }
@@ -225,7 +225,7 @@ pub(super) fn bandage(inner: &mut Inner, now: Instant) -> bool {
         let Some(bandage) = world
             .items
             .values()
-            .filter(|i| i.graphic == graphic && b.bandage_color.map_or(true, |c| i.hue == c))
+            .filter(|i| i.graphic == graphic && b.bandage_color.is_none_or(|c| i.hue == c))
             .filter(|i| pack.is_some_and(|p| world.is_inside(i.serial, p)))
             .map(|i| i.serial)
             .min_by_key(|s| s.0)
@@ -304,7 +304,7 @@ fn may_move(inner: &Inner, item: Serial) -> bool {
         .agents
         .job_moves
         .get(&item)
-        .map_or(true, |&n| n < MAX_JOB_MOVES)
+        .is_none_or(|&n| n < MAX_JOB_MOVES)
 }
 
 /// Moves each listed item from the source bag to the destination, split to
@@ -781,37 +781,37 @@ pub(super) fn pick_by_filter(
             filter
                 .name
                 .as_ref()
-                .map_or(true, |n| m.name.to_lowercase().contains(&n.to_lowercase()))
+                .is_none_or(|n| m.name.to_lowercase().contains(&n.to_lowercase()))
         })
         .filter(|m| {
             let d = here.chebyshev(m.location);
-            filter.range_min.map_or(true, |r| d >= r) && filter.range_max.map_or(true, |r| d <= r)
+            filter.range_min.is_none_or(|r| d >= r) && filter.range_max.is_none_or(|r| d <= r)
         })
         .filter(|m| {
             filter
                 .poisoned
-                .map_or(true, |p| world.is_poisoned(m.serial) == p)
+                .is_none_or(|p| world.is_poisoned(m.serial) == p)
         })
-        .filter(|m| filter.human.map_or(true, |h| is_humanoid(m.body) == h))
+        .filter(|m| filter.human.is_none_or(|h| is_humanoid(m.body) == h))
         .filter(|m| {
             filter
                 .ghost
-                .map_or(true, |g| uoterm_world::is_ghost_body(m.body) == g)
+                .is_none_or(|g| uoterm_world::is_ghost_body(m.body) == g)
         })
         .filter(|m| {
-            filter.war.map_or(true, |w| {
-                (m.flags & uoterm_protocol::types::FLAG_WAR != 0) == w
-            })
+            filter
+                .war
+                .is_none_or(|w| (m.flags & uoterm_protocol::types::FLAG_WAR != 0) == w)
         })
         .filter(|m| {
             filter
                 .friend
-                .map_or(true, |f| inner.agents.is_friend(&world, m.serial) == f)
+                .is_none_or(|f| inner.agents.is_friend(&world, m.serial) == f)
         })
         .filter(|m| {
             filter
                 .paralyzed
-                .map_or(true, |p| (m.flags & FLAG_FROZEN != 0) == p)
+                .is_none_or(|p| (m.flags & FLAG_FROZEN != 0) == p)
         })
         .collect();
     passing.sort_by_key(|m| (here.chebyshev(m.location), m.serial.0));

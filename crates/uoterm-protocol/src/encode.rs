@@ -149,7 +149,7 @@ fn keyword_block(keywords: &[u16]) -> Vec<u8> {
             nibbles.push(((field >> (place * NIBBLE_BITS)) & NIBBLE_MASK) as u8);
         }
     }
-    if nibbles.len() % NIBBLES_PER_BYTE != 0 {
+    if !nibbles.len().is_multiple_of(NIBBLES_PER_BYTE) {
         nibbles.push(0);
     }
     nibbles

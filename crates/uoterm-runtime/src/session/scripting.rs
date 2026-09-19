@@ -562,7 +562,7 @@ impl Game<'_> {
         let mut found: Vec<&uoterm_world::Item> = world
             .items
             .values()
-            .filter(|i| i.graphic == graphic && color.map_or(true, |c| i.hue == c))
+            .filter(|i| i.graphic == graphic && color.is_none_or(|c| i.hue == c))
             .filter(|i| !ignored.contains(&i.serial))
             .filter(|i| match source {
                 Source::Backpack => pack.is_some_and(|p| world.is_inside(i.serial, p)),
@@ -589,7 +589,7 @@ impl Game<'_> {
         let mut found: Vec<&uoterm_world::Mobile> = world
             .mobiles
             .values()
-            .filter(|m| m.body == body && color.map_or(true, |c| m.hue == c))
+            .filter(|m| m.body == body && color.is_none_or(|c| m.hue == c))
             .filter(|m| !ignored.contains(&m.serial))
             .filter(|m| here.chebyshev(m.location) <= range)
             .collect();

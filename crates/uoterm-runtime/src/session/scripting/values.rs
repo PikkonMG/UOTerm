@@ -383,9 +383,9 @@ fn find_object(game: &Game, call: &Call, ctx: &mut Ctx) -> Read {
     let found = {
         let w = game.world();
         let here = w.self_state.location;
-        let in_range = |at: Point3| range.map_or(true, |r| here.chebyshev(at) <= r);
+        let in_range = |at: Point3| range.is_none_or(|r| here.chebyshev(at) <= r);
         if let Some(m) = w.mobiles.get(&serial) {
-            color.map_or(true, |c| m.hue == c) && in_range(m.location)
+            color.is_none_or(|c| m.hue == c) && in_range(m.location)
         } else if let Some(i) = w.items.get(&serial) {
             let inside = match source {
                 Some(Source::Container(c)) => w.is_inside(serial, c),
@@ -394,7 +394,7 @@ fn find_object(game: &Game, call: &Call, ctx: &mut Ctx) -> Read {
                 }
                 _ => true,
             };
-            color.map_or(true, |c| i.hue == c)
+            color.is_none_or(|c| i.hue == c)
                 && inside
                 && i64::from(i.amount) >= amount
                 && w.map_location(serial).is_some_and(in_range)

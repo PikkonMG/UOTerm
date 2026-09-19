@@ -125,7 +125,7 @@ impl MultiFiles {
 pub fn multi_is_hs(lengths: &[u32]) -> bool {
     lengths
         .iter()
-        .all(|len| *len as usize % MULTI_RECORD_HS == 0)
+        .all(|len| (*len as usize).is_multiple_of(MULTI_RECORD_HS))
 }
 
 /// Where the pieces of one multi sit in the flat piece list.

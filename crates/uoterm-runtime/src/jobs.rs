@@ -416,7 +416,7 @@ impl HuntJob {
             let gone = blocked_aggro.is_none()
                 && self
                     .avoided
-                    .map_or(true, |serial| !world.mobiles.contains_key(&serial));
+                    .is_none_or(|serial| !world.mobiles.contains_key(&serial));
             if gone {
                 if self.avoided_gone_since.is_none() {
                     self.avoided_gone_since = Some(now);

@@ -70,7 +70,7 @@ impl DepositJob {
             .iter()
             .filter_map(|serial| world.items.get(serial))
             .filter(|item| item.parent == Some(self.backpack))
-            .filter(|item| self.only.map_or(true, |graphic| item.graphic == graphic))
+            .filter(|item| self.only.is_none_or(|graphic| item.graphic == graphic))
             .collect();
         if left.is_empty() {
             return DepositStep::Done;

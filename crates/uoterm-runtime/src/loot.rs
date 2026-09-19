@@ -40,7 +40,7 @@ impl MoveLimits {
     pub fn may_lift(&self, item: Serial) -> bool {
         self.lifts
             .get(&item)
-            .map_or(true, |&n| n < MAX_LIFTS_PER_ITEM)
+            .is_none_or(|&n| n < MAX_LIFTS_PER_ITEM)
     }
 
     pub fn note_lift(&mut self, item: Serial) {
