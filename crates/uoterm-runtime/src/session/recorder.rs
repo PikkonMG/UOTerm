@@ -71,7 +71,7 @@ fn is_file_name(name: &str) -> bool {
 
 /// Saves a script: in the working directory's scripts folder when there is
 /// one, and in the user's config folder when not.
-fn save(name: &str, text: &str) -> std::result::Result<PathBuf, String> {
+pub(super) fn save(name: &str, text: &str) -> std::result::Result<PathBuf, String> {
     let local = PathBuf::from(scripting::SCRIPTS_DIR);
     let dir = if local.is_dir() {
         local

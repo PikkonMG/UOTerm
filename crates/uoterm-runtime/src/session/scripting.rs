@@ -329,6 +329,54 @@ pub(super) fn script_status(inner: &Inner) -> ToolResult {
     ToolResult::ok(body)
 }
 
+const NEEDS_NAME: &str = "needs name";
+const BAD_NAME: &str = "a script name has letters, digits, spaces, - and _ only";
+/// No script name is longer than this.
+const NAME_MAX_CHARS: usize = 48;
+
+/// A name that is safe as a file name: it cannot leave the scripts folder.
+fn script_name(args: &Value) -> std::result::Result<&str, &'static str> {
+    let name = args
+        .get(ARG_NAME)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or(NEEDS_NAME)?;
+    let safe = name.chars().count() <= NAME_MAX_CHARS
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'));
+    safe.then_some(name).ok_or(BAD_NAME)
+}
+
+pub(super) fn script_read(args: &Value) -> ToolResult {
+    let name = match script_name(args) {
+        Ok(name) => name,
+        Err(words) => return ToolResult::err(words),
+    };
+    match find_script(name) {
+        Some(text) => ToolResult::ok(json!({ "name": name, "text": text })),
+        None => ToolResult::err(NO_SCRIPT_NAMED),
+    }
+}
+
+/// Saves a script that parses. A fault is refused with its line, so the
+/// folder holds no script that cannot start.
+pub(super) fn script_save(args: &Value) -> ToolResult {
+    let name = match script_name(args) {
+        Ok(name) => name,
+        Err(words) => return ToolResult::err(words),
+    };
+    let text = args.get(ARG_TEXT).and_then(Value::as_str).unwrap_or("");
+    if let Err(fault) = uoterm_script::Program::parse(text) {
+        return ToolResult::err(fault.to_string());
+    }
+    match super::recorder::save(name, text) {
+        Ok(path) => ToolResult::ok(json!({ "name": name, "path": path })),
+        Err(words) => ToolResult::err(words),
+    }
+}
+
 pub(super) fn list_scripts() -> ToolResult {
     ToolResult::ok(json!({ "scripts": script_names() }))
 }
@@ -703,6 +751,30 @@ mod tests {
 
     fn status(inner: &Inner) -> Value {
         script_status(inner).result
+    }
+
+    #[test]
+    fn a_script_name_cannot_leave_the_scripts_folder() {
+        assert_eq!(
+            script_name(&json!({ "name": " heal self " })),
+            Ok("heal self")
+        );
+        assert_eq!(
+            script_name(&json!({ "name": "../etc/passwd" })),
+            Err(BAD_NAME)
+        );
+        assert_eq!(script_name(&json!({ "name": "a/b" })), Err(BAD_NAME));
+        assert_eq!(script_name(&json!({ "name": "" })), Err(NEEDS_NAME));
+        assert_eq!(script_name(&json!({})), Err(NEEDS_NAME));
+        let long = "a".repeat(NAME_MAX_CHARS + 1);
+        assert_eq!(script_name(&json!({ "name": long })), Err(BAD_NAME));
+    }
+
+    #[test]
+    fn a_script_that_does_not_parse_is_not_saved() {
+        let refused = script_save(&json!({ "name": "broken", "text": "if\n" }));
+        assert!(!refused.ok);
+        assert!(!script_read(&json!({ "name": "no such script here" })).ok);
     }
 
     #[test]

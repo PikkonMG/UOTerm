@@ -10419,6 +10419,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_SHOP_CLOSE => play::shop_close(inner),
         TOOL_MENU_PICK => play::menu_pick(inner, args),
         TOOL_BOOK_CLOSE => play::book_close(inner),
+        TOOL_BOARD_READ => play::board_read(inner, args),
+        TOOL_BOARD_POST => play::board_post(inner, args),
+        TOOL_BOARD_REMOVE => play::board_remove(inner, args),
+        TOOL_BOARD_CLOSE => play::board_close(inner),
         TOOL_TRADE_GOLD => play::trade_gold(inner, args),
         TOOL_COMMAND => scripting::command(inner, args),
         TOOL_TAKE_CONTROL => control::take(inner, Instant::now()),
@@ -10437,6 +10441,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_STOP_SCRIPT => scripting::stop_script(inner),
         TOOL_SCRIPT_STATUS => scripting::script_status(inner),
         TOOL_LIST_SCRIPTS => scripting::list_scripts(),
+        TOOL_SCRIPT_READ => scripting::script_read(args),
+        TOOL_SCRIPT_SAVE => scripting::script_save(args),
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
                 p.clamp_rates();

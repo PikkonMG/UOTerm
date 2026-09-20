@@ -6,7 +6,9 @@
 //! everything in view, so it reads `watch`.
 
 use super::*;
-use uoterm_protocol::{ContextMenuEntry, Inbound, MenuEntry, VendorBuyEntry, VendorSellEntry};
+use uoterm_protocol::{
+    BulletinEvent, ContextMenuEntry, Inbound, MenuEntry, VendorBuyEntry, VendorSellEntry,
+};
 
 /// How many journal lines a window gets. It shows the last few and draws the
 /// newest over the heads of the speakers.
@@ -20,6 +22,13 @@ const NO_MENU_SHOWN: &str = "no context menu is shown for this object; ask for i
 const NO_SHOP_OPEN: &str = "no shop list is open";
 const NO_TRADE_OPEN: &str = "no trade is open";
 const NO_MENU_OPEN: &str = "no menu is open";
+const NO_BOARD_OPEN: &str = "no bulletin board is open; use one first";
+const NEEDS_MESSAGE: &str = "needs message: the serial of a message of the board";
+const NEEDS_SUBJECT: &str = "needs subject";
+const ARG_MESSAGE: &str = "message";
+const ARG_SUBJECT: &str = "subject";
+const ARG_TEXT: &str = "text";
+const ARG_REPLY_TO: &str = "reply_to";
 const NO_SUCH_ENTRY: &str = "the menu has no entry with that index";
 const CART_IS_EMPTY: &str = "items is empty: give [{serial, amount}]";
 
@@ -59,6 +68,28 @@ struct Book {
     pages: std::collections::BTreeMap<u16, Vec<String>>,
 }
 
+/// One message of a bulletin board. The lines come when it is read.
+#[derive(Clone, Debug, Default)]
+struct Post {
+    /// The message this one answers.
+    parent: Option<Serial>,
+    poster: String,
+    subject: String,
+    time: String,
+    lines: Option<Vec<String>>,
+}
+
+/// A bulletin board the character opened.
+#[derive(Clone, Debug)]
+struct Board {
+    serial: Serial,
+    name: String,
+    /// The messages under their serial numbers, so the oldest is first.
+    posts: std::collections::BTreeMap<u32, Post>,
+    /// The message that was read last.
+    reading: Option<Serial>,
+}
+
 #[derive(Default)]
 pub(super) struct Play {
     /// The object whose context menu the human waits for.
@@ -67,6 +98,7 @@ pub(super) struct Play {
     shop: Option<Shop>,
     old_menu: Option<OldMenu>,
     book: Option<Book>,
+    board: Option<Board>,
 }
 
 /// The shard sent a context menu. It is kept when the human asked for it.
@@ -180,6 +212,74 @@ pub(super) fn on_book_or_menu(inner: &mut Inner, msg: &Inbound) {
                 pages: std::collections::BTreeMap::new(),
             });
         }
+        Inbound::Bulletin(BulletinEvent::Opened { board, name }) => {
+            inner.play.board = Some(Board {
+                serial: *board,
+                name: name.clone(),
+                posts: std::collections::BTreeMap::new(),
+                reading: None,
+            });
+            // The messages that came before the board opened.
+            let known: Vec<Serial> = inner
+                .world
+                .read()
+                .items_inside(*board, false)
+                .iter()
+                .map(|item| item.serial)
+                .collect();
+            for message in known {
+                ask_for_summary(inner, message);
+            }
+        }
+        Inbound::AddItem(item)
+            if inner.play.board.as_ref().map(|b| b.serial) == Some(item.container) =>
+        {
+            ask_for_summary(inner, item.serial);
+        }
+        Inbound::ContainerContents { items } => {
+            let board = inner.play.board.as_ref().map(|b| b.serial);
+            let messages: Vec<Serial> = items
+                .iter()
+                .filter(|item| Some(item.container) == board)
+                .map(|item| item.serial)
+                .collect();
+            for message in messages {
+                ask_for_summary(inner, message);
+            }
+        }
+        Inbound::Bulletin(BulletinEvent::Summary {
+            board,
+            message,
+            parent,
+            poster,
+            subject,
+            time,
+        }) => {
+            if let Some(open) = inner.play.board.as_mut().filter(|b| b.serial == *board) {
+                let post = open.posts.entry(message.0).or_default();
+                post.parent = parent.is_valid().then_some(*parent);
+                post.poster = poster.clone();
+                post.subject = subject.clone();
+                post.time = time.clone();
+            }
+        }
+        Inbound::Bulletin(BulletinEvent::Message {
+            board,
+            message,
+            poster,
+            subject,
+            time,
+            lines,
+        }) => {
+            if let Some(open) = inner.play.board.as_mut().filter(|b| b.serial == *board) {
+                let post = open.posts.entry(message.0).or_default();
+                post.poster = poster.clone();
+                post.subject = subject.clone();
+                post.time = time.clone();
+                post.lines = Some(lines.clone());
+                open.reading = Some(*message);
+            }
+        }
         Inbound::BookContent { serial, pages } => {
             if let Some(book) = inner.play.book.as_mut().filter(|b| b.serial == *serial) {
                 for page in pages {
@@ -189,6 +289,97 @@ pub(super) fn on_book_or_menu(inner: &mut Inner, msg: &Inbound) {
         }
         _ => {}
     }
+}
+
+/// Asks for the list line of a message, once.
+fn ask_for_summary(inner: &mut Inner, message: Serial) {
+    let Some(board) = inner.play.board.as_mut() else {
+        return;
+    };
+    if board.posts.contains_key(&message.0) {
+        return;
+    }
+    board.posts.insert(message.0, Post::default());
+    let packet = encode::bulletin_ask(board.serial, message, false);
+    inner.outbound.push_back(packet);
+}
+
+/// The open board, or the words that refuse the call.
+fn open_board(inner: &Inner) -> std::result::Result<Serial, &'static str> {
+    inner
+        .play
+        .board
+        .as_ref()
+        .map(|board| board.serial)
+        .ok_or(NO_BOARD_OPEN)
+}
+
+fn message_arg(inner: &Inner, args: &Value) -> std::result::Result<(Serial, Serial), &'static str> {
+    let board = open_board(inner)?;
+    let message = arg_serial(args, ARG_MESSAGE);
+    let known = inner
+        .play
+        .board
+        .as_ref()
+        .is_some_and(|b| b.posts.contains_key(&message.0));
+    if known {
+        Ok((board, message))
+    } else {
+        Err(NEEDS_MESSAGE)
+    }
+}
+
+pub(super) fn board_read(inner: &mut Inner, args: &Value) -> ToolResult {
+    let (board, message) = match message_arg(inner, args) {
+        Ok(found) => found,
+        Err(refusal) => return ToolResult::err(refusal),
+    };
+    inner
+        .outbound
+        .push_back(encode::bulletin_ask(board, message, true));
+    ToolResult::action(TOOL_BOARD_READ)
+}
+
+pub(super) fn board_post(inner: &mut Inner, args: &Value) -> ToolResult {
+    let board = match open_board(inner) {
+        Ok(board) => board,
+        Err(refusal) => return ToolResult::err(refusal),
+    };
+    let subject = args
+        .get(ARG_SUBJECT)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if subject.is_empty() {
+        return ToolResult::err(NEEDS_SUBJECT);
+    }
+    let text = args.get(ARG_TEXT).and_then(Value::as_str).unwrap_or("");
+    let lines: Vec<&str> = text.lines().collect();
+    let reply_to = arg_serial(args, ARG_REPLY_TO);
+    inner
+        .outbound
+        .push_back(encode::bulletin_post(board, reply_to, subject, &lines));
+    ToolResult::action(TOOL_BOARD_POST)
+}
+
+pub(super) fn board_remove(inner: &mut Inner, args: &Value) -> ToolResult {
+    let (board, message) = match message_arg(inner, args) {
+        Ok(found) => found,
+        Err(refusal) => return ToolResult::err(refusal),
+    };
+    inner
+        .outbound
+        .push_back(encode::bulletin_remove(board, message));
+    if let Some(open) = inner.play.board.as_mut() {
+        open.posts.remove(&message.0);
+        open.reading = open.reading.filter(|reading| *reading != message);
+    }
+    ToolResult::action(TOOL_BOARD_REMOVE)
+}
+
+pub(super) fn board_close(inner: &mut Inner) -> ToolResult {
+    inner.play.board = None;
+    ToolResult::ok(json!({ "board": Value::Null }))
 }
 
 /// `menu_pick`: answers the old-style menu. The entries count from one.
@@ -453,6 +644,17 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         .menu
         .as_ref()
         .map(|menu| json!({ "serial": menu.serial, "lines": menu.lines })));
+    let words = |number: u32, arguments: &str| {
+        inner
+            .cliloc
+            .as_ref()
+            .and_then(|table| table.render(number, arguments))
+    };
+    picture["gump_layouts"] = json!(world
+        .gumps
+        .iter()
+        .map(|gump| uoterm_world::gump_layout(gump, &words))
+        .collect::<Vec<_>>());
     picture["menu"] = json!(inner.play.old_menu.as_ref().map(|menu| json!({
         "question": menu.question,
         "entries": menu.entries,
@@ -463,6 +665,23 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         "author": book.author,
         "page_count": book.page_count,
         "pages": book.pages.values().collect::<Vec<_>>(),
+    })));
+    picture["board"] = json!(inner.play.board.as_ref().map(|board| json!({
+        "serial": board.serial,
+        "name": board.name,
+        "reading": board.reading,
+        "posts": board
+            .posts
+            .iter()
+            .map(|(serial, post)| json!({
+                "serial": serial,
+                "parent": post.parent,
+                "poster": post.poster,
+                "subject": post.subject,
+                "time": post.time,
+                "lines": post.lines,
+            }))
+            .collect::<Vec<_>>(),
     })));
     picture["text_entry"] = json!(world
         .text_entry
@@ -564,6 +783,7 @@ mod tests {
             "party_members",
             "cues",
             "multis",
+            "gump_layouts",
             "running",
             "season",
             "light",
@@ -641,6 +861,73 @@ mod tests {
         assert_eq!(shown["book"]["pages"][0][0], "Once");
         assert!(book_close(&mut inner).ok);
         assert!(watch_value(&inner, RADAR_DEFAULT)["book"].is_null());
+    }
+
+    #[test]
+    fn a_board_lists_its_messages_and_one_can_be_read_posted_and_removed() {
+        const BOARD: Serial = Serial(0x4000_0E01);
+        const NOTE: Serial = Serial(0x4000_0E02);
+        let mut inner = test_session();
+        assert!(!board_read(&mut inner, &json!({ "message": NOTE })).ok);
+        on_book_or_menu(
+            &mut inner,
+            &Inbound::Bulletin(BulletinEvent::Opened {
+                board: BOARD,
+                name: "town board".into(),
+            }),
+        );
+        let arrives = Inbound::AddItem(uoterm_protocol::ContainerItem {
+            serial: NOTE,
+            graphic: 0x0EB0,
+            amount: 1,
+            x: 0,
+            y: 0,
+            grid: 0,
+            container: BOARD,
+            hue: 0,
+        });
+        on_book_or_menu(&mut inner, &arrives);
+        on_book_or_menu(&mut inner, &arrives);
+        let asked = encode::bulletin_ask(BOARD, NOTE, false);
+        assert_eq!(
+            inner.outbound.iter().filter(|p| **p == asked).count(),
+            1,
+            "the list line is asked for once"
+        );
+        on_book_or_menu(
+            &mut inner,
+            &Inbound::Bulletin(BulletinEvent::Summary {
+                board: BOARD,
+                message: NOTE,
+                parent: Serial(0),
+                poster: "Ann".into(),
+                subject: "Selling ore".into(),
+                time: "Day 1".into(),
+            }),
+        );
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["board"]["posts"][0]["subject"], "Selling ore");
+        assert!(shown["board"]["posts"][0]["lines"].is_null());
+        assert!(board_read(&mut inner, &json!({ "message": NOTE })).ok);
+        assert!(inner
+            .outbound
+            .contains(&encode::bulletin_ask(BOARD, NOTE, true)));
+        assert!(!board_post(&mut inner, &json!({ "text": "no subject" })).ok);
+        let post = json!({ "subject": "Re: ore", "text": "I buy.\nTonight.", "reply_to": NOTE });
+        assert!(board_post(&mut inner, &post).ok);
+        assert!(inner.outbound.contains(&encode::bulletin_post(
+            BOARD,
+            NOTE,
+            "Re: ore",
+            &["I buy.", "Tonight."]
+        )));
+        assert!(board_remove(&mut inner, &json!({ "message": NOTE })).ok);
+        assert!(watch_value(&inner, RADAR_DEFAULT)["board"]["posts"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(board_close(&mut inner).ok);
+        assert!(watch_value(&inner, RADAR_DEFAULT)["board"].is_null());
     }
 
     #[test]

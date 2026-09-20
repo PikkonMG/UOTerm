@@ -52,6 +52,8 @@ pub const TOOL_RUN_SCRIPT: &str = "run_script";
 pub const TOOL_STOP_SCRIPT: &str = "stop_script";
 pub const TOOL_SCRIPT_STATUS: &str = "script_status";
 pub const TOOL_LIST_SCRIPTS: &str = "list_scripts";
+pub const TOOL_SCRIPT_READ: &str = "script_read";
+pub const TOOL_SCRIPT_SAVE: &str = "script_save";
 pub const TOOL_AGENTS: &str = "agents";
 pub const TOOL_AGENT_SET: &str = "agent_set";
 pub const TOOL_AGENT_ON: &str = "agent_on";
@@ -74,6 +76,10 @@ pub const TOOL_SHOP_CHECKOUT: &str = "shop_checkout";
 pub const TOOL_SHOP_CLOSE: &str = "shop_close";
 pub const TOOL_MENU_PICK: &str = "menu_pick";
 pub const TOOL_BOOK_CLOSE: &str = "book_close";
+pub const TOOL_BOARD_READ: &str = "board_read";
+pub const TOOL_BOARD_POST: &str = "board_post";
+pub const TOOL_BOARD_REMOVE: &str = "board_remove";
+pub const TOOL_BOARD_CLOSE: &str = "board_close";
 pub const TOOL_TRADE_GOLD: &str = "trade_gold";
 pub const TOOL_COMMAND: &str = "command";
 pub const TOOL_TAKE_CONTROL: &str = "take_control";
@@ -376,6 +382,16 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (TOOL_LIST_SCRIPTS, "The scripts in the scripts folder.", "session exists"),
     (
+        TOOL_SCRIPT_READ,
+        "The text of one script of the scripts folder: name.",
+        "the script exists",
+    ),
+    (
+        TOOL_SCRIPT_SAVE,
+        "Saves a script in the scripts folder: name (letters, digits, space, - and _) and text. A script that does not parse is refused with the line of the fault. A script with that name is replaced.",
+        "session exists",
+    ),
+    (
         TOOL_AGENTS,
         "Every agent's settings, which agents are on, and the job running.",
         "session exists",
@@ -408,7 +424,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_HOTKEYS,
-        "The hotkeys by group: general, actions, pets, agents, combat, potions, items, wands, skills, spells, virtues, targets, scripts. Give group for one group.",
+        "The hotkeys by group: general, actions, pets, agents, combat, potions, items, wands, skills, spells, virtues, targets, scripts. Give group for one group. Give name for one hotkey with the script lines it runs.",
         "session exists",
     ),
     (
@@ -472,6 +488,26 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "session exists",
     ),
     (
+        TOOL_BOARD_READ,
+        "Asks for the lines of one message of the open bulletin board: message is its serial. Use a bulletin board to open it; watch then shows it under board, with the list of messages and the message that was read.",
+        "a bulletin board is open",
+    ),
+    (
+        TOOL_BOARD_POST,
+        "Posts a message on the open bulletin board: subject, text (lines parted by a line break), and reply_to for an answer to a message.",
+        "a bulletin board is open",
+    ),
+    (
+        TOOL_BOARD_REMOVE,
+        "Removes a message the character posted from the open bulletin board: message.",
+        "a bulletin board is open",
+    ),
+    (
+        TOOL_BOARD_CLOSE,
+        "Forgets the open bulletin board.",
+        "session exists",
+    ),
+    (
         TOOL_TRADE_GOLD,
         "Sets the gold and platinum offered in the open trade: gold, platinum.",
         "a trade is open",
@@ -495,7 +531,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
 
 /// The tools that only look. An agent may call them while a human has the
 /// character.
-const READ_ONLY_TOOLS: [&str; 19] = [
+const READ_ONLY_TOOLS: [&str; 20] = [
     TOOL_OBSERVE,
     TOOL_WATCH,
     TOOL_PROPERTIES,
@@ -510,6 +546,7 @@ const READ_ONLY_TOOLS: [&str; 19] = [
     TOOL_NEXT_EVENT,
     TOOL_SCRIPT_STATUS,
     TOOL_LIST_SCRIPTS,
+    TOOL_SCRIPT_READ,
     TOOL_AGENTS,
     TOOL_DAMAGE_METER,
     TOOL_HOTKEYS,

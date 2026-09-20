@@ -274,7 +274,26 @@ fn title(name: &str) -> String {
 const ARG_GROUP: &str = "group";
 
 /// The hotkeys, by group. A group name limits the list to that group.
+/// One hotkey with the script lines it runs. None for a hotkey that is not
+/// made of script lines.
+fn one(inner: &Inner, name: &str) -> ToolResult {
+    let want = name_key(name);
+    match all(inner).into_iter().find(|k| name_key(&k.name) == want) {
+        Some(key) => {
+            let lines = match &key.action {
+                Action::Lines(text) => Some(text.clone()),
+                _ => None,
+            };
+            ToolResult::ok(json!({ "name": key.name, "group": key.group, "lines": lines }))
+        }
+        None => ToolResult::err(format!("no hotkey named '{name}'")),
+    }
+}
+
 pub(super) fn list(inner: &Inner, args: &Value) -> ToolResult {
+    if let Some(name) = args.get("name").and_then(Value::as_str) {
+        return one(inner, name);
+    }
     let only = args
         .get(ARG_GROUP)
         .and_then(|v| v.as_str())
