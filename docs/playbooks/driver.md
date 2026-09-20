@@ -15,6 +15,6 @@ This is the loop that runs the character. Other playbooks are the branches.
 
 Start one job at a time. Hunt and walk refuse a second start unless `replace` is true. Replace emits `job_ended` with reason `stopped` for the old job, then starts the new one.
 
-Watch the character with `uoterm watch`, `connect --view`, or `connect --text-view`. `--view` starts watch as a child; closing the window does not drop the socket. The window draws the real map from the client files. A human can press "Take control" in it; see step 0 above.
+Watch the character with `uoterm watch`, `connect --view`, or `connect --text-view`. `--view` opens the window in the same process; closing the window does not drop the socket. The window draws the real map from the client files. A human can press "Take control" in it and then play by hand: walk, drag items, shop, trade, answer gumps. See step 0 above. Do not call `watch`, `command`, `properties`, `shop_checkout`, `menu_pick` or `close_menu`: they are for the window.
 
 To see what the human sees, call the MCP tool `screenshot`. It gives one picture of the watch window. Use it when the text radar is not enough, for example in a crowd or in a dungeon. It takes some seconds, so do not call it in a fight.

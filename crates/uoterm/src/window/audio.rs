@@ -5,16 +5,16 @@
 //! The sounds come from the client files. With no client files, or with no
 //! sound device, the window is silent and the rest of it works the same.
 
+use super::kept;
 use crate::view::{WatchFrame, WatchSound};
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZero;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use uoterm_nav::{MusicList, SoundData, SOUND_SAMPLE_RATE};
-use uoterm_runtime::config::config_dir;
 
 const SETTINGS_FILE: &str = "watch-audio.toml";
 const ONE_CHANNEL: NonZero<u16> = NonZero::new(1).unwrap();
@@ -81,35 +81,12 @@ impl Settings {
         (own * self.master).clamp(0.0, 1.0)
     }
 
-    fn path() -> PathBuf {
-        config_dir().join(SETTINGS_FILE)
-    }
-
     pub fn load() -> Self {
-        Self::load_from(&Self::path())
-    }
-
-    fn load_from(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| toml::from_str(&text).ok())
-            .unwrap_or_default()
+        kept::load(SETTINGS_FILE)
     }
 
     pub fn save(&self) {
-        self.save_to(&Self::path());
-    }
-
-    fn save_to(&self, path: &Path) {
-        let Ok(text) = toml::to_string(self) else {
-            return;
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(e) = std::fs::write(path, text) {
-            tracing::warn!(error = %e, "audio settings not saved");
-        }
+        kept::save(SETTINGS_FILE, self);
     }
 }
 
@@ -363,10 +340,10 @@ mod tests {
             muted: true,
             ..Settings::default()
         };
-        settings.save_to(&path);
-        assert_eq!(Settings::load_from(&path), settings);
+        kept::save_to(&path, &settings);
+        assert_eq!(kept::load_from::<Settings>(&path), settings);
         std::fs::write(&path, "music = \"loud\"").unwrap();
-        assert_eq!(Settings::load_from(&path), Settings::default());
+        assert_eq!(kept::load_from::<Settings>(&path), Settings::default());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

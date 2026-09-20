@@ -8,7 +8,8 @@ use super::client_art::{is_drawn, ClientArt};
 use super::figure::{is_mounted, Pose};
 use super::theme;
 use crate::view::{
-    WatchFrame, WatchItem, WatchLook, WatchMobile, SYM_BLOCK, SYM_DOOR, SYM_WALK, SYM_WATER,
+    WatchCueKind, WatchFrame, WatchItem, WatchLook, WatchMobile, SYM_BLOCK, SYM_DOOR, SYM_WALK,
+    SYM_WATER,
 };
 use eframe::egui::{
     self,
@@ -33,16 +34,24 @@ const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 3.0;
 const ZOOM_START: f32 = 1.0;
 const ZOOM_PER_SCROLL_POINT: f32 = 0.0015;
-/// One tile takes 0.1 s on a fast mount and 0.4 s on foot. A move is never
-/// quicker or slower than these limits.
-const GLIDE_MIN_SECONDS: f64 = 0.1;
-const GLIDE_MAX_SECONDS: f64 = 0.5;
+/// The paces of the game: the time of one tile on foot and on a mount.
+const STEP_SECONDS_FOOT_WALK: f64 = 0.4;
+const STEP_SECONDS_FOOT_RUN: f64 = 0.2;
+const STEP_SECONDS_MOUNT_WALK: f64 = 0.2;
+const STEP_SECONDS_MOUNT_RUN: f64 = 0.1;
+/// How many tiles wait while a move is under way.
+const GLIDE_QUEUE_CAP: usize = 4;
+/// A move with no tile queued takes this much longer than its pace.
+const GLIDE_STRETCH_ALONE: f64 = 1.02;
+/// A gap of this many paces, or more, is a rest between two walks.
+const NEWS_REST_FACTOR: f64 = 2.0;
+/// How much of each new gap goes into the learned rhythm.
+const NEWS_LEARN_SHARE: f64 = 0.35;
+/// Each queued tile makes the next move this much faster.
+const GLIDE_CATCH_UP_PER_TILE: f64 = 0.08;
 /// The next place comes a moment after a move ends. A mobile keeps his walk
 /// for this long, so he does not stand still for one frame between two tiles.
-const STEP_LINGER_SECONDS: f64 = 0.2;
-/// A tile in less time than this is a run: on foot, and on a mount.
-const RUN_TILE_SECONDS_ON_FOOT: f64 = 0.3;
-const RUN_TILE_SECONDS_MOUNTED: f64 = 0.15;
+const STEP_LINGER_SECONDS: f64 = 0.12;
 /// How long one picture of each action shows.
 const STAND_FRAME_SECONDS: f64 = 0.35;
 /// The least time between two footstep sounds of one walker, as the game
@@ -54,8 +63,10 @@ const STEP_GAP_MOUNT_WALK: f64 = 0.455;
 const STEP_MEMORY_SECONDS: f64 = 5.0;
 /// The character has no serial in the frame. No mobile has this one.
 const SELF_STEP_KEY: u32 = 0;
-const WALK_FRAME_SECONDS: f64 = 0.09;
-const RUN_FRAME_SECONDS: f64 = 0.06;
+/// One picture of a walk or a run shows for this long at the full pace of
+/// the game. The legs go by the ground that was covered, not by the clock:
+/// a slow mobile has slow legs, and a mobile that stops has still legs.
+const STEP_FRAME_SECONDS: f64 = 0.08;
 /// A jump longer than this is a teleport. The camera does not slide over it.
 const TELEPORT_TILES: f32 = 12.0;
 
@@ -142,6 +153,14 @@ pub struct Scene {
     steps: Vec<Step>,
     /// When each walker last made a footstep sound.
     last_step: HashMap<u32, f64>,
+    /// The action each mobile shows now, and when it began.
+    shows: HashMap<u32, (u8, f64)>,
+    /// The last cue that was taken. None until the first picture.
+    last_cue: Option<u64>,
+    /// The panels of the last frame. The wheel over one does not zoom.
+    panels: Vec<Rect>,
+    /// How many screen pixels one point of the window has.
+    pixels_per_point: f32,
 }
 
 /// What kind of thing the mouse is on.
@@ -178,6 +197,15 @@ struct Looks<'a> {
     alpha: f32,
 }
 
+const MS_PER_SECOND: f64 = 1000.0;
+/// A fire or a fountain shows its next picture this often, so the window
+/// draws again at least this often.
+const ART_CYCLE_SECONDS: f64 = 0.1;
+
+/// How long a shown action plays, and how long each of its pictures stays.
+const SHOW_SECONDS: f64 = 0.9;
+const SHOW_FRAME_SECONDS: f64 = 0.1;
+
 /// The pose of a mobile the window has not seen move.
 const STANDING: Pose = Pose {
     action: Action::Stand,
@@ -187,6 +215,11 @@ const STANDING: Pose = Pose {
 /// A thing that stands on one tile and is drawn in height order.
 enum Standing<'a> {
     Art(&'a WatchItem),
+    /// One piece of a house or a boat.
+    Piece {
+        graphic: u16,
+        z: f32,
+    },
     Corpse(&'a WatchItem),
     Mobile {
         mobile: &'a WatchMobile,
@@ -201,6 +234,7 @@ impl Standing<'_> {
     fn z(&self) -> f32 {
         match self {
             Self::Art(item) | Self::Corpse(item) => f32::from(item.z),
+            Self::Piece { z, .. } => *z,
             Self::Mobile { at, .. } | Self::Character { at } => at[2],
         }
     }
@@ -303,6 +337,34 @@ struct Glide {
     to: [f32; 3],
     started: f64,
     seconds: f64,
+    /// The tiles that came while the move to `to` was under way.
+    queue: [[f32; 3]; GLIDE_QUEUE_CAP],
+    queued: usize,
+    /// How long one tile takes at the pace of the mobile.
+    tile_seconds: f64,
+    /// How long one tile took of late, by when the news of each tile came.
+    /// The news of a live shard comes at uneven times. A move that is a
+    /// little faster than the news stops after each tile.
+    news_seconds: f64,
+    last_news: f64,
+    /// The tiles of the moves that ended, for the pictures of the legs.
+    tiles_done: f32,
+    running: bool,
+}
+
+/// How long one tile takes. These are the paces of the game itself, so the
+/// move on the screen does not depend on when the news of it came.
+fn tile_seconds(mounted: bool, running: bool) -> f64 {
+    match (mounted, running) {
+        (false, false) => STEP_SECONDS_FOOT_WALK,
+        (false, true) => STEP_SECONDS_FOOT_RUN,
+        (true, false) => STEP_SECONDS_MOUNT_WALK,
+        (true, true) => STEP_SECONDS_MOUNT_RUN,
+    }
+}
+
+fn tiles_between(a: [f32; 3], b: [f32; 3]) -> f32 {
+    (a[0] - b[0]).abs().max((a[1] - b[1]).abs())
 }
 
 impl Glide {
@@ -311,65 +373,177 @@ impl Glide {
             from: at,
             to: at,
             started: time,
-            seconds: GLIDE_MIN_SECONDS,
+            seconds: 0.0,
+            queue: [at; GLIDE_QUEUE_CAP],
+            queued: 0,
+            tile_seconds: STEP_SECONDS_FOOT_WALK,
+            news_seconds: STEP_SECONDS_FOOT_WALK,
+            last_news: time,
+            tiles_done: 0.0,
+            running: false,
         }
     }
 
     fn at(&self, time: f64) -> [f32; 3] {
+        if self.seconds <= 0.0 {
+            return self.to;
+        }
         let share = ((time - self.started) / self.seconds).clamp(0.0, 1.0) as f32;
         [0, 1, 2].map(|i| self.from[i] + (self.to[i] - self.from[i]) * share)
     }
 
     fn moving(&self, time: f64) -> bool {
-        self.from != self.to && time - self.started < self.seconds
+        self.queued > 0 || (self.from != self.to && time - self.started < self.seconds)
     }
 
-    /// What the mobile does now, and which picture of it shows.
-    fn pose(&self, time: f64, mounted: bool) -> Pose {
-        let stepping =
-            self.from != self.to && time - self.started < self.seconds + STEP_LINGER_SECONDS;
-        let tiles = (self.to[0] - self.from[0])
-            .abs()
-            .max((self.to[1] - self.from[1]).abs())
-            .max(1.0);
-        let run_under = if mounted {
-            RUN_TILE_SECONDS_MOUNTED
-        } else {
-            RUN_TILE_SECONDS_ON_FOOT
+    /// The way the mobile moves now, 0 for north and then clockwise to 7.
+    /// None when he rests. The shard turns him when it takes his next step,
+    /// but the window still draws the step before it. With the way of the
+    /// shard he would slide sideways, as on ice.
+    fn heading(&self, time: f64) -> Option<u8> {
+        /// The ways, by the step south (north, none, south) and then by the
+        /// step east (west, none, east). The middle is no move.
+        const WAYS: [[u8; 3]; 3] = [[7, 0, 1], [6, 0, 2], [5, 4, 3]];
+        let place = |step: f32| match step {
+            step if step < 0.0 => 0,
+            step if step > 0.0 => 2,
+            _ => 1,
         };
-        let (action, frame_seconds) = if !stepping {
-            (Action::Stand, STAND_FRAME_SECONDS)
-        } else if self.seconds / f64::from(tiles) < run_under {
-            (Action::Run, RUN_FRAME_SECONDS)
-        } else {
-            (Action::Walk, WALK_FRAME_SECONDS)
-        };
+        let east = place(self.to[0] - self.from[0]);
+        let south = place(self.to[1] - self.from[1]);
+        let on_the_move = time - self.started < self.seconds + STEP_LINGER_SECONDS;
+        (on_the_move && (east, south) != (1, 1)).then(|| WAYS[south][east])
+    }
+
+    /// How many tiles the mobile covered since he last rested.
+    fn tiles_covered(&self, time: f64) -> f32 {
+        if self.seconds <= 0.0 {
+            return self.tiles_done;
+        }
+        let share = ((time - self.started) / self.seconds).clamp(0.0, 1.0) as f32;
+        self.tiles_done + tiles_between(self.from, self.to) * share
+    }
+
+    /// What the mobile does now, and which picture of it shows. The legs of
+    /// a walk go by the ground he covered. For a short time after a move he
+    /// keeps his last picture, so he does not stand up between two tiles.
+    fn pose(&self, time: f64) -> Pose {
+        let stepping = self.queued > 0
+            || (self.from != self.to && time - self.started < self.seconds + STEP_LINGER_SECONDS);
+        if !stepping {
+            return Pose {
+                action: Action::Stand,
+                tick: (time / STAND_FRAME_SECONDS) as usize,
+            };
+        }
+        let pictures_per_tile = self.tile_seconds / STEP_FRAME_SECONDS;
         Pose {
-            action,
-            tick: (time / frame_seconds) as usize,
+            action: if self.running {
+                Action::Run
+            } else {
+                Action::Walk
+            },
+            tick: (f64::from(self.tiles_covered(time)) * pictures_per_tile) as usize,
         }
     }
 
-    /// Starts a new move when the goal changed. A jump is not a move.
-    fn aim(&mut self, goal: [f32; 3], time: f64) {
-        if goal == self.to {
-            return;
+    /// The last tile the mobile is on his way to.
+    fn goal(&self) -> [f32; 3] {
+        match self.queued {
+            0 => self.to,
+            queued => self.queue[queued - 1],
         }
-        if far_apart(self.to, goal) {
-            *self = Self::resting(goal, time);
-            return;
-        }
-        *self = Self {
-            from: self.at(time),
-            to: goal,
-            started: time,
-            seconds: (time - self.started).clamp(GLIDE_MIN_SECONDS, GLIDE_MAX_SECONDS),
+    }
+
+    /// How long the move to the next tile takes. With nothing queued it is
+    /// a little slow, so the next tile comes before this one ends and the
+    /// mobile does not stop between two tiles. With tiles queued it is fast,
+    /// so the mobile catches up.
+    fn leg_seconds(&self, from: [f32; 3], to: [f32; 3]) -> f64 {
+        let tiles = f64::from(tiles_between(from, to).max(1.0));
+        let pace = match self.queued {
+            0 => GLIDE_STRETCH_ALONE,
+            queued => 1.0 / (1.0 + GLIDE_CATCH_UP_PER_TILE * queued as f64),
         };
+        self.tile_seconds.max(self.news_seconds) * tiles * pace
+    }
+
+    /// Takes the tile the mobile is on now. A new tile starts a move, or
+    /// waits in the queue for the move under way to end. A jump is not a move.
+    fn aim(&mut self, goal: [f32; 3], time: f64, mounted: bool, running: bool) {
+        self.tile_seconds = tile_seconds(mounted, running);
+        self.running = running;
+        if goal != self.goal() {
+            if far_apart(self.goal(), goal) {
+                *self = Self::resting(goal, time);
+                return;
+            }
+            self.note_news(goal, time);
+            let at_rest = self.queued == 0 && time - self.started >= self.seconds;
+            if at_rest {
+                // A walk after a rest starts its legs from the first picture.
+                let rested = time - self.started >= self.seconds + STEP_LINGER_SECONDS;
+                self.tiles_done = if rested {
+                    0.0
+                } else {
+                    self.tiles_done + tiles_between(self.from, self.to)
+                };
+                self.from = self.to;
+                self.to = goal;
+                self.started = time;
+                self.seconds = self.leg_seconds(self.from, goal);
+            } else {
+                // A full queue loses its last tile. The move then cuts a corner.
+                let place = self.queued.min(GLIDE_QUEUE_CAP - 1);
+                self.queue[place] = goal;
+                self.queued = place + 1;
+            }
+        }
+        self.settle(time);
+    }
+
+    /// Learns the rhythm of the news. A gap that is much longer than the
+    /// pace is a rest, not a rhythm.
+    fn note_news(&mut self, goal: [f32; 3], time: f64) {
+        let tiles = f64::from(tiles_between(self.goal(), goal).max(1.0));
+        let took = (time - self.last_news) / tiles;
+        self.last_news = time;
+        let in_rhythm = took < self.tile_seconds * NEWS_REST_FACTOR;
+        self.news_seconds = if in_rhythm {
+            self.news_seconds + (took - self.news_seconds) * NEWS_LEARN_SHARE
+        } else {
+            self.tile_seconds
+        };
+    }
+
+    /// Starts the move to the next queued tile at the moment the last move
+    /// ended, so no time is lost between two tiles.
+    fn settle(&mut self, time: f64) {
+        while self.queued > 0 && time - self.started >= self.seconds {
+            let next = self.queue[0];
+            self.queue.copy_within(1.., 0);
+            self.queued -= 1;
+            self.started += self.seconds;
+            self.tiles_done += tiles_between(self.from, self.to);
+            self.from = self.to;
+            self.to = next;
+            self.seconds = self.leg_seconds(self.from, next);
+        }
     }
 }
 
+/// The look of a mobile turned the way he moves. None when he faces that
+/// way already, or when he rests.
+fn turned_to(look: &WatchLook, heading: Option<u8>) -> Option<WatchLook> {
+    let heading = heading.filter(|way| *way != look.direction)?;
+    Some(WatchLook {
+        direction: heading,
+        ..look.clone()
+    })
+}
+
 fn far_apart(a: [f32; 3], b: [f32; 3]) -> bool {
-    (a[0] - b[0]).abs().max((a[1] - b[1]).abs()) > TELEPORT_TILES
+    tiles_between(a, b) > TELEPORT_TILES
 }
 
 impl Scene {
@@ -393,6 +567,10 @@ impl Scene {
             now: 0.0,
             steps: Vec::new(),
             last_step: HashMap::new(),
+            shows: HashMap::new(),
+            last_cue: None,
+            panels: Vec::new(),
+            pixels_per_point: 1.0,
         }
     }
 
@@ -407,12 +585,15 @@ impl Scene {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, theme::VOID);
         self.read_zoom(ui, rect);
+        self.pixels_per_point = ui.ctx().pixels_per_point();
         self.now = time;
-        let moving = self.follow(frame, time);
-        // A mobile that stands still moves a little. Wake for its next picture.
+        self.take_cues(frame, time);
+        let moving = self.follow(frame, time) || !self.shows.is_empty();
+        // A mobile that stands still moves a little, and a fire burns. Wake
+        // for the next picture.
         if self.client.is_some() {
             ui.ctx()
-                .request_repaint_after(Duration::from_secs_f64(STAND_FRAME_SECONDS));
+                .request_repaint_after(Duration::from_secs_f64(ART_CYCLE_SECONDS));
         }
         let atlas = self.atlas.get_or_insert_with(|| Atlas::new(ui.ctx()));
         let mut canvas = Canvas {
@@ -431,7 +612,9 @@ impl Scene {
 
     fn read_zoom(&mut self, ui: &egui::Ui, rect: Rect) {
         let scroll = ui.input(|i| {
-            let over = i.pointer.hover_pos().is_some_and(|p| rect.contains(p));
+            let over = i.pointer.hover_pos().is_some_and(|p| {
+                rect.contains(p) && !self.panels.iter().any(|panel| panel.contains(p))
+            });
             if over {
                 i.smooth_scroll_delta.y
             } else {
@@ -448,14 +631,14 @@ impl Scene {
         self.camera_map = Some(frame.map);
         let glide = match self.camera_glide.filter(|_| same_map) {
             Some(mut glide) => {
-                glide.aim(goal, time);
+                glide.aim(goal, time, is_mounted(&frame.look), frame.look.running);
                 glide
             }
             None => Glide::resting(goal, time),
         };
         if self
             .camera_glide
-            .is_some_and(|before| before.to != glide.to)
+            .is_some_and(|before| before.goal() != glide.goal())
             && !frame.dead
             && !frame.hidden
         {
@@ -475,8 +658,8 @@ impl Scene {
             let glide = match self.glides.get(&mobile.serial).filter(|_| same_map) {
                 Some(known) => {
                     let mut glide = *known;
-                    glide.aim(goal, time);
-                    if glide.to != known.to {
+                    glide.aim(goal, time, is_mounted(&mobile.look), mobile.look.running);
+                    if glide.goal() != known.goal() {
                         self.step(
                             mobile.serial,
                             &mobile.look,
@@ -499,6 +682,60 @@ impl Scene {
         moving
     }
 
+    /// Takes the new animation cues. A cue from before the window opened
+    /// does not play.
+    fn take_cues(&mut self, frame: &WatchFrame, time: f64) {
+        let newest = frame.cues.iter().map(|cue| cue.seq).max();
+        if let Some(seen) = self.last_cue {
+            for cue in frame.cues.iter().filter(|cue| cue.seq > seen) {
+                if let WatchCueKind::Animation(action) = cue.kind {
+                    if let Ok(group) = u8::try_from(action) {
+                        self.shows.insert(cue.serial, (group, time));
+                    }
+                }
+            }
+        }
+        self.last_cue = newest.or(self.last_cue).or(Some(0));
+        self.shows
+            .retain(|_, (_, began)| time - *began < SHOW_SECONDS);
+    }
+
+    /// The pose of a mobile that shows an action now.
+    fn shown_pose(&self, serial: u32) -> Option<Pose> {
+        let (group, began) = self.shows.get(&serial)?;
+        Some(Pose {
+            action: Action::Shown(*group),
+            tick: ((self.now - began) / SHOW_FRAME_SECONDS) as usize,
+        })
+    }
+
+    /// The color of one tile on a map of the world.
+    pub fn radar_rgb(&mut self, map: u8, x: u16, y: u16) -> Option<[u8; 3]> {
+        self.client.as_mut()?.radar_rgb(map, x, y)
+    }
+
+    /// Where a place of the world is on the screen.
+    pub fn screen_of(&self, rect: Rect, place: [f32; 3]) -> Pos2 {
+        self.project(rect, place)
+    }
+
+    /// Where a mobile is drawn now. None for one that is not in view.
+    pub fn place_of(&self, frame: &WatchFrame, serial: u32) -> Option<[f32; 3]> {
+        if serial == frame.serial {
+            return Some(self.camera);
+        }
+        self.actors.get(&serial).copied()
+    }
+
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    /// The window tells where its panels are, for the next frame.
+    pub fn set_panels(&mut self, panels: Vec<Rect>) {
+        self.panels = panels;
+    }
+
     /// Notes one footstep for the sound, when the walker is a person and his
     /// last footstep is long enough ago. A jump makes no footstep.
     fn step(&mut self, walker: u32, look: &WatchLook, glide: &Glide, tiles_away: f32, time: f64) {
@@ -510,7 +747,7 @@ impl Scene {
             return;
         }
         let mounted = is_mounted(look);
-        let running = glide.pose(time, mounted).action == Action::Run;
+        let running = glide.running;
         let gap = match (mounted, running) {
             (true, true) => STEP_GAP_MOUNT_RUN,
             (true, false) => STEP_GAP_MOUNT_WALK,
@@ -543,17 +780,26 @@ impl Scene {
     }
 
     fn item_sprite(&mut self, map: u8, graphic: u16, hue: u16) -> Option<Sprite> {
-        self.client
-            .as_ref()?
-            .item_sprite(self.atlas.as_mut()?, map, graphic, hue)
+        let client = self.client.as_ref()?;
+        let now_ms = (self.now * MS_PER_SECOND) as u64;
+        let shown = client.shown_graphic(map, graphic, now_ms);
+        client.item_sprite(self.atlas.as_mut()?, map, shown, hue)
     }
 
+    /// Where a place of the world is in the window. The camera moves in
+    /// whole screen pixels, and each place lands on a whole screen pixel.
+    /// The art is drawn with sharp pixels, so a part of a pixel would make
+    /// the pixels of the art crawl while the map scrolls.
     fn project(&self, rect: Rect, at: [f32; 3]) -> Pos2 {
-        let dx = at[0] - self.camera[0];
-        let dy = at[1] - self.camera[1];
-        let dz = at[2] - self.camera[2];
-        rect.center()
-            + Vec2::new((dx - dy) * HALF_TILE, (dx + dy) * HALF_TILE - dz * Z_PIXELS) * self.zoom
+        let on_plane = |place: [f32; 3]| {
+            Vec2::new(
+                (place[0] - place[1]) * HALF_TILE,
+                (place[0] + place[1]) * HALF_TILE - place[2] * Z_PIXELS,
+            ) * self.zoom
+        };
+        let snap = |v: Vec2| (v * self.pixels_per_point).round() / self.pixels_per_point;
+        let camera = snap(on_plane(self.camera));
+        rect.center() + snap(on_plane(at) - camera)
     }
 
     /// The things that stand on each tile this frame.
@@ -569,6 +815,25 @@ impl Scene {
             out.entry((i32::from(item.x), i32::from(item.y)))
                 .or_default()
                 .push(thing);
+        }
+        for (multi, piece) in frame.multis.iter().flat_map(|multi| {
+            let pieces = self
+                .client
+                .as_ref()
+                .map_or(&[][..], |client| client.multi_pieces(multi.multi_id));
+            pieces.iter().map(move |piece| (multi, piece))
+        }) {
+            if !is_drawn(piece.graphic) {
+                continue;
+            }
+            let tile = (
+                i32::from(multi.x) + i32::from(piece.dx),
+                i32::from(multi.y) + i32::from(piece.dy),
+            );
+            out.entry(tile).or_default().push(Standing::Piece {
+                graphic: piece.graphic,
+                z: f32::from(multi.z) + f32::from(piece.dz),
+            });
         }
         for mobile in &frame.mobiles {
             let at = self.actors[&mobile.serial];
@@ -789,6 +1054,12 @@ impl Scene {
                         kind: PickKind::Item,
                     }));
                 }
+                Standing::Piece { graphic, z } => {
+                    if ceiling.is_some_and(|c| z >= f32::from(c)) {
+                        continue;
+                    }
+                    self.item_art(rect, frame.map, [x, y, z], graphic, 0, canvas);
+                }
                 Standing::Corpse(item) => {
                     let center = self.project(rect, [x, y, f32::from(item.z)]);
                     let radius = Vec2::new(PAWN_RING_RX, PAWN_RING_RY) * self.zoom;
@@ -804,11 +1075,18 @@ impl Scene {
                     let target = !frame.combatant.is_empty() && mobile.name == frame.combatant;
                     let color = theme::notoriety_color(mobile.notoriety);
                     let foot = self.project(rect, at);
-                    let pose = self.glides.get(&mobile.serial).map_or(STANDING, |glide| {
-                        glide.pose(self.now, is_mounted(&mobile.look))
+                    let pose = self.shown_pose(mobile.serial).unwrap_or_else(|| {
+                        self.glides
+                            .get(&mobile.serial)
+                            .map_or(STANDING, |glide| glide.pose(self.now))
                     });
+                    let heading = self
+                        .glides
+                        .get(&mobile.serial)
+                        .and_then(|glide| glide.heading(self.now));
+                    let moving_look = turned_to(&mobile.look, heading);
                     let look = Looks {
-                        look: &mobile.look,
+                        look: moving_look.as_ref().unwrap_or(&mobile.look),
                         pose,
                         color,
                         alpha: 1.0,
@@ -843,11 +1121,14 @@ impl Scene {
                     } else {
                         self.facing_mark(canvas, foot, &frame.facing);
                     }
-                    let pose = self.camera_glide.map_or(STANDING, |glide| {
-                        glide.pose(self.now, is_mounted(&frame.look))
+                    let pose = self.shown_pose(frame.serial).unwrap_or_else(|| {
+                        self.camera_glide
+                            .map_or(STANDING, |glide| glide.pose(self.now))
                     });
+                    let heading = self.camera_glide.and_then(|glide| glide.heading(self.now));
+                    let moving_look = turned_to(&frame.look, heading);
                     let look = Looks {
-                        look: &frame.look,
+                        look: moving_look.as_ref().unwrap_or(&frame.look),
                         pose,
                         color: theme::SELF_FIGURE,
                         alpha,
@@ -984,6 +1265,26 @@ impl Scene {
     ) -> Option<(egui::TextureId, Sprite)> {
         let sprite = self.item_sprite(map, graphic, hue)?;
         Some((self.atlas.as_ref()?.texture_id(), sprite))
+    }
+
+    /// The point over the head of a mobile that is drawn now.
+    pub fn head_of(&self, rect: Rect, frame: &WatchFrame, serial: u32) -> Option<Pos2> {
+        if serial == frame.serial {
+            let foot = self.project(rect, self.camera);
+            return Some(self.figure_rect(foot).center_top());
+        }
+        self.picks
+            .iter()
+            .find(|pick| pick.serial == serial && pick.kind == PickKind::Mobile)
+            .map(|pick| pick.area.center_top())
+    }
+
+    /// The color of words in a hue. Without client files, the plain color.
+    pub fn words_color(&self, hue: u16) -> Color32 {
+        self.client
+            .as_ref()
+            .and_then(|client| client.text_rgb(hue))
+            .map_or(theme::TEXT, |[r, g, b]| Color32::from_rgb(r, g, b))
     }
 
     /// The thing on top under the mouse.
@@ -1187,6 +1488,50 @@ mod tests {
     const MIDDLE: Pos2 = Pos2::new(50.0, 50.0);
 
     #[test]
+    fn a_piece_of_a_house_is_drawn_in_height_order_with_the_rest() {
+        let floor = Standing::Piece {
+            graphic: 0x0500,
+            z: 7.0,
+        };
+        let character = Standing::Character {
+            at: [0.0, 0.0, 12.0],
+        };
+        assert!(floor.z() < character.z());
+        let without_files = Scene::new(None);
+        let frame = WatchFrame {
+            multis: vec![crate::view::WatchMulti {
+                multi_id: 100,
+                x: 10,
+                y: 10,
+                z: 0,
+            }],
+            ..WatchFrame::default()
+        };
+        let standing = without_files.standing(&frame);
+        assert_eq!(standing.len(), 1, "only the character stands");
+    }
+
+    #[test]
+    fn a_new_animation_cue_plays_once_and_then_ends() {
+        const ORC: u32 = 9;
+        const SWING: u16 = 9;
+        let mut scene = Scene::new(None);
+        let mut frame = WatchFrame::default();
+        scene.take_cues(&frame, 0.0);
+        frame.cues.push(crate::view::WatchCue {
+            seq: 1,
+            serial: ORC,
+            kind: WatchCueKind::Animation(SWING),
+        });
+        scene.take_cues(&frame, 1.0);
+        scene.now = 1.25;
+        let pose = scene.shown_pose(ORC).unwrap();
+        assert_eq!((pose.action, pose.tick), (Action::Shown(9), 2));
+        scene.take_cues(&frame, 1.0 + SHOW_SECONDS * 2.0);
+        assert!(scene.shown_pose(ORC).is_none());
+    }
+
+    #[test]
     fn a_goal_outside_the_window_is_marked_on_the_edge() {
         let far_right = Pos2::new(250.0, 50.0);
         assert_eq!(clamp_to(WINDOW, MIDDLE, far_right), Pos2::new(100.0, 50.0));
@@ -1256,36 +1601,159 @@ mod tests {
         );
     }
 
+    const ON_FOOT: bool = false;
+    const WALKS: bool = false;
+    const RUNS: bool = true;
+    const CLOSE: f32 = 0.001;
+
+    fn east(tiles: f32) -> [f32; 3] {
+        [tiles, 0.0, 0.0]
+    }
+
     #[test]
-    fn a_mobile_walks_runs_and_stands_by_how_fast_his_tiles_come() {
-        const ON_FOOT: bool = false;
-        const MOUNTED: bool = true;
-        let step = |seconds: f64| Glide {
-            from: [0.0; 3],
-            to: [1.0, 0.0, 0.0],
-            started: 0.0,
-            seconds,
-        };
-        let walk = step(0.4);
-        assert_eq!(walk.pose(0.1, ON_FOOT).action, Action::Walk);
-        assert_eq!(step(0.2).pose(0.1, ON_FOOT).action, Action::Run);
-        assert_eq!(step(0.2).pose(0.1, MOUNTED).action, Action::Walk);
-        assert_eq!(step(0.1).pose(0.05, MOUNTED).action, Action::Run);
-        let just_after = 0.4 + STEP_LINGER_SECONDS / 2.0;
-        assert_eq!(walk.pose(just_after, ON_FOOT).action, Action::Walk);
-        assert_eq!(walk.pose(2.0, ON_FOOT).action, Action::Stand);
+    fn a_mobile_walks_or_runs_by_what_the_shard_says_and_then_stands() {
+        let mut walker = Glide::resting(east(0.0), 0.0);
+        assert_eq!(walker.pose(0.0).action, Action::Stand);
+        walker.aim(east(1.0), 0.0, ON_FOOT, WALKS);
+        assert_eq!(walker.pose(0.1).action, Action::Walk);
+        // Five pictures for one tile on foot, spread over the move.
+        let end_of_move = walker.seconds;
+        assert_eq!(walker.pose(end_of_move / 2.0).tick, 2);
+        assert_eq!(walker.pose(end_of_move).tick, 5);
+        let end = walker.seconds;
         assert_eq!(
-            Glide::resting([0.0; 3], 0.0).pose(0.0, ON_FOOT).action,
-            Action::Stand
+            walker.pose(end + STEP_LINGER_SECONDS / 2.0).action,
+            Action::Walk
         );
-        let later = walk.pose(0.1 + WALK_FRAME_SECONDS, ON_FOOT).tick;
-        assert_eq!(later, walk.pose(0.1, ON_FOOT).tick + 1);
+        assert_eq!(walker.pose(end + 2.0).action, Action::Stand);
+        let mut runner = Glide::resting(east(0.0), 0.0);
+        runner.aim(east(1.0), 0.0, ON_FOOT, RUNS);
+        assert_eq!(runner.pose(0.05).action, Action::Run);
+        assert!(runner.seconds < walker.seconds);
+    }
+
+    #[test]
+    fn tiles_that_come_early_wait_and_the_move_does_not_stop_between_them() {
+        let mut glide = Glide::resting(east(0.0), 0.0);
+        glide.aim(east(1.0), 0.0, ON_FOOT, WALKS);
+        let first_leg = glide.seconds;
+        assert!((first_leg - STEP_SECONDS_FOOT_WALK * GLIDE_STRETCH_ALONE).abs() < 1e-9);
+        // The news of the next tile comes at an uneven time. It waits.
+        glide.aim(east(2.0), 0.33, ON_FOOT, WALKS);
+        assert_eq!(glide.queued, 1);
+        assert!(glide.at(0.33)[0] < 1.0);
+        // The next move starts at the moment the first one ended.
+        glide.aim(east(2.0), first_leg + 0.05, ON_FOOT, WALKS);
+        assert_eq!((glide.queued, glide.started), (0, first_leg));
+        let speed = 1.0 / glide.seconds as f32;
+        assert!((glide.at(first_leg + 0.05)[0] - (1.0 + 0.05 * speed)).abs() < CLOSE);
+        assert!(glide.moving(first_leg + 0.05));
+    }
+
+    #[test]
+    fn news_that_comes_late_each_time_makes_the_move_slower_so_it_does_not_stop() {
+        const LATE: f64 = STEP_SECONDS_FOOT_WALK * 1.2;
+        let mut glide = Glide::resting(east(0.0), 0.0);
+        for tile in 1..=8 {
+            glide.aim(east(tile as f32), LATE * f64::from(tile), ON_FOOT, WALKS);
+        }
+        assert!(glide.news_seconds > STEP_SECONDS_FOOT_WALK * 1.15);
+        assert!(glide.seconds >= LATE, "the move lasts until the next news");
+        // A rest does not count as a slow rhythm.
+        glide.aim(east(9.0), 100.0, ON_FOOT, WALKS);
+        assert_eq!(glide.news_seconds, STEP_SECONDS_FOOT_WALK);
+    }
+
+    #[test]
+    fn uneven_news_gives_a_move_that_never_stops_between_tiles() {
+        const FRAME: f64 = 1.0 / 60.0;
+        // The session spaces its steps like a person: some early, some late.
+        let gaps = [0.46, 0.35, 0.44, 0.37, 0.45, 0.34, 0.46, 0.40, 0.43, 0.36];
+        let mut glide = Glide::resting(east(0.0), 0.0);
+        let (mut news_at, mut tile, mut gap) = (0.0, 0.0, 0);
+        let (mut time, mut before, mut stalls) = (0.0, 0.0, 0);
+        while tile < 40.0 {
+            if time >= news_at {
+                tile += 1.0;
+                news_at += gaps[gap % gaps.len()];
+                gap += 1;
+            }
+            glide.aim(east(tile), time, ON_FOOT, WALKS);
+            let at = glide.at(time)[0];
+            // The first tiles teach the rhythm.
+            if tile > 6.0 && at <= before {
+                stalls += 1;
+            }
+            before = at;
+            time += FRAME;
+        }
+        assert_eq!(stalls, 0);
+        assert!(tile - before < 2.0, "the move stays near the news");
+    }
+
+    #[test]
+    fn the_legs_go_by_the_ground_and_stop_when_the_mobile_stops() {
+        let mut glide = Glide::resting(east(0.0), 0.0);
+        glide.aim(east(1.0), 0.0, ON_FOOT, RUNS);
+        let end = glide.seconds;
+        let at_end = glide.pose(end).tick;
+        // After the move the legs keep their picture, then he stands.
+        assert_eq!(glide.pose(end + STEP_LINGER_SECONDS / 2.0).tick, at_end);
+        assert_eq!(glide.pose(end + 1.0).action, Action::Stand);
+        // A slow move has the same pictures for each tile as a fast one.
+        let mut slow = Glide::resting(east(0.0), 0.0);
+        slow.aim(east(1.0), 0.0, ON_FOOT, RUNS);
+        slow.seconds *= 3.0;
+        assert_eq!(slow.pose(slow.seconds).tick, at_end);
+        // The next tile carries the legs on from where they were.
+        glide.aim(east(2.0), end, ON_FOOT, RUNS);
+        assert!(glide.pose(end + glide.seconds).tick > at_end);
+    }
+
+    #[test]
+    fn a_mobile_faces_the_way_he_moves_and_not_the_way_of_his_next_step() {
+        const NORTH: u8 = 0;
+        const EAST: u8 = 2;
+        const SOUTH_WEST: u8 = 5;
+        let mut glide = Glide::resting(east(0.0), 0.0);
+        assert_eq!(glide.heading(0.0), None);
+        glide.aim(east(1.0), 0.0, ON_FOOT, WALKS);
+        assert_eq!(glide.heading(0.1), Some(EAST));
+        // The shard turned him north for his next step. He still goes east.
+        let shard_look = WatchLook {
+            direction: NORTH,
+            ..WatchLook::default()
+        };
+        let drawn = turned_to(&shard_look, glide.heading(0.1)).unwrap();
+        assert_eq!(drawn.direction, EAST);
+        assert!(turned_to(&shard_look, Some(NORTH)).is_none());
+        assert_eq!(glide.heading(glide.seconds + 1.0), None);
+        let mut back = Glide::resting([5.0, 5.0, 0.0], 0.0);
+        back.aim([4.0, 6.0, 0.0], 0.0, ON_FOOT, WALKS);
+        assert_eq!(back.heading(0.1), Some(SOUTH_WEST));
+    }
+
+    #[test]
+    fn a_mobile_that_is_behind_catches_up() {
+        let mut glide = Glide::resting(east(0.0), 0.0);
+        glide.aim(east(1.0), 0.0, ON_FOOT, WALKS);
+        let alone = glide.seconds;
+        for tile in 2..=8 {
+            glide.aim(east(tile as f32), 0.01, ON_FOOT, WALKS);
+        }
+        assert_eq!(glide.queued, GLIDE_QUEUE_CAP);
+        assert_eq!(
+            glide.goal(),
+            east(8.0),
+            "a full queue keeps the newest tile"
+        );
+        glide.aim(east(8.0), alone, ON_FOOT, WALKS);
+        assert!(glide.seconds < STEP_SECONDS_FOOT_WALK);
     }
 
     #[test]
     fn a_step_is_a_steady_move_and_a_teleport_is_not() {
-        const STEP_SECONDS: f64 = 0.4;
-        const CLOSE: f32 = 0.001;
+        let leg = STEP_SECONDS_FOOT_WALK * GLIDE_STRETCH_ALONE;
         let mut scene = Scene::new(None);
         let mut frame = WatchFrame {
             x: 100,
@@ -1294,14 +1762,14 @@ mod tests {
         };
         scene.follow(&frame, 0.0);
         frame.x += 1;
-        assert!(scene.follow(&frame, STEP_SECONDS));
+        assert!(scene.follow(&frame, 1.0));
         assert_eq!(scene.camera[0], 100.0);
-        assert!(scene.follow(&frame, STEP_SECONDS * 1.5));
+        assert!(scene.follow(&frame, 1.0 + leg / 2.0));
         assert!((scene.camera[0] - 100.5).abs() < CLOSE);
-        assert!(!scene.follow(&frame, STEP_SECONDS * 2.5));
+        assert!(!scene.follow(&frame, 1.0 + leg * 2.0));
         assert_eq!(scene.camera[0], 101.0);
         frame.x = 900;
-        assert!(!scene.follow(&frame, STEP_SECONDS * 3.0));
+        assert!(!scene.follow(&frame, 3.0));
         assert_eq!(scene.camera[0], 900.0);
     }
 }

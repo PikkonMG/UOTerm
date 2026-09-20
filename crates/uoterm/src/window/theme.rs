@@ -179,11 +179,19 @@ pub fn button(ui: &egui::Ui, left_top: egui::Pos2, words: &str, color: Color32) 
 /// One button that fills `area`, with its words in the middle. A row of
 /// these with equal areas is one tidy strip. True when it was clicked.
 pub fn segment(ui: &egui::Ui, area: Rect, words: &str, color: Color32) -> bool {
-    let response = ui.interact(
-        area,
-        egui::Id::new(("segment", words)),
-        egui::Sense::click(),
-    );
+    segment_keyed(ui, area, egui::Id::new(("segment", words)), words, color)
+}
+
+/// A segment whose words are not its own alone, such as the "+" of each row
+/// of a list. The caller gives the key.
+pub fn segment_keyed(
+    ui: &egui::Ui,
+    area: Rect,
+    key: egui::Id,
+    words: &str,
+    color: Color32,
+) -> bool {
+    let response = ui.interact(area, key, egui::Sense::click());
     let fill = if response.hovered() {
         BUTTON_HOVER
     } else {
@@ -201,15 +209,17 @@ pub fn segment(ui: &egui::Ui, area: Rect, words: &str, color: Color32) -> bool {
     response.clicked()
 }
 
-const HINT_OFFSET: egui::Vec2 = egui::vec2(16.0, 18.0);
-const HINT_PAD: egui::Vec2 = egui::vec2(8.0, 5.0);
+pub const CELL_ART_PAD: f32 = 4.0;
+/// Small pictures grow to this, so a coin is not a dot. More would blur.
+const ART_MAX_SCALE: f32 = 2.0;
 
-/// A small label beside the mouse that names a thing and what a click does.
-pub fn hint(painter: &Painter, mouse: egui::Pos2, words: &str) {
-    let galley = painter.layout_no_wrap(words.to_string(), text_font(SIZE_SMALL), TEXT);
-    let area = Rect::from_min_size(mouse + HINT_OFFSET, galley.size() + HINT_PAD * 2.0);
-    painter.rect_filled(area, CornerRadius::same(BAR_RADIUS), PLATE_BACK);
-    painter.galley(area.min + HINT_PAD, galley, TEXT);
+/// A picture scaled to fit a cell, with its proportions kept.
+pub fn fit(cell: Rect, width: f32, height: f32) -> Rect {
+    let room = cell.shrink(CELL_ART_PAD);
+    let scale = (room.width() / width)
+        .min(room.height() / height)
+        .min(ART_MAX_SCALE);
+    Rect::from_center_size(room.center(), egui::Vec2::new(width, height) * scale)
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -246,4 +256,19 @@ fn fonts() -> egui::FontDefinitions {
         .families
         .insert(FontFamily::Name(TITLE_FACE.into()), title);
     fonts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_large_picture_shrinks_to_the_cell_and_a_small_one_grows_a_little() {
+        const CELL: f32 = 46.0;
+        let cell = Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CELL));
+        let large = fit(cell, 100.0, 50.0);
+        assert!(large.width() <= CELL && (large.width() / large.height() - 2.0).abs() < 0.01);
+        let small = fit(cell, 10.0, 10.0);
+        assert_eq!(small.size(), egui::Vec2::splat(10.0 * ART_MAX_SCALE));
+    }
 }

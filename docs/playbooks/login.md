@@ -11,7 +11,7 @@ uoterm connect --host HOST --port PORT --account NAME --character NAME --era mod
 
 The CLI default for `--era` is `modern`. Use `--era t2a` only for the mock demo shard.
 
-Optional `--view` opens the watch window as a separate process so closing it does not drop the game socket. Optional `--text-view` prints the radar in that terminal. The HTTP API still runs.
+Optional `--view` opens the watch window in the same process. Closing it does not drop the game socket. Optional `--text-view` prints the radar in that terminal. The HTTP API still runs.
 
 Wait until `observe` shows `self_state` in the world (`logged_in` / a real location). Then you may walk, hunt, or talk.
 

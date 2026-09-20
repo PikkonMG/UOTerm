@@ -175,6 +175,9 @@ enum Commands {
         /// Save one picture of the window to this PNG file, then close
         #[arg(long, conflicts_with = "text")]
         snapshot: Option<PathBuf>,
+        /// Panels that are open when the window starts. Give it once for each panel
+        #[arg(long, value_enum, conflicts_with = "text")]
+        open: Vec<window::Panel>,
     },
 }
 
@@ -369,9 +372,11 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
             text,
             uopath,
             snapshot,
+            open,
         } => {
             let uopath = uopath.or_else(|| load_app_config(None).uopath);
-            watch_session(api, session, text, uopath, snapshot).await
+            let shown = window::Shown { snapshot, open };
+            watch_session(api, session, text, uopath, shown).await
         }
         Commands::Mcp => mcp::run_stdio(api).await,
     }
@@ -504,38 +509,24 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     }
     if view {
         start_api(rt.clone(), bind.clone());
-        spawn_watch_window(
-            remote::normalize_base(&bind),
-            handle.id.clone(),
-            view_uopath,
-        );
+        // The window and the session are one program, so the window reaches
+        // the session with no delay. The window needs the main thread. The
+        // session runs on the other threads. When the window closes, the
+        // character stays in the world until Ctrl+C.
+        let options = window::WatchOptions {
+            link: window::Link::SameProgram {
+                runtime: rt.clone(),
+                session: handle.id.clone(),
+            },
+            uopath: view_uopath,
+            shown: window::Shown::default(),
+        };
+        if let Err(e) = tokio::task::block_in_place(|| window::open(options)) {
+            tracing::error!(error = %e, "watch window");
+        }
         return wait_ctrl_c().await;
     }
     serve_until_ctrl_c(rt, bind).await
-}
-
-fn spawn_watch_window(api: String, session: String, uopath: Option<PathBuf>) {
-    let exe = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::error!(error = %e, "watch window");
-            return;
-        }
-    };
-    std::thread::spawn(move || {
-        let mut command = std::process::Command::new(exe);
-        command
-            .env("UOTERM_API", api)
-            .env("UOTERM_SESSION", session)
-            .arg("watch");
-        if let Some(uopath) = uopath {
-            command.arg("--uopath").arg(uopath);
-        }
-        let status = command.status();
-        if let Err(e) = status {
-            tracing::error!(error = %e, "watch window");
-        }
-    });
 }
 
 fn text_watch_loop(api: String, session: String) {
@@ -566,7 +557,7 @@ async fn watch_session(
     session: Option<&str>,
     text: bool,
     uopath: Option<PathBuf>,
-    snapshot: Option<PathBuf>,
+    shown: window::Shown,
 ) -> Result<u8, RuntimeError> {
     let base = remote::api_base(api);
     let id = remote::resolve_session(&base, session).await?;
@@ -588,10 +579,12 @@ async fn watch_session(
         return Ok(EXIT_OK as u8);
     }
     window::open(window::WatchOptions {
-        api: base,
-        session: id,
+        link: window::Link::Http {
+            api: base,
+            session: id,
+        },
         uopath,
-        snapshot,
+        shown,
     })
     .map_err(RuntimeError::Network)?;
     Ok(EXIT_OK as u8)
@@ -879,6 +872,8 @@ mod tests {
         let cli = Cli::try_parse_from([
             "uoterm",
             "watch",
+            "--open",
+            "map",
             "--snapshot",
             "out.png",
             "--uopath",
@@ -887,9 +882,13 @@ mod tests {
         .unwrap();
         match cli.command {
             Commands::Watch {
-                snapshot, uopath, ..
+                snapshot,
+                uopath,
+                open,
+                ..
             } => {
                 assert_eq!(snapshot, Some(PathBuf::from("out.png")));
+                assert_eq!(open, vec![window::Panel::Map]);
                 assert_eq!(uopath, Some(PathBuf::from("/uo")));
             }
             _ => panic!("expected watch"),

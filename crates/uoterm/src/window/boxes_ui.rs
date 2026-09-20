@@ -4,19 +4,19 @@
 //! sees. The clicks work only while the human has control.
 
 use super::control::{Act, Hand};
+use super::desk::{Desk, Zone};
+use super::ring_ui::{RingUi, Subject};
 use super::scene::Scene;
 use super::theme::{self, number_font, text_font, title_font};
+use super::tips::Tips;
 use crate::view::{WatchContainer, WatchFrame, WatchGump, WatchPackItem};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use std::collections::{HashMap, HashSet};
 
 const LEFT_COLUMN_TOP: f32 = 150.0;
-const CELL: f32 = 46.0;
-const CELL_GAP: f32 = 4.0;
-const CELL_RADIUS: u8 = 5;
-const CELL_ART_PAD: f32 = 4.0;
-/// Small pictures grow to this, so a coin is not a dot. More would blur.
-const ART_MAX_SCALE: f32 = 2.0;
+pub(super) const CELL: f32 = 46.0;
+pub(super) const CELL_GAP: f32 = 4.0;
+pub(super) const CELL_RADIUS: u8 = 5;
 const COLUMNS: usize = 6;
 const MAX_ROWS: usize = 3;
 const MAX_CONTAINERS: usize = 2;
@@ -39,12 +39,24 @@ const FIRST_PAGE: u32 = 1;
 const EVERY_PAGE: u32 = 0;
 
 const WORDS_CLOSE: &str = "Close";
-const HINT_USE: &str = "Double-click: use.  Right-click: put down.";
+const HINT_USE: &str = "Double-click: use.  Drag: move.  Right-click: more.";
+
+/// The parts of the window a panel works with.
+pub struct Tools<'a> {
+    pub scene: &'a mut Scene,
+    pub hand: &'a Hand,
+    pub desk: &'a mut Desk,
+    pub tips: &'a mut Tips,
+    pub ring: &'a mut RingUi,
+    pub time: f64,
+}
 
 /// What the human did to one gump before he answers it.
 #[derive(Default)]
 struct GumpState {
     page: Option<u32>,
+    /// The words the human typed, by the id of the field.
+    typed: HashMap<u16, String>,
     /// The boxes whose tick the human changed from what the gump came with.
     flipped: HashSet<u32>,
 }
@@ -56,6 +68,8 @@ pub struct BoxesUi {
     /// a container, so the window keeps it. A use of the container shows it
     /// again.
     closed: HashSet<u32>,
+    /// The first row each container shows. The mouse wheel turns it.
+    first_row: HashMap<u32, usize>,
 }
 
 fn panel_size(columns: usize, rows: usize) -> Vec2 {
@@ -64,15 +78,6 @@ fn panel_size(columns: usize, rows: usize) -> Vec2 {
         rows as f32 * (CELL + CELL_GAP) - CELL_GAP,
     ) + Vec2::splat(theme::PANEL_PAD * 2.0)
         + Vec2::new(0.0, TITLE_ROW)
-}
-
-/// The picture scaled to fit the cell, with its proportions kept.
-fn fit(cell: Rect, width: f32, height: f32) -> Rect {
-    let room = cell.shrink(CELL_ART_PAD);
-    let scale = (room.width() / width)
-        .min(room.height() / height)
-        .min(ART_MAX_SCALE);
-    Rect::from_center_size(room.center(), Vec2::new(width, height) * scale)
 }
 
 /// The boxes that are ticked now: the ticks the gump came with, with the
@@ -112,6 +117,35 @@ fn flip(gump: &WatchGump, flipped: &mut HashSet<u32>, switch: u32) {
     toggle(flipped, switch);
 }
 
+/// The first row after the mouse wheel turned over the panel.
+pub(super) fn scrolled(
+    ui: &egui::Ui,
+    panel: Rect,
+    first_row: usize,
+    last_first_row: usize,
+) -> usize {
+    let turned = ui.input(|i| {
+        let over = i.pointer.hover_pos().is_some_and(|p| panel.contains(p));
+        if over {
+            i.raw_scroll_delta.y
+        } else {
+            0.0
+        }
+    });
+    next_first_row(first_row, turned, last_first_row)
+}
+
+fn next_first_row(first_row: usize, turned: f32, last_first_row: usize) -> usize {
+    let next = if turned < 0.0 {
+        first_row + 1
+    } else if turned > 0.0 {
+        first_row.saturating_sub(1)
+    } else {
+        first_row
+    };
+    next.min(last_first_row)
+}
+
 fn on_page(item_page: u32, shown: u32) -> bool {
     item_page == EVERY_PAGE || item_page == shown
 }
@@ -136,11 +170,10 @@ impl BoxesUi {
     /// Gives the places it covered, so the map does not take their clicks.
     pub fn draw(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         rect: Rect,
         frame: &WatchFrame,
-        scene: &mut Scene,
-        hand: &Hand,
+        tools: &mut Tools<'_>,
     ) -> Vec<Rect> {
         let mut covered = Vec::new();
         let mut top = rect.top() + LEFT_COLUMN_TOP;
@@ -158,7 +191,7 @@ impl BoxesUi {
             if top + panel_size(COLUMNS, MAX_ROWS).y > floor && !covered.is_empty() {
                 break;
             }
-            let panel = self.container(ui, Pos2::new(left, top), container, frame, scene, hand);
+            let panel = self.container(ui, Pos2::new(left, top), container, frame, tools);
             top = panel.bottom() + PANEL_GAP;
             covered.push(panel);
         }
@@ -169,7 +202,7 @@ impl BoxesUi {
                 rect.right() - theme::SCREEN_MARGIN - GUMP_WIDTH,
                 rect.top() + GUMP_TOP,
             );
-            covered.push(self.gump(ui, at, gump, frame, hand));
+            covered.push(self.gump(ui, at, gump, frame, tools.hand));
         }
         covered
     }
@@ -180,12 +213,23 @@ impl BoxesUi {
         left_top: Pos2,
         container: &WatchContainer,
         frame: &WatchFrame,
-        scene: &mut Scene,
-        hand: &Hand,
+        tools: &mut Tools<'_>,
     ) -> Rect {
-        let shown: Vec<&WatchPackItem> = container.items.iter().take(COLUMNS * MAX_ROWS).collect();
-        let rows = shown.len().div_ceil(COLUMNS).max(1);
+        let all_rows = container.items.len().div_ceil(COLUMNS).max(1);
+        let rows = all_rows.min(MAX_ROWS);
         let panel = Rect::from_min_size(left_top, panel_size(COLUMNS, rows));
+        let first_row = {
+            let kept = self.first_row.entry(container.serial).or_default();
+            *kept = scrolled(ui, panel, *kept, all_rows - rows);
+            *kept
+        };
+        let shown: Vec<&WatchPackItem> = container
+            .items
+            .iter()
+            .skip(first_row * COLUMNS)
+            .take(COLUMNS * MAX_ROWS)
+            .collect();
+        tools.desk.zone(panel, Zone::Into(container.serial));
         let painter = ui.painter();
         theme::panel(painter, panel);
         let inner = panel.shrink(theme::PANEL_PAD);
@@ -239,7 +283,7 @@ impl BoxesUi {
                     ),
                 Vec2::splat(CELL),
             );
-            self.cell(ui, cell, item, frame, scene, hand);
+            self.cell(ui, cell, item, frame, tools);
         }
         panel
     }
@@ -250,10 +294,15 @@ impl BoxesUi {
         cell: Rect,
         item: &WatchPackItem,
         frame: &WatchFrame,
-        scene: &mut Scene,
-        hand: &Hand,
+        tools: &mut Tools<'_>,
     ) {
-        let response = ui.interact(cell, Id::new(("pack-item", item.serial)), Sense::click());
+        let response = ui.interact(
+            cell,
+            Id::new(("pack-item", item.serial)),
+            Sense::click_and_drag(),
+        );
+        // An item dropped on a bag goes in, and on a pile of its kind joins.
+        tools.desk.zone(cell, Zone::Into(item.serial));
         let painter = ui.painter();
         let fill = if response.hovered() {
             theme::BUTTON_HOVER
@@ -261,43 +310,50 @@ impl BoxesUi {
             theme::TRACK
         };
         painter.rect_filled(cell, CornerRadius::same(CELL_RADIUS), fill);
-        if let Some((texture, sprite)) = scene.item_picture(frame.map, item.graphic, item.hue) {
-            let area = fit(cell, sprite.width, sprite.height);
+        if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, item.hue)
+        {
+            let area = theme::fit(cell, sprite.width, sprite.height);
             painter.image(texture, area, sprite.uv, Color32::WHITE);
         }
         if item.amount > 1 {
             theme::shadowed_text(
                 painter,
-                cell.right_bottom() - Vec2::splat(CELL_ART_PAD),
+                cell.right_bottom() - Vec2::splat(theme::CELL_ART_PAD),
                 Align2::RIGHT_BOTTOM,
                 &item.amount.to_string(),
                 number_font(theme::SIZE_SMALL),
                 theme::TEXT,
             );
         }
-        if let Some(mouse) = response.hover_pos() {
-            let words = if frame.human_control {
-                format!("{}.  {HINT_USE}", item.name)
-            } else {
-                item.name.clone()
-            };
-            theme::hint(painter, mouse, &words);
+        if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
+            let footer = if frame.human_control { HINT_USE } else { "" };
+            tools
+                .tips
+                .point_at(ui, tools.hand, item.serial, &item.name, footer, tools.time);
         }
         if !frame.human_control {
             return;
         }
-        if response.double_clicked() {
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            tools.desk.pick_up(item);
+        } else if response.double_clicked() {
             // The item may be a bag that the human closed before.
             self.used(item.serial);
-            hand.act(Act::Use(item.serial));
+            tools.hand.act(Act::Use(item.serial));
         } else if response.secondary_clicked() {
-            hand.act(Act::PutDown(item.serial));
+            tools.ring.open_at(
+                cell.center(),
+                item.serial,
+                &item.name,
+                Subject::Packed,
+                tools.hand,
+            );
         }
     }
 
     fn gump(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         left_top: Pos2,
         gump: &WatchGump,
         frame: &WatchFrame,
@@ -324,12 +380,19 @@ impl BoxesUi {
             .filter(|b| on_page(b.page, page))
             .take(GUMP_MAX_ROWS)
             .collect();
-        let rows = texts.len() + choices.len() + buttons.len() + 1;
+        let entries: Vec<_> = gump
+            .entries
+            .iter()
+            .filter(|e| on_page(e.page, page))
+            .take(GUMP_MAX_ROWS)
+            .collect();
+        let rows = texts.len() + choices.len() + entries.len() + buttons.len() + 1;
         let panel = Rect::from_min_size(
             left_top,
             Vec2::new(GUMP_WIDTH, rows as f32 * GUMP_ROW + theme::PANEL_PAD * 2.0),
         );
-        let painter = ui.painter();
+        let painter = ui.painter().clone();
+        let painter = &painter;
         theme::panel(painter, panel);
         let inner = panel.shrink(theme::PANEL_PAD);
         let mut y = inner.top();
@@ -384,6 +447,36 @@ impl BoxesUi {
                 flip(gump, &mut state.flipped, choice.switch);
             }
         }
+        for entry in entries {
+            let area = row(&mut y).shrink2(Vec2::new(0.0, 2.0));
+            let label = painter.text(
+                area.left_center(),
+                Align2::LEFT_CENTER,
+                &entry.label,
+                text_font(theme::SIZE_BODY),
+                theme::TEXT_DIM,
+            );
+            let field = Rect::from_min_max(
+                Pos2::new(label.right() + theme::ROW_GAP, area.top()),
+                area.right_bottom(),
+            );
+            painter.rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+            let words = state
+                .typed
+                .entry(entry.id)
+                .or_insert_with(|| entry.text.clone());
+            let limit = entry.limit.map_or(usize::MAX, |limit| limit as usize);
+            ui.add_enabled_ui(live, |ui| {
+                ui.put(
+                    field,
+                    egui::TextEdit::singleline(words)
+                        .frame(false)
+                        .char_limit(limit)
+                        .font(text_font(theme::SIZE_BODY))
+                        .text_color(theme::TEXT),
+                );
+            });
+        }
         for button in buttons {
             let area = row(&mut y).shrink2(Vec2::new(0.0, 2.0));
             let response = ui.interact(
@@ -418,6 +511,11 @@ impl BoxesUi {
                     gump: gump.gump,
                     button: id,
                     switches: ticked(gump, &state.flipped),
+                    texts: state
+                        .typed
+                        .iter()
+                        .map(|(id, words)| (*id, words.clone()))
+                        .collect(),
                 }),
                 (None, Some(to_page)) => state.page = Some(to_page),
                 (None, None) => {}
@@ -500,12 +598,11 @@ mod tests {
     }
 
     #[test]
-    fn a_large_picture_shrinks_to_the_cell_and_a_small_one_grows_a_little() {
-        let cell = Rect::from_min_size(Pos2::ZERO, Vec2::splat(CELL));
-        let large = fit(cell, 100.0, 50.0);
-        assert!(large.width() <= CELL && (large.width() / large.height() - 2.0).abs() < 0.01);
-        let small = fit(cell, 10.0, 10.0);
-        assert_eq!(small.size(), Vec2::splat(10.0 * ART_MAX_SCALE));
+    fn the_wheel_turns_a_container_one_row_and_stops_at_its_ends() {
+        assert_eq!(next_first_row(0, -1.0, 2), 1);
+        assert_eq!(next_first_row(2, -1.0, 2), 2);
+        assert_eq!(next_first_row(0, 1.0, 2), 0);
+        assert_eq!(next_first_row(2, 0.0, 1), 1, "the container lost rows");
     }
 
     #[test]

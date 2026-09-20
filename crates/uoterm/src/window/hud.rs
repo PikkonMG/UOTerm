@@ -4,6 +4,7 @@
 use super::theme::{self, number_font, text_font, title_font};
 use crate::view::{Danger, WatchFrame, WatchMobile, JOURNAL_LINES, MOBILE_LINES};
 use eframe::egui::{
+    self,
     epaint::{Mesh, Vertex, WHITE_UV},
     text::LayoutJob,
     Align2, Color32, FontId, Painter, Pos2, Rect, Shape, TextFormat, Vec2,
@@ -52,6 +53,57 @@ pub struct Hud {
     bars: [Bar; 3],
     /// Where the panels were drawn this frame.
     panels: Vec<Rect>,
+    journal_filter: JournalFilter,
+    /// The left middle of the row of filter words, when the journal has them.
+    filter_row: Option<Pos2>,
+}
+
+/// Which lines the journal shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum JournalFilter {
+    #[default]
+    All,
+    /// What mobiles said.
+    Talk,
+    /// What the shard wrote.
+    System,
+}
+
+const JOURNAL_FILTERS: [(JournalFilter, &str); 3] = [
+    (JournalFilter::All, "All"),
+    (JournalFilter::Talk, "Talk"),
+    (JournalFilter::System, "System"),
+];
+const FILTER_LEFT: f32 = 96.0;
+const FILTER_GAP: f32 = 12.0;
+/// The message types of lines the shard wrote: a system line, a name label.
+const KINDS_SYSTEM: [u8; 2] = [1, 6];
+
+/// The lines of the journal in words. The full journal of `watch` can be
+/// filtered; the short one of `observe` shows as it is.
+fn journal_texts(frame: &WatchFrame, filter: JournalFilter) -> Vec<String> {
+    if frame.speech.is_empty() {
+        return frame.journal.clone();
+    }
+    frame
+        .speech
+        .iter()
+        .filter(|line| {
+            let system = line.serial == 0 || KINDS_SYSTEM.contains(&line.kind);
+            match filter {
+                JournalFilter::All => true,
+                JournalFilter::Talk => !system,
+                JournalFilter::System => system,
+            }
+        })
+        .map(|line| {
+            if line.name.is_empty() {
+                line.text.clone()
+            } else {
+                format!("{}: {}", line.name, line.text)
+            }
+        })
+        .collect()
 }
 
 /// What the panels tell the rest of the window after they are drawn.
@@ -60,6 +112,8 @@ pub struct Drawn {
     pub moving: bool,
     /// The free row under the journal, when one was asked for.
     pub chat_row: Option<Rect>,
+    /// The pack panel at the bottom middle. The hotbar sits on it.
+    pub pack: Rect,
 }
 
 /// What one bar shows now, as shares of its full length.
@@ -270,12 +324,45 @@ impl Hud {
         self.panels.clear();
         activity(painter, &mut self.panels, area, frame);
         roster(painter, &mut self.panels, area, frame);
-        let chat_row = journal(painter, &mut self.panels, area, frame, chat_row);
-        pack(painter, &mut self.panels, area, frame);
+        let lines = journal_texts(frame, self.journal_filter);
+        let (chat_row, title_row) =
+            journal(painter, &mut self.panels, area, frame, &lines, chat_row);
+        self.filter_row = (!frame.speech.is_empty()).then_some(title_row);
+        let pack = pack(painter, &mut self.panels, area, frame);
         let bars_move = self.vitals(painter, area, frame, dt);
         Drawn {
             moving: bars_move || danger != Danger::Calm,
             chat_row,
+            pack,
+        }
+    }
+
+    /// The words that pick which journal lines show. Call this after
+    /// `draw`, with the `Ui` that takes the clicks.
+    pub fn journal_filters(&mut self, ui: &egui::Ui) {
+        let Some(mut at) = self.filter_row else {
+            return;
+        };
+        for (filter, words) in JOURNAL_FILTERS {
+            let color = if filter == self.journal_filter {
+                theme::GOAL
+            } else {
+                theme::TEXT_FAINT
+            };
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(words.to_string(), text_font(theme::SIZE_SMALL), color);
+            let area = Align2::LEFT_CENTER.anchor_size(at, galley.size());
+            let response = ui.interact(
+                area.expand(FILTER_GAP / 2.0),
+                egui::Id::new(("journal-filter", words)),
+                egui::Sense::click(),
+            );
+            ui.painter().galley(area.min, galley, color);
+            if response.clicked() {
+                self.journal_filter = filter;
+            }
+            at.x = area.right() + FILTER_GAP;
         }
     }
 
@@ -490,11 +577,12 @@ fn journal(
     panels: &mut Vec<Rect>,
     area: Rect,
     frame: &WatchFrame,
+    all_lines: &[String],
     chat_row: bool,
-) -> Option<Rect> {
+) -> (Option<Rect>, Pos2) {
     let width = JOURNAL_WIDTH - theme::PANEL_PAD * 2.0;
-    let start = frame.journal.len().saturating_sub(JOURNAL_LINES);
-    let lines = &frame.journal[start..];
+    let start = all_lines.len().saturating_sub(JOURNAL_LINES);
+    let lines = &all_lines[start..];
     let galleys: Vec<_> = lines
         .iter()
         .enumerate()
@@ -529,6 +617,10 @@ fn journal(
             theme::WAITING,
         );
     }
+    let title_row = Pos2::new(
+        rows.left + FILTER_LEFT,
+        rows.y + TITLE_HEIGHT / 2.0 - theme::ROW_GAP,
+    );
     rows.title("Journal", theme::TEXT);
     if galleys.is_empty() {
         rows.line("No lines yet.", theme::TEXT_FAINT);
@@ -538,7 +630,7 @@ fn journal(
         painter.galley(Pos2::new(rows.left, rows.y), galley, theme::TEXT);
         rows.y += height + JOURNAL_LINE_GAP;
     }
-    chat_row.then(|| {
+    let chat = chat_row.then(|| {
         let inner = panel.shrink(theme::PANEL_PAD);
         Rect::from_min_max(
             Pos2::new(
@@ -547,7 +639,8 @@ fn journal(
             ),
             inner.right_bottom(),
         )
-    })
+    });
+    (chat, title_row)
 }
 
 fn waiting_words(persons: usize) -> String {
@@ -576,7 +669,7 @@ fn journal_job(line: &str, width: f32, alpha: f32) -> LayoutJob {
 
 /// The pack, the gold, the buffs and the party, in the space between the
 /// vitals and the journal.
-fn pack(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFrame) {
+fn pack(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFrame) -> Rect {
     let lists: Vec<(&str, String)> = [("Buffs", &frame.buffs), ("Party", &frame.party)]
         .into_iter()
         .filter(|(_, list)| !list.is_empty())
@@ -622,6 +715,7 @@ fn pack(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFram
     for (label, list) in lists {
         rows.pair(label, &list, theme::TEXT);
     }
+    panel
 }
 
 /// A dark edge that keeps the panels readable, and the alarm color over it
@@ -726,6 +820,41 @@ mod tests {
 
     const ONE_FRAME: f32 = 1.0 / 60.0;
     const HALF: f32 = 0.5;
+
+    #[test]
+    fn the_journal_filter_keeps_talk_or_system_lines() {
+        use crate::view::WatchSpeech;
+        let line = |serial: u32, name: &str, kind: u8, text: &str| WatchSpeech {
+            serial,
+            name: name.into(),
+            kind,
+            text: text.into(),
+            ..WatchSpeech::default()
+        };
+        let frame = WatchFrame {
+            journal: vec!["short journal".into()],
+            speech: vec![
+                line(5, "Ann", 0, "hail"),
+                line(0, "", 1, "The world will save."),
+                line(5, "Ann", 6, "Ann"),
+            ],
+            ..WatchFrame::default()
+        };
+        assert_eq!(journal_texts(&frame, JournalFilter::All).len(), 3);
+        assert_eq!(
+            journal_texts(&frame, JournalFilter::Talk),
+            vec!["Ann: hail"]
+        );
+        assert_eq!(journal_texts(&frame, JournalFilter::System).len(), 2);
+        let from_observe = WatchFrame {
+            journal: vec!["short journal".into()],
+            ..WatchFrame::default()
+        };
+        assert_eq!(
+            journal_texts(&from_observe, JournalFilter::Talk),
+            vec!["short journal"]
+        );
+    }
 
     #[test]
     fn a_lost_part_of_a_bar_stays_behind_the_fill() {

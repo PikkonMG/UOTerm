@@ -21,7 +21,7 @@ Treat every capability as unproven until a test in this tree proves it.
 
 ## What it is not
 
-- Not a full graphical client. `--view` / `uoterm watch` is a monitor with a way to step in: click to walk, double-click to use or attack, a chat box, the open containers and gumps. It has no paperdoll, no drag and drop, no vendor windows, no spell book, and no sound. It draws the land, the items, and the mobiles from your client files. Each mobile shows with its mount and worn items, and it walks, runs, or stands by how fast its tiles change. A mobile with no picture in the classic `anim*.mul` files shows as a plain colored figure.
+- Not a copy of the classic client. `--view` / `uoterm watch` shows what the agent does, and it is a full way to play when you press "Take control". You walk with a click, with the arrow keys or W A S D, or with the right mouse button held. You drag items between bags, onto your character, onto other mobiles, onto the ground and into a trade. A right-click opens a ring of acts with the context menu of the shard. It has tooltips, a character sheet with worn items, skills with locks, spells and the party, a hotbar, shop and trade windows, gumps with text fields, old-style menus, books, prompts, speech over heads, damage numbers, spell effects, night, rain and snow, houses and boats, and sound. It draws the land, the items, and the mobiles from your client files. Each mobile shows with its mount and worn items, and it walks, runs, stands, or swings by what the shard sends. A mobile with no picture in the classic `anim*.mul` files shows as a plain colored figure. A Map button opens a map of the land round you, and a click on it walks you there. It does not have these parts yet: gumps in their shard layout (it shows them as lists), bulletin boards, map items, profiles, custom house design, and login screens (the login is `uoterm connect`).
 - Not a click-macro overlay.
 - Not an official-server farm bot.
 - Not a cheat tool for EA or Broadsword shards.
@@ -54,7 +54,7 @@ The examples below write `uoterm`. On a fresh machine use `./target/debug/uoterm
 
 ## How the process model works
 
-`uoterm connect` and `uoterm populate` stay in the foreground. They log in, then serve HTTP until you press Ctrl+C. `connect --view` starts `uoterm watch` as a child process so closing the window does not drop the game socket.
+`uoterm connect` and `uoterm populate` stay in the foreground. They log in, then serve HTTP until you press Ctrl+C. `connect --view` opens the watch window in the same process, so the window reads the session with no HTTP step. When you close the window, the session stays connected until Ctrl+C. `uoterm watch` is a different process: it reads a running session through the HTTP API.
 
 All other commands (`session`, `say`, `move`, `walk`, `open-door`, `look`, `state`, `agent`, `watch`, `mcp`) are clients. They call that HTTP API. They do not open a second game socket.
 
@@ -120,7 +120,7 @@ uoterm connect \
 
 Expected line: `session s1 started; api 127.0.0.1:7733; encryption none`. Leave this process running.
 
-Optional `--view` opens the watch window as a child process. `view = true` in `uoterm.toml` does the same on each `connect`. Optional `--text-view` prints the radar in that terminal. Those flags conflict with each other.
+Optional `--view` opens the watch window in the same process. `view = true` in `uoterm.toml` does the same on each `connect`. Optional `--text-view` prints the radar in that terminal. Those flags conflict with each other.
 
 Password is `UO_PASS`. Never put it in a file.
 
@@ -181,7 +181,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | Command | Role | Notes |
 | --- | --- | --- |
 | `uoterm mock-shard [--bind HOST:PORT]` | Demo | Unencrypted demo shard. Default `127.0.0.1:2593`. Do not run this while a live shard uses that port. |
-| `uoterm connect ...` | Server | Login and HTTP API. Blocks until Ctrl+C. `--view` starts `uoterm watch` as a child. `--text-view` prints the radar in that terminal. |
+| `uoterm connect ...` | Server | Login and HTTP API. Blocks until Ctrl+C. `--view` opens the watch window in the same process. `--text-view` prints the radar in that terminal. |
 | `uoterm populate --manifest PATH` | Server | Start many sessions, then HTTP API. |
 | `uoterm session list` | Client | Session ids on the API. |
 | `uoterm session attach <id>` | Client | Print state for one id. |
@@ -190,7 +190,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `uoterm walk --dir DIR [--run] [--hold-ms N]` | Client | Tool `walk`. One step or a hold stream of `0x02`. |
 | `uoterm open-door` | Client | Tool `open_door` (`0x12`/`0x58`). |
 | `uoterm look` | Client | Radar. `--json` prints full observe JSON. |
-| `uoterm watch [--text] [--uopath DIR] [--snapshot FILE.png]` | Client | Live window of the running session: the map, vitals, what the agent does, who is near, the journal, the pack. With client files (`--uopath`, or `uopath` in `uoterm.toml`) it draws the real map. Without them it draws flat colors from the radar. Scroll to zoom. "Take control" stops the agent and lets you click: the ground to walk, a double-click to use (or to attack in war mode), one click to look, and the target cursor. The chat box says words. In Order mode it takes a plain order such as `attack the orc`; TypeSafe's Jev model picks the act and the target, and the order and the names of the things near go to `api.typesafe.ai`. Order mode is on only when `TYPESAFE_API_KEY` is set (environment or `.env`). "Give back", or 90 s with no act, returns the character to the agent. The "Options" button opens the sound panel: a master volume, and one volume each for music, sound effects, and footsteps, with a switch for silence. The sounds and the music come from your client files. The settings are saved in `watch-audio.toml` in the UOTerm config folder. `--snapshot` saves one PNG picture and closes. `--text` prints the radar in the terminal. |
+| `uoterm watch [--text] [--uopath DIR] [--open sheet] [--open map] [--snapshot FILE.png]` | Client | Live window of the running session: the map, vitals, what the agent does, who is near, the journal, the pack. With client files (`--uopath`, or `uopath` in `uoterm.toml`) it draws the real map. Without them it draws flat colors from the radar. Scroll to zoom. "Take control" stops the agent and lets you click: the ground to walk, a double-click to use (or to attack in war mode), one click to look, and the target cursor. You also walk with the arrow keys or W A S D (Shift runs) and with the right mouse button held. You drag items to move, wear, give, trade or drop them; hold Shift to split a pile. A right-click on a thing opens a ring of acts with the context menu of the shard. "Bag", "Sheet" and "Map" open the backpack, the character sheet (worn items, skills with locks, spells, party) and the map of the land; `--open` opens the sheet or the map at the start. The hotbar takes a dragged item, a pinned skill or spell, or a pinned command; the keys 1 to 0 use its slots, and it is saved in `watch-hotbar.toml`. The chat box says words. In Do mode it runs one script command. When the shard asks for words, the box answers it. In Order mode it takes a plain order such as `attack the orc`; TypeSafe's Jev model picks the act and the target, and the order and the names of the things near go to `api.typesafe.ai`. Order mode is on only when `TYPESAFE_API_KEY` is set (environment or `.env`). "Give back", or 90 s with no act, returns the character to the agent. The "Options" button opens the sound panel: a master volume, and one volume each for music, sound effects, and footsteps, with a switch for silence. The sounds and the music come from your client files. The settings are saved in `watch-audio.toml` in the UOTerm config folder. `--snapshot` saves one PNG picture and closes. `--text` prints the radar in the terminal. |
 | `uoterm state` | Client | YAML. `--json` for JSON. Field name is `self_state`. |
 | `uoterm agent run --persona FILE [--goal NAME]` | Client | `set_persona` then `set_goal`. |
 | `uoterm agent stop` | Client | `cancel_goal`. |
@@ -214,7 +214,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `--profile` | none | TOML profile |
 | `--persona` | built-in lumberjack | Persona TOML used by speech and reflex |
 | `--api-bind` | from config, `127.0.0.1:7733` | HTTP listen address |
-| `--view` | off | Start `uoterm watch` as a child. Closing the window does not drop the socket. |
+| `--view` | off | Open the watch window in the same process. Closing the window does not drop the socket. |
 | `--text-view` | off | Print a live radar in this terminal. Conflicts with `--view`. |
 
 ## MCP (LLM attach)

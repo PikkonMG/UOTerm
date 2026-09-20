@@ -92,15 +92,22 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `follow` / `stop` | `follow` needs a mobile serial |
 | `logout` | in world. Sends the logout request; a shard may hold it until she is somewhere it allows, such as an inn or a house |
 | `use` / `single_click` / `attack` / `war_mode` | serial / in world |
-| `lift` / `drop` / `equip` / `unequip` | item serial. `drop` takes `dest`: a container, or a mobile to give to; none drops at your feet. `unequip` needs a valid `layer`. Empty layer returns `layer empty`. It does not unequip the backpack |
+| `lift` / `drop` / `equip` / `unequip` | item serial. `drop` takes `dest`: a container, or a mobile to give to; none drops at your feet. `x` and `y` give an exact place in the container, or a ground tile with `z` when there is no `dest`. `unequip` needs a valid `layer`. Empty layer returns `layer empty`. It does not unequip the backpack |
 | `cast` / `use_skill` | in world; `spell` or `skill` number is required |
 | `wait_target` | none |
 | `target` | a target cursor must be pending |
 | `open_container` / `loot` / `trade_offer` | serial |
-| `gump_respond` / `gump_close` | open gump. `gump` names the gump id to answer (the oldest open one when omitted). `button` is a button id, `switches` the choices to tick; button `0` closes. A button or switch that is not on the gump is refused, because a shard drops or disconnects on it |
+| `gump_respond` / `gump_close` | open gump. `gump` names the gump id to answer (the oldest open one when omitted). `button` is a button id, `switches` the choices to tick, `texts` the typed fields as `[{id, text}]` (`observe` lists them under `entries`); button `0` closes. A button or switch that is not on the gump is refused, because a shard drops or disconnects on it |
 | `set_goal` | in world; `idle` `travel` `hunt` `gather` `bank` `shop` `social` `flee` `ress`. `hunt` starts the hunt job with empty lists |
 | `set_persona` | session exists; JSON persona body. `typo_rate` is clamped to `0.0..=1.0` |
 | `cancel_goal` | session exists; also stops a hunt or walk job (`job_ended` reason `stopped`) |
+| `watch` | For a window, not for an agent. `observe` with each list at full length, and what only a screen draws: each container with all its items, `journal_lines` with hue and kind, `skills`, `party_members`, `multis`, `cues` (damage, animations and effects, each with a `seq` that counts up), `season`, `light`, `weather`, `prompt`, `text_entry`, `target_cursor`, `context_menu`, `shop`, `menu`, `book`, and the items of an open `trade` |
+| `properties` | in world; `serial`. The tooltip lines of one object. It asks the shard when the session has none, so the next call has them |
+| `context_menu` with `serial` only | Asks for the context menu and shows its lines in `watch`. With `index`, picks that line. `close_menu` closes it with no pick. With `cliloc`, it works as before: one call that asks and picks |
+| `shop_checkout` / `shop_close` | a shop list is open (`watch` `shop`). `items` is `[{serial, amount}]`. It buys or sells by the kind of list |
+| `menu_pick` / `book_close` | an old-style menu or a book is open (`watch` `menu`, `book`). `index` counts from 1; none walks away |
+| `trade_gold` | a trade is open; `gold`, `platinum` |
+| `command` | For the watch window. One script command line (`text`) as one act of a human; needs `human` true |
 | `take_control` / `release_control` | For the watch window, not for an agent. While a human has control, only a call with `human` true acts. Control goes back by itself after 90 s with no human act |
 | `jobs` / `job_start` / `job_stop` | session exists / in world / a job is running. Hunt: `job` `hunt`, optional `include` and `avoid`. Walk: `job` `walk`, `x` and `y` or `name`, `watch`. `replace` true stops the old job (`job_ended` `stopped`) then starts the new one. Hands back with `job_ended`. See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md) |
 

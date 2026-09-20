@@ -12,17 +12,28 @@ mod boxes_ui;
 mod client_art;
 mod control;
 mod control_ui;
+mod deal_ui;
+mod deck_ui;
+mod desk;
 mod figure;
+mod floats;
 mod hud;
+mod kept;
+mod link;
+mod map_ui;
 mod options_ui;
 mod orders;
+mod pages_ui;
+mod ring_ui;
 mod scene;
+mod sky;
+mod steer;
 mod theme;
+mod tips;
 
-use crate::remote;
 use crate::view::{
-    WatchFrame, WINDOW_HEIGHT, WINDOW_POLL_MS, WINDOW_RADAR_SIZE, WINDOW_RADAR_SIZE_WITH_ART,
-    WINDOW_TITLE, WINDOW_WIDTH,
+    WatchFrame, WINDOW_HEIGHT, WINDOW_RADAR_SIZE, WINDOW_RADAR_SIZE_WITH_ART, WINDOW_TITLE,
+    WINDOW_WIDTH,
 };
 use audio::Audio;
 use boxes_ui::BoxesUi;
@@ -30,13 +41,16 @@ use control::Hand;
 use control_ui::{ControlUi, Places};
 use eframe::egui::{self, ColorImage, Event, UserData, ViewportCommand};
 use hud::Hud;
+pub use link::Link;
 use options_ui::OptionsUi;
 use scene::Scene;
+use serde_json::json;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use uoterm_runtime::tools::TOOL_WATCH;
 
 const WINDOW_MIN_WIDTH: f32 = 1080.0;
 const WINDOW_MIN_HEIGHT: f32 = 640.0;
@@ -46,12 +60,26 @@ const SNAPSHOT_SETTLE: Duration = Duration::from_millis(2500);
 const ENDED: &str = "The watch ended.";
 
 pub struct WatchOptions {
-    pub api: String,
-    pub session: String,
+    /// How to reach the session.
+    pub link: Link,
     /// The client files for the real map. None draws the map in flat colors.
     pub uopath: Option<PathBuf>,
+    pub shown: Shown,
+}
+
+/// A panel the operator can ask for when the window starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Panel {
+    Sheet,
+    Map,
+}
+
+/// How the window starts, and whether it is one picture only.
+#[derive(Clone, Debug, Default)]
+pub struct Shown {
     /// Save one picture of the window to this PNG file, then close.
     pub snapshot: Option<PathBuf>,
+    pub open: Vec<Panel>,
 }
 
 pub fn open(options: WatchOptions) -> Result<(), String> {
@@ -84,6 +112,15 @@ struct WatchApp {
     boxes_ui: BoxesUi,
     options_ui: OptionsUi,
     audio: Audio,
+    floats: floats::Floats,
+    sky: sky::Sky,
+    desk: desk::Desk,
+    tips: tips::Tips,
+    ring: ring_ui::RingUi,
+    deck: deck_ui::DeckUi,
+    deals: deal_ui::DealUi,
+    pages: pages_ui::PagesUi,
+    world_map: map_ui::MapUi,
     snapshot: Option<Snapshot>,
 }
 
@@ -96,22 +133,22 @@ struct Snapshot {
 impl WatchApp {
     fn start(options: WatchOptions, ctx: egui::Context) -> Self {
         let (tx, rx) = mpsc::channel();
-        let (api, session) = (options.api, options.session);
+        let link = options.link;
         let scene = Scene::new(options.uopath.as_deref());
         // A snapshot is one silent picture.
         let audio = Audio::new(
             options
                 .uopath
                 .as_deref()
-                .filter(|_| options.snapshot.is_none()),
+                .filter(|_| options.shown.snapshot.is_none()),
         );
         let radar_size = if scene.note().is_empty() {
             WINDOW_RADAR_SIZE_WITH_ART
         } else {
             WINDOW_RADAR_SIZE
         };
-        let hand = Hand::start(api.clone(), session.clone(), ctx.clone());
-        thread::spawn(move || poll_loop(api, session, radar_size, tx, ctx));
+        let hand = Hand::start(link.clone(), ctx.clone());
+        thread::spawn(move || poll_loop(link, radar_size, tx, ctx));
         Self {
             rx,
             frame: None,
@@ -122,7 +159,16 @@ impl WatchApp {
             boxes_ui: BoxesUi::default(),
             options_ui: OptionsUi::default(),
             audio,
-            snapshot: options.snapshot.map(|path| Snapshot {
+            floats: floats::Floats::default(),
+            sky: sky::Sky::default(),
+            desk: desk::Desk::default(),
+            tips: tips::Tips::default(),
+            ring: ring_ui::RingUi::default(),
+            deck: deck_ui::DeckUi::starting(options.shown.open.contains(&Panel::Sheet)),
+            deals: deal_ui::DealUi::default(),
+            pages: pages_ui::PagesUi::default(),
+            world_map: map_ui::MapUi::starting(options.shown.open.contains(&Panel::Map)),
+            snapshot: options.shown.snapshot.map(|path| Snapshot {
                 path,
                 first_picture: None,
                 asked: false,
@@ -214,32 +260,50 @@ impl eframe::App for WatchApp {
                     ),
                     Some(frame) => {
                         moving = self.scene.draw(ui, rect, frame, time);
+                        moving |= self.sky.draw(&painter, rect, frame, &mut self.scene, time);
+                        moving |= self.floats.draw(&painter, rect, frame, &self.scene, time);
                         self.audio.play(frame, &self.scene.take_steps());
                         let drawn = self.hud.draw(&painter, rect, frame, true, time, dt);
                         moving |= drawn.moving;
                         let map = control_ui::map_sense(ui, rect);
-                        let mut covered =
-                            self.boxes_ui
-                                .draw(ui, rect, frame, &mut self.scene, &self.hand);
+                        self.hud.journal_filters(ui);
+                        self.desk.begin();
+                        self.tips.begin(&self.hand, time);
+                        let mut tools = boxes_ui::Tools {
+                            scene: &mut self.scene,
+                            hand: &self.hand,
+                            desk: &mut self.desk,
+                            tips: &mut self.tips,
+                            ring: &mut self.ring,
+                            time,
+                        };
+                        let mut covered = self.boxes_ui.draw(ui, rect, frame, &mut tools);
                         let notes = usize::from(!self.audio.note().is_empty());
                         covered.extend(self.options_ui.panel(rect, notes));
+                        covered.extend(self.deck.draw(ui, rect, frame, &mut tools, drawn.pack));
+                        covered.extend(self.deals.draw(ui, rect, frame, &mut tools));
+                        covered.extend(self.pages.draw(ui, rect, frame, &mut tools));
+                        covered.extend(self.world_map.draw(
+                            ui,
+                            rect,
+                            frame,
+                            tools.scene,
+                            tools.hand,
+                        ));
+                        covered.extend(tools.ring.draw(ui, rect, frame, tools.hand));
+                        covered.extend(tools.desk.split_box(ui, rect, tools.hand));
                         let places = Places {
                             map: &map,
                             chat_row: drawn.chat_row,
                             covered: &covered,
                             boxes: &mut self.boxes_ui,
                             options: &mut self.options_ui,
+                            deck: &mut self.deck,
+                            world_map: &mut self.world_map,
                         };
-                        self.control_ui.draw(
-                            ui,
-                            rect,
-                            frame,
-                            &mut self.scene,
-                            &self.hud,
-                            &self.hand,
-                            places,
-                            time,
-                        );
+                        self.control_ui
+                            .draw(ui, rect, frame, &self.hud, &mut tools, places);
+                        self.scene.set_panels(covered);
                         self.options_ui.draw(ui, rect, &mut self.audio);
                     }
                 }
@@ -252,13 +316,7 @@ impl eframe::App for WatchApp {
 }
 
 /// Reads the session again and again, and wakes the window for each picture.
-fn poll_loop(
-    api: String,
-    session: String,
-    radar_size: u16,
-    tx: mpsc::Sender<WatchFrame>,
-    ctx: egui::Context,
-) {
+fn poll_loop(link: Link, radar_size: u16, tx: mpsc::Sender<WatchFrame>, ctx: egui::Context) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -271,15 +329,15 @@ fn poll_loop(
     };
     loop {
         let frame = rt.block_on(async {
-            match remote::session_observe(&api, &session, radar_size).await {
+            match link.call(TOOL_WATCH, json!({ "size": radar_size })).await {
                 Ok(value) => WatchFrame::from_observe(&value),
-                Err(e) => WatchFrame::error_frame(e.to_string()),
+                Err(words) => WatchFrame::error_frame(words),
             }
         });
         if tx.send(frame).is_err() {
             break;
         }
         ctx.request_repaint();
-        thread::sleep(Duration::from_millis(WINDOW_POLL_MS));
+        thread::sleep(Duration::from_millis(link.poll_ms()));
     }
 }

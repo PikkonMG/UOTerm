@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uoterm_nav::{
-    land_is_ignored, AnimData, ArtData, ArtPixels, HueData, MulMap, TileQuery, TILE_PARTIAL_HUE,
+    land_is_ignored, AnimData, ArtCycles, ArtData, ArtPixels, HueData, MulMap, MultiData,
+    MultiPiece, RadarColors, TileQuery, TILE_ANIMATED, TILE_PARTIAL_HUE,
 };
 
 /// How many tiles the window remembers. A full window shows about four
@@ -46,6 +47,12 @@ pub struct ClientArt {
     anim: Option<AnimData>,
     frames: FrameCache,
     hues: Option<HueData>,
+    /// None when the client files hold no picture cycles.
+    cycles: Option<ArtCycles>,
+    /// None when the client files hold no houses and boats.
+    multis: Option<MultiData>,
+    /// None when the client files hold no colors for a world map.
+    radar: Option<RadarColors>,
     /// None marks a map the client files do not hold.
     maps: HashMap<u8, Option<MulMap>>,
     cells: HashMap<(u8, u16, u16), Cell>,
@@ -63,6 +70,9 @@ impl ClientArt {
             anim: AnimData::open(uopath).ok(),
             frames: FrameCache::default(),
             hues: HueData::open(uopath).ok(),
+            cycles: ArtCycles::open(uopath).ok(),
+            multis: MultiData::open(uopath).ok(),
+            radar: RadarColors::open(uopath).ok(),
             maps: HashMap::new(),
             cells: HashMap::new(),
         })
@@ -139,6 +149,53 @@ impl ClientArt {
             let ramp = self.hues.as_ref().and_then(|h| h.ramp(hue, partial));
             Some(picture_of(&art, ramp))
         })
+    }
+
+    /// The color of one tile on a map of the world: the color of its
+    /// highest item, or of its land. None past the edge of the map.
+    pub fn radar_rgb(&mut self, map_index: u8, x: u16, y: u16) -> Option<[u8; 3]> {
+        let radar = self.radar.as_ref()?;
+        let uopath = &self.uopath;
+        let map = self
+            .maps
+            .entry(map_index)
+            .or_insert_with(|| MulMap::open(uopath, map_index).ok())
+            .as_ref()?;
+        if !map.in_bounds(x, y) {
+            return None;
+        }
+        let top = map
+            .statics_at(x, y)
+            .into_iter()
+            .filter(|s| is_drawn(s.graphic))
+            .max_by_key(|s| s.z);
+        match top {
+            Some(item) => radar.item(item.graphic),
+            None => radar.land(map.column(x, y).land_id),
+        }
+    }
+
+    /// The pieces of a house or a boat.
+    pub fn multi_pieces(&self, multi_id: u16) -> &[MultiPiece] {
+        self.multis
+            .as_ref()
+            .map_or(&[], |multis| multis.pieces(multi_id))
+    }
+
+    /// The picture an item shows now. A fire or a fountain goes through
+    /// the pictures of its cycle.
+    pub fn shown_graphic(&self, map_index: u8, graphic: u16, time_ms: u64) -> u16 {
+        match &self.cycles {
+            Some(cycles) if self.item_flags(map_index, graphic) & TILE_ANIMATED != 0 => {
+                cycles.graphic_at(graphic, time_ms)
+            }
+            _ => graphic,
+        }
+    }
+
+    /// The color of words written in a hue.
+    pub fn text_rgb(&self, hue: u16) -> Option<[u8; 3]> {
+        self.hues.as_ref()?.text_rgb(hue)
     }
 
     /// True when the body is a person: a human, an elf, a gargoyle.
