@@ -119,10 +119,45 @@ pub enum LoginQuestion {
         names: Vec<String>,
         reply: tokio::sync::oneshot::Sender<usize>,
     },
+    /// The characters of the account. The screen may play one, delete one
+    /// or make a new one. The shard answers a new list, or a refusal.
+    Characters {
+        names: Vec<String>,
+        /// The words of the last refusal of the shard, when there was one.
+        refused: Option<String>,
+        reply: tokio::sync::oneshot::Sender<CharacterRequest>,
+    },
     Character {
         names: Vec<String>,
         reply: tokio::sync::oneshot::Sender<usize>,
     },
+}
+
+/// What a login screen may ask the shard to do with the characters of the
+/// account, before it plays one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CharacterRequest {
+    /// Play the character in this slot.
+    Play(usize),
+    Delete(usize),
+    Make(Box<NewCharacterWish>),
+}
+
+/// What a player picked for a new character, in the words of a screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewCharacterWish {
+    pub name: String,
+    pub female: bool,
+    pub race: u8,
+    pub strength: u8,
+    pub dexterity: u8,
+    pub intelligence: u8,
+    pub skills: Vec<(u8, u8)>,
+    pub skin_hue: u16,
+    pub hair: u16,
+    pub hair_hue: u16,
+    pub start_city: u16,
+    pub slot: u16,
 }
 
 /// The way from a login to the screen that answers its questions. With no
@@ -131,6 +166,24 @@ pub enum LoginQuestion {
 pub struct LoginPicker(pub tokio::sync::mpsc::UnboundedSender<LoginQuestion>);
 
 impl LoginPicker {
+    /// Asks the screen what to do with the characters of the account.
+    /// None when the screen is gone.
+    pub async fn characters(
+        &self,
+        names: Vec<String>,
+        refused: Option<String>,
+    ) -> Option<CharacterRequest> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.0
+            .send(LoginQuestion::Characters {
+                names,
+                refused,
+                reply,
+            })
+            .ok()?;
+        answer.await.ok()
+    }
+
     /// Asks the screen, and waits for the pick. None when the screen is
     /// gone, or when its answer is not a place of the list.
     pub async fn pick(

@@ -1097,6 +1097,8 @@ async fn login(
     let mut seen_relay = false;
     let mut seen_chars = false;
     let mut seen_confirm = false;
+    // The words of the last refusal of the shard, for the screen.
+    let mut refused: Option<String> = None;
     while tokio::time::Instant::now() < deadline {
         let n = tokio::time::timeout(LOGIN_READ_TIMEOUT, reader.read(&mut buf))
             .await
@@ -1151,8 +1153,23 @@ async fn login(
                     tcp_flush(&mut writer).await?;
                     inner.compressed = true;
                 }
-                Inbound::CharacterList { characters } => {
+                Inbound::CharacterRejected { reason } => {
+                    // The shard refused to play, make or delete. The next
+                    // character list carries the words to the screen.
+                    refused = Some(uoterm_protocol::character_refusal(*reason).to_string());
+                    tracing::warn!(reason, words = refused.as_deref(), "character refused");
+                }
+                Inbound::CharacterListUpdate { characters }
+                | Inbound::CharacterList { characters } => {
                     seen_chars = true;
+                    // A screen may make or delete a character before it
+                    // plays one. Each of those brings a new list.
+                    if character_request(inner, &mut writer, opts, characters, refused.take())
+                        .await?
+                    {
+                        tcp_flush(&mut writer).await?;
+                        continue;
+                    }
                     let slot = pick_character(opts, characters)
                         .await
                         .ok_or_else(|| RuntimeError::NoCharacter(opts.character.clone()))?;
@@ -1327,6 +1344,76 @@ fn ensure_house_parts(inner: &mut Inner) {
     let catalog = uoterm_nav::HouseCatalog::open(&path);
     tracing::info!(parts = catalog.parts().len(), "house parts ready");
     inner.house_parts = Some(Arc::new(catalog));
+}
+
+/// Asks the screen what to do with the characters of the account. True
+/// when it asked the shard to make or delete one, so the login waits for
+/// the new list. A login with no screen never asks.
+async fn character_request(
+    inner: &mut Inner,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    opts: &ConnectOptions,
+    characters: &[uoterm_protocol::CharacterSlot],
+    refused: Option<String>,
+) -> Result<bool> {
+    let Some(picker) = opts.picker.as_ref() else {
+        return Ok(false);
+    };
+    let names: Vec<String> = characters.iter().map(|slot| slot.name.clone()).collect();
+    // A named character of the list needs no screen at all.
+    let named = characters
+        .iter()
+        .any(|slot| !slot.name.is_empty() && slot.name.eq_ignore_ascii_case(&opts.character));
+    if named && refused.is_none() {
+        return Ok(false);
+    }
+    let Some(request) = picker.characters(names, refused).await else {
+        return Ok(false);
+    };
+    let packet = match request {
+        crate::config::CharacterRequest::Play(_) => return Ok(false),
+        crate::config::CharacterRequest::Delete(slot) => encode::delete_character(slot as u32),
+        crate::config::CharacterRequest::Make(wish) => {
+            let new = uoterm_protocol::NewCharacter {
+                name: &wish.name,
+                female: wish.female,
+                race: wish.race,
+                strength: wish.strength,
+                dexterity: wish.dexterity,
+                intelligence: wish.intelligence,
+                skills: wish.skills.clone(),
+                skin_hue: wish.skin_hue,
+                hair: wish.hair,
+                hair_hue: wish.hair_hue,
+                start_city: wish.start_city,
+                slot: wish.slot,
+            };
+            encode::create_character(&new, opts.version)
+        }
+    };
+    write_sealed(inner, writer, packet).await?;
+    Ok(true)
+}
+
+/// The shard told the character to take one step. It goes on the wire as
+/// his own step does, so the pace and the answers stay in one place.
+fn forced_walk(inner: &mut Inner, direction: u8, running: bool) {
+    let dir = Direction::from_byte(direction);
+    let from = inner
+        .movement
+        .stepping_from(inner.world.read().self_state.location);
+    inner.ensure_facet();
+    let Some(next) = from.neighbour(dir) else {
+        return;
+    };
+    let Some(z) = inner.tiles().can_step(from, next.x, next.y) else {
+        return;
+    };
+    inner.movement.run_override = Some(running);
+    inner.movement.set_path(
+        vec![Point3::new(next.x, next.y, z)],
+        Point3::new(next.x, next.y, z),
+    );
 }
 
 fn multi_bounds(inner: &Inner, foundation: Serial) -> Option<uoterm_world::HouseBounds> {
@@ -4946,7 +5033,10 @@ mod relay_tests {
         tokio::spawn(async move {
             while let Some(question) = questions.recv().await {
                 let (crate::config::LoginQuestion::Shard { names, reply }
-                | crate::config::LoginQuestion::Character { names, reply }) = question;
+                | crate::config::LoginQuestion::Character { names, reply }) = question
+                else {
+                    continue;
+                };
                 let _ = reply.send(names.len() - 1);
             }
         });
@@ -7501,6 +7591,16 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     play::on_map_or_profile(inner, &msg);
                     play::on_chat(inner, &msg);
                     play::on_designer(inner, &msg);
+                    // The shard may walk the character itself.
+                    match &msg {
+                        Inbound::ForcedWalk { direction, running } => {
+                            forced_walk(inner, *direction, *running);
+                        }
+                        Inbound::Pathfind { x, y, z } => {
+                            let _ = queue_move(inner, Point3::new(*x, *y, *z));
+                        }
+                        _ => {}
+                    }
                     if matches!(
                         msg,
                         Inbound::HouseDesigner {
@@ -10707,6 +10807,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_HOUSE_EDIT => play::house_edit(inner, args),
         TOOL_HELP => play::help(inner),
         TOOL_CHAT => play::chat(inner, args),
+        TOOL_BOOK_WRITE => play::book_write(inner, args),
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
                 p.clamp_rates();

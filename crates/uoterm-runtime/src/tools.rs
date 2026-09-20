@@ -60,6 +60,7 @@ pub const TOOL_PROFILE: &str = "profile";
 pub const TOOL_HOUSE_EDIT: &str = "house_edit";
 pub const TOOL_HELP: &str = "help";
 pub const TOOL_CHAT: &str = "chat";
+pub const TOOL_BOOK_WRITE: &str = "book_write";
 pub const TOOL_AGENTS: &str = "agents";
 pub const TOOL_AGENT_SET: &str = "agent_set";
 pub const TOOL_AGENT_ON: &str = "agent_on";
@@ -542,6 +543,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         TOOL_CHAT,
         "The chat of the shard: action open (with name) turns it on, join (with channel and password), say (with text), leave. watch shows the channels and the lines under chat.",
         "in world",
+    ),
+    (
+        TOOL_BOOK_WRITE,
+        "Writes in the open book (watch shows it under book): title and author name it, page and text write one page, its lines parted by a line break. A book the shard sealed cannot be written in.",
+        "a book is open",
     ),
     (
         TOOL_TRADE_GOLD,

@@ -26,8 +26,8 @@ pub mod teleporters;
 pub mod tools;
 
 pub use config::{
-    parse_encryption_mode, AppConfig, ConnectOptions, EncryptionMode, LoginPicker, LoginQuestion,
-    Profile,
+    parse_encryption_mode, AppConfig, CharacterRequest, ConnectOptions, EncryptionMode,
+    LoginPicker, LoginQuestion, NewCharacterWish, Profile,
 };
 pub use error::{Result, RuntimeError};
 pub use manager::{FacetCache, Runtime};

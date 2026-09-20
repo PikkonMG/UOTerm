@@ -30,6 +30,11 @@ const BAD_ACTION: &str = "action must be add, remove, stair, roof, remove_roof, 
 const BAD_CHAT_ACTION: &str = "action must be open, join, say or leave";
 const NEEDS_CHANNEL: &str = "needs channel";
 const NEEDS_WORDS: &str = "needs text";
+const NO_BOOK_OPEN: &str = "no book is open; use a book first";
+const NEEDS_PAGE: &str = "needs page, from 1";
+const ARG_PAGE: &str = "page";
+const ARG_TITLE: &str = "title";
+const ARG_AUTHOR: &str = "author";
 const ARG_GRAPHIC: &str = "graphic";
 const ARG_Z: &str = "z";
 const ARG_LEVEL: &str = "level";
@@ -801,6 +806,52 @@ pub(super) fn menu_pick(inner: &mut Inner, args: &Value) -> ToolResult {
     };
     inner.outbound.push_back(packet);
     ToolResult::action(TOOL_MENU_PICK)
+}
+
+/// `book_write`: names the open book, or writes one of its pages.
+pub(super) fn book_write(inner: &mut Inner, args: &Value) -> ToolResult {
+    let Some(book) = inner.play.book.as_ref().map(|book| book.serial) else {
+        return ToolResult::err(NO_BOOK_OPEN);
+    };
+    let words = |key: &str| args.get(key).and_then(Value::as_str).map(str::trim);
+    let title = words(ARG_TITLE);
+    let author = words(ARG_AUTHOR);
+    if title.is_some() || author.is_some() {
+        let (kept_title, kept_author) = inner
+            .play
+            .book
+            .as_ref()
+            .map(|open| (open.title.clone(), open.author.clone()))
+            .unwrap_or_default();
+        let title = title.unwrap_or(&kept_title).to_string();
+        let author = author.unwrap_or(&kept_author).to_string();
+        inner
+            .outbound
+            .push_back(encode::book_header(book, &title, &author));
+        if let Some(open) = inner.play.book.as_mut() {
+            open.title = title;
+            open.author = author;
+        }
+        return ToolResult::action(TOOL_BOOK_WRITE);
+    }
+    let Some(page) = args
+        .get(ARG_PAGE)
+        .and_then(Value::as_u64)
+        .and_then(|page| u16::try_from(page).ok())
+        .filter(|page| *page > 0)
+    else {
+        return ToolResult::err(NEEDS_PAGE);
+    };
+    let text = args.get(ARG_TEXT).and_then(Value::as_str).unwrap_or("");
+    let lines: Vec<&str> = text.lines().collect();
+    inner
+        .outbound
+        .push_back(encode::book_page(book, page, &lines));
+    if let Some(open) = inner.play.book.as_mut() {
+        open.pages
+            .insert(page, lines.iter().map(|line| (*line).to_string()).collect());
+    }
+    ToolResult::action(TOOL_BOOK_WRITE)
 }
 
 pub(super) fn book_close(inner: &mut Inner) -> ToolResult {
