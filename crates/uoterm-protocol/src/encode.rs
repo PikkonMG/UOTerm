@@ -43,6 +43,10 @@ pub fn game_login(auth_id: u32, account: &str, password: &str) -> Vec<u8> {
     w.finish()
 }
 
+/// Play the character in `slot`. `client_flags` are the expansion bits, which
+/// [`ClientVersion::expansion_flags`] builds. They tell the shard which maps
+/// and rules the client has, and their clear 3D bits are the one place a
+/// Classic Client names itself in the login talk.
 pub fn play_character(slot: u32, name: &str, client_flags: u32, client_ip: u32) -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_PLAY_CHARACTER);
     w.u32(PLAY_CHAR_PATTERN)
@@ -59,46 +63,6 @@ pub fn client_version(version: ClientVersion) -> Vec<u8> {
     let mut w = PacketWriter::with_variable(PKT_CLIENT_VERSION);
     w.ascii_z(&version.as_string());
     var_bytes(w)
-}
-
-pub fn client_type(version: ClientVersion) -> Vec<u8> {
-    let mut w = PacketWriter::with_variable(PKT_CLIENT_TYPE);
-    w.u16(CLIENT_TYPE_CMD)
-        .u16(CLIENT_TYPE_CLASSIC)
-        .ascii_z(&version.as_string());
-    var_bytes(w)
-}
-
-pub fn client_info() -> Vec<u8> {
-    let mut w = PacketWriter::new(PKT_CLIENT_INFO);
-    w.u8(CLIENT_INFO_TYPE_NEW)
-        .u32(0)
-        .u32(0)
-        .u32(0)
-        .u32(0)
-        .u8(0)
-        .u32(0)
-        .u32(0)
-        .u32(0)
-        .u8(0)
-        .u32(0)
-        .u32(0)
-        .u32(0)
-        .u32(0)
-        .u16(0)
-        .u16(0)
-        .ascii_fixed("", CLIENT_INFO_VIDEO_DESC_LEN)
-        .u32(0)
-        .u32(0)
-        .u32(0)
-        .u8(0)
-        .u8(CLIENT_INFO_CLIENTS_RUNNING)
-        .u8(CLIENT_INFO_CLIENTS_INSTALLED)
-        .u8(0)
-        .bytes(&LANGUAGE_ENU);
-    let mut packet = w.finish();
-    packet.resize(CLIENT_INFO_LEN, 0);
-    packet
 }
 
 /// Classic Client 7.x / server movement request (`0x02`, 7 bytes):
@@ -1874,17 +1838,6 @@ mod tests {
     }
 
     #[test]
-    fn client_type_is_the_modern_layout() {
-        let p = client_type(ClientVersion::MODERN);
-        assert_eq!(p[0], PKT_CLIENT_TYPE);
-        let len = u16::from_be_bytes([p[1], p[2]]);
-        assert_eq!(len as usize, p.len());
-        assert_eq!(u16::from_be_bytes([p[3], p[4]]), CLIENT_TYPE_CMD);
-        assert_eq!(u16::from_be_bytes([p[5], p[6]]), CLIENT_TYPE_CLASSIC);
-        assert_eq!(&p[7..], b"7.0.102.3\0");
-    }
-
-    #[test]
     fn single_click_is_id_plus_serial() {
         const SINGLE_CLICK_LEN: usize = 1 + SERIAL_LEN;
         let packet = single_click(Serial(0x4000_00AB));
@@ -1945,12 +1898,19 @@ mod tests {
     }
 
     #[test]
-    fn client_info_is_classic_hardware_len() {
-        let p = client_info();
-        assert_eq!(p.len(), CLIENT_INFO_LEN);
-        assert_eq!(p[0], PKT_CLIENT_INFO);
-        assert_eq!(p[1], CLIENT_INFO_TYPE_NEW);
-        assert!(p.windows(4).any(|w| w == LANGUAGE_ENU));
+    fn play_character_carries_the_classic_expansion_bits() {
+        const FLAGS_AT: usize = 1 + 4 + 30 + 2;
+        let flags = ClientVersion::MODERN.expansion_flags();
+        let p = play_character(0, "Tester", flags, 0);
+        let sent = u32::from_be_bytes([
+            p[FLAGS_AT],
+            p[FLAGS_AT + 1],
+            p[FLAGS_AT + 2],
+            p[FLAGS_AT + 3],
+        ]);
+        assert_eq!(sent, flags);
+        assert_eq!(sent & CLIENT_FLAG_UO3D, 0, "never the 3D client");
+        assert_eq!(sent & CLIENT_FLAG_UOTD_CLIENT, 0, "never the UO:TD client");
     }
 
     const VENDOR: Serial = Serial(0x0000_1234);

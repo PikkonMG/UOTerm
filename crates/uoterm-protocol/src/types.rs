@@ -12,7 +12,9 @@ pub const DIR_RUNNING: u8 = 0x80;
 pub const DIR_MASK: u8 = 0x07;
 pub const DEFAULT_FONT: u16 = 3;
 pub const DEFAULT_SPEECH_HUE: u16 = 0x03B2;
-pub const LANGUAGE_ENU: [u8; 4] = *b"ENU\0";
+/// A language code on the wire: three letters and a stop byte.
+pub const LANGUAGE_LEN: usize = 4;
+pub const LANGUAGE_ENU: [u8; LANGUAGE_LEN] = *b"ENU\0";
 
 pub const PKT_DAMAGE: u8 = 0x0B;
 pub const PKT_CLILOC: u8 = 0xC1;
@@ -276,15 +278,85 @@ pub const WORLD_ITEM_SA_TYPE_MULTI: u8 = 0x02;
 /// `0xF7`. A self-describing container that bundles whole `0xF3` packets, each
 /// one still carrying its own id byte.
 pub const PKT_PACKET_LIST: u8 = 0xF7;
-pub const PKT_CLIENT_TYPE: u8 = 0xE1;
-pub const PKT_CLIENT_INFO: u8 = 0xD9;
-pub const CLIENT_TYPE_CMD: u16 = 0x0001;
-pub const CLIENT_TYPE_CLASSIC: u16 = 0x0000;
-pub const CLIENT_INFO_LEN: usize = 0x10C;
-pub const CLIENT_INFO_TYPE_NEW: u8 = 0x00;
-pub const CLIENT_INFO_VIDEO_DESC_LEN: usize = 64;
-pub const CLIENT_INFO_CLIENTS_RUNNING: u8 = 1;
-pub const CLIENT_INFO_CLIENTS_INSTALLED: u8 = 1;
+/// The expansion bits a Classic Client reports in the play-character request.
+/// A client sets its own expansion bit and every bit below it, and a shard
+/// reads them as the maps and the rules the client may use.
+pub const CLIENT_FLAG_T2A: u32 = 0x00;
+pub const CLIENT_FLAG_RENAISSANCE: u32 = 0x01;
+pub const CLIENT_FLAG_THIRD_DAWN: u32 = 0x02;
+pub const CLIENT_FLAG_BLACKTHORN: u32 = 0x04;
+pub const CLIENT_FLAG_AGE_OF_SHADOWS: u32 = 0x08;
+pub const CLIENT_FLAG_SAMURAI_EMPIRE: u32 = 0x10;
+pub const CLIENT_FLAG_STYGIAN_ABYSS: u32 = 0x20;
+/// The 3D client bit. UOTerm is a Classic Client, so it never sets this bit.
+pub const CLIENT_FLAG_UO3D: u32 = 0x40;
+/// The Third Dawn client bit. A shard that sees it stops holding the session
+/// as a Classic Client, so UOTerm never sets this bit either.
+pub const CLIENT_FLAG_UOTD_CLIENT: u32 = 0x100;
+/// A shard reads a client version with this major number as the Kingdom
+/// Reborn client, and a larger one as the Enhanced Client. Every Classic
+/// Client version is below it.
+pub const KINGDOM_REBORN_MAJOR: u32 = 66;
+
+/// Each expansion: the first client version that has it, and the bit a client
+/// of that version reports.
+const EXPANSION_STEPS: [(ClientVersion, u32); 6] = [
+    (
+        ClientVersion {
+            major: 2,
+            minor: 0,
+            revision: 0,
+            patch: 0,
+        },
+        CLIENT_FLAG_RENAISSANCE,
+    ),
+    (
+        ClientVersion {
+            major: 3,
+            minor: 0,
+            revision: 0,
+            patch: 0,
+        },
+        CLIENT_FLAG_THIRD_DAWN,
+    ),
+    (
+        ClientVersion {
+            major: 3,
+            minor: 0,
+            revision: 8,
+            patch: 0,
+        },
+        CLIENT_FLAG_BLACKTHORN,
+    ),
+    (
+        ClientVersion {
+            major: 3,
+            minor: 0,
+            revision: 8,
+            patch: b'z' as u32,
+        },
+        CLIENT_FLAG_AGE_OF_SHADOWS,
+    ),
+    (
+        ClientVersion {
+            major: 4,
+            minor: 0,
+            revision: 5,
+            patch: b'a' as u32,
+        },
+        CLIENT_FLAG_SAMURAI_EMPIRE,
+    ),
+    (
+        ClientVersion {
+            major: 6,
+            minor: 0,
+            revision: 14,
+            patch: 4,
+        },
+        CLIENT_FLAG_STYGIAN_ABYSS,
+    ),
+];
+
 pub const LOGIN_CONFIRM_LEN: usize = 37;
 pub const MAP_DEFAULT_WIDTH: u16 = 7168;
 pub const MAP_DEFAULT_HEIGHT: u16 = 4096;
@@ -769,6 +841,27 @@ impl ClientVersion {
             >= (other.major, other.minor, other.revision, other.patch)
     }
 
+    /// The expansion bits this version reports to a shard. Each expansion adds
+    /// its bit and keeps every bit below it. [`CLIENT_FLAG_UO3D`] and
+    /// [`CLIENT_FLAG_UOTD_CLIENT`] always stay clear, which is how a shard
+    /// knows the session is a Classic Client.
+    pub fn expansion_flags(self) -> u32 {
+        let mut flags = CLIENT_FLAG_T2A;
+        for (first, bit) in EXPANSION_STEPS {
+            if self.at_least(first) {
+                flags |= bit;
+            }
+        }
+        flags
+    }
+
+    /// True when a shard reads this version as the Classic Client. A shard
+    /// reads major [`KINGDOM_REBORN_MAJOR`] as the Kingdom Reborn client and
+    /// anything above it as the Enhanced Client.
+    pub fn is_classic(self) -> bool {
+        self.major < KINGDOM_REBORN_MAJOR
+    }
+
     pub fn has_container_grid(self) -> bool {
         self.at_least(Self {
             major: 6,
@@ -1004,6 +1097,53 @@ mod tests {
         );
         assert!(is_ranged_weapon(GRAPHIC_BOW));
         assert!(!is_ranged_weapon(GRAPHIC_HATCHET));
+    }
+
+    #[test]
+    fn a_modern_version_reports_every_expansion_below_it() {
+        const ALL_EXPANSIONS: u32 = CLIENT_FLAG_RENAISSANCE
+            | CLIENT_FLAG_THIRD_DAWN
+            | CLIENT_FLAG_BLACKTHORN
+            | CLIENT_FLAG_AGE_OF_SHADOWS
+            | CLIENT_FLAG_SAMURAI_EMPIRE
+            | CLIENT_FLAG_STYGIAN_ABYSS;
+        assert_eq!(ClientVersion::MODERN.expansion_flags(), ALL_EXPANSIONS);
+    }
+
+    #[test]
+    fn an_old_version_reports_only_what_it_has() {
+        let flags = ClientVersion::T2A.expansion_flags();
+        assert_eq!(flags, CLIENT_FLAG_RENAISSANCE);
+        assert_eq!(flags & CLIENT_FLAG_AGE_OF_SHADOWS, 0);
+    }
+
+    #[test]
+    fn the_client_never_names_itself_3d() {
+        for version in [ClientVersion::T2A, ClientVersion::MODERN] {
+            let flags = version.expansion_flags();
+            assert_eq!(flags & CLIENT_FLAG_UO3D, 0);
+            assert_eq!(flags & CLIENT_FLAG_UOTD_CLIENT, 0);
+        }
+    }
+
+    #[test]
+    fn a_shard_reads_our_versions_as_the_classic_client() {
+        assert!(ClientVersion::T2A.is_classic());
+        assert!(ClientVersion::MODERN.is_classic());
+        let kingdom_reborn = ClientVersion {
+            major: KINGDOM_REBORN_MAJOR,
+            minor: 0,
+            revision: 0,
+            patch: 0,
+        };
+        assert!(!kingdom_reborn.is_classic());
+        let enhanced = ClientVersion {
+            major: KINGDOM_REBORN_MAJOR + 1,
+            minor: 0,
+            revision: 0,
+            patch: 0,
+        };
+        assert!(!enhanced.is_classic());
     }
 
     #[test]
