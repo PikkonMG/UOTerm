@@ -372,6 +372,9 @@ impl Buff {
     }
 }
 
+/// The weather kind that ends the weather.
+pub(crate) const WEATHER_NONE: u8 = 0xFF;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct World {
     pub self_state: SelfState,
@@ -386,6 +389,9 @@ pub struct World {
     /// ordinary item on that serial.
     pub multis: HashMap<Serial, MultiItem>,
     pub journal: Journal,
+    /// Hits and body actions, for a window to play once.
+    #[serde(default)]
+    pub cues: crate::Cues,
     /// The sound effects and the music the shard asked for.
     #[serde(default)]
     pub sounds: crate::Sounds,
@@ -412,6 +418,13 @@ pub struct World {
     pub map_width: u16,
     pub map_height: u16,
     pub season: u8,
+    /// How dark the world is: 0 for day, and up to the darkest night.
+    #[serde(default)]
+    pub light: u8,
+    /// The weather the shard set: its kind and how many drops. None for
+    /// clear sky.
+    #[serde(default)]
+    pub weather: Option<(u8, u8)>,
     pub names: NameBook,
     /// The property list of each object the shard described, as text numbers
     /// and their arguments. The runtime turns them into words.
@@ -644,6 +657,8 @@ impl World {
                 self.self_state.map = *map;
             }
             Inbound::Damage { serial, amount } => {
+                self.cues
+                    .push(*serial, crate::CueKind::Damage { amount: *amount });
                 if *serial == self.self_state.serial {
                     self.self_state.hits = self.self_state.hits.saturating_sub(*amount);
                     self.note_harm_now();
@@ -861,6 +876,13 @@ impl World {
             Inbound::Season { season, .. } => {
                 self.season = *season;
             }
+            Inbound::GlobalLight { level } => self.light = *level,
+            Inbound::Weather { kind, count } => {
+                self.weather = (*kind != WEATHER_NONE && *count > 0).then_some((*kind, *count));
+            }
+            Inbound::Effect(effect) => self
+                .cues
+                .push(effect.source, crate::CueKind::Effect { effect: *effect }),
             // The paperdoll byte is not the mobile flags byte: bit 1 is war
             // mode and bit 2 says the viewer may lift from the doll.
             Inbound::Paperdoll {
@@ -926,6 +948,9 @@ impl World {
             } => {
                 self.accept_properties(*serial, *hash, properties);
             }
+            Inbound::CharacterAnimation { serial, action, .. } => self
+                .cues
+                .push(*serial, crate::CueKind::Animation { action: *action }),
             Inbound::SoundEffect { sound, x, y, .. } => self.sounds.heard(*sound, *x, *y),
             Inbound::Music { index, stop } => self.sounds.music_changed(*index, *stop),
             Inbound::BuffDebuff {

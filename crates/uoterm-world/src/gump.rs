@@ -36,6 +36,25 @@ pub struct GumpView {
     /// The round and square buttons a player ticks before a reply. Send the
     /// `switch` of each one to tick in `gump_respond` `switches`.
     pub choices: Vec<GumpChoice>,
+    /// The fields a player types in before a reply. Send the `id` and the
+    /// words of each one in `gump_respond` `texts`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<GumpEntry>,
+}
+
+/// A field of a gump that takes typed words.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GumpEntry {
+    pub id: u16,
+    /// The page the field is on. Page 0 shows on every page.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub page: u32,
+    pub label: String,
+    /// The words in the field when the gump opened.
+    pub text: String,
+    /// The most characters the field takes, when the gump says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 /// Words on a gump.
@@ -130,6 +149,11 @@ enum Control {
         kind: ChoiceKind,
         on: bool,
     },
+    Entry {
+        id: u16,
+        text: String,
+        limit: Option<u32>,
+    },
 }
 
 struct Placed<T> {
@@ -198,6 +222,14 @@ pub fn read_gump(gump: &OpenGump, words: &dyn Fn(u32, &str) -> Option<String>) -
                     on: n(4) != 0,
                 },
             }),
+            kind @ ("textentry" | "textentrylimited") => controls.push(Placed {
+                at,
+                what: Control::Entry {
+                    id: n(5) as u16,
+                    text: text_line(n(6)).unwrap_or_default(),
+                    limit: (kind == "textentrylimited").then_some(n(7) as u32),
+                },
+            }),
             "text" => texts.extend(text_line(n(3)).map(|what| Placed { at, what })),
             "croppedtext" => texts.extend(text_line(n(5)).map(|what| Placed { at, what })),
             "htmlgump" => texts.extend(text_line(n(4)).map(|what| Placed { at, what })),
@@ -242,17 +274,24 @@ pub fn read_gump(gump: &OpenGump, words: &dyn Fn(u32, &str) -> Option<String>) -
         ..GumpView::default()
     };
     for (control, label) in controls.iter().zip(&labels) {
-        match control.what {
+        match &control.what {
             Control::Button { id, to_page } => view.buttons.push(GumpButton {
-                id,
-                to_page,
+                id: *id,
+                to_page: *to_page,
                 page: control.at.page,
                 label: label.clone(),
             }),
+            Control::Entry { id, text, limit } => view.entries.push(GumpEntry {
+                id: *id,
+                page: control.at.page,
+                label: label.clone(),
+                text: text.clone(),
+                limit: *limit,
+            }),
             Control::Choice { switch, kind, on } => view.choices.push(GumpChoice {
-                switch,
-                kind,
-                on,
+                switch: *switch,
+                kind: *kind,
+                on: *on,
                 page: control.at.page,
                 section: if control.at.page == 0 {
                     String::new()
@@ -356,6 +395,26 @@ mod tests {
 
     /// The moongate gump as ModernUO draws it: a tab per map on page 0, and
     /// the towns of each map on its own page.
+    #[test]
+    fn a_text_field_gives_its_id_its_words_and_its_limit() {
+        let gump = OpenGump {
+            serial: Serial(1),
+            gump_id: 5,
+            x: 0,
+            y: 0,
+            layout: "{ page 0 }{ text 10 20 0 0 }{ textentrylimited 80 20 100 20 0 7 1 12 }".into(),
+            text: vec!["Price".into(), "100".into()],
+        };
+        let view = read_gump(&gump, &|_, _| None);
+        assert_eq!(view.entries.len(), 1);
+        let field = &view.entries[0];
+        assert_eq!(
+            (field.id, field.text.as_str(), field.limit),
+            (7, "100", Some(12))
+        );
+        assert_eq!(field.label, "Price");
+    }
+
     #[test]
     fn the_moongate_gump_reads_as_towns_under_maps() {
         let layout = format!(

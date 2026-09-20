@@ -2,6 +2,7 @@
 
 mod addressed;
 mod assist;
+mod cues;
 mod events;
 mod gump;
 mod journal;
@@ -16,8 +17,9 @@ pub use addressed::{
     CHAT_MODE_PLAY_ALONG, SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
 };
 pub use assist::{AssistFeature, AssistRules};
+pub use cues::{Cue, CueKind, Cues, CUE_CAP};
 pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
-pub use gump::{read_gump, ChoiceKind, GumpButton, GumpChoice, GumpText, GumpView};
+pub use gump::{read_gump, ChoiceKind, GumpButton, GumpChoice, GumpEntry, GumpText, GumpView};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
 };
