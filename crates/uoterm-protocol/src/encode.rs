@@ -1089,6 +1089,102 @@ pub fn chat_open(name: &str) -> Vec<u8> {
 /// The most characters of a name the chat takes.
 const CHAT_NAME_MAX_CHARS: usize = 30;
 
+/// The bytes a delete request pads before the slot.
+const DELETE_PAD: usize = 30;
+/// The fixed width of a name in a character request.
+const CHARACTER_NAME_LEN: usize = 30;
+/// The two words a create request starts with. A shard reads them to know
+/// the request is whole.
+const CREATE_PATTERN: u32 = 0xEDED_EDED;
+const CREATE_PATTERN_END: u32 = 0xFFFF_FFFF;
+/// The block of zeroes between the profession and the sex.
+const CREATE_SPARE: usize = 15;
+/// From 7.0.16.0 a new character starts with three skills; before it, two.
+const CREATE_SKILLS_NEW: usize = 4;
+const CREATE_SKILLS_OLD: usize = 3;
+/// The flags of the client, as the reference client writes them.
+const CREATE_CLIENT_FLAG: u32 = 0x1F;
+const CREATE_MARK: u32 = 0x01;
+
+/// `0x83`: delete the character in this slot of the account.
+pub fn delete_character(slot: u32) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_DELETE_CHARACTER);
+    w.bytes(&[0; DELETE_PAD]).u32(slot).u32(0);
+    w.finish()
+}
+
+/// What a player picks for a new character. The rest of the parts a shard
+/// checks are written for him.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewCharacter<'a> {
+    pub name: &'a str,
+    pub female: bool,
+    /// 0 human, 1 elf, 2 gargoyle.
+    pub race: u8,
+    pub strength: u8,
+    pub dexterity: u8,
+    pub intelligence: u8,
+    /// Each starting skill and how high it starts.
+    pub skills: Vec<(u8, u8)>,
+    pub skin_hue: u16,
+    pub hair: u16,
+    pub hair_hue: u16,
+    /// The town he starts in, and the slot he takes.
+    pub start_city: u16,
+    pub slot: u16,
+}
+
+/// `0x00`, or `0xF8` for a newer client: make a new character. The shard
+/// answers with the list of characters, or with `0x85` and a reason.
+pub fn create_character(new: &NewCharacter<'_>, version: ClientVersion) -> Vec<u8> {
+    let newer = version.has_three_starting_skills();
+    let id = if newer {
+        PKT_CREATE_CHARACTER_NEW
+    } else {
+        PKT_CREATE_CHARACTER
+    };
+    let skills = if newer {
+        CREATE_SKILLS_NEW
+    } else {
+        CREATE_SKILLS_OLD
+    };
+    let mut w = PacketWriter::new(id);
+    w.u32(CREATE_PATTERN)
+        .u32(CREATE_PATTERN_END)
+        .u8(0)
+        .ascii_fixed(new.name, CHARACTER_NAME_LEN)
+        .u16(0)
+        .u32(CREATE_CLIENT_FLAG)
+        .u32(CREATE_MARK)
+        .u32(0)
+        // No profession: the numbers below say what he is.
+        .u8(0)
+        .bytes(&[0; CREATE_SPARE])
+        // The race and the sex share one byte on a newer client.
+        .u8(new.race * 2 + u8::from(new.female))
+        .u8(new.strength)
+        .u8(new.dexterity)
+        .u8(new.intelligence);
+    for place in 0..skills {
+        let (skill, value) = new.skills.get(place).copied().unwrap_or((0, 0));
+        w.u8(skill).u8(value);
+    }
+    w.u16(new.skin_hue)
+        .u16(new.hair)
+        .u16(new.hair_hue)
+        // No beard on a new character.
+        .u16(0)
+        .u16(0)
+        .u16(new.start_city)
+        .u16(0)
+        .u16(new.slot)
+        .u32(0)
+        // The shirt and the trousers he starts in.
+        .u16(0)
+        .u16(0);
+    w.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1147,6 +1243,51 @@ mod tests {
 
     fn regular_keyword_speech(keywords: &[u16], text: &str) -> Vec<u8> {
         keyword_speech(SPEECH_REGULAR, DEFAULT_SPEECH_HUE, keywords, text)
+    }
+
+    #[test]
+    fn making_and_deleting_a_character_is_byte_exact() {
+        let gone = delete_character(2);
+        assert_eq!(gone[0], PKT_DELETE_CHARACTER);
+        assert_eq!(
+            &gone[1 + DELETE_PAD..1 + DELETE_PAD + 4],
+            &2u32.to_be_bytes()
+        );
+        let new = NewCharacter {
+            name: "Mara",
+            female: true,
+            race: 0,
+            strength: 45,
+            dexterity: 35,
+            intelligence: 10,
+            skills: vec![(45, 25), (30, 25)],
+            skin_hue: 0x83EA,
+            hair: 0x203B,
+            hair_hue: 0x044E,
+            start_city: 0,
+            slot: 1,
+        };
+        let old_client = ClientVersion {
+            major: 6,
+            minor: 0,
+            revision: 0,
+            patch: 0,
+        };
+        let new_client = ClientVersion {
+            major: 7,
+            minor: 0,
+            revision: 16,
+            patch: 0,
+        };
+        let made = create_character(&new, old_client);
+        assert_eq!(made[0], PKT_CREATE_CHARACTER);
+        assert_eq!(&made[1..5], &CREATE_PATTERN.to_be_bytes());
+        // id, two patterns and one zero byte come before the name.
+        assert_eq!(&made[10..14], b"Mara");
+        // A newer client sends its own packet, with room for one more skill.
+        let newer = create_character(&new, new_client);
+        assert_eq!(newer[0], PKT_CREATE_CHARACTER_NEW);
+        assert_eq!(newer.len(), made.len() + 2);
     }
 
     #[test]

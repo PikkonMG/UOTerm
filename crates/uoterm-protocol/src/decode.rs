@@ -750,6 +750,14 @@ pub enum Inbound {
         serial: Serial,
         fighting: Option<Serial>,
     },
+    /// `0x85`. The shard refused to play, make or delete a character.
+    CharacterRejected {
+        reason: u8,
+    },
+    /// `0x86`. The characters of the account, after one changed.
+    CharacterListUpdate {
+        characters: Vec<CharacterSlot>,
+    },
     /// `0x89`. What a corpse wears, so it is drawn and looted whole.
     CorpseEquipment {
         corpse: Serial,
@@ -944,6 +952,8 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_MOBILE_ATTRIBUTES => parse_mobile_attributes(packet),
         PKT_MOBILE_STATUS => parse_mobile_status(packet),
         PKT_CORPSE_EQUIPMENT => parse_corpse_equipment(packet),
+        PKT_CHARACTER_REJECTED => parse_character_rejected(packet),
+        PKT_CHARACTER_LIST_UPDATE => parse_character_list_update(packet),
         PKT_DROP_ACCEPTED => Ok(Inbound::DropAccepted),
         PKT_BOAT_MOVING => parse_boat_moving(packet),
         PKT_QUEST_ARROW => parse_quest_arrow(packet, version),
@@ -1187,6 +1197,10 @@ fn parse_features(packet: &[u8]) -> Result<Inbound> {
     Ok(Inbound::Features { flags })
 }
 
+/// The fixed width of a name and of the password beside it in a list of
+/// characters.
+const CHARACTER_NAME_LEN: usize = 30;
+
 fn parse_character_list(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -1194,8 +1208,8 @@ fn parse_character_list(packet: &[u8]) -> Result<Inbound> {
     let count = r.u8()? as usize;
     let mut characters = Vec::new();
     for _ in 0..count {
-        let name = r.ascii_fixed(30)?;
-        r.ascii_fixed(30)?;
+        let name = r.ascii_fixed(CHARACTER_NAME_LEN)?;
+        r.ascii_fixed(CHARACTER_NAME_LEN)?;
         if !name.is_empty() {
             characters.push(CharacterSlot { name });
         }
@@ -2787,6 +2801,45 @@ const TIP_OF_THE_DAY: u8 = 0;
 /// The brightest light a character can carry.
 const LIGHT_MAX: u8 = 0x1E;
 
+/// The words for why the shard refused a character request. The last one
+/// stands for every reason the shard invents.
+const CHARACTER_REFUSALS: [&str; 6] = [
+    "that password is wrong",
+    "that character does not exist",
+    "that character is being played",
+    "that character is not old enough",
+    "that character is being backed up",
+    "the shard could not carry out the request",
+];
+
+/// The words for a refusal code of `0x85`.
+pub fn character_refusal(reason: u8) -> &'static str {
+    let last = CHARACTER_REFUSALS.len() - 1;
+    CHARACTER_REFUSALS[usize::from(reason).min(last)]
+}
+
+fn parse_character_rejected(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::CharacterRejected { reason: r.u8()? })
+}
+
+fn parse_character_list_update(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let count = usize::from(r.u8()?);
+    let mut characters = Vec::new();
+    for _ in 0..count {
+        let name = r.ascii_fixed(CHARACTER_NAME_LEN)?;
+        r.ascii_fixed(CHARACTER_NAME_LEN)?;
+        if !name.is_empty() {
+            characters.push(CharacterSlot { name });
+        }
+    }
+    Ok(Inbound::CharacterListUpdate { characters })
+}
+
 fn parse_corpse_equipment(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -3045,6 +3098,34 @@ const BUFF_TRAILING_TEXTS: usize = 1;
 mod tests {
     use super::*;
     use crate::encode;
+
+    #[test]
+    fn the_shard_says_why_it_refused_a_character() {
+        assert!(matches!(
+            parse(&[PKT_CHARACTER_REJECTED, 2]).unwrap(),
+            Inbound::CharacterRejected { reason: 2 }
+        ));
+        assert_eq!(character_refusal(1), "that character does not exist");
+        // A reason the shard invents still has words.
+        assert_eq!(character_refusal(200), character_refusal(5));
+    }
+
+    #[test]
+    fn the_list_comes_again_after_a_character_is_made_or_deleted() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CHARACTER_LIST_UPDATE);
+        w.u8(2)
+            .ascii_fixed("Mara", CHARACTER_NAME_LEN)
+            .ascii_fixed("", CHARACTER_NAME_LEN)
+            .ascii_fixed("", CHARACTER_NAME_LEN)
+            .ascii_fixed("", CHARACTER_NAME_LEN);
+        let Inbound::CharacterListUpdate { characters } =
+            parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not a character list");
+        };
+        assert_eq!(characters.len(), 1, "an empty slot is no character");
+        assert_eq!(characters[0].name, "Mara");
+    }
 
     #[test]
     fn a_corpse_gives_what_it_wears_with_the_right_layers() {

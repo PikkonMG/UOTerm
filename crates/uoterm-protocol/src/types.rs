@@ -102,6 +102,16 @@ pub const PKT_UPDATE_NAME: u8 = 0x98;
 /// `0xE5` and `0xE6`. A mark on the world map.
 pub const PKT_WAYPOINT_ADD: u8 = 0xE5;
 pub const PKT_WAYPOINT_REMOVE: u8 = 0xE6;
+/// `0x85`. The shard refused a character request, and why.
+pub const PKT_CHARACTER_REJECTED: u8 = 0x85;
+/// `0x86`. The list of characters again, after one was made or deleted.
+pub const PKT_CHARACTER_LIST_UPDATE: u8 = 0x86;
+/// `0x83`. Delete a character of the account.
+pub const PKT_DELETE_CHARACTER: u8 = 0x83;
+/// `0x00` and `0xF8`. Make a new character. The newer one takes a third
+/// starting skill.
+pub const PKT_CREATE_CHARACTER: u8 = 0x00;
+pub const PKT_CREATE_CHARACTER_NEW: u8 = 0xF8;
 pub const PKT_AOS_COMMAND: u8 = 0xD7;
 pub const PKT_HELP_REQUEST: u8 = 0x9B;
 pub const PKT_CHAT_EVENT: u8 = 0xB2;
@@ -723,6 +733,12 @@ pub struct ClientVersion {
 }
 
 impl ClientVersion {
+    /// From 7.0.16.0 a new character starts with three skills, not two,
+    /// and the request goes as `0xF8`.
+    pub fn has_three_starting_skills(&self) -> bool {
+        (self.major, self.minor, self.revision) >= (7, 0, 16)
+    }
+
     /// From 7.0.9.0 a quest arrow carries the serial it points at.
     pub fn has_quest_arrow_serial(&self) -> bool {
         (self.major, self.minor, self.revision) >= (7, 0, 9)
