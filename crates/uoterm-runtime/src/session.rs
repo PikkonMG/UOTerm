@@ -353,6 +353,9 @@ struct Inner {
     /// session was given no client directory, or when those files would not
     /// open: a building is then only known from the steps the server refuses.
     multi_shapes: Option<Arc<MultiData>>,
+    /// The parts a house can be built from, read once from the client
+    /// files when the designer first opens.
+    house_parts: Option<Arc<uoterm_nav::HouseCatalog>>,
     movement: Movement,
     doors: DoorOpener,
     /// The door macro the character owes, which waits until it can be aimed.
@@ -833,6 +836,7 @@ async fn run_session(
         maps,
         facets,
         multi_shapes: shapes,
+        house_parts: None,
         movement: Movement::default(),
         doors: DoorOpener::default(),
         door_macro: None,
@@ -1311,6 +1315,20 @@ async fn pick_character(
 
 /// The corners of the multi a house item stands on. None when the client
 /// files do not describe it.
+/// Reads the parts a house can be built from, once. The client files list
+/// them, so a session with no client files has none.
+fn ensure_house_parts(inner: &mut Inner) {
+    if inner.house_parts.is_some() {
+        return;
+    }
+    let Some(path) = inner.uopath.clone() else {
+        return;
+    };
+    let catalog = uoterm_nav::HouseCatalog::open(&path);
+    tracing::info!(parts = catalog.parts().len(), "house parts ready");
+    inner.house_parts = Some(Arc::new(catalog));
+}
+
 fn multi_bounds(inner: &Inner, foundation: Serial) -> Option<uoterm_world::HouseBounds> {
     let multi_id = inner.world.read().multis.get(&foundation)?.multi_id;
     let shapes = inner.multi_shapes.as_deref()?;
@@ -1688,6 +1706,7 @@ mod relay_tests {
             maps: HashMap::new(),
             facets: Arc::new(FacetCache::default()),
             multi_shapes: None,
+            house_parts: None,
             movement: Movement::default(),
             doors: DoorOpener::default(),
             door_macro: None,
@@ -7433,6 +7452,17 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     }
                     play::on_book_or_menu(inner, &msg);
                     play::on_map_or_profile(inner, &msg);
+                    play::on_chat(inner, &msg);
+                    play::on_designer(inner, &msg);
+                    if matches!(
+                        msg,
+                        Inbound::HouseDesigner {
+                            designing: true,
+                            ..
+                        }
+                    ) {
+                        ensure_house_parts(inner);
+                    }
                     if let Inbound::CustomHouse(house) = &msg {
                         let bounds = multi_bounds(inner, house.serial);
                         play::on_custom_house(inner, house, bounds);
@@ -10579,6 +10609,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_MAP_PIN => play::map_pin(inner, args),
         TOOL_MAP_CLOSE => play::map_close(inner, args),
         TOOL_PROFILE => play::profile(inner, args),
+        TOOL_HOUSE_EDIT => play::house_edit(inner, args),
+        TOOL_HELP => play::help(inner),
+        TOOL_CHAT => play::chat(inner, args),
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
                 p.clamp_rates();

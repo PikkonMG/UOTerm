@@ -57,6 +57,9 @@ pub const TOOL_SCRIPT_SAVE: &str = "script_save";
 pub const TOOL_MAP_PIN: &str = "map_pin";
 pub const TOOL_MAP_CLOSE: &str = "map_close";
 pub const TOOL_PROFILE: &str = "profile";
+pub const TOOL_HOUSE_EDIT: &str = "house_edit";
+pub const TOOL_HELP: &str = "help";
+pub const TOOL_CHAT: &str = "chat";
 pub const TOOL_AGENTS: &str = "agents";
 pub const TOOL_AGENT_SET: &str = "agent_set";
 pub const TOOL_AGENT_ON: &str = "agent_on";
@@ -523,6 +526,21 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (
         TOOL_PROFILE,
         "The profile a player wrote about his character: serial. With text, writes the profile of your own character. The words come back in watch under profiles.",
+        "in world",
+    ),
+    (
+        TOOL_HOUSE_EDIT,
+        "One step of the house designer, while it is open (watch shows it under designing): action add, remove, stair, roof, remove_roof with graphic, x and y (and z to remove); floor with level from 1; and clear, revert, commit, exit, backup, restore. The parts to build with are in watch under house_parts.",
+        "the house designer is open",
+    ),
+    (
+        TOOL_HELP,
+        "Asks the shard for its help menu. It answers with a gump.",
+        "in world",
+    ),
+    (
+        TOOL_CHAT,
+        "The chat of the shard: action open (with name) turns it on, join (with channel and password), say (with text), leave. watch shows the channels and the lines under chat.",
         "in world",
     ),
     (

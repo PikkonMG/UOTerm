@@ -7,8 +7,8 @@
 
 use super::*;
 use uoterm_protocol::{
-    BulletinEvent, ContextMenuEntry, DisplayMap, Inbound, MapChange, MenuEntry, VendorBuyEntry,
-    VendorSellEntry,
+    BulletinEvent, ChatEvent, ContextMenuEntry, DisplayMap, HouseEdit, Inbound, MapChange,
+    MenuEntry, VendorBuyEntry, VendorSellEntry,
 };
 
 /// How many journal lines a window gets. It shows the last few and draws the
@@ -23,6 +23,21 @@ const NO_MENU_SHOWN: &str = "no context menu is shown for this object; ask for i
 const NO_SHOP_OPEN: &str = "no shop list is open";
 const NO_TRADE_OPEN: &str = "no trade is open";
 const NO_MENU_OPEN: &str = "no menu is open";
+const NO_DESIGNER: &str = "the house designer is not open; use the house sign and start it";
+const NEEDS_GRAPHIC: &str = "needs graphic: one of the parts in watch house_parts";
+const NEEDS_ACTION: &str = "needs action";
+const BAD_ACTION: &str = "action must be add, remove, stair, roof, remove_roof, floor, clear, revert, commit, exit, backup or restore";
+const BAD_CHAT_ACTION: &str = "action must be open, join, say or leave";
+const NEEDS_CHANNEL: &str = "needs channel";
+const NEEDS_WORDS: &str = "needs text";
+const ARG_GRAPHIC: &str = "graphic";
+const ARG_Z: &str = "z";
+const ARG_LEVEL: &str = "level";
+const ARG_NAME: &str = "name";
+const ARG_CHANNEL: &str = "channel";
+const ARG_PASSWORD: &str = "password";
+/// How many chat lines the session keeps for a window.
+const CHAT_LINES_KEPT: usize = 80;
 const NO_MAP_OPEN: &str = "no map item is open; use a map first";
 const NEEDS_PLACE: &str = "needs x and y, in pixels of the map picture";
 const ARG_ACTION: &str = "action";
@@ -111,6 +126,19 @@ struct OpenMap {
     may_plot: bool,
 }
 
+/// The chat of the shard: its channels, the one the character is in, and
+/// the lines that were said.
+#[derive(Clone, Debug, Default)]
+struct Chat {
+    /// The chat is on. Before that the shard may ask for a name.
+    open: bool,
+    asks_for_name: bool,
+    name: String,
+    channels: Vec<(String, bool)>,
+    in_channel: String,
+    lines: Vec<(String, String)>,
+}
+
 /// The profile a player wrote about a character.
 #[derive(Clone, Debug)]
 struct CharacterProfile {
@@ -135,6 +163,9 @@ pub(super) struct Play {
     houses: std::collections::HashMap<Serial, uoterm_world::DesignedHouse>,
     /// The building the shard waits for a place for.
     placing: Option<Value>,
+    /// The house the designer works on, and the level it works on.
+    designing: Option<(Serial, u8)>,
+    chat: Chat,
 }
 
 /// The shard sent a context menu. It is kept when the human asked for it.
@@ -325,6 +356,178 @@ pub(super) fn on_book_or_menu(inner: &mut Inner, msg: &Inbound) {
         }
         _ => {}
     }
+}
+
+/// Keeps whether the house designer is open.
+pub(super) fn on_designer(inner: &mut Inner, msg: &Inbound) {
+    if let Inbound::HouseDesigner { serial, designing } = msg {
+        inner.play.designing = designing.then_some((*serial, DESIGNER_FIRST_FLOOR));
+    }
+}
+
+/// The level the designer starts on.
+const DESIGNER_FIRST_FLOOR: u8 = 1;
+
+/// Keeps what the chat of the shard says.
+pub(super) fn on_chat(inner: &mut Inner, msg: &Inbound) {
+    let Inbound::Chat(event) = msg else {
+        return;
+    };
+    let chat = &mut inner.play.chat;
+    match event {
+        ChatEvent::ChannelAdded { name, has_password } => {
+            chat.channels.retain(|(kept, _)| kept != name);
+            chat.channels.push((name.clone(), *has_password));
+        }
+        ChatEvent::ChannelRemoved { name } => chat.channels.retain(|(kept, _)| kept != name),
+        ChatEvent::AsksForName => chat.asks_for_name = true,
+        ChatEvent::Opened { name } => {
+            chat.open = true;
+            chat.asks_for_name = false;
+            chat.name = name.clone();
+        }
+        ChatEvent::Closed => *chat = Chat::default(),
+        ChatEvent::Joined { name } => chat.in_channel = name.clone(),
+        ChatEvent::Left { name } if chat.in_channel == *name => chat.in_channel.clear(),
+        ChatEvent::Left { .. } => {}
+        ChatEvent::Said { who, words } => {
+            chat.lines.push((who.clone(), words.clone()));
+            while chat.lines.len() > CHAT_LINES_KEPT {
+                chat.lines.remove(0);
+            }
+        }
+    }
+}
+
+/// `chat`: turns the chat on, joins a channel, says words, or leaves.
+pub(super) fn chat(inner: &mut Inner, args: &Value) -> ToolResult {
+    let action = args.get(ARG_ACTION).and_then(Value::as_str).unwrap_or("");
+    let words = |key: &str| args.get(key).and_then(Value::as_str).map(str::trim);
+    let packet = match action {
+        "open" => {
+            let name = words(ARG_NAME).unwrap_or_default();
+            let name = if name.is_empty() {
+                inner.world.read().self_state.name.clone()
+            } else {
+                name.to_string()
+            };
+            encode::chat_open(&name)
+        }
+        "join" => {
+            let Some(channel) = words(ARG_CHANNEL).filter(|channel| !channel.is_empty()) else {
+                return ToolResult::err(NEEDS_CHANNEL);
+            };
+            encode::chat_join(channel, words(ARG_PASSWORD).filter(|p| !p.is_empty()))
+        }
+        "say" => {
+            let Some(text) = words(ARG_TEXT).filter(|text| !text.is_empty()) else {
+                return ToolResult::err(NEEDS_WORDS);
+            };
+            encode::chat_say(text)
+        }
+        "leave" => encode::chat_leave(),
+        "" => return ToolResult::err(NEEDS_ACTION),
+        _ => return ToolResult::err(BAD_CHAT_ACTION),
+    };
+    inner.outbound.push_back(packet);
+    ToolResult::action(TOOL_CHAT)
+}
+
+/// `help`: asks the shard for its help menu.
+pub(super) fn help(inner: &mut Inner) -> ToolResult {
+    inner.outbound.push_back(encode::help_request());
+    ToolResult::action(TOOL_HELP)
+}
+
+/// One step of the house designer, from the words of the call.
+fn house_step(args: &Value) -> std::result::Result<HouseEdit, &'static str> {
+    let number = |key: &str| args.get(key).and_then(Value::as_i64).map(|n| n as i32);
+    let graphic = || {
+        args.get(ARG_GRAPHIC)
+            .and_then(Value::as_u64)
+            .map(|graphic| graphic as u16)
+            .ok_or(NEEDS_GRAPHIC)
+    };
+    let place = || (number(ARG_X).unwrap_or(0), number(ARG_Y).unwrap_or(0));
+    match args.get(ARG_ACTION).and_then(Value::as_str).unwrap_or("") {
+        "add" => {
+            let (x, y) = place();
+            Ok(HouseEdit::Add {
+                graphic: graphic()?,
+                x,
+                y,
+            })
+        }
+        "stair" => {
+            let (x, y) = place();
+            Ok(HouseEdit::AddStair {
+                graphic: graphic()?,
+                x,
+                y,
+            })
+        }
+        "remove" => {
+            let (x, y) = place();
+            Ok(HouseEdit::Remove {
+                graphic: graphic()?,
+                x,
+                y,
+                z: number(ARG_Z).unwrap_or(0),
+            })
+        }
+        "roof" => {
+            let (x, y) = place();
+            Ok(HouseEdit::AddRoof {
+                graphic: graphic()?,
+                x,
+                y,
+                z: number(ARG_Z).unwrap_or(0),
+            })
+        }
+        "remove_roof" => {
+            let (x, y) = place();
+            Ok(HouseEdit::RemoveRoof {
+                graphic: graphic()?,
+                x,
+                y,
+                z: number(ARG_Z).unwrap_or(0),
+            })
+        }
+        "floor" => Ok(HouseEdit::GoToFloor(
+            number(ARG_LEVEL).unwrap_or(1).clamp(1, i32::from(u8::MAX)) as u8,
+        )),
+        "clear" => Ok(HouseEdit::Clear),
+        "revert" => Ok(HouseEdit::Revert),
+        "commit" => Ok(HouseEdit::Commit),
+        "exit" => Ok(HouseEdit::Exit),
+        "backup" => Ok(HouseEdit::Backup),
+        "restore" => Ok(HouseEdit::Restore),
+        "" => Err(NEEDS_ACTION),
+        _ => Err(BAD_ACTION),
+    }
+}
+
+/// `house_edit`: one step of the house designer.
+pub(super) fn house_edit(inner: &mut Inner, args: &Value) -> ToolResult {
+    if inner.play.designing.is_none() {
+        return ToolResult::err(NO_DESIGNER);
+    }
+    let step = match house_step(args) {
+        Ok(step) => step,
+        Err(words) => return ToolResult::err(words),
+    };
+    let me = inner.world.read().self_state.serial;
+    inner.outbound.push_back(encode::house_edit(me, step));
+    match step {
+        HouseEdit::GoToFloor(level) => {
+            if let Some((_, floor)) = inner.play.designing.as_mut() {
+                *floor = level;
+            }
+        }
+        HouseEdit::Commit | HouseEdit::Exit => inner.play.designing = None,
+        _ => {}
+    }
+    ToolResult::action(TOOL_HOUSE_EDIT)
 }
 
 /// Keeps the map items and the profiles the shard sends.
@@ -886,6 +1089,34 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         }))
         .collect::<Vec<_>>());
     // A building shows only while the cursor that places it is up.
+    picture["chat"] = json!(inner.play.chat.open.then(|| json!({
+        "name": inner.play.chat.name,
+        "channels": inner
+            .play
+            .chat
+            .channels
+            .iter()
+            .map(|(name, locked)| json!({ "name": name, "has_password": locked }))
+            .collect::<Vec<_>>(),
+        "in_channel": inner.play.chat.in_channel,
+        "lines": inner
+            .play
+            .chat
+            .lines
+            .iter()
+            .map(|(who, words)| json!({ "who": who, "words": words }))
+            .collect::<Vec<_>>(),
+    })));
+    picture["chat_asks_for_name"] = json!(inner.play.chat.asks_for_name);
+    picture["house_parts"] = json!(inner
+        .house_parts
+        .as_ref()
+        .filter(|_| inner.play.designing.is_some())
+        .map(|catalog| catalog.parts()));
+    picture["designing"] = json!(inner
+        .play
+        .designing
+        .map(|(serial, floor)| json!({ "serial": serial, "floor": floor })));
     picture["placing"] = json!(inner
         .play
         .placing
@@ -1014,6 +1245,9 @@ mod tests {
             "profiles",
             "designed_houses",
             "placing",
+            "chat",
+            "designing",
+            "house_parts",
             "running",
             "season",
             "light",
@@ -1258,6 +1492,103 @@ mod tests {
         let shown = watch_value(&inner, RADAR_DEFAULT);
         assert_eq!(shown["designed_houses"][0]["revision"], 3);
         assert_eq!(shown["designed_houses"][0]["tiles"][0]["graphic"], 0x64);
+    }
+
+    #[test]
+    fn the_designer_takes_steps_only_while_it_is_open() {
+        const HOUSE: Serial = Serial(0x4000_0F03);
+        const WALL: u16 = 10;
+        let mut inner = test_session();
+        let add = json!({ "action": "add", "graphic": WALL, "x": -3, "y": 4 });
+        assert!(!house_edit(&mut inner, &add).ok, "the designer is shut");
+        on_designer(
+            &mut inner,
+            &Inbound::HouseDesigner {
+                serial: HOUSE,
+                designing: true,
+            },
+        );
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["designing"]["floor"], DESIGNER_FIRST_FLOOR);
+        assert!(
+            !house_edit(&mut inner, &json!({ "action": "add" })).ok,
+            "no part"
+        );
+        assert!(!house_edit(&mut inner, &json!({ "action": "dance" })).ok);
+        assert!(house_edit(&mut inner, &add).ok);
+        let me = inner.world.read().self_state.serial;
+        assert!(inner.outbound.contains(&encode::house_edit(
+            me,
+            HouseEdit::Add {
+                graphic: WALL,
+                x: -3,
+                y: 4
+            }
+        )));
+        assert!(house_edit(&mut inner, &json!({ "action": "floor", "level": 3 })).ok);
+        assert_eq!(watch_value(&inner, RADAR_DEFAULT)["designing"]["floor"], 3);
+        assert!(house_edit(&mut inner, &json!({ "action": "commit" })).ok);
+        assert!(watch_value(&inner, RADAR_DEFAULT)["designing"].is_null());
+    }
+
+    #[test]
+    fn the_chat_keeps_its_channels_and_its_lines() {
+        let mut inner = test_session();
+        assert!(!chat(&mut inner, &json!({})).ok);
+        assert!(!chat(&mut inner, &json!({ "action": "sing" })).ok);
+        assert!(!chat(&mut inner, &json!({ "action": "join" })).ok);
+        assert!(watch_value(&inner, RADAR_DEFAULT)["chat"].is_null());
+        let event = |event: ChatEvent| Inbound::Chat(event);
+        on_chat(&mut inner, &event(ChatEvent::AsksForName));
+        assert_eq!(
+            watch_value(&inner, RADAR_DEFAULT)["chat_asks_for_name"],
+            true
+        );
+        on_chat(
+            &mut inner,
+            &event(ChatEvent::Opened {
+                name: "Mara".into(),
+            }),
+        );
+        on_chat(
+            &mut inner,
+            &event(ChatEvent::ChannelAdded {
+                name: "General".into(),
+                has_password: false,
+            }),
+        );
+        on_chat(
+            &mut inner,
+            &event(ChatEvent::Joined {
+                name: "General".into(),
+            }),
+        );
+        on_chat(
+            &mut inner,
+            &event(ChatEvent::Said {
+                who: "Ann".into(),
+                words: "Anyone selling ore?".into(),
+            }),
+        );
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["chat"]["name"], "Mara");
+        assert_eq!(shown["chat"]["channels"][0]["name"], "General");
+        assert_eq!(shown["chat"]["in_channel"], "General");
+        assert_eq!(shown["chat"]["lines"][0]["who"], "Ann");
+        assert_eq!(shown["chat_asks_for_name"], false);
+        assert!(chat(&mut inner, &json!({ "action": "say", "text": "hail" })).ok);
+        assert!(inner.outbound.contains(&encode::chat_say("hail")));
+        assert!(chat(&mut inner, &json!({ "action": "join", "channel": "Trade" })).ok);
+        assert!(inner.outbound.contains(&encode::chat_join("Trade", None)));
+        on_chat(&mut inner, &event(ChatEvent::Closed));
+        assert!(watch_value(&inner, RADAR_DEFAULT)["chat"].is_null());
+    }
+
+    #[test]
+    fn help_asks_the_shard_for_its_menu() {
+        let mut inner = test_session();
+        assert!(help(&mut inner).ok);
+        assert!(inner.outbound.contains(&encode::help_request()));
     }
 
     #[test]
