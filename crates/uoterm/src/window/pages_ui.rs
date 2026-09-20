@@ -27,6 +27,12 @@ const WORDS_CANCEL: &str = "Cancel";
 const WORDS_CLOSE: &str = "Close";
 const WORDS_BACK: &str = "Back";
 const WORDS_NEXT: &str = "Next";
+const WORDS_WRITE: &str = "Write";
+const WORDS_SAVE_PAGE: &str = "Save page";
+const HINT_PAGE: &str = "The words of this page";
+const HINT_TITLE: &str = "The title of the book";
+const WORDS_NAME_IT: &str = "Name it";
+const TITLE_FIELD_WIDTH: f32 = 220.0;
 const WORDS_POST: &str = "Post";
 const WORDS_REPLY: &str = "Reply";
 const WORDS_REMOVE: &str = "Remove";
@@ -52,6 +58,10 @@ pub struct PagesUi {
     first_post: usize,
     subject: String,
     text: String,
+    /// The page being written, and its words.
+    writing: Option<(usize, String)>,
+    /// The title being typed for the open book.
+    new_title: Option<String>,
 }
 
 /// The left page after a turn, kept inside the book.
@@ -176,7 +186,7 @@ impl PagesUi {
 
     fn book(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         rect: Rect,
         book: &WatchBook,
         frame: &WatchFrame,
@@ -197,21 +207,43 @@ impl PagesUi {
         );
         theme::panel(ui.painter(), panel);
         let inner = panel.shrink(theme::PANEL_PAD);
-        let painter = ui.painter();
-        painter.text(
-            inner.left_top(),
-            Align2::LEFT_TOP,
-            &book.title,
-            title_font(theme::SIZE_TITLE),
-            theme::TEXT,
-        );
-        painter.text(
+        match self.new_title.as_mut() {
+            Some(words) => {
+                let field = Rect::from_min_size(
+                    inner.left_top(),
+                    Vec2::new(TITLE_FIELD_WIDTH, TITLE_ROW - theme::ROW_GAP),
+                );
+                ui.painter()
+                    .rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+                ui.put(
+                    field,
+                    egui::TextEdit::singleline(words)
+                        .frame(false)
+                        .margin(egui::Margin::symmetric(8, 4))
+                        .hint_text(HINT_TITLE)
+                        .font(text_font(theme::SIZE_BODY))
+                        .text_color(theme::TEXT),
+                );
+            }
+            None => {
+                ui.painter().text(
+                    inner.left_top(),
+                    Align2::LEFT_TOP,
+                    &book.title,
+                    title_font(theme::SIZE_TITLE),
+                    theme::TEXT,
+                );
+            }
+        }
+        ui.painter().text(
             inner.right_top() + Vec2::new(0.0, theme::ROW_GAP),
             Align2::RIGHT_TOP,
             format!("by {}", book.author),
             text_font(theme::SIZE_BODY),
             theme::TEXT_DIM,
         );
+        let painter = ui.painter().clone();
+        let painter = &painter;
         for side in 0..PAGES_SHOWN {
             let number = left_page + side;
             let paper = Rect::from_min_size(
@@ -242,6 +274,31 @@ impl PagesUi {
                 INK,
             );
         }
+        if let Some((page, words)) = self.writing.as_mut() {
+            // The page being written takes the place of the left paper.
+            let paper = Rect::from_min_size(
+                inner.left_top() + Vec2::new(0.0, TITLE_ROW),
+                Vec2::new(BOOK_PAGE_WIDTH, paper_height),
+            );
+            ui.painter()
+                .rect_filled(paper, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+            ui.put(
+                paper,
+                egui::TextEdit::multiline(words)
+                    .frame(false)
+                    .margin(egui::Margin::symmetric(8, 6))
+                    .hint_text(HINT_PAGE)
+                    .font(text_font(theme::SIZE_BODY))
+                    .text_color(theme::TEXT),
+            );
+            ui.painter().text(
+                paper.center_bottom() - Vec2::new(0.0, theme::ROW_GAP),
+                Align2::CENTER_BOTTOM,
+                (*page + 1).to_string(),
+                number_font(theme::SIZE_SMALL),
+                theme::TEXT_DIM,
+            );
+        }
         let foot = Pos2::new(inner.left(), inner.bottom() - FOOT_ROW + theme::ROW_GAP);
         let (back, went_back) = theme::button(ui, foot, WORDS_BACK, theme::TEXT);
         let (next, went_on) = theme::button(
@@ -256,13 +313,59 @@ impl PagesUi {
         }
         self.book_at = Some((book.serial, now_left));
         if frame.human_control {
-            let (_, closed) = theme::button(
+            let writing = self.writing.is_some();
+            let words = if writing {
+                WORDS_SAVE_PAGE
+            } else {
+                WORDS_WRITE
+            };
+            let (write, pressed) = theme::button(
                 ui,
                 Pos2::new(next.right() + BOOK_GUTTER, foot.y),
+                words,
+                theme::GOAL,
+            );
+            if pressed {
+                match self.writing.take() {
+                    Some((page, words)) => tools.hand.act(Act::BookPage {
+                        page: page as u16 + 1,
+                        text: words,
+                    }),
+                    None => {
+                        let words = book
+                            .pages
+                            .get(now_left)
+                            .map(|lines| lines.join("\n"))
+                            .unwrap_or_default();
+                        self.writing = Some((now_left, words));
+                    }
+                }
+            }
+            let naming = self.new_title.is_some();
+            let (name_it, named) = theme::button(
+                ui,
+                Pos2::new(write.right() + theme::ROW_GAP, foot.y),
+                WORDS_NAME_IT,
+                if naming { theme::GOAL } else { theme::TEXT },
+            );
+            if named {
+                match self.new_title.take() {
+                    Some(title) => tools.hand.act(Act::BookName {
+                        title,
+                        author: book.author.clone(),
+                    }),
+                    None => self.new_title = Some(book.title.clone()),
+                }
+            }
+            let (_, closed) = theme::button(
+                ui,
+                Pos2::new(name_it.right() + theme::ROW_GAP, foot.y),
                 WORDS_CLOSE,
                 theme::TEXT_DIM,
             );
             if closed {
+                self.writing = None;
+                self.new_title = None;
                 tools.hand.act(Act::BookClose);
             }
         }

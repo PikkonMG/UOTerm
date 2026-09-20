@@ -15,15 +15,15 @@ use std::thread;
 use std::time::Duration;
 use uoterm_runtime::tools::{
     ARG_HUMAN, TOOL_ATTACK, TOOL_BOARD_CLOSE, TOOL_BOARD_POST, TOOL_BOARD_READ, TOOL_BOARD_REMOVE,
-    TOOL_BOOK_CLOSE, TOOL_CAST, TOOL_CHAT, TOOL_CLOSE_MENU, TOOL_COMMAND, TOOL_CONTEXT_MENU,
-    TOOL_DEPOSIT, TOOL_DROP, TOOL_EQUIP, TOOL_FIND_LANDMARKS, TOOL_FOLLOW, TOOL_GUMP_CLOSE,
-    TOOL_GUMP_RESPOND, TOOL_HELP, TOOL_HOTKEYS, TOOL_HOUSE_EDIT, TOOL_LIFT, TOOL_LIST_SCRIPTS,
-    TOOL_LOGOUT, TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN, TOOL_MENU_PICK, TOOL_MOVE_TO,
-    TOOL_PROFILE, TOOL_PROPERTIES, TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT,
-    TOOL_SAY, TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT,
-    TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL,
-    TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD, TOOL_TRADE_OFFER,
-    TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK, TOOL_WAR_MODE,
+    TOOL_BOOK_CLOSE, TOOL_BOOK_WRITE, TOOL_CAST, TOOL_CHAT, TOOL_CLOSE_MENU, TOOL_COMMAND,
+    TOOL_CONTEXT_MENU, TOOL_DEPOSIT, TOOL_DROP, TOOL_EQUIP, TOOL_FIND_LANDMARKS, TOOL_FOLLOW,
+    TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_HELP, TOOL_HOTKEYS, TOOL_HOUSE_EDIT, TOOL_LIFT,
+    TOOL_LIST_SCRIPTS, TOOL_LOGOUT, TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN, TOOL_MENU_PICK,
+    TOOL_MOVE_TO, TOOL_PROFILE, TOOL_PROPERTIES, TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL,
+    TOOL_RUN_SCRIPT, TOOL_SAY, TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS,
+    TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_STOP_SCRIPT,
+    TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD,
+    TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK, TOOL_WAR_MODE,
 };
 
 /// The shard refuses a drop that comes too soon after the lift.
@@ -89,6 +89,15 @@ pub enum Act {
     /// Answer the old-style menu: an entry from one, or none to walk away.
     OldMenuPick(Option<u16>),
     BookClose,
+    /// Name the open book, or write one of its pages.
+    BookName {
+        title: String,
+        author: String,
+    },
+    BookPage {
+        page: u16,
+        text: String,
+    },
     /// Ask for the lines of a message of the open bulletin board.
     BoardRead(u32),
     BoardPost {
@@ -309,6 +318,12 @@ impl Act {
             Self::OldMenuPick(Some(index)) => vec![(TOOL_MENU_PICK, json!({ "index": index }))],
             Self::OldMenuPick(None) => vec![(TOOL_MENU_PICK, json!({}))],
             Self::BookClose => vec![(TOOL_BOOK_CLOSE, json!({}))],
+            Self::BookName { title, author } => {
+                vec![(TOOL_BOOK_WRITE, json!({ "title": title, "author": author }))]
+            }
+            Self::BookPage { page, text } => {
+                vec![(TOOL_BOOK_WRITE, json!({ "page": page, "text": text }))]
+            }
             Self::BoardRead(message) => vec![(TOOL_BOARD_READ, json!({ "message": message }))],
             Self::BoardPost {
                 subject,
@@ -432,6 +447,8 @@ impl Act {
             Self::TakeOff(_) => "Taken off.".into(),
             Self::Menu(_) | Self::MenuClose | Self::BookClose => String::new(),
             Self::BoardRead(_) | Self::BoardClose => String::new(),
+            Self::BookName { .. } => "Book named.".into(),
+            Self::BookPage { page, .. } => format!("Page {page} written."),
             Self::BoardPost { .. } => "Message posted.".into(),
             Self::BoardRemove(_) => "Message removed.".into(),
             Self::MapPin { .. } => "Pin put on the map.".into(),
@@ -915,6 +932,14 @@ mod tests {
             Act::OldMenuPick(Some(1)),
             Act::OldMenuPick(None),
             Act::BookClose,
+            Act::BookName {
+                title: "Tales".into(),
+                author: "Ann".into(),
+            },
+            Act::BookPage {
+                page: 1,
+                text: "Once".into(),
+            },
             Act::BoardRead(ITEM),
             Act::BoardPost {
                 subject: "Hi".into(),

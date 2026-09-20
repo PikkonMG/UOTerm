@@ -18,7 +18,7 @@ use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2}
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
-use uoterm_runtime::{LoginPicker, LoginQuestion};
+use uoterm_runtime::{CharacterRequest, LoginPicker, LoginQuestion, NewCharacterWish};
 
 const PANEL_SIZE: Vec2 = Vec2::new(760.0, 470.0);
 const LIST_WIDTH: f32 = 230.0;
@@ -37,6 +37,22 @@ const WORDS_CONNECT: &str = "Connect";
 const WORDS_CONNECTING: &str = "Connecting...";
 const WORDS_PICK_SHARD: &str = "Pick a shard";
 const WORDS_PICK_CHARACTER: &str = "Pick a character";
+const WORDS_MAKE: &str = "New character";
+const WORDS_DELETE: &str = "Delete";
+const WORDS_DELETE_SURE: &str = "Delete?";
+const WORDS_EMPTY_SLOT: &str = "(empty)";
+const HINT_NEW_NAME: &str = "The name of your new character";
+const WORDS_NEEDS_NAME: &str = "Give the new character a name.";
+/// A new character starts with these, which every shard takes.
+const NEW_STRENGTH: u8 = 45;
+const NEW_DEXTERITY: u8 = 35;
+const NEW_INTELLIGENCE: u8 = 10;
+/// Swordsmanship and Tactics, each at 25 points, and Healing at 10.
+const NEW_SKILLS: [(u8, u8); 3] = [(45, 25), (30, 25), (17, 10)];
+const NEW_SKIN_HUE: u16 = 0x83EA;
+const NEW_HAIR: u16 = 0x203B;
+const NEW_HAIR_HUE: u16 = 0x044E;
+const CHARACTER_SLOTS: usize = 7;
 const WORDS_FIND: &str = "Find";
 const WORDS_ASKING: &str = "Jev looks at the list...";
 const WORDS_NOT_SURE: &str = "Jev is not sure which one you mean. Click one.";
@@ -46,6 +62,7 @@ const HINT_PASSWORD_ENV: &str = "From the environment when empty";
 const LABELS: [&str; 6] = ["Host", "Port", "Account", "Password", "Shard", "Character"];
 const PASSWORD_FIELD: usize = 3;
 const FIND_WIDTH: f32 = 70.0;
+const DELETE_WIDTH: f32 = 70.0;
 
 /// What the human typed in the login form.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -94,6 +111,11 @@ enum Stage {
         names: Vec<String>,
         reply: tokio::sync::oneshot::Sender<usize>,
     },
+    /// The login waits for what to do with the characters of the account.
+    Characters {
+        names: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<CharacterRequest>,
+    },
 }
 
 /// What Jev was asked about, so the answer goes to the right list.
@@ -118,6 +140,10 @@ pub struct LoginUi {
     note: Option<(String, bool)>,
     /// The first frame starts the login. A fault brings the form back.
     connect_at_once: bool,
+    /// The name typed for a new character, and the slot waiting to be
+    /// deleted once the human presses Delete a second time.
+    new_name: String,
+    delete_asked: Option<usize>,
 }
 
 /// The form with a saved login put in. The host, the port and the password
@@ -153,6 +179,8 @@ impl LoginUi {
             jev_answers,
             note: None,
             connect_at_once,
+            new_name: String::new(),
+            delete_asked: None,
         }
     }
 
@@ -221,6 +249,117 @@ impl LoginUi {
         }
     }
 
+    /// Sends what the human wants done with the characters, and goes back
+    /// to waiting for the shard.
+    fn answer_request(&mut self, request: CharacterRequest) {
+        if let Stage::Characters { reply, .. } =
+            std::mem::replace(&mut self.stage, Stage::Connecting)
+        {
+            let _ = reply.send(request);
+        }
+    }
+
+    /// The characters of the account: play one, delete one, or make one.
+    fn character_stage(
+        &mut self,
+        ui: &mut egui::Ui,
+        body: Rect,
+        names: &[String],
+    ) -> Option<CharacterRequest> {
+        ui.painter().text(
+            body.center_top(),
+            Align2::CENTER_TOP,
+            WORDS_PICK_CHARACTER,
+            text_font(theme::SIZE_TITLE),
+            theme::TEXT,
+        );
+        let width = LIST_WIDTH * 1.5;
+        let left = body.center().x - width / 2.0;
+        let mut request = None;
+        for slot in 0..CHARACTER_SLOTS {
+            let name = names.get(slot).filter(|name| !name.is_empty());
+            let row = Rect::from_min_size(
+                Pos2::new(left, body.top() + TITLE_ROW + slot as f32 * ROW),
+                Vec2::new(width, ROW - theme::ROW_GAP / 2.0),
+            );
+            let words = name.map_or(WORDS_EMPTY_SLOT, |name| name.as_str());
+            if list_row(ui, row, ("character-slot", slot), words, false) && name.is_some() {
+                request = Some(CharacterRequest::Play(slot));
+            }
+            let Some(_) = name else {
+                continue;
+            };
+            let asked = self.delete_asked == Some(slot);
+            let cross = Rect::from_min_size(
+                Pos2::new(row.right() + GAP, row.top()),
+                Vec2::new(DELETE_WIDTH, row.height()),
+            );
+            let words = if asked {
+                WORDS_DELETE_SURE
+            } else {
+                WORDS_DELETE
+            };
+            if theme::segment(ui, cross, words, theme::ALARM) {
+                if asked {
+                    request = Some(CharacterRequest::Delete(slot));
+                } else {
+                    self.delete_asked = Some(slot);
+                }
+            }
+        }
+        let make_row = Rect::from_min_size(
+            Pos2::new(
+                left,
+                body.top() + TITLE_ROW + CHARACTER_SLOTS as f32 * ROW + GAP,
+            ),
+            Vec2::new(width, FIELD_ROW),
+        );
+        ui.painter()
+            .rect_filled(make_row, CornerRadius::same(FIELD_RADIUS), theme::TRACK);
+        ui.put(
+            make_row,
+            egui::TextEdit::singleline(&mut self.new_name)
+                .frame(false)
+                .margin(egui::Margin::symmetric(8, 6))
+                .hint_text(HINT_NEW_NAME)
+                .font(text_font(theme::SIZE_BODY))
+                .text_color(theme::TEXT),
+        );
+        let (_, make) = theme::button(
+            ui,
+            Pos2::new(make_row.right() + GAP, make_row.top()),
+            WORDS_MAKE,
+            theme::GOAL,
+        );
+        if make {
+            let name = self.new_name.trim();
+            if name.is_empty() {
+                self.note = Some((WORDS_NEEDS_NAME.into(), true));
+            } else {
+                let slot = names
+                    .iter()
+                    .position(|name| name.is_empty())
+                    .unwrap_or(names.len());
+                request = Some(CharacterRequest::Make(Box::new(NewCharacterWish {
+                    name: name.to_string(),
+                    female: false,
+                    race: 0,
+                    strength: NEW_STRENGTH,
+                    dexterity: NEW_DEXTERITY,
+                    intelligence: NEW_INTELLIGENCE,
+                    skills: NEW_SKILLS.to_vec(),
+                    skin_hue: NEW_SKIN_HUE,
+                    hair: NEW_HAIR,
+                    hair_hue: NEW_HAIR_HUE,
+                    start_city: 0,
+                    slot: slot as u16,
+                })));
+                self.new_name.clear();
+            }
+        }
+        request
+    }
+
     fn answer_pick(&mut self, place: usize) {
         if let Stage::Picking { reply, .. } = std::mem::replace(&mut self.stage, Stage::Connecting)
         {
@@ -236,6 +375,18 @@ impl LoginUi {
             }
             Some(LoginQuestion::Character { names, reply }) => {
                 (WORDS_PICK_CHARACTER, orders::ASK_CHARACTER, names, reply)
+            }
+            Some(LoginQuestion::Characters {
+                names,
+                refused,
+                reply,
+            }) => {
+                if let Some(words) = refused {
+                    self.note = Some((words, true));
+                }
+                self.delete_asked = None;
+                self.stage = Stage::Characters { names, reply };
+                return;
             }
             None => return,
         };
@@ -297,6 +448,12 @@ impl LoginUi {
                 let (title, names) = (*title, names.clone());
                 if let Some(place) = pick_list(ui, body, title, &names) {
                     self.answer_pick(place);
+                }
+            }
+            Stage::Characters { names, .. } => {
+                let names = names.clone();
+                if let Some(request) = self.character_stage(ui, body, &names) {
+                    self.answer_request(request);
                 }
             }
         }
