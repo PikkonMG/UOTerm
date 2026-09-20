@@ -1109,7 +1109,7 @@ async fn login(
             match msg {
                 Inbound::ServerList { servers, .. } => {
                     seen_server_list = true;
-                    let idx = select_shard(servers, opts.shard.as_deref());
+                    let idx = pick_shard(opts, servers).await;
                     write_sealed(inner, &mut writer, encode::select_server(idx)).await?;
                 }
                 // The relay ends the login socket: one server family
@@ -1149,10 +1149,8 @@ async fn login(
                 }
                 Inbound::CharacterList { characters } => {
                     seen_chars = true;
-                    let slot = characters
-                        .iter()
-                        .position(|c| c.name.eq_ignore_ascii_case(&opts.character))
-                        .or_else(|| characters.iter().position(|c| !c.name.is_empty()))
+                    let slot = pick_character(opts, characters)
+                        .await
                         .ok_or_else(|| RuntimeError::NoCharacter(opts.character.clone()))?;
                     let name = characters[slot].name.clone();
                     tracing::info!(
@@ -1252,6 +1250,63 @@ fn opening_seed(opts: &ConnectOptions) -> (u32, Vec<u8>) {
         }
     };
     (seed, bytes)
+}
+
+/// The shard of the list to play on. A screen picks it when the options
+/// name no shard of the list and the list has more than one.
+async fn pick_shard(opts: &ConnectOptions, servers: &[uoterm_protocol::ServerEntry]) -> u16 {
+    let named = opts
+        .shard
+        .as_deref()
+        .is_some_and(|name| servers.iter().any(|s| s.name.eq_ignore_ascii_case(name)));
+    if let Some(picker) = opts.picker.as_ref().filter(|_| !named && servers.len() > 1) {
+        let names = servers.iter().map(|s| s.name.clone()).collect();
+        if let Some(place) = picker.pick(names, shard_question).await {
+            return servers[place].index;
+        }
+    }
+    select_shard(servers, opts.shard.as_deref())
+}
+
+fn shard_question(
+    names: Vec<String>,
+    reply: tokio::sync::oneshot::Sender<usize>,
+) -> crate::config::LoginQuestion {
+    crate::config::LoginQuestion::Shard { names, reply }
+}
+
+fn character_question(
+    names: Vec<String>,
+    reply: tokio::sync::oneshot::Sender<usize>,
+) -> crate::config::LoginQuestion {
+    crate::config::LoginQuestion::Character { names, reply }
+}
+
+/// The slot of the character to play. The name in the options wins. With
+/// no such character, a screen picks one; with no screen, the first one.
+async fn pick_character(
+    opts: &ConnectOptions,
+    characters: &[uoterm_protocol::CharacterSlot],
+) -> Option<usize> {
+    let named = characters
+        .iter()
+        .position(|c| !c.name.is_empty() && c.name.eq_ignore_ascii_case(&opts.character));
+    if named.is_some() {
+        return named;
+    }
+    let filled: Vec<usize> = (0..characters.len())
+        .filter(|slot| !characters[*slot].name.is_empty())
+        .collect();
+    if let Some(picker) = opts.picker.as_ref().filter(|_| filled.len() > 1) {
+        let names = filled
+            .iter()
+            .map(|slot| characters[*slot].name.clone())
+            .collect();
+        if let Some(place) = picker.pick(names, character_question).await {
+            return Some(filled[place]);
+        }
+    }
+    filled.first().copied()
 }
 
 fn select_shard(servers: &[uoterm_protocol::ServerEntry], wanted: Option<&str>) -> u16 {
@@ -4635,6 +4690,7 @@ mod relay_tests {
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
+            picker: None,
         }
     }
 
@@ -4845,6 +4901,70 @@ mod relay_tests {
             walked,
             vec![hill_tile(HILL_FOOT_Y + 1)],
             "the walk stops in front of the tile the map holds nobody up on"
+        );
+    }
+
+    fn slots(names: &[&str]) -> Vec<uoterm_protocol::CharacterSlot> {
+        names
+            .iter()
+            .map(|name| uoterm_protocol::CharacterSlot {
+                name: (*name).to_string(),
+            })
+            .collect()
+    }
+
+    /// A screen that picks the last name of each list it is asked about.
+    fn screen_that_picks_the_last() -> crate::config::LoginPicker {
+        let (ask, mut questions) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(question) = questions.recv().await {
+                let (crate::config::LoginQuestion::Shard { names, reply }
+                | crate::config::LoginQuestion::Character { names, reply }) = question;
+                let _ = reply.send(names.len() - 1);
+            }
+        });
+        crate::config::LoginPicker(ask)
+    }
+
+    #[tokio::test]
+    async fn a_named_character_needs_no_screen_and_an_unknown_one_asks_it() {
+        let listed = slots(&["Mara", "", "Cedric", "Aldreth"]);
+        let mut opts = ConnectOptions {
+            character: "cedric".into(),
+            ..ConnectOptions::default()
+        };
+        assert_eq!(pick_character(&opts, &listed).await, Some(2));
+        opts.character = "Nobody".into();
+        assert_eq!(pick_character(&opts, &listed).await, Some(0), "no screen");
+        opts.picker = Some(screen_that_picks_the_last());
+        assert_eq!(
+            pick_character(&opts, &listed).await,
+            Some(3),
+            "the empty slot is no pick"
+        );
+        assert_eq!(pick_character(&opts, &slots(&["", ""])).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_shard_list_with_no_named_shard_asks_the_screen() {
+        let shard = |index: u16, name: &str| uoterm_protocol::ServerEntry {
+            index,
+            name: name.into(),
+            percent_full: 0,
+            timezone: 0,
+            ip: [0; 4],
+        };
+        let listed = vec![shard(0, "Atlantic"), shard(7, "Test Center")];
+        let mut opts = ConnectOptions {
+            picker: Some(screen_that_picks_the_last()),
+            ..ConnectOptions::default()
+        };
+        assert_eq!(pick_shard(&opts, &listed).await, 7);
+        opts.shard = Some("atlantic".into());
+        assert_eq!(
+            pick_shard(&opts, &listed).await,
+            0,
+            "a named shard needs no screen"
         );
     }
 

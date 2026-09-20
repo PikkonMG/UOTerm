@@ -111,6 +111,40 @@ pub struct Profile {
     pub era: Option<String>,
 }
 
+/// What a login asks a human: which shard of the list, or which character.
+/// The answer is the place of the pick in `names`.
+#[derive(Debug)]
+pub enum LoginQuestion {
+    Shard {
+        names: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<usize>,
+    },
+    Character {
+        names: Vec<String>,
+        reply: tokio::sync::oneshot::Sender<usize>,
+    },
+}
+
+/// The way from a login to the screen that answers its questions. With no
+/// picker, the login picks by the names in the options, as an agent needs.
+#[derive(Clone, Debug)]
+pub struct LoginPicker(pub tokio::sync::mpsc::UnboundedSender<LoginQuestion>);
+
+impl LoginPicker {
+    /// Asks the screen, and waits for the pick. None when the screen is
+    /// gone, or when its answer is not a place of the list.
+    pub async fn pick(
+        &self,
+        names: Vec<String>,
+        question: fn(Vec<String>, tokio::sync::oneshot::Sender<usize>) -> LoginQuestion,
+    ) -> Option<usize> {
+        let count = names.len();
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.0.send(question(names, reply)).ok()?;
+        answer.await.ok().filter(|place| *place < count)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ConnectOptions {
     pub host: String,
@@ -133,6 +167,9 @@ pub struct ConnectOptions {
     pub answer_when_named: bool,
     /// Let the agent party up with, follow and help a player who spoke.
     pub play_along: bool,
+    /// A screen that picks the shard and the character. None for a login
+    /// that picks by name.
+    pub picker: Option<LoginPicker>,
 }
 
 impl Default for ConnectOptions {
@@ -154,6 +191,7 @@ impl Default for ConnectOptions {
             obey_shard_rules: OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
             play_along: PLAY_ALONG_DEFAULT,
+            picker: None,
         }
     }
 }

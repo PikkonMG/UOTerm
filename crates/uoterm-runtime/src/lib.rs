@@ -25,7 +25,10 @@ pub mod session;
 pub mod teleporters;
 pub mod tools;
 
-pub use config::{parse_encryption_mode, AppConfig, ConnectOptions, EncryptionMode, Profile};
+pub use config::{
+    parse_encryption_mode, AppConfig, ConnectOptions, EncryptionMode, LoginPicker, LoginQuestion,
+    Profile,
+};
 pub use error::{Result, RuntimeError};
 pub use manager::{FacetCache, Runtime};
 pub use persona::Persona;
@@ -62,6 +65,7 @@ mod tests {
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
+            picker: None,
         };
         let handle = rt.connect(opts).await.unwrap();
         for _ in 0..25 {
