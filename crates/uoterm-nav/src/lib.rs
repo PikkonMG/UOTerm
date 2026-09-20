@@ -7,6 +7,7 @@ mod art;
 mod bwt;
 mod cliloc;
 mod gumpart;
+mod housing;
 mod hues;
 mod mounts;
 mod mul;
@@ -26,6 +27,7 @@ pub use animdata::{ArtCycles, TILE_ANIMATED};
 pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
 pub use cliloc::ClilocData;
 pub use gumpart::GumpArt;
+pub use housing::{HouseCatalog, HousePart, HousePartKind};
 pub use hues::{HueData, HueRamp};
 pub use mounts::{mount_of, Mount};
 pub use mul::{
