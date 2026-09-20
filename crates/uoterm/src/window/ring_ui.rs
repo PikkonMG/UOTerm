@@ -25,6 +25,7 @@ const WORDS_FOLLOW: &str = "Follow";
 const WORDS_TRADE: &str = "Trade";
 const WORDS_LOOT: &str = "Loot";
 const WORDS_TAKE: &str = "Take";
+const WORDS_PROFILE: &str = "Profile";
 
 /// What kind of thing the ring is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +62,7 @@ fn own_lines(subject: Subject, serial: u32, backpack: Option<u32>) -> Vec<(&'sta
     match subject {
         Subject::OnMap(PickKind::Mobile) => vec![
             (WORDS_LOOK, Act::Look(serial)),
+            (WORDS_PROFILE, Act::ProfileRead(serial)),
             (WORDS_ATTACK, Act::Attack(serial)),
             (WORDS_FOLLOW, Act::Follow(serial)),
             (WORDS_TRADE, Act::TradeWith(serial)),
@@ -125,6 +127,7 @@ impl RingUi {
         rect: Rect,
         frame: &WatchFrame,
         hand: &Hand,
+        profiles: &mut super::mapitem_ui::ProfileUi,
     ) -> Vec<Rect> {
         let Some(ring) = &self.open else {
             return Vec::new();
@@ -208,6 +211,9 @@ impl RingUi {
                 .input(|i| i.pointer.interact_pos())
                 .is_some_and(|at| !covered.iter().any(|area| area.contains(at)));
         if let Some(act) = picked {
+            if let Act::ProfileRead(serial) = act {
+                profiles.show(serial, hand);
+            }
             let shard_line = matches!(act, Act::MenuPick { .. });
             hand.act(act);
             if !shard_line {

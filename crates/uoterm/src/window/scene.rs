@@ -163,6 +163,8 @@ pub struct Scene {
     panels: Vec<Rect>,
     /// How many screen pixels one point of the window has.
     pixels_per_point: f32,
+    /// The season of the world. It swaps some of the art.
+    season: u8,
 }
 
 /// What kind of thing the mouse is on.
@@ -199,6 +201,8 @@ struct Looks<'a> {
     alpha: f32,
 }
 
+/// How much of a building that waits for its place shows.
+const PLACING_ALPHA: f32 = 0.55;
 const MS_PER_SECOND: f64 = 1000.0;
 /// A fire or a fountain shows its next picture this often, so the window
 /// draws again at least this often.
@@ -573,6 +577,7 @@ impl Scene {
             last_cue: None,
             panels: Vec::new(),
             pixels_per_point: 1.0,
+            season: 0,
         }
     }
 
@@ -588,6 +593,7 @@ impl Scene {
         painter.rect_filled(rect, 0.0, theme::VOID);
         self.read_zoom(ui, rect);
         self.pixels_per_point = ui.ctx().pixels_per_point();
+        self.season = frame.season;
         self.now = time;
         self.take_cues(frame, time);
         let moving = self.follow(frame, time) || !self.shows.is_empty();
@@ -729,6 +735,74 @@ impl Scene {
         })
     }
 
+    /// Draws the outline of a building where the mouse points, while the
+    /// shard waits for its place. Its pieces show as a pale shape, so the
+    /// human sees what the building covers before he puts it there.
+    pub fn draw_placing(
+        &mut self,
+        painter: &Painter,
+        rect: Rect,
+        frame: &WatchFrame,
+        mouse: Pos2,
+    ) -> bool {
+        let Some(placing) = frame.placing else {
+            return false;
+        };
+        let (x, y, z) = self.tile_at(rect, frame, mouse);
+        let pieces: Vec<(i16, i16, i16, u16)> = self
+            .client
+            .as_ref()
+            .map(|client| {
+                client
+                    .multi_pieces(placing.multi_id)
+                    .iter()
+                    .map(|piece| (piece.dx, piece.dy, piece.dz, piece.graphic))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut mesh = Mesh::with_texture(match self.atlas.as_ref() {
+            Some(atlas) => atlas.texture_id(),
+            None => return false,
+        });
+        let white = self.atlas.as_ref().map(Atlas::white_uv).unwrap_or_default();
+        let mut canvas = Canvas { mesh, white };
+        for (dx, dy, dz, graphic) in pieces {
+            if !is_drawn(graphic) {
+                continue;
+            }
+            let at = [
+                f32::from(x) + f32::from(dx),
+                f32::from(y) + f32::from(dy),
+                f32::from(z) + f32::from(dz),
+            ];
+            let Some(sprite) = self.item_sprite(frame.map, graphic, placing.hue) else {
+                continue;
+            };
+            let foot = self.project(rect, at);
+            let area = Rect::from_min_size(
+                foot - sprite.anchor * self.zoom,
+                Vec2::new(sprite.width, sprite.height) * self.zoom,
+            );
+            canvas.sprite(
+                sprite,
+                area,
+                theme::with_alpha(Color32::WHITE, PLACING_ALPHA),
+            );
+        }
+        mesh = canvas.mesh;
+        if !mesh.is_empty() {
+            painter.add(Shape::mesh(mesh));
+        }
+        // The tile the building goes on, so the human sees the exact spot.
+        let center = self.project(rect, [f32::from(x), f32::from(y), f32::from(z)]);
+        painter.circle_stroke(
+            center,
+            PAWN_RING_RX * self.zoom,
+            Stroke::new(PAWN_RING_WIDTH * self.zoom, theme::GOAL),
+        );
+        true
+    }
+
     /// True when gumps can show in their own pictures.
     pub fn has_gump_art(&self) -> bool {
         self.client.as_ref().is_some_and(ClientArt::has_gump_art)
@@ -806,14 +880,15 @@ impl Scene {
     }
 
     fn land_sprite(&mut self, land_id: u16) -> Option<Sprite> {
-        self.client
-            .as_ref()?
-            .land_sprite(self.atlas.as_mut()?, land_id)
+        let client = self.client.as_ref()?;
+        let land_id = client.season_land(self.season, land_id);
+        client.land_sprite(self.atlas.as_mut()?, land_id)
     }
 
     fn item_sprite(&mut self, map: u8, graphic: u16, hue: u16) -> Option<Sprite> {
         let client = self.client.as_ref()?;
         let now_ms = (self.now * MS_PER_SECOND) as u64;
+        let graphic = client.season_item(self.season, graphic);
         let shown = client.shown_graphic(map, graphic, now_ms);
         client.item_sprite(self.atlas.as_mut()?, map, shown, hue)
     }
@@ -848,10 +923,32 @@ impl Scene {
                 .or_default()
                 .push(thing);
         }
+        // A house a player designed is drawn from its own tiles, not from
+        // the plain multi its foundation names.
+        let designed: HashMap<u32, &uoterm_world::DesignedHouse> = frame
+            .designed_houses
+            .iter()
+            .map(|house| (house.serial.0, house))
+            .collect();
+        for (multi, house) in frame
+            .multis
+            .iter()
+            .filter_map(|multi| Some((multi, *designed.get(&multi.serial)?)))
+        {
+            for tile in house.tiles.iter().filter(|t| is_drawn(t.graphic)) {
+                let at = (i32::from(multi.x) + tile.dx, i32::from(multi.y) + tile.dy);
+                out.entry(at).or_default().push(Standing::Piece {
+                    graphic: tile.graphic,
+                    z: f32::from(multi.z) + tile.dz as f32,
+                });
+            }
+        }
         for (multi, piece) in frame.multis.iter().flat_map(|multi| {
+            let designed = designed.contains_key(&multi.serial);
             let pieces = self
                 .client
                 .as_ref()
+                .filter(|_| !designed)
                 .map_or(&[][..], |client| client.multi_pieces(multi.multi_id));
             pieces.iter().map(move |piece| (multi, piece))
         }) {
@@ -1564,6 +1661,7 @@ mod tests {
         let without_files = Scene::new(None);
         let frame = WatchFrame {
             multis: vec![crate::view::WatchMulti {
+                serial: 50,
                 multi_id: 100,
                 x: 10,
                 y: 10,

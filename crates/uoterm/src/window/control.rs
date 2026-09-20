@@ -16,17 +16,20 @@ use std::time::Duration;
 use uoterm_runtime::tools::{
     ARG_HUMAN, TOOL_ATTACK, TOOL_BOARD_CLOSE, TOOL_BOARD_POST, TOOL_BOARD_READ, TOOL_BOARD_REMOVE,
     TOOL_BOOK_CLOSE, TOOL_CAST, TOOL_CLOSE_MENU, TOOL_COMMAND, TOOL_CONTEXT_MENU, TOOL_DEPOSIT,
-    TOOL_DROP, TOOL_EQUIP, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_HOTKEYS,
-    TOOL_LIFT, TOOL_LIST_SCRIPTS, TOOL_LOOT, TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROPERTIES,
-    TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT, TOOL_SAY, TOOL_SCRIPT_READ,
-    TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK,
-    TOOL_STOP, TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT,
-    TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL,
-    TOOL_WALK, TOOL_WAR_MODE,
+    TOOL_DROP, TOOL_EQUIP, TOOL_FIND_LANDMARKS, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND,
+    TOOL_HOTKEYS, TOOL_LIFT, TOOL_LIST_SCRIPTS, TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN,
+    TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROFILE, TOOL_PROPERTIES, TOOL_RECORD_MACRO,
+    TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT, TOOL_SAY, TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE,
+    TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK, TOOL_STOP,
+    TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL,
+    TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK,
+    TOOL_WAR_MODE,
 };
 
 /// The shard refuses a drop that comes too soon after the lift.
 const LIFT_TO_DROP: Duration = Duration::from_millis(650);
+const NO_PLACE_ON_MAP: &str = "The marker file names no place on this map.";
+const NO_SUCH_PLACE: &str = "Jev is not sure which place you mean. Click the map instead.";
 const ORDER_OFF: &str = "Orders need a TypeSafe key. Put TYPESAFE_API_KEY in the environment.";
 
 /// How long one sent step keeps the character on his way. The window sends
@@ -94,6 +97,21 @@ pub enum Act {
     },
     BoardRemove(u32),
     BoardClose,
+    /// Put a pin on the open map, in pixels of its picture.
+    MapPin {
+        x: u16,
+        y: u16,
+    },
+    MapClear,
+    /// Ask the shard to let the open map be drawn on.
+    MapEdit,
+    MapClose(u32),
+    /// Ask for the profile a player wrote about a character.
+    ProfileRead(u32),
+    ProfileWrite {
+        serial: u32,
+        text: String,
+    },
     /// Buy or sell the rows of the cart: the item and how many.
     Checkout(Vec<(u32, u16)>),
     ShopClose,
@@ -159,6 +177,14 @@ pub enum Ask {
     ScriptStatus,
     /// Plain words that Jev turns into the script lines of one hotkey.
     LinesFor(String),
+    /// The named places that lie on a map, and which one the words mean.
+    /// The answer is the tile of the place Jev picked.
+    PlaceOnMap {
+        wish: String,
+        map: u8,
+        from: (u16, u16),
+        to: (u16, u16),
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,6 +197,8 @@ pub enum Answer {
     /// The state of the running or last script, in words.
     ScriptStatus(String),
     Lines(Result<String, String>),
+    /// The tile of the place that was asked for, or words for the human.
+    Place(Result<(u16, u16), String>),
 }
 
 /// What came of an act, in words for the human.
@@ -247,6 +275,14 @@ impl Act {
                 vec![(TOOL_BOARD_REMOVE, json!({ "message": message }))]
             }
             Self::BoardClose => vec![(TOOL_BOARD_CLOSE, json!({}))],
+            Self::MapPin { x, y } => vec![(TOOL_MAP_PIN, json!({ "x": x, "y": y }))],
+            Self::MapClear => vec![(TOOL_MAP_PIN, json!({ "action": "clear" }))],
+            Self::MapEdit => vec![(TOOL_MAP_PIN, json!({ "action": "edit" }))],
+            Self::MapClose(map) => vec![(TOOL_MAP_CLOSE, json!({ "serial": map }))],
+            Self::ProfileRead(s) => vec![(TOOL_PROFILE, serial(s))],
+            Self::ProfileWrite { serial, text } => {
+                vec![(TOOL_PROFILE, json!({ "serial": serial, "text": text }))]
+            }
             Self::Checkout(rows) => {
                 let items: Vec<Value> = rows
                     .iter()
@@ -324,6 +360,10 @@ impl Act {
             Self::BoardRead(_) | Self::BoardClose => String::new(),
             Self::BoardPost { .. } => "Message posted.".into(),
             Self::BoardRemove(_) => "Message removed.".into(),
+            Self::MapPin { .. } => "Pin put on the map.".into(),
+            Self::MapClear => "Pins cleared.".into(),
+            Self::MapEdit | Self::MapClose(_) | Self::ProfileRead(_) => String::new(),
+            Self::ProfileWrite { .. } => "Profile written.".into(),
             Self::OldMenuPick(Some(_)) => "Menu answered.".into(),
             Self::OldMenuPick(None) => "Menu closed.".into(),
             Self::MenuPick { .. } => "Menu line picked.".into(),
@@ -526,6 +566,15 @@ async fn answer_one(link: &Link, key: Option<&str>, ask: Ask) -> Answer {
             let status = link.call(TOOL_SCRIPT_STATUS, json!({})).await.ok();
             Answer::ScriptStatus(status_words(status.as_ref()))
         }
+        Ask::PlaceOnMap {
+            wish,
+            map,
+            from,
+            to,
+        } => Answer::Place(match key {
+            None => Err(ORDER_OFF.into()),
+            Some(key) => place_on_map(link, key, &wish, map, from, to).await,
+        }),
         Ask::LinesFor(wish) => Answer::Lines(match key {
             None => Err(ORDER_OFF.into()),
             Some(key) => {
@@ -537,6 +586,56 @@ async fn answer_one(link: &Link, key: Option<&str>, ask: Ask) -> Answer {
             }
         }),
     }
+}
+
+/// The named places that lie between `from` and `to` of a map, with their
+/// tiles. The marker file of the operator names them.
+fn places_in(
+    landmarks: &Value,
+    map: u8,
+    from: (u16, u16),
+    to: (u16, u16),
+) -> Vec<(String, u16, u16)> {
+    let inside = |x: u16, y: u16| x >= from.0 && x <= to.0 && y >= from.1 && y <= to.1;
+    landmarks
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|place| place.get("map").and_then(Value::as_u64) == Some(u64::from(map)))
+        .filter_map(|place| {
+            let at = place.get("location")?;
+            let number = |key: &str| u16::try_from(at.get(key)?.as_u64()?).ok();
+            let (x, y) = (number("x")?, number("y")?);
+            let name = place.get("name")?.as_str()?.to_string();
+            inside(x, y).then_some((name, x, y))
+        })
+        .collect()
+}
+
+/// The tile of the place the words name. Jev picks it from the places that
+/// lie on the map.
+async fn place_on_map(
+    link: &Link,
+    key: &str,
+    wish: &str,
+    map: u8,
+    from: (u16, u16),
+    to: (u16, u16),
+) -> Result<(u16, u16), String> {
+    let landmarks = link
+        .call(TOOL_FIND_LANDMARKS, json!({ "map": map }))
+        .await?;
+    let places = places_in(&landmarks, map, from, to);
+    if places.is_empty() {
+        return Err(NO_PLACE_ON_MAP.into());
+    }
+    let names: Vec<&str> = places.iter().map(|(name, ..)| name.as_str()).collect();
+    let place = orders::pick(key, orders::ASK_LANDMARK, wish, &names)
+        .await?
+        .ok_or(NO_SUCH_PLACE)?;
+    let (_, x, y) = &places[place];
+    Ok((*x, *y))
 }
 
 fn string_list(answer: Option<&Value>, key: &str) -> Vec<String> {
@@ -607,6 +706,19 @@ mod tests {
 
     const ITEM: u32 = 0x4000_0001;
     const BAG: u32 = 0x4000_0002;
+
+    #[test]
+    fn only_the_places_that_lie_on_the_map_are_asked_about() {
+        let landmarks = json!([
+            { "name": "Britain bank", "map": 0, "location": { "x": 1400, "y": 1500 } },
+            { "name": "Yew moongate", "map": 0, "location": { "x": 9000, "y": 9000 } },
+            { "name": "Luna bank", "map": 1, "location": { "x": 1400, "y": 1500 } },
+            { "name": "no place", "map": 0 },
+        ]);
+        let places = places_in(&landmarks, 0, (1000, 1200), (1600, 1600));
+        assert_eq!(places, vec![("Britain bank".to_string(), 1400, 1500)]);
+        assert!(places_in(&landmarks, 4, (0, 0), (u16::MAX, u16::MAX)).is_empty());
+    }
 
     #[test]
     fn a_failed_script_tells_its_line_and_its_fault() {
@@ -704,6 +816,15 @@ mod tests {
             },
             Act::BoardRemove(ITEM),
             Act::BoardClose,
+            Act::MapPin { x: 1, y: 2 },
+            Act::MapClear,
+            Act::MapEdit,
+            Act::MapClose(ITEM),
+            Act::ProfileRead(ITEM),
+            Act::ProfileWrite {
+                serial: ITEM,
+                text: "hi".into(),
+            },
             Act::Checkout(vec![(ITEM, 1)]),
             Act::ShopClose,
             Act::TradeWith(ITEM),

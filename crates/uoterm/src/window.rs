@@ -24,6 +24,7 @@ mod link;
 mod login_ui;
 mod macros_ui;
 mod map_ui;
+mod mapitem_ui;
 mod options_ui;
 mod orders;
 mod pages_ui;
@@ -76,6 +77,7 @@ pub enum Panel {
     Sheet,
     Map,
     Macros,
+    Profile,
 }
 
 /// How the window starts, and whether it is one picture only.
@@ -197,6 +199,8 @@ struct WatchApp {
     gumps: gump_ui::GumpUi,
     world_map: map_ui::MapUi,
     macros: macros_ui::MacrosUi,
+    map_items: mapitem_ui::MapItemUi,
+    profiles: mapitem_ui::ProfileUi,
     snapshot: Option<Snapshot>,
 }
 
@@ -244,6 +248,8 @@ impl WatchApp {
             deals: deal_ui::DealUi::default(),
             pages: pages_ui::PagesUi::default(),
             gumps: gump_ui::GumpUi::default(),
+            map_items: mapitem_ui::MapItemUi::default(),
+            profiles: mapitem_ui::ProfileUi::starting(options.shown.open.contains(&Panel::Profile)),
             macros: macros_ui::MacrosUi::starting(options.shown.open.contains(&Panel::Macros)),
             world_map: map_ui::MapUi::starting(options.shown.open.contains(&Panel::Map)),
             snapshot: options.shown.snapshot.map(|path| Snapshot {
@@ -367,6 +373,8 @@ impl eframe::App for WatchApp {
                         covered.extend(self.deck.draw(ui, rect, frame, &mut tools, drawn.pack));
                         covered.extend(self.deals.draw(ui, rect, frame, &mut tools));
                         covered.extend(self.pages.draw(ui, rect, frame, &mut tools));
+                        covered.extend(self.map_items.draw(ui, rect, frame, &mut tools));
+                        covered.extend(self.profiles.draw(ui, rect, frame, &mut tools));
                         covered.extend(self.world_map.draw(
                             ui,
                             rect,
@@ -381,7 +389,13 @@ impl eframe::App for WatchApp {
                             &mut tools,
                             &mut self.deck,
                         ));
-                        covered.extend(tools.ring.draw(ui, rect, frame, tools.hand));
+                        covered.extend(tools.ring.draw(
+                            ui,
+                            rect,
+                            frame,
+                            tools.hand,
+                            &mut self.profiles,
+                        ));
                         covered.extend(tools.desk.split_box(ui, rect, tools.hand));
                         let places = Places {
                             map: &map,
@@ -392,6 +406,7 @@ impl eframe::App for WatchApp {
                             deck: &mut self.deck,
                             world_map: &mut self.world_map,
                             macros: &mut self.macros,
+                            profiles: &mut self.profiles,
                         };
                         self.control_ui
                             .draw(ui, rect, frame, &self.hud, &mut tools, places);

@@ -11,6 +11,7 @@ use super::deck_ui::DeckUi;
 use super::hud::Hud;
 use super::macros_ui::MacrosUi;
 use super::map_ui::MapUi;
+use super::mapitem_ui::ProfileUi;
 use super::options_ui::OptionsUi;
 use super::ring_ui::Subject;
 use super::scene::{PickKind, Scene};
@@ -23,7 +24,7 @@ use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2}
 
 /// The top panel has one width in each state, so nothing in it moves when
 /// the buttons change.
-const STRIP_WIDTH: f32 = 640.0;
+const STRIP_WIDTH: f32 = 720.0;
 const STRIP_PAD: f32 = 10.0;
 const STRIP_ROW: f32 = 24.0;
 const RULE_GAP: f32 = 8.0;
@@ -50,6 +51,7 @@ const WORDS_BAG: &str = "Bag";
 const WORDS_SHEET: &str = "Sheet";
 const WORDS_MAP: &str = "Map";
 const WORDS_MACROS: &str = "Macros";
+const WORDS_PROFILE: &str = "Profile";
 const WORDS_PIN: &str = "Pin";
 const PIN_WIDTH: f32 = 48.0;
 const REPORT_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
@@ -88,6 +90,7 @@ pub struct Places<'a> {
     pub deck: &'a mut DeckUi,
     pub world_map: &'a mut MapUi,
     pub macros: &'a mut MacrosUi,
+    pub profiles: &'a mut ProfileUi,
 }
 
 /// The click sense of the whole map. Call this before any button is made.
@@ -127,6 +130,8 @@ enum Press {
     Sheet,
     Map,
     Macros,
+    /// Opens the profile of the character, or closes it.
+    Profile,
     Options,
 }
 
@@ -303,6 +308,14 @@ fn act_on_map(
     if tools.desk.carries() || steered {
         return;
     }
+    // A building that waits for its place shows where the mouse points.
+    if tools.scene.draw_placing(ui.painter(), rect, frame, mouse) {
+        if map.clicked() {
+            let (x, y, z) = tools.scene.tile_at(rect, frame, mouse);
+            hand.act(Act::TargetGround { x, y, z });
+        }
+        return;
+    }
     let thing = tools.scene.thing_at(mouse).cloned();
     if let Some(thing) = &thing {
         let footer = hint_for(frame, thing.kind);
@@ -373,6 +386,7 @@ impl ControlUi {
                     (WORDS_SHEET, Press::Sheet),
                     (WORDS_MAP, Press::Map),
                     (WORDS_MACROS, Press::Macros),
+                    (WORDS_PROFILE, Press::Profile),
                     (war_words, Press::Act(Act::War(!frame.war))),
                     (WORDS_STOP, Press::Act(Act::Stop)),
                     (WORDS_GIVE_BACK, Press::Act(Act::GiveBack)),
@@ -469,6 +483,8 @@ impl ControlUi {
                 Press::Sheet => places.deck.toggle(),
                 Press::Map => places.world_map.toggle(),
                 Press::Macros => places.macros.toggle(),
+                Press::Profile if places.profiles.shows(frame.serial) => places.profiles.close(),
+                Press::Profile => places.profiles.show(frame.serial, hand),
                 Press::Bag(bag) if places.boxes.shows(frame, bag) => places.boxes.close(bag),
                 Press::Bag(bag) => {
                     places.boxes.used(bag);

@@ -98,6 +98,7 @@ pub struct WatchItem {
 /// A house or a boat. Its pieces come from the multi files of the client.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WatchMulti {
+    pub serial: u32,
     pub multi_id: u16,
     pub x: u16,
     pub y: u16,
@@ -279,6 +280,45 @@ pub struct WatchOldMenu {
     pub entries: Vec<WatchPackItem>,
 }
 
+/// A map item the character opened: a treasure map or a city map. The
+/// picture is the land between `start` and `end` of `facet`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchMap {
+    pub serial: u32,
+    pub facet: u8,
+    pub start_x: u16,
+    pub start_y: u16,
+    pub end_x: u16,
+    pub end_y: u16,
+    pub width: u16,
+    pub height: u16,
+    /// The shard lets the player draw on this map.
+    pub may_plot: bool,
+    /// The pins, in pixels of the picture.
+    pub pins: Vec<(u16, u16)>,
+}
+
+/// The profile a player wrote about a character.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchProfile {
+    pub serial: u32,
+    pub name: String,
+    pub title: String,
+    /// What the shard writes and nobody may change.
+    pub shard_words: String,
+    /// What the owner of the character wrote.
+    pub own_words: String,
+}
+
+/// A building the shard waits for a place for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WatchPlacing {
+    pub multi_id: u16,
+    pub x_offset: i16,
+    pub y_offset: i16,
+    pub hue: u16,
+}
+
 /// One message of a bulletin board. The lines come when it is read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WatchPost {
@@ -372,6 +412,12 @@ pub struct WatchFrame {
     pub mobiles: Vec<WatchMobile>,
     pub items: Vec<WatchItem>,
     pub multis: Vec<WatchMulti>,
+    /// The houses players designed, with their tiles.
+    pub designed_houses: Vec<uoterm_world::DesignedHouse>,
+    pub maps: Vec<WatchMap>,
+    pub profiles: Vec<WatchProfile>,
+    /// A building that waits for its place.
+    pub placing: Option<WatchPlacing>,
     pub buffs: Vec<String>,
     pub party: Vec<String>,
     pub containers: Vec<WatchContainer>,
@@ -490,9 +536,41 @@ impl WatchFrame {
                 .map_or(0, Vec::len),
             mobiles: watch_mobiles(mobiles, self_serial, x, y),
             items: watch_items(value.get("items")),
+            designed_houses: value
+                .get("designed_houses")
+                .and_then(|houses| serde_json::from_value(houses.clone()).ok())
+                .unwrap_or_default(),
+            maps: list_of(value.get("maps"), |map| WatchMap {
+                serial: serial_field(map, "serial"),
+                facet: num_field(Some(map), "facet") as u8,
+                start_x: num_field(Some(map), "start_x"),
+                start_y: num_field(Some(map), "start_y"),
+                end_x: num_field(Some(map), "end_x"),
+                end_y: num_field(Some(map), "end_y"),
+                width: num_field(Some(map), "width"),
+                height: num_field(Some(map), "height"),
+                may_plot: bool_field(Some(map), "may_plot"),
+                pins: list_of(map.get("pins"), |pin| {
+                    (num_field(Some(pin), "x"), num_field(Some(pin), "y"))
+                }),
+            }),
+            profiles: list_of(value.get("profiles"), |profile| WatchProfile {
+                serial: serial_field(profile, "serial"),
+                name: string_field(Some(profile), "name"),
+                title: string_field(Some(profile), "title"),
+                shard_words: string_field(Some(profile), "shard_words"),
+                own_words: string_field(Some(profile), "own_words"),
+            }),
+            placing: shown(value, "placing").map(|placing| WatchPlacing {
+                multi_id: num_field(Some(placing), "multi_id"),
+                x_offset: num_field(Some(placing), "x_offset") as i16,
+                y_offset: num_field(Some(placing), "y_offset") as i16,
+                hue: num_field(Some(placing), "hue"),
+            }),
             multis: list_of(value.get("multis"), |multi| {
                 let at = multi.get("location");
                 WatchMulti {
+                    serial: serial_field(multi, "serial"),
                     multi_id: num_field(Some(multi), "multi_id"),
                     x: num_field(at, "x"),
                     y: num_field(at, "y"),
@@ -1114,6 +1192,14 @@ mod tests {
                 "pages": [["Once", "upon"], []] },
             "multis": [{ "serial": 50, "multi_id": 100,
                 "location": { "x": 900, "y": 800, "z": -5 } }],
+            "maps": [{ "serial": 60, "facet": 1, "start_x": 1000, "start_y": 1200,
+                "end_x": 1400, "end_y": 1600, "width": 200, "height": 200, "may_plot": true,
+                "pins": [{ "x": 40, "y": 90 }] }],
+            "profiles": [{ "serial": 5, "name": "Ann", "title": "Ann the miner",
+                "shard_words": "Guild", "own_words": "I dig ore." }],
+            "designed_houses": [{ "serial": 70, "revision": 3,
+                "tiles": [{ "graphic": 100, "dx": 1, "dy": 2, "dz": 7 }] }],
+            "placing": { "multi_id": 100, "x_offset": -3, "y_offset": -3, "hue": 0 },
             "season": 3,
             "light": 18,
             "weather": { "kind": 2, "count": 40 },
@@ -1148,8 +1234,17 @@ mod tests {
         assert_eq!((frame.light, frame.weather), (18, Some((2, 40))));
         assert_eq!(frame.text_entry.as_deref(), Some("Name your pet"));
         assert_eq!(
+            (frame.maps[0].width, frame.maps[0].pins[0]),
+            (200, (40, 90))
+        );
+        assert!(frame.maps[0].may_plot);
+        assert_eq!(frame.profiles[0].own_words, "I dig ore.");
+        assert_eq!(frame.designed_houses[0].tiles[0].graphic, 100);
+        assert_eq!(frame.placing.unwrap().multi_id, 100);
+        assert_eq!(
             frame.multis,
             vec![WatchMulti {
+                serial: 50,
                 multi_id: 100,
                 x: 900,
                 y: 800,

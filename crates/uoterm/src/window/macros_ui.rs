@@ -126,6 +126,8 @@ impl MacrosUi {
                     self.note = None;
                 }
                 Answer::Lines(Err(words)) => self.say(&words, true, time),
+                // The map item takes the answers about places.
+                Answer::Place(_) => {}
             }
         }
     }

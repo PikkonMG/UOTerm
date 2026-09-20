@@ -228,6 +228,8 @@ const ASK_HOTKEY: &str =
     "`wish` says what the next step of a macro must do. Which one hotkey does that?";
 /// The question of the login screen about the saved profiles.
 pub const ASK_PROFILE: &str = "A player of an online role-playing game says in `wish` who he wants to play. Each option is one saved login: its name, its character and its shard. Which one does he mean?";
+/// The question of the map item about the named places on it.
+pub const ASK_LANDMARK: &str = "A player of an online role-playing game marks a place on a map of the land. `wish` says which place he means. Each option is a named place that lies on the map. Which one does he mean?";
 /// The question of the login screen about the shards of the login server.
 pub const ASK_SHARD: &str = "A player of an online role-playing game says in `wish` who he wants to play and where. Each option is the name of one game server. Which one does he mean?";
 /// The question of the login screen about the characters of the account.

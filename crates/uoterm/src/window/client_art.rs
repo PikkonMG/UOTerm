@@ -11,7 +11,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uoterm_nav::{
     land_is_ignored, Action, AnimData, ArtCycles, ArtData, ArtPixels, Deed, GumpArt, HueData,
-    MulMap, MultiData, MultiPiece, RadarColors, Stance, TileQuery, TILE_ANIMATED, TILE_PARTIAL_HUE,
+    MulMap, MultiData, MultiPiece, RadarColors, SeasonArt, Stance, TileQuery, TILE_ANIMATED,
+    TILE_PARTIAL_HUE,
 };
 
 /// How many tiles the window remembers. A full window shows about four
@@ -55,6 +56,8 @@ pub struct ClientArt {
     multis: Option<MultiData>,
     /// None when the client files hold no gump pictures.
     gumps: Option<GumpArt>,
+    /// The art that each season swaps.
+    seasons: SeasonArt,
     /// None when the client files hold no colors for a world map.
     radar: Option<RadarColors>,
     /// None marks a map the client files do not hold.
@@ -78,6 +81,7 @@ impl ClientArt {
             multis: MultiData::open(uopath).ok(),
             radar: RadarColors::open(uopath).ok(),
             gumps: GumpArt::open(uopath).ok(),
+            seasons: SeasonArt::open(&uoterm_runtime::config::config_dir()),
             maps: HashMap::new(),
             cells: HashMap::new(),
         })
@@ -198,6 +202,16 @@ impl ClientArt {
         self.multis
             .as_ref()
             .map_or(&[], |multis| multis.pieces(multi_id))
+    }
+
+    /// The land tile and the item that show in a season. In winter the
+    /// grass shows as snow, and in autumn a green tree shows as a brown one.
+    pub fn season_land(&self, season: u8, land_id: u16) -> u16 {
+        self.seasons.land(season, land_id)
+    }
+
+    pub fn season_item(&self, season: u8, graphic: u16) -> u16 {
+        self.seasons.item(season, graphic)
     }
 
     /// The picture an item shows now. A fire or a fountain goes through
