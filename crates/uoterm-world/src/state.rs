@@ -225,6 +225,10 @@ pub struct Container {
     pub serial: Serial,
     pub gump: u16,
     pub items: Vec<Serial>,
+    /// Counts up as containers open. A window shows the newest first,
+    /// because that is the one the player just opened.
+    #[serde(default)]
+    pub opened: u64,
 }
 
 /// A secure trade window: the other player, and the two containers the
@@ -381,6 +385,10 @@ pub struct World {
     pub mobiles: HashMap<Serial, Mobile>,
     pub items: HashMap<Serial, Item>,
     pub containers: HashMap<Serial, Container>,
+    /// How many containers have been opened. It gives each one its place
+    /// in the order a window shows them.
+    #[serde(default)]
+    pub container_count: u64,
     /// The doors the character can see, by serial. A door moves and changes
     /// graphic while it swings, and the server reports both on the same serial.
     pub doors: HashMap<Serial, DoorItem>,
@@ -736,11 +744,21 @@ impl World {
                 ));
             }
             Inbound::OpenContainer { serial, gump } => {
-                self.containers.entry(*serial).or_insert(Container {
-                    serial: *serial,
-                    gump: *gump,
-                    items: Vec::new(),
-                });
+                self.container_count += 1;
+                let opened = self.container_count;
+                self.containers
+                    .entry(*serial)
+                    .and_modify(|container| {
+                        container.gump = *gump;
+                        // Opening it again brings it to the front.
+                        container.opened = opened;
+                    })
+                    .or_insert(Container {
+                        serial: *serial,
+                        gump: *gump,
+                        items: Vec::new(),
+                        opened,
+                    });
                 self.push_event(Event::new(
                     EventKind::ContainerOpened,
                     Some(*serial),
@@ -759,6 +777,39 @@ impl World {
             } => {
                 self.set_hits(*serial, *current, *max);
             }
+            // `0x2D` carries the bars of one mobile in one packet.
+            Inbound::MobileAttributes {
+                serial,
+                hits,
+                hits_max,
+                mana,
+                mana_max,
+                stam,
+                stam_max,
+            } => {
+                self.set_hits(*serial, *hits, *hits_max);
+                if *serial == self.self_state.serial {
+                    self.self_state.mana = *mana;
+                    self.self_state.mana_max = *mana_max;
+                    self.self_state.stam = *stam;
+                    self.self_state.stam_max = *stam_max;
+                }
+            }
+            // `0xDE` says whom a mobile fights. Only our own fight is kept.
+            Inbound::MobileStatus { serial, fighting } if *serial == self.self_state.serial => {
+                match fighting {
+                    Some(other) => {
+                        self.combatant = Some(*other);
+                        self.push_event(Event::new(
+                            EventKind::CombatantChanged,
+                            self.combatant,
+                            format!("{other}"),
+                        ));
+                    }
+                    None => self.end_fight(),
+                }
+            }
+            Inbound::MobileStatus { .. } => {}
             Inbound::UpdateMana {
                 serial,
                 current,
@@ -1375,10 +1426,13 @@ impl World {
                 name,
             },
         );
+        self.container_count += 1;
+        let opened = self.container_count;
         let container = self.containers.entry(item.container).or_insert(Container {
             serial: item.container,
             gump: 0,
             items: Vec::new(),
+            opened,
         });
         if !container.items.contains(&item.serial) {
             container.items.push(item.serial);
@@ -1820,4 +1874,93 @@ pub fn is_ghost_body(body: u16) -> bool {
 
 fn paperdoll_name(text: &str) -> &str {
     text.split('(').next().map(str::trim).unwrap_or(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ORC: Serial = Serial(0x0000_0A11);
+    const SWORD: Serial = Serial(0x4000_0A12);
+
+    fn orc_at(x: u16, equipment: Vec<EquipItem>) -> MobileView {
+        MobileView {
+            serial: ORC,
+            body: 17,
+            x,
+            y: 1200,
+            z: 5,
+            direction: 2,
+            hue: 0,
+            flags: 0,
+            notoriety: 5,
+            hits: None,
+            hits_max: None,
+            equipment,
+        }
+    }
+
+    #[test]
+    fn the_newer_move_packet_moves_a_mobile_and_keeps_what_he_wears() {
+        let mut world = World::default();
+        world.apply(&Inbound::MobileIncoming(orc_at(
+            1000,
+            vec![EquipItem {
+                serial: SWORD,
+                graphic: 0x13B9,
+                layer: 1,
+                hue: 0,
+            }],
+        )));
+        // The newer move packet carries no worn items. It must not take
+        // the ones he already has off him.
+        world.apply(&Inbound::MobileMoving(orc_at(1001, Vec::new())));
+        let orc = world.mobiles.get(&ORC).unwrap();
+        assert_eq!(orc.location.x, 1001);
+        assert_eq!(orc.equipment.len(), 1, "he keeps his sword");
+    }
+
+    #[test]
+    fn the_newer_bars_packet_fills_a_mobile_and_the_character() {
+        let mut world = World::default();
+        world.apply(&Inbound::MobileIncoming(orc_at(1000, Vec::new())));
+        let bars = |serial: Serial| Inbound::MobileAttributes {
+            serial,
+            hits: 60,
+            hits_max: 80,
+            mana: 10,
+            mana_max: 20,
+            stam: 30,
+            stam_max: 40,
+        };
+        world.apply(&bars(ORC));
+        let orc = world.mobiles.get(&ORC).unwrap();
+        assert_eq!((orc.hits, orc.hits_max), (Some(60), Some(80)));
+        let me = world.self_state.serial;
+        world.apply(&bars(me));
+        assert_eq!((world.self_state.hits, world.self_state.hits_max), (60, 80));
+        assert_eq!((world.self_state.mana, world.self_state.stam), (10, 30));
+    }
+
+    #[test]
+    fn the_newer_fight_packet_names_the_one_we_fight() {
+        let mut world = World::default();
+        let me = world.self_state.serial;
+        world.apply(&Inbound::MobileStatus {
+            serial: me,
+            fighting: Some(ORC),
+        });
+        assert_eq!(world.combatant, Some(ORC));
+        world.apply(&Inbound::MobileStatus {
+            serial: me,
+            fighting: None,
+        });
+        assert_eq!(world.combatant, None);
+        // The fight of another mobile is not ours.
+        world.apply(&Inbound::MobileStatus {
+            serial: ORC,
+            fighting: Some(me),
+        });
+        assert_eq!(world.combatant, None);
+    }
 }
