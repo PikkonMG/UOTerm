@@ -68,6 +68,15 @@ pub const PKT_DISPLAY_MAP_FACET: u8 = 0xF5;
 pub const PKT_PROFILE: u8 = 0xB8;
 pub const PKT_MULTI_PLACEMENT: u8 = 0x99;
 pub const PKT_CUSTOM_HOUSE: u8 = 0xD8;
+/// `0x2D`. The hits and the mana of a mobile in one packet.
+pub const PKT_MOBILE_ATTRIBUTES: u8 = 0x2D;
+/// `0xD2`. A mobile moved or changed, in the newer form.
+pub const PKT_UPDATE_CHARACTER: u8 = 0xD2;
+/// `0xD3`. A mobile came into view, in the newer form: `0x78` with six
+/// bytes more before its worn items.
+pub const PKT_UPDATE_OBJECT: u8 = 0xD3;
+/// `0xDE`. Whether a mobile fights, and whom.
+pub const PKT_MOBILE_STATUS: u8 = 0xDE;
 pub const PKT_AOS_COMMAND: u8 = 0xD7;
 pub const PKT_HELP_REQUEST: u8 = 0x9B;
 pub const PKT_CHAT_EVENT: u8 = 0xB2;

@@ -735,6 +735,21 @@ pub enum Inbound {
         /// True while the player designs the house.
         designing: bool,
     },
+    /// `0x2D`. The hits and the mana of a mobile in one packet.
+    MobileAttributes {
+        serial: Serial,
+        hits: u16,
+        hits_max: u16,
+        mana: u16,
+        mana_max: u16,
+        stam: u16,
+        stam_max: u16,
+    },
+    /// `0xDE`. The mobile fights `fighting`, or fights nobody.
+    MobileStatus {
+        serial: Serial,
+        fighting: Option<Serial>,
+    },
     /// `0xB2`. The chat of the shard.
     Chat(ChatEvent),
     /// `0x90` or `0xF5`. A map item opened.
@@ -847,6 +862,10 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_DELETE => parse_delete(packet),
         PKT_MOBILE_MOVING => parse_mobile_moving(packet),
         PKT_MOBILE_INCOMING => parse_mobile_incoming(packet, version),
+        PKT_UPDATE_OBJECT => parse_update_object(packet, version),
+        PKT_UPDATE_CHARACTER => parse_update_character(packet),
+        PKT_MOBILE_ATTRIBUTES => parse_mobile_attributes(packet),
+        PKT_MOBILE_STATUS => parse_mobile_status(packet),
         PKT_WORLD_ITEM => parse_world_item(packet),
         PKT_WORLD_ITEM_SA => parse_world_item_sa(packet),
         PKT_PACKET_LIST => parse_packet_list(packet, version),
@@ -1235,7 +1254,20 @@ fn parse_mobile_moving(packet: &[u8]) -> Result<Inbound> {
     }))
 }
 
+/// The bytes `0xD3` carries between the mobile and its worn items. `0x78`
+/// has none.
+const UPDATE_OBJECT_SPARE: usize = 6;
+
 fn parse_mobile_incoming(packet: &[u8], version: ClientVersion) -> Result<Inbound> {
+    parse_mobile_view(packet, version, 0)
+}
+
+/// `0xD3`: the same as `0x78`, with six bytes more before the worn items.
+fn parse_update_object(packet: &[u8], version: ClientVersion) -> Result<Inbound> {
+    parse_mobile_view(packet, version, UPDATE_OBJECT_SPARE)
+}
+
+fn parse_mobile_view(packet: &[u8], version: ClientVersion, spare: usize) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     r.u16()?;
@@ -1248,6 +1280,7 @@ fn parse_mobile_incoming(packet: &[u8], version: ClientVersion) -> Result<Inboun
     let hue = r.u16()?;
     let flags = r.u8()?;
     let notoriety = r.u8()?;
+    r.skip(spare)?;
     let always_hue = version.has_incoming_equip_hue();
     let mut equipment = Vec::new();
     loop {
@@ -2604,6 +2637,55 @@ fn parse_multi_placement(packet: &[u8]) -> Result<Inbound> {
     })
 }
 
+/// `0xD2`: a mobile moved or changed. It carries no worn items, so the
+/// ones it already has are kept.
+fn parse_update_character(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::MobileMoving(MobileView {
+        serial: r.serial()?,
+        body: r.u16()?,
+        x: r.u16()?,
+        y: r.u16()?,
+        z: r.i8()?,
+        direction: r.u8()?,
+        hue: r.u16()?,
+        flags: r.u8()?,
+        notoriety: r.u8()?,
+        hits: None,
+        hits_max: None,
+        equipment: Vec::new(),
+    }))
+}
+
+fn parse_mobile_attributes(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::MobileAttributes {
+        serial: r.serial()?,
+        hits_max: r.u16()?,
+        hits: r.u16()?,
+        mana_max: r.u16()?,
+        mana: r.u16()?,
+        stam_max: r.u16()?,
+        stam: r.u16()?,
+    })
+}
+
+/// The status byte that says the mobile is in a fight.
+const MOBILE_STATUS_FIGHTING: u8 = 1;
+
+fn parse_mobile_status(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    let serial = r.serial()?;
+    let fighting = (r.u8()? == MOBILE_STATUS_FIGHTING)
+        .then(|| r.serial())
+        .transpose()?
+        .filter(|serial| serial.is_valid());
+    Ok(Inbound::MobileStatus { serial, fighting })
+}
+
 fn parse_new_animation(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -2705,6 +2787,108 @@ const BUFF_TRAILING_TEXTS: usize = 1;
 mod tests {
     use super::*;
     use crate::encode;
+
+    #[test]
+    fn the_newer_mobile_packets_read_the_same_mobile_as_the_older_ones() {
+        const ORC: Serial = Serial(0x0000_0A11);
+        const SWORD: Serial = Serial(0x4000_0A12);
+        let mobile = |id: u8, spare: usize| {
+            let mut w = crate::buf::PacketWriter::with_variable(id);
+            w.serial(ORC)
+                .u16(17)
+                .u16(1000)
+                .u16(1200)
+                .i8(5)
+                .u8(2)
+                .u16(0x21)
+                .u8(0)
+                .u8(5);
+            for _ in 0..spare {
+                w.u8(0);
+            }
+            w.serial(SWORD).u16(0x13B9).u8(1).u16(0);
+            w.u32(0);
+            {
+                let modern = ClientVersion {
+                    major: 7,
+                    minor: 0,
+                    revision: 90,
+                    patch: 0,
+                };
+                parse_with_version(&w.finish_variable().unwrap(), modern).unwrap()
+            }
+        };
+        let Inbound::MobileIncoming(old) = mobile(PKT_MOBILE_INCOMING, 0) else {
+            panic!("not a mobile");
+        };
+        let Inbound::MobileIncoming(new) = mobile(PKT_UPDATE_OBJECT, UPDATE_OBJECT_SPARE) else {
+            panic!("not a mobile");
+        };
+        assert_eq!(old.serial, new.serial);
+        assert_eq!((new.body, new.x, new.y, new.z), (17, 1000, 1200, 5));
+        assert_eq!(new.equipment.len(), 1);
+        assert_eq!(new.equipment[0].serial, SWORD);
+    }
+
+    #[test]
+    fn the_newer_move_packet_keeps_the_items_the_mobile_already_wears() {
+        const ORC: Serial = Serial(0x0000_0A11);
+        let mut w = crate::buf::PacketWriter::new(PKT_UPDATE_CHARACTER);
+        w.serial(ORC)
+            .u16(17)
+            .u16(1001)
+            .u16(1200)
+            .i8(5)
+            .u8(3)
+            .u16(0)
+            .u8(0)
+            .u8(6);
+        let Inbound::MobileMoving(moved) = parse(&w.finish()).unwrap() else {
+            panic!("not a move");
+        };
+        assert_eq!((moved.serial, moved.x, moved.direction), (ORC, 1001, 3));
+        assert_eq!(moved.notoriety, 6);
+        assert!(moved.equipment.is_empty(), "it carries no worn items");
+    }
+
+    #[test]
+    fn the_attribute_and_fight_packets_read_their_numbers() {
+        const ORC: Serial = Serial(0x0000_0A11);
+        const ME: Serial = Serial(0x0000_00AB);
+        let mut w = crate::buf::PacketWriter::new(PKT_MOBILE_ATTRIBUTES);
+        w.serial(ORC)
+            .u16(80)
+            .u16(60)
+            .u16(20)
+            .u16(10)
+            .u16(40)
+            .u16(30);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::MobileAttributes {
+                hits: 60,
+                hits_max: 80,
+                mana: 10,
+                stam: 30,
+                ..
+            }
+        ));
+        let mut w = crate::buf::PacketWriter::new(PKT_MOBILE_STATUS);
+        w.serial(ORC).u8(MOBILE_STATUS_FIGHTING).serial(ME);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::MobileStatus {
+                fighting: Some(ME),
+                ..
+            }
+        ));
+        let mut w = crate::buf::PacketWriter::new(PKT_MOBILE_STATUS);
+        w.serial(ORC).u8(0);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::MobileStatus { fighting: None, .. }
+        ));
+    }
 
     #[test]
     fn the_house_designer_says_when_it_opens_and_when_it_closes() {
