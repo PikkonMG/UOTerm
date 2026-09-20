@@ -800,6 +800,58 @@ pub fn resync() -> Vec<u8> {
     w.finish()
 }
 
+const BULLETIN_ASK_MESSAGE: u8 = 3;
+const BULLETIN_ASK_SUMMARY: u8 = 4;
+const BULLETIN_POST: u8 = 5;
+const BULLETIN_REMOVE: u8 = 6;
+/// The length byte of a line counts the zero at its end.
+const BULLETIN_LINE_MAX_BYTES: usize = u8::MAX as usize - 1;
+
+fn bulletin(kind: u8, board: Serial, message: Serial) -> PacketWriter {
+    let mut w = PacketWriter::with_variable(PKT_BULLETIN_BOARD);
+    w.u8(kind).serial(board).serial(message);
+    w
+}
+
+/// `0x71`: ask for one message of a bulletin board. `full` asks for its
+/// lines; otherwise the shard sends the one line for the list.
+pub fn bulletin_ask(board: Serial, message: Serial, full: bool) -> Vec<u8> {
+    let kind = if full {
+        BULLETIN_ASK_MESSAGE
+    } else {
+        BULLETIN_ASK_SUMMARY
+    };
+    var_bytes(bulletin(kind, board, message))
+}
+
+/// Words with their length in one byte before them and a zero at their
+/// end. Words that are too long are cut at a whole character.
+fn counted_words(w: &mut PacketWriter, words: &str) {
+    let mut end = words.len().min(BULLETIN_LINE_MAX_BYTES);
+    while !words.is_char_boundary(end) {
+        end -= 1;
+    }
+    w.u8(end as u8 + 1).bytes(&words.as_bytes()[..end]).u8(0);
+}
+
+/// `0x71`: post a message. `reply_to` is the message it answers, or zero
+/// for a new one.
+pub fn bulletin_post(board: Serial, reply_to: Serial, subject: &str, lines: &[&str]) -> Vec<u8> {
+    let mut w = bulletin(BULLETIN_POST, board, reply_to);
+    counted_words(&mut w, subject);
+    let lines = &lines[..lines.len().min(usize::from(u8::MAX))];
+    w.u8(lines.len() as u8);
+    for line in lines {
+        counted_words(&mut w, line);
+    }
+    var_bytes(w)
+}
+
+/// `0x71`: remove a message the character posted.
+pub fn bulletin_remove(board: Serial, message: Serial) -> Vec<u8> {
+    var_bytes(bulletin(BULLETIN_REMOVE, board, message))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +910,25 @@ mod tests {
 
     fn regular_keyword_speech(keywords: &[u16], text: &str) -> Vec<u8> {
         keyword_speech(SPEECH_REGULAR, DEFAULT_SPEECH_HUE, keywords, text)
+    }
+
+    #[test]
+    fn bulletin_packets_are_byte_exact() {
+        const BOARD: Serial = Serial(0x4000_0050);
+        const MESSAGE: Serial = Serial(0x4000_0051);
+        let ask = bulletin_ask(BOARD, MESSAGE, true);
+        assert_eq!(ask[0], PKT_BULLETIN_BOARD);
+        assert_eq!(usize::from(u16::from_be_bytes([ask[1], ask[2]])), ask.len());
+        assert_eq!(ask[3], BULLETIN_ASK_MESSAGE);
+        assert_eq!(&ask[4..8], &BOARD.0.to_be_bytes());
+        assert_eq!(&ask[8..12], &MESSAGE.0.to_be_bytes());
+        assert_eq!(bulletin_ask(BOARD, MESSAGE, false)[3], BULLETIN_ASK_SUMMARY);
+        assert_eq!(bulletin_remove(BOARD, MESSAGE)[3], BULLETIN_REMOVE);
+        let post = bulletin_post(BOARD, Serial(0), "Hi", &["one", "two"]);
+        assert_eq!(post[3], BULLETIN_POST);
+        assert_eq!(&post[12..16], &[3, b'H', b'i', 0]);
+        assert_eq!(post[16], 2, "the count of lines");
+        assert_eq!(&post[17..22], &[4, b'o', b'n', b'e', 0]);
     }
 
     #[test]

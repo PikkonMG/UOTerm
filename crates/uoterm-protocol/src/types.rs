@@ -60,6 +60,8 @@ pub const PKT_WEATHER: u8 = 0x65;
 pub const PKT_GRAPHIC_EFFECT: u8 = 0x70;
 pub const PKT_HUED_EFFECT: u8 = 0xC0;
 pub const PKT_PARTICLE_EFFECT: u8 = 0xC7;
+pub const PKT_NEW_ANIMATION: u8 = 0xE2;
+pub const PKT_BULLETIN_BOARD: u8 = 0x71;
 pub const PKT_PLAY_CHARACTER: u8 = 0x5D;
 /// `0x66`. Server: the pages of an open book. Client: one edited page, or a
 /// request for a page it has not read yet.

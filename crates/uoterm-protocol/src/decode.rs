@@ -372,6 +372,33 @@ pub struct GraphicEffect {
     pub hue: u16,
 }
 
+/// `0x71` from the shard: a bulletin board opens, or one of its messages
+/// comes as one line for the list or in full.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BulletinEvent {
+    Opened {
+        board: Serial,
+        name: String,
+    },
+    /// One line of the list. `parent` is the message it answers, or zero.
+    Summary {
+        board: Serial,
+        message: Serial,
+        parent: Serial,
+        poster: String,
+        subject: String,
+        time: String,
+    },
+    Message {
+        board: Serial,
+        message: Serial,
+        poster: String,
+        subject: String,
+        time: String,
+        lines: Vec<String>,
+    },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Inbound {
     ServerList {
@@ -615,6 +642,16 @@ pub enum Inbound {
         repeat: bool,
         delay: u8,
     },
+    /// `0x71`.
+    Bulletin(BulletinEvent),
+    /// `0xE2`. What a mobile does, in words of the game and not as a number
+    /// of his animation files: `kind` 0 attacks, 3 dies, 11 casts a spell.
+    /// `action` says which attack, emote or spell.
+    NewCharacterAnimation {
+        serial: Serial,
+        kind: u16,
+        action: u16,
+    },
     /// `0x54`.
     SoundEffect {
         sound: u16,
@@ -707,6 +744,8 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_TARGET => parse_target(packet),
         PKT_GUMP | PKT_COMPRESSED_GUMP => parse_gump(packet),
         PKT_DEATH => parse_death(packet),
+        PKT_NEW_ANIMATION => parse_new_animation(packet),
+        PKT_BULLETIN_BOARD => parse_bulletin(packet),
         PKT_SEASON => parse_season(packet),
         PKT_GRAPHIC_EFFECT | PKT_HUED_EFFECT | PKT_PARTICLE_EFFECT => parse_effect(packet),
         PKT_GLOBAL_LIGHT => parse_global_light(packet),
@@ -2142,6 +2181,87 @@ fn parse_character_animation(packet: &[u8]) -> Result<Inbound> {
     })
 }
 
+const BULLETIN_OPENED: u8 = 0;
+const BULLETIN_SUMMARY: u8 = 1;
+const BULLETIN_MESSAGE: u8 = 2;
+const BULLETIN_NAME_BYTES: usize = 22;
+/// After the time of a full message: the body of the poster, and then a
+/// count of the things he wears with four bytes for each.
+const BULLETIN_POSTER_BODY_BYTES: usize = 4;
+const BULLETIN_WORN_BYTES: usize = 4;
+
+/// Words with their length in one byte before them, and a zero at their end.
+fn counted_words(r: &mut PacketReader<'_>) -> Result<String> {
+    let len = usize::from(r.u8()?);
+    let bytes = r.take(len)?;
+    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
+}
+
+fn parse_bulletin(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let kind = r.u8()?;
+    let board = r.serial()?;
+    let event = match kind {
+        BULLETIN_OPENED => {
+            let bytes = r.take(BULLETIN_NAME_BYTES.min(r.remaining()))?;
+            let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+            BulletinEvent::Opened {
+                board,
+                name: String::from_utf8_lossy(&bytes[..end]).into_owned(),
+            }
+        }
+        BULLETIN_SUMMARY => BulletinEvent::Summary {
+            board,
+            message: r.serial()?,
+            parent: r.serial()?,
+            poster: counted_words(&mut r)?,
+            subject: counted_words(&mut r)?,
+            time: counted_words(&mut r)?,
+        },
+        BULLETIN_MESSAGE => {
+            let message = r.serial()?;
+            let poster = counted_words(&mut r)?;
+            let subject = counted_words(&mut r)?;
+            let time = counted_words(&mut r)?;
+            r.skip(BULLETIN_POSTER_BODY_BYTES)?;
+            let worn = usize::from(r.u8()?);
+            r.skip(worn * BULLETIN_WORN_BYTES)?;
+            let count = r.u8()?;
+            let lines = (0..count)
+                .map(|_| counted_words(&mut r))
+                .collect::<Result<Vec<_>>>()?;
+            BulletinEvent::Message {
+                board,
+                message,
+                poster,
+                subject,
+                time,
+                lines,
+            }
+        }
+        _ => {
+            return Ok(Inbound::Unknown {
+                id: PKT_BULLETIN_BOARD,
+                payload: packet.to_vec(),
+            })
+        }
+    };
+    Ok(Inbound::Bulletin(event))
+}
+
+fn parse_new_animation(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::NewCharacterAnimation {
+        serial: r.serial()?,
+        kind: r.u16()?,
+        action: r.u16()?,
+    })
+}
+
 fn parse_sound_effect(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -2262,6 +2382,77 @@ mod tests {
         assert_eq!((effect.kind, effect.graphic), (EFFECT_MOVING, FIREBALL));
         assert_eq!((effect.from.x, effect.to.y, effect.to.z), (100, 203, -2));
         assert_eq!(effect.hue, HUE as u16);
+    }
+
+    #[test]
+    fn the_newer_animation_packet_gives_the_kind_and_the_action() {
+        let mut w = crate::buf::PacketWriter::new(PKT_NEW_ANIMATION);
+        w.serial(Serial(9)).u16(11).u16(1).u8(0);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::NewCharacterAnimation {
+                serial: Serial(9),
+                kind: 11,
+                action: 1
+            }
+        ));
+    }
+
+    fn counted(w: &mut crate::buf::PacketWriter, words: &str) {
+        w.u8(words.len() as u8 + 1).bytes(words.as_bytes()).u8(0);
+    }
+
+    #[test]
+    fn a_bulletin_message_gives_its_poster_its_subject_and_its_lines() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_BULLETIN_BOARD);
+        w.u8(BULLETIN_MESSAGE).serial(Serial(50)).serial(Serial(51));
+        counted(&mut w, "Ann");
+        counted(&mut w, "Selling ore");
+        counted(&mut w, "Day 1 @ 11:28");
+        w.u32(0x0190_83EA).u8(1).u32(0x1515_0000).u8(2);
+        counted(&mut w, "Iron, 5 gp each.");
+        counted(&mut w, "Find me at the forge.");
+        let packet = w.finish_variable().unwrap();
+        let Inbound::Bulletin(BulletinEvent::Message {
+            board,
+            message,
+            poster,
+            subject,
+            lines,
+            ..
+        }) = parse(&packet).unwrap()
+        else {
+            panic!("not a bulletin message");
+        };
+        assert_eq!((board, message), (Serial(50), Serial(51)));
+        assert_eq!((poster.as_str(), subject.as_str()), ("Ann", "Selling ore"));
+        assert_eq!(lines, vec!["Iron, 5 gp each.", "Find me at the forge."]);
+    }
+
+    #[test]
+    fn a_bulletin_board_opens_with_its_name_and_lists_a_summary() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_BULLETIN_BOARD);
+        w.u8(BULLETIN_OPENED)
+            .serial(Serial(50))
+            .ascii_fixed("bulletin board", BULLETIN_NAME_BYTES);
+        let opened = parse(&w.finish_variable().unwrap()).unwrap();
+        assert!(
+            matches!(opened, Inbound::Bulletin(BulletinEvent::Opened { name, .. })
+            if name == "bulletin board")
+        );
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_BULLETIN_BOARD);
+        w.u8(BULLETIN_SUMMARY)
+            .serial(Serial(50))
+            .serial(Serial(51))
+            .serial(Serial(0));
+        counted(&mut w, "Ann");
+        counted(&mut w, "Selling ore");
+        counted(&mut w, "Day 1");
+        let summary = parse(&w.finish_variable().unwrap()).unwrap();
+        assert!(
+            matches!(summary, Inbound::Bulletin(BulletinEvent::Summary { parent, subject, .. })
+            if parent == Serial(0) && subject == "Selling ore")
+        );
     }
 
     #[test]
