@@ -164,6 +164,23 @@ enum Commands {
     },
     /// MCP stdio server (proxies to --api)
     Mcp,
+    /// Play by hand: login screens, then the game window with control taken
+    Play {
+        /// A saved login that fills the form at the start
+        #[arg(long)]
+        profile: Option<PathBuf>,
+        /// none = nocrypt freeshard, the usual private shard default. osi = Classic Client encryption for official/encrypted shards.
+        #[arg(long, value_enum, default_value_t = EncryptionMode::None)]
+        encryption: EncryptionMode,
+        /// The client files for the real map. The default is `uopath` in uoterm.toml.
+        #[arg(long)]
+        uopath: Option<PathBuf>,
+        #[arg(long)]
+        api_bind: Option<String>,
+        /// Log in at once with the saved login of --profile, with no click on Connect
+        #[arg(long, requires = "profile")]
+        go: bool,
+    },
     /// Watch a running session: a 2D window, or --text for the terminal
     Watch {
         /// Print the radar in the terminal instead of opening a window
@@ -368,6 +385,13 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
                 .map_err(|e| RuntimeError::Network(e.to_string()))?;
             Ok(EXIT_OK as u8)
         }
+        Commands::Play {
+            profile,
+            encryption,
+            uopath,
+            api_bind,
+            go,
+        } => play(profile, encryption, uopath, api_bind, go),
         Commands::Watch {
             text,
             uopath,
@@ -476,6 +500,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         obey_shard_rules: cfg.obey_shard_rules,
         answer_when_named: cfg.answer_when_named,
         play_along: cfg.play_along,
+        picker: None,
     };
     let rt = Runtime::new(cfg.max_sessions);
     let handle = rt.connect(opts).await?;
@@ -601,6 +626,162 @@ async fn remote_tool(
     let id = remote::resolve_session(&base, session).await?;
     let v = remote::call_tool(&base, &id, name, args).await?;
     emit(as_json, v);
+    Ok(EXIT_OK as u8)
+}
+
+const PROFILES_DIR: &str = "profiles";
+const PROFILE_EXT: &str = "toml";
+const NEEDS_PASSWORD: &str = "Type the password.";
+const NEEDS_ACCOUNT: &str = "Type the account.";
+const BAD_PORT: &str = "The port must be a number from 1 to 65535.";
+
+/// The saved logins of the profiles folder, by file name.
+fn saved_profiles() -> Vec<(String, uoterm_runtime::Profile)> {
+    let mut saved: Vec<_> = std::fs::read_dir(PROFILES_DIR)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == PROFILE_EXT))
+        .filter_map(|path| {
+            let name = path.file_stem()?.to_str()?.to_string();
+            Some((name, load_profile(&path).ok()?))
+        })
+        .collect();
+    saved.sort_by(|a, b| a.0.cmp(&b.0));
+    saved
+}
+
+/// The options of a login from what the human typed. The password comes
+/// from the form, or from the environment variable of the saved login.
+fn play_options(
+    cfg: &uoterm_runtime::AppConfig,
+    form: &window::LoginForm,
+    profile: Option<&uoterm_runtime::Profile>,
+    encryption: EncryptionMode,
+    picker: uoterm_runtime::LoginPicker,
+) -> Result<ConnectOptions, String> {
+    let account = form.account.trim();
+    if account.is_empty() {
+        return Err(NEEDS_ACCOUNT.into());
+    }
+    let port: u16 = form
+        .port
+        .trim()
+        .parse()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or(BAD_PORT)?;
+    let password = if form.password.is_empty() {
+        profile
+            .and_then(|p| password_from_env(&p.password_env).ok())
+            .ok_or(NEEDS_PASSWORD)?
+    } else {
+        form.password.clone()
+    };
+    let era: Era = profile
+        .and_then(|p| p.era.as_deref())
+        .and_then(|era| era.parse().ok())
+        .unwrap_or(cfg.era);
+    let shard = form.shard.trim();
+    Ok(ConnectOptions {
+        host: form.host.trim().to_string(),
+        port,
+        account: account.to_string(),
+        password,
+        shard: (!shard.is_empty()).then(|| shard.to_string()),
+        character: form.character.trim().to_string(),
+        version: uoterm_runtime::config::version_from_str(
+            profile.and_then(|p| p.version.as_deref()),
+            era,
+        ),
+        era,
+        uopath: cfg.uopath.clone(),
+        markers: cfg.markers.clone(),
+        encryption: match encryption {
+            EncryptionMode::None => uoterm_runtime::EncryptionMode::None,
+            EncryptionMode::Osi => uoterm_runtime::EncryptionMode::Osi,
+        },
+        obey_shard_rules: cfg.obey_shard_rules,
+        answer_when_named: cfg.answer_when_named,
+        play_along: cfg.play_along,
+        picker: Some(picker),
+        ..ConnectOptions::default()
+    })
+}
+
+/// `uoterm play`: the login screens, then the game window. The window has
+/// the main thread. The logins and the sessions run on the other threads.
+fn play(
+    profile: Option<PathBuf>,
+    encryption: EncryptionMode,
+    uopath: Option<PathBuf>,
+    api_bind: Option<String>,
+    go: bool,
+) -> Result<u8, RuntimeError> {
+    let mut cfg = load_app_config(None);
+    cfg.uopath = uopath.or(cfg.uopath);
+    let bind = api_bind.unwrap_or_else(|| cfg.api_bind.clone());
+    let saved = saved_profiles();
+    let start_with = profile
+        .as_deref()
+        .and_then(|path| path.file_stem()?.to_str())
+        .and_then(|name| saved.iter().find(|(saved_name, _)| saved_name == name));
+    let form = window::LoginForm {
+        host: cfg.host.clone(),
+        port: cfg.port.to_string(),
+        account: start_with
+            .map(|(_, p)| p.account.clone())
+            .unwrap_or_default(),
+        character: start_with
+            .map(|(_, p)| p.character.clone())
+            .unwrap_or_default(),
+        shard: start_with
+            .and_then(|(_, p)| p.shard.clone())
+            .unwrap_or_default(),
+        profile: start_with.map(|(name, _)| name.clone()),
+        password: String::new(),
+    };
+    let listed = saved
+        .iter()
+        .map(|(name, p)| window::SavedLogin {
+            name: name.clone(),
+            account: p.account.clone(),
+            character: p.character.clone(),
+            shard: p.shard.clone().unwrap_or_default(),
+        })
+        .collect();
+    let rt = Runtime::new(cfg.max_sessions);
+    let tokio = tokio::runtime::Handle::current();
+    let api_started = std::sync::atomic::AtomicBool::new(false);
+    let uopath = cfg.uopath.clone();
+    let connect: window::Connect = std::sync::Arc::new(move |form, picker| {
+        let profile = form
+            .profile
+            .as_deref()
+            .and_then(|name| saved.iter().find(|(saved_name, _)| saved_name == name))
+            .map(|(_, profile)| profile);
+        let opts = play_options(&cfg, &form, profile, encryption, picker)?;
+        let handle = tokio
+            .block_on(rt.connect(opts))
+            .map_err(|e| e.to_string())?;
+        if !api_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let _guard = tokio.enter();
+            start_api(rt.clone(), bind.clone());
+        }
+        Ok(window::Link::SameProgram {
+            runtime: rt.clone(),
+            session: handle.id.clone(),
+        })
+    });
+    let options = window::PlayOptions {
+        form,
+        saved: listed,
+        connect,
+        uopath,
+        connect_at_once: go,
+    };
+    tokio::task::block_in_place(|| window::play(options)).map_err(RuntimeError::Network)?;
     Ok(EXIT_OK as u8)
 }
 
@@ -865,6 +1046,55 @@ mod tests {
         ])
         .unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    fn typed(account: &str, port: &str, password: &str) -> window::LoginForm {
+        window::LoginForm {
+            host: "127.0.0.1".into(),
+            port: port.into(),
+            account: account.into(),
+            password: password.into(),
+            character: "Mara".into(),
+            ..window::LoginForm::default()
+        }
+    }
+
+    fn no_screen() -> uoterm_runtime::LoginPicker {
+        uoterm_runtime::LoginPicker(tokio::sync::mpsc::unbounded_channel().0)
+    }
+
+    #[test]
+    fn a_login_form_needs_an_account_a_port_and_a_password() {
+        let cfg = uoterm_runtime::AppConfig::default();
+        let options = |form: &window::LoginForm| {
+            play_options(&cfg, form, None, EncryptionMode::None, no_screen())
+        };
+        assert_eq!(
+            options(&typed("", "2593", "pw")).unwrap_err(),
+            NEEDS_ACCOUNT
+        );
+        assert_eq!(options(&typed("acct", "port", "pw")).unwrap_err(), BAD_PORT);
+        assert_eq!(options(&typed("acct", "0", "pw")).unwrap_err(), BAD_PORT);
+        assert_eq!(
+            options(&typed("acct", "2593", "")).unwrap_err(),
+            NEEDS_PASSWORD
+        );
+        let ready = options(&typed(" acct ", "2593", "pw")).unwrap();
+        assert_eq!((ready.account.as_str(), ready.port), ("acct", 2593));
+        assert_eq!(ready.shard, None);
+        assert!(ready.picker.is_some());
+    }
+
+    #[test]
+    fn parses_play() {
+        let cli = Cli::try_parse_from(["uoterm", "play", "--profile", "profiles/cedric.toml"]);
+        assert!(matches!(
+            cli.unwrap().command,
+            Commands::Play {
+                profile: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -222,8 +222,16 @@ pub async fn ask(key: &str, order: &str, frame: &WatchFrame) -> Result<Act, Stri
 // group of hotkeys, and which hotkey of that group.
 
 const Q_GROUP: &str = "group";
-const Q_HOTKEY: &str = "hotkey";
-const HOTKEY_PREFIX: &str = "hotkey_";
+const Q_PICK: &str = "pick";
+const OPTION_PREFIX: &str = "option_";
+const ASK_HOTKEY: &str =
+    "`wish` says what the next step of a macro must do. Which one hotkey does that?";
+/// The question of the login screen about the saved profiles.
+pub const ASK_PROFILE: &str = "A player of an online role-playing game says in `wish` who he wants to play. Each option is one saved login: its name, its character and its shard. Which one does he mean?";
+/// The question of the login screen about the shards of the login server.
+pub const ASK_SHARD: &str = "A player of an online role-playing game says in `wish` who he wants to play and where. Each option is the name of one game server. Which one does he mean?";
+/// The question of the login screen about the characters of the account.
+pub const ASK_CHARACTER: &str = "A player of an online role-playing game says in `wish` who he wants to play. Each option is the name of one character of his account. Which one does he mean?";
 /// How many names of a group tell Jev what the group holds.
 const GROUP_SAMPLE: usize = 8;
 /// A group such as the spells has hundreds of hotkeys. Jev gets this many,
@@ -307,32 +315,45 @@ pub fn hotkey_choices<'a>(wish: &str, names: &'a [String]) -> Vec<&'a str> {
     near.into_iter().chain(far).take(MAX_HOTKEYS).collect()
 }
 
-pub fn hotkey_request(wish: &str, choices: &[&str]) -> Value {
-    let mut criteria: Map<String, Value> = choices
+/// One closed question: which of `options` does `wish` ask for?
+pub fn pick_request(instructions: &str, wish: &str, options: &[&str]) -> Value {
+    let mut criteria: Map<String, Value> = options
         .iter()
         .enumerate()
-        .map(|(i, name)| (format!("{HOTKEY_PREFIX}{i}"), json!(name)))
+        .map(|(i, words)| (format!("{OPTION_PREFIX}{i}"), json!(words)))
         .collect();
-    criteria.insert(NO_THING.into(), json!("No hotkey of this list does it."));
+    criteria.insert(NO_THING.into(), json!("None of this list."));
     json!({
         "model": MODEL,
         "state": { "wish": wish },
-        "questions": { Q_HOTKEY: {
+        "questions": { Q_PICK: {
             "type": "choice",
-            "instructions": "`wish` says what the next step of a macro must do. Which one hotkey does that?",
+            "instructions": instructions,
             "criteria": criteria,
         }}
     })
 }
 
-/// The hotkey Jev picked from `choices`, when it is sure enough.
-pub fn picked_hotkey<'a>(response: &Value, choices: &[&'a str]) -> Option<&'a str> {
+/// The place of the option Jev picked, when it is sure enough.
+pub fn picked(response: &Value, options: usize) -> Option<usize> {
     let answers = response.get("answers")?;
-    let index: usize = sure_choice(answers, Q_HOTKEY)?
-        .strip_prefix(HOTKEY_PREFIX)?
+    let place: usize = sure_choice(answers, Q_PICK)?
+        .strip_prefix(OPTION_PREFIX)?
         .parse()
         .ok()?;
-    choices.get(index).copied()
+    (place < options).then_some(place)
+}
+
+/// Asks Jev which of `options` the wish names. None when Jev is not sure,
+/// or when the wish names none of them.
+pub async fn pick(
+    key: &str,
+    instructions: &str,
+    wish: &str,
+    options: &[&str],
+) -> Result<Option<usize>, String> {
+    let response = post(key, &pick_request(instructions, wish, options)).await?;
+    Ok(picked(&response, options.len()))
 }
 
 /// The script lines for a wish in plain words. `hotkeys` asks the session:
@@ -349,8 +370,10 @@ where
         .and_then(|group| groups.get(group))
         .ok_or(NO_SUCH_HOTKEY)?;
     let choices = hotkey_choices(wish, names);
-    let hotkey_answer = post(key, &hotkey_request(wish, &choices)).await?;
-    let name = picked_hotkey(&hotkey_answer, &choices).ok_or(NO_SUCH_HOTKEY)?;
+    let place = pick(key, ASK_HOTKEY, wish, &choices)
+        .await?
+        .ok_or(NO_SUCH_HOTKEY)?;
+    let name = choices[place];
     let hotkey = hotkeys(Some(name.to_string())).await?;
     hotkey
         .get("lines")
@@ -417,18 +440,16 @@ mod tests {
         assert!(criteria.get(NO_THING).is_some());
         let choices = hotkey_choices("cast greater heal", &groups["spells"]);
         assert_eq!(choices.len(), 3);
-        let request = hotkey_request("cast greater heal", &choices);
+        let request = pick_request(ASK_HOTKEY, "cast greater heal", &choices);
         assert_eq!(
-            request["questions"][Q_HOTKEY]["criteria"]["hotkey_1"],
+            request["questions"][Q_PICK]["criteria"]["option_1"],
             "Cast Greater Heal"
         );
-        let sure = json!({ "answers": { Q_HOTKEY: { "choice": "hotkey_1", "confidence": 0.9 } } });
-        assert_eq!(picked_hotkey(&sure, &choices), Some("Cast Greater Heal"));
-        let unsure =
-            json!({ "answers": { Q_HOTKEY: { "choice": "hotkey_1", "confidence": 0.2 } } });
-        assert_eq!(picked_hotkey(&unsure, &choices), None);
-        let none = json!({ "answers": { Q_HOTKEY: { "choice": NO_THING, "confidence": 0.9 } } });
-        assert_eq!(picked_hotkey(&none, &choices), None);
+        let answer = |choice: &str, confidence: f64| json!({ "answers": { Q_PICK: { "choice": choice, "confidence": confidence } } });
+        assert_eq!(picked(&answer("option_1", 0.9), choices.len()), Some(1));
+        assert_eq!(picked(&answer("option_1", 0.2), choices.len()), None);
+        assert_eq!(picked(&answer(NO_THING, 0.9), choices.len()), None);
+        assert_eq!(picked(&answer("option_9", 0.9), choices.len()), None);
     }
 
     #[test]

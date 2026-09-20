@@ -21,6 +21,7 @@ mod gump_ui;
 mod hud;
 mod kept;
 mod link;
+mod login_ui;
 mod macros_ui;
 mod map_ui;
 mod options_ui;
@@ -85,7 +86,77 @@ pub struct Shown {
     pub open: Vec<Panel>,
 }
 
+pub use login_ui::{Connect, LoginForm, SavedLogin};
+
+/// What `uoterm play` starts with: the login screens, then the game.
+pub struct PlayOptions {
+    pub form: LoginForm,
+    pub saved: Vec<SavedLogin>,
+    pub connect: Connect,
+    /// The client files for the real map.
+    pub uopath: Option<PathBuf>,
+    /// Log in with the form as it is, with no click on Connect.
+    pub connect_at_once: bool,
+}
+
+/// Opens the login screens. When the character is in the world, the same
+/// window becomes the game window, and the human has control.
+pub fn play(options: PlayOptions) -> Result<(), String> {
+    run(Box::new(move |ctx| {
+        Box::new(PlayApp {
+            login: login_ui::LoginUi::new(
+                options.form,
+                options.saved,
+                options.connect,
+                options.connect_at_once,
+            ),
+            uopath: options.uopath,
+            game: None,
+            ctx: ctx.clone(),
+        })
+    }))
+}
+
+/// The login screens, and after them the game window.
+struct PlayApp {
+    login: login_ui::LoginUi,
+    uopath: Option<PathBuf>,
+    game: Option<WatchApp>,
+    ctx: egui::Context,
+}
+
+impl eframe::App for PlayApp {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(game) = self.game.as_mut() {
+            return game.update(ctx, frame);
+        }
+        let mut link = None;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| link = self.login.draw(ui, ui.max_rect()));
+        if let Some(link) = link {
+            let options = WatchOptions {
+                link,
+                uopath: self.uopath.clone(),
+                shown: Shown::default(),
+            };
+            let game = WatchApp::start(options, self.ctx.clone());
+            // The one who logged in is a human. He has the character.
+            game.hand.act(control::Act::Take);
+            self.game = Some(game);
+        }
+    }
+}
+
 pub fn open(options: WatchOptions) -> Result<(), String> {
+    run(Box::new(move |ctx| {
+        Box::new(WatchApp::start(options, ctx.clone()))
+    }))
+}
+
+type MakeApp = Box<dyn FnOnce(&egui::Context) -> Box<dyn eframe::App>>;
+
+fn run(make: MakeApp) -> Result<(), String> {
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
@@ -98,7 +169,7 @@ pub fn open(options: WatchOptions) -> Result<(), String> {
         native,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
-            Ok(Box::new(WatchApp::start(options, cc.egui_ctx.clone())))
+            Ok(make(&cc.egui_ctx))
         }),
     )
     .map_err(|e| e.to_string())
