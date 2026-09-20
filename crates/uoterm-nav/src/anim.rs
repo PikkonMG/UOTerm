@@ -18,7 +18,7 @@ use crate::mul::{capped_len, read_file, slice_at, MapError, IDX_EMPTY};
 
 const ANIM_FILE_COUNT: usize = 6;
 const IDX_RECORD: usize = 12;
-const DIRECTIONS_STORED: u32 = 5;
+pub(crate) const DIRECTIONS_STORED: u32 = 5;
 const MOBTYPES_NAME: &str = "mobtypes.txt";
 const BODYCONV_NAME: &str = "Bodyconv.def";
 const BODY_DEF_NAME: &str = "Body.def";
@@ -48,10 +48,12 @@ const MAX_FRAMES: usize = 64;
 const FLAG_LOW_GROUP_EXTENDED: u32 = 0x0020;
 const FLAG_BY_LOW_GROUP: u32 = 0x0040;
 const FLAG_BY_PEOPLE_GROUP: u32 = 0x0400;
+/// The pictures of the body are in the newer animation packages.
+const FLAG_USE_UOP: u32 = 0x1_0000;
 
 const PALETTE_COLORS: usize = 256;
 const WORD: usize = 2;
-const PALETTE_BYTES: usize = PALETTE_COLORS * WORD;
+pub(crate) const PALETTE_BYTES: usize = PALETTE_COLORS * WORD;
 const DWORD: usize = 4;
 const FRAME_HEADER_BYTES: usize = 8;
 const RUN_END: u32 = 0x7FFF_7FFF;
@@ -102,6 +104,48 @@ impl Action {
             Self::Shown(group) => u32::from(group),
         }
     }
+}
+
+/// A thing a body does once: the newer animation packet names it in the
+/// words of the game, and each kind of body has its own pictures for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Deed {
+    Attack,
+    Block,
+    GetHit,
+    Die,
+    Fidget,
+    Eat,
+    Bow,
+    Salute,
+    CastAtOne,
+    CastAtAll,
+}
+
+impl Deed {
+    /// The deed for the kind and the action of the newer animation packet.
+    pub fn from_packet(kind: u16, action: u16) -> Option<Self> {
+        Some(match (kind, action) {
+            (0, _) => Self::Attack,
+            (1 | 2, _) => Self::Block,
+            (3, _) => Self::Die,
+            (4, _) => Self::GetHit,
+            (5, _) => Self::Fidget,
+            (6, _) => Self::Eat,
+            (7, 0) => Self::Bow,
+            (7, _) => Self::Salute,
+            (11, 0) => Self::CastAtOne,
+            (11, _) => Self::CastAtAll,
+            _ => return None,
+        })
+    }
+}
+
+/// How a person holds himself. It picks his stand, walk and run pictures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Stance {
+    pub armed: bool,
+    pub war: bool,
 }
 
 /// The five directions the files hold. The other three are these, mirrored.
@@ -160,6 +204,8 @@ pub struct AnimData {
     /// A body that shows as a different body, with a hue.
     shown_as: HashMap<u16, (u16, u16)>,
     equip_conv: HashMap<(u16, u16), EquipConv>,
+    /// None when the client files hold no newer animation packages.
+    uop: Option<crate::anim_uop::UopAnims>,
 }
 
 fn anim_file_names(index: usize) -> (String, String) {
@@ -299,6 +345,39 @@ fn default_kind(body: u16, file: usize) -> BodyKind {
 }
 
 /// The first index record of a body, and its group for each action.
+const PEOPLE_WALK_ARMED: u8 = 1;
+const PEOPLE_RUN_ARMED: u8 = 3;
+const PEOPLE_STAND_WAR: u8 = 7;
+const PEOPLE_WALK_WAR: u8 = 15;
+
+/// The group of a deed for a person on foot, a person on a mount, a
+/// monster and an animal. None when that kind has no pictures for it.
+fn deed_groups(deed: Deed) -> [Option<u8>; 4] {
+    match deed {
+        Deed::Attack => [Some(9), Some(26), Some(4), Some(5)],
+        Deed::Block => [Some(30), None, Some(15), Some(7)],
+        Deed::GetHit => [Some(20), None, Some(10), Some(7)],
+        Deed::Die => [Some(21), None, Some(2), Some(8)],
+        Deed::Fidget => [Some(5), None, Some(17), Some(9)],
+        Deed::Eat => [Some(34), None, Some(11), Some(3)],
+        Deed::Bow => [Some(32), None, None, None],
+        Deed::Salute => [Some(33), None, None, None],
+        Deed::CastAtOne => [Some(16), None, Some(12), None],
+        Deed::CastAtAll => [Some(17), None, Some(12), None],
+    }
+}
+
+/// The action numbers of a body in the newer packages. They are the
+/// numbers of its kind in the classic files.
+fn uop_groups(kind: BodyKind, mounted: bool) -> [u32; 3] {
+    match kind {
+        BodyKind::Monster => GROUPS_HIGH,
+        BodyKind::SeaMonster | BodyKind::Animal => GROUPS_LOW,
+        BodyKind::Person if mounted => GROUPS_PEOPLE_MOUNTED,
+        BodyKind::Person => GROUPS_PEOPLE,
+    }
+}
+
 fn first_record_and_groups(
     body: u16,
     kind: BodyKind,
@@ -354,7 +433,38 @@ impl AnimData {
             moved: parse_bodyconv(&read_text(&dir.join(BODYCONV_NAME))),
             shown_as: parse_body_def(&read_text(&dir.join(BODY_DEF_NAME))),
             equip_conv: parse_equipconv(&read_text(&dir.join(EQUIPCONV_NAME))),
+            uop: crate::anim_uop::UopAnims::open(dir),
         })
+    }
+
+    /// The action that shows a deed of a body. None when the body has no
+    /// pictures for it.
+    pub fn deed_action(&self, body: u16, deed: Deed, mounted: bool) -> Option<Action> {
+        let (file, body_in_file) = self.moved.get(&body).copied().unwrap_or((0, body));
+        let (kind, _) = self.kind_of(body, body_in_file, file);
+        let column = match kind {
+            BodyKind::Person if mounted => 1,
+            BodyKind::Person => 0,
+            BodyKind::Monster => 2,
+            BodyKind::SeaMonster | BodyKind::Animal => 3,
+        };
+        deed_groups(deed)[column].map(Action::Shown)
+    }
+
+    /// The action of a person on foot for the way he holds himself. A
+    /// person in war mode stands ready, and one with a weapon in his hand
+    /// swings his arms in a different way. Other bodies keep their action.
+    pub fn stance_action(&self, body: u16, action: Action, stance: Stance) -> Action {
+        if !self.is_person(body) {
+            return action;
+        }
+        match (action, stance.war, stance.armed) {
+            (Action::Stand, true, _) => Action::Shown(PEOPLE_STAND_WAR),
+            (Action::Walk, true, _) => Action::Shown(PEOPLE_WALK_WAR),
+            (Action::Walk, false, true) => Action::Shown(PEOPLE_WALK_ARMED),
+            (Action::Run, _, true) => Action::Shown(PEOPLE_RUN_ARMED),
+            (other, ..) => other,
+        }
     }
 
     /// What a worn item with animation `worn_anim` shows as on `body`.
@@ -394,6 +504,10 @@ impl AnimData {
             let (file, body_in_file) = self.moved.get(&body).copied().unwrap_or((0, body));
             let (kind, flags) = self.kind_of(body, body_in_file, file);
             let read = |action: Action| {
+                if flags & FLAG_USE_UOP != 0 {
+                    let group = action.group(uop_groups(kind, mounted));
+                    return self.uop.as_ref()?.frames(body, group, facing.stored);
+                }
                 let (first, groups) = first_record_and_groups(body_in_file, kind, flags, mounted)?;
                 let record = first + action.group(groups) * DIRECTIONS_STORED + facing.stored;
                 self.read_frames(file, record)
@@ -477,7 +591,11 @@ fn decode_frames(data: &[u8]) -> Option<Vec<Option<(i32, i32, ArtPixels)>>> {
     frames.iter().any(Option::is_some).then_some(frames)
 }
 
-fn decode_frame(data: &[u8], palette: &[u8], frame: usize) -> Option<(i32, i32, ArtPixels)> {
+pub(crate) fn decode_frame(
+    data: &[u8],
+    palette: &[u8],
+    frame: usize,
+) -> Option<(i32, i32, ArtPixels)> {
     let center_x = short_at(data, frame)?;
     let center_y = short_at(data, frame + WORD)?;
     let width = usize::try_from(short_at(data, frame + WORD * 2)?).ok()?;
@@ -526,6 +644,41 @@ mod tests {
     const BODY_OGRE: u16 = 1;
     const SOUTH: u8 = 4;
     const EAST: u8 = 2;
+
+    #[test]
+    fn the_newer_packet_names_a_deed_and_each_kind_of_body_has_its_group() {
+        assert_eq!(Deed::from_packet(0, 3), Some(Deed::Attack));
+        assert_eq!(Deed::from_packet(7, 0), Some(Deed::Bow));
+        assert_eq!(Deed::from_packet(7, 1), Some(Deed::Salute));
+        assert_eq!(Deed::from_packet(11, 0), Some(Deed::CastAtOne));
+        assert_eq!(Deed::from_packet(9, 0), None);
+        let [on_foot, mounted, monster, animal] = deed_groups(Deed::Attack);
+        assert_eq!(
+            (on_foot, mounted, monster, animal),
+            (Some(9), Some(26), Some(4), Some(5))
+        );
+        assert_eq!(deed_groups(Deed::Bow)[2], None, "a monster does not bow");
+    }
+
+    #[test]
+    fn a_body_of_the_newer_packages_has_pictures_when_client_files_are_here() {
+        const BODY_GARGOYLE_MAN: u16 = 666;
+        let Some(dir) = crate::mul::client_data_dir_from_env() else {
+            return;
+        };
+        let anim = AnimData::open(&dir).unwrap();
+        let south = Facing::from_direction(4);
+        let stand = anim
+            .frames(BODY_GARGOYLE_MAN, south, Action::Stand, false)
+            .unwrap();
+        let walk = anim
+            .frames(BODY_GARGOYLE_MAN, south, Action::Walk, false)
+            .unwrap();
+        assert!(stand.iter().flatten().count() > 0);
+        assert!(walk.len() > 1 && walk.iter().flatten().count() > 1);
+        let frame = walk.iter().flatten().next().unwrap();
+        assert!(frame.pixels.colors.iter().any(|c| c & PIXEL_DRAWN != 0));
+    }
 
     #[test]
     fn each_kind_of_body_starts_at_its_own_record() {

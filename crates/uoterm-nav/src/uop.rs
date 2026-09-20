@@ -28,6 +28,9 @@ pub const MULTI_ID_COUNT: u32 = u16::MAX as u32 + 1;
 /// the places after them, one for each `u16` graphic.
 pub const ART_ENTRY_COUNT: u32 = 0x4000 + u16::MAX as u32 + 1;
 
+/// One gump picture for each `u16` gump id.
+pub const GUMP_ENTRY_COUNT: u32 = u16::MAX as u32 + 1;
+
 #[derive(Clone, Copy, Debug)]
 pub struct UopIndex {
     pub offset: u64,
@@ -50,6 +53,10 @@ pub const SOUND_ENTRY_COUNT: u32 = u16::MAX as u32 + 1;
 
 pub fn sound_uop_name(index: u32) -> String {
     format!("build/soundlegacymul/{index:08}.dat")
+}
+
+pub fn gump_uop_name(index: u32) -> String {
+    format!("build/gumpartlegacymul/{index:08}.tga")
 }
 
 pub fn art_uop_name(index: u32) -> String {
@@ -145,7 +152,7 @@ fn read_i64(file: &mut File) -> Result<i64, MapError> {
 /// Walks the block chain of a UOP package and returns every file it holds,
 /// by the hash of its name. A package names no file in the clear, so a reader
 /// finds a file only by hashing the name it expects.
-fn read_directory(path: &Path) -> Result<HashMap<u64, UopIndex>, MapError> {
+pub(crate) fn read_directory(path: &Path) -> Result<HashMap<u64, UopIndex>, MapError> {
     let mut file = File::open(path)?;
     let magic = read_u32(&mut file)?;
     if magic != UOP_MAGIC {
@@ -237,6 +244,10 @@ pub fn load_sound_entries(path: &Path) -> Result<Vec<Option<UopIndex>>, MapError
     load_named_entries(path, SOUND_ENTRY_COUNT, sound_uop_name)
 }
 
+pub fn load_gump_entries(path: &Path) -> Result<Vec<Option<UopIndex>>, MapError> {
+    load_named_entries(path, GUMP_ENTRY_COUNT, gump_uop_name)
+}
+
 pub fn load_art_entries(path: &Path) -> Result<Vec<Option<UopIndex>>, MapError> {
     load_named_entries(path, ART_ENTRY_COUNT, art_uop_name)
 }
@@ -255,20 +266,51 @@ fn load_named_entries(
     Ok(entries)
 }
 
+fn unzip(raw: &[u8], dest_len: u32) -> Result<Vec<u8>, MapError> {
+    let mut out = Vec::new();
+    let mut dec = ZlibDecoder::new(raw).take(u64::from(dest_len));
+    dec.read_to_end(&mut out)?;
+    Ok(out)
+}
+
 pub fn decompress(raw: &[u8], compression: u16, dest_len: u32) -> Result<Vec<u8>, MapError> {
     match compression {
         UOP_COMPRESS_NONE => {
             let n = (dest_len as usize).min(raw.len());
             Ok(raw[..n].to_vec())
         }
-        UOP_COMPRESS_ZLIB => {
-            let mut out = Vec::new();
-            let mut dec = ZlibDecoder::new(raw).take(u64::from(dest_len));
-            dec.read_to_end(&mut out)?;
-            Ok(out)
-        }
-        UOP_COMPRESS_ZLIB_BWT => Err(MapError::UnsupportedUop),
+        UOP_COMPRESS_ZLIB => unzip(raw, dest_len),
+        UOP_COMPRESS_ZLIB_BWT => crate::bwt::unpack(&unzip(raw, dest_len)?).ok_or(MapError::BadUop),
         _ => Err(MapError::UnsupportedUop),
+    }
+}
+
+/// An open package, or an open MUL file with its index: the file and where
+/// each of its records lies.
+pub(crate) struct Package {
+    file: std::sync::Mutex<std::fs::File>,
+    entries: Vec<Option<UopIndex>>,
+}
+
+impl Package {
+    pub(crate) fn new(path: &Path, entries: Vec<Option<UopIndex>>) -> Result<Self, MapError> {
+        Ok(Self {
+            file: std::sync::Mutex::new(std::fs::File::open(path)?),
+            entries,
+        })
+    }
+
+    /// The bytes of one record, unpacked. None when the package holds none.
+    pub(crate) fn read(&self, index: u32) -> Option<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let entry = self.entries.get(index as usize)?.as_ref()?;
+        let mut file = self.file.lock().ok()?;
+        let file_len = file.metadata().ok()?.len();
+        let mut raw =
+            vec![0u8; crate::mul::capped_len(file_len, entry.offset, entry.compressed_len)];
+        file.seek(SeekFrom::Start(entry.offset)).ok()?;
+        file.read_exact(&mut raw).ok()?;
+        decompress(&raw, entry.compression, entry.decompressed_len).ok()
     }
 }
 

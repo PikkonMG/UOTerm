@@ -1,9 +1,12 @@
 //! Client-side map query and A* navigation.
 
 mod anim;
+mod anim_uop;
 mod animdata;
 mod art;
+mod bwt;
 mod cliloc;
+mod gumpart;
 mod hues;
 mod mounts;
 mod mul;
@@ -17,10 +20,11 @@ mod step;
 mod tiles;
 mod uop;
 
-pub use anim::{Action, AnimData, AnimFrame, EquipConv, Facing};
+pub use anim::{Action, AnimData, AnimFrame, Deed, EquipConv, Facing, Stance};
 pub use animdata::{ArtCycles, TILE_ANIMATED};
 pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
 pub use cliloc::ClilocData;
+pub use gumpart::GumpArt;
 pub use hues::{HueData, HueRamp};
 pub use mounts::{mount_of, Mount};
 pub use mul::{

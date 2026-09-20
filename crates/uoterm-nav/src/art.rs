@@ -5,16 +5,11 @@
 //! pixel. A hue changes those colors before they become RGBA, so the hue
 //! step works on the file colors and not on the screen colors.
 
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Mutex;
 
 use crate::hues::HueRamp;
-use crate::mul::{
-    capped_len, first_existing, idx_entries, is_uop_path, read_file, slice_at, MapError,
-};
-use crate::uop::{decompress, load_art_entries, UopIndex};
+use crate::mul::{first_existing, idx_entries, is_uop_path, read_file, slice_at, MapError};
+use crate::uop::{load_art_entries, Package};
 
 pub const ART_UOP_NAME: &str = "artLegacyMUL.uop";
 pub const ART_MUL_NAME: &str = "art.mul";
@@ -51,7 +46,7 @@ pub struct ArtPixels {
 }
 
 impl ArtPixels {
-    fn clear(width: usize, height: usize) -> Self {
+    pub(crate) fn clear(width: usize, height: usize) -> Self {
         Self {
             width,
             height,
@@ -86,8 +81,7 @@ pub(crate) fn channel(bits: u16) -> u8 {
 }
 
 pub struct ArtData {
-    file: Mutex<File>,
-    entries: Vec<Option<UopIndex>>,
+    package: Package,
 }
 
 impl ArtData {
@@ -105,8 +99,7 @@ impl ArtData {
             idx_entries(&read_file(&idx)?)
         };
         Ok(Self {
-            file: Mutex::new(File::open(&path)?),
-            entries,
+            package: Package::new(&path, entries)?,
         })
     }
 
@@ -121,13 +114,7 @@ impl ArtData {
     }
 
     fn read(&self, index: u32) -> Option<Vec<u8>> {
-        let entry = self.entries.get(index as usize)?.as_ref()?;
-        let mut file = self.file.lock().ok()?;
-        let file_len = file.metadata().ok()?.len();
-        let mut raw = vec![0u8; capped_len(file_len, entry.offset, entry.compressed_len)];
-        file.seek(SeekFrom::Start(entry.offset)).ok()?;
-        file.read_exact(&mut raw).ok()?;
-        decompress(&raw, entry.compression, entry.decompressed_len).ok()
+        self.package.read(index)
     }
 }
 
