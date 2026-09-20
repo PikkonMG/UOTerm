@@ -141,7 +141,7 @@ impl MapItemUi {
                     self.note = None;
                 }
                 Answer::Place(Err(words)) => self.note = Some((words, true)),
-                // The macro editor takes the other answers.
+                // The macro editor, the designer and the chat take the rest.
                 _ => {}
             }
         }

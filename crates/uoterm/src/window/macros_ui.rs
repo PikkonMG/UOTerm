@@ -126,8 +126,8 @@ impl MacrosUi {
                     self.note = None;
                 }
                 Answer::Lines(Err(words)) => self.say(&words, true, time),
-                // The map item takes the answers about places.
-                Answer::Place(_) => {}
+                // The map item, the designer and the chat take the rest.
+                Answer::Place(_) | Answer::Picked(_) => {}
             }
         }
     }

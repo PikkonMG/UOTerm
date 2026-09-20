@@ -9,6 +9,7 @@
 mod atlas;
 mod audio;
 mod boxes_ui;
+mod build_ui;
 mod client_art;
 mod control;
 mod control_ui;
@@ -78,6 +79,7 @@ pub enum Panel {
     Map,
     Macros,
     Profile,
+    Chat,
 }
 
 /// How the window starts, and whether it is one picture only.
@@ -200,6 +202,8 @@ struct WatchApp {
     world_map: map_ui::MapUi,
     macros: macros_ui::MacrosUi,
     map_items: mapitem_ui::MapItemUi,
+    build: build_ui::BuildUi,
+    chat: build_ui::ChatUi,
     profiles: mapitem_ui::ProfileUi,
     snapshot: Option<Snapshot>,
 }
@@ -249,6 +253,8 @@ impl WatchApp {
             pages: pages_ui::PagesUi::default(),
             gumps: gump_ui::GumpUi::default(),
             map_items: mapitem_ui::MapItemUi::default(),
+            build: build_ui::BuildUi::default(),
+            chat: build_ui::ChatUi::starting(options.shown.open.contains(&Panel::Chat)),
             profiles: mapitem_ui::ProfileUi::starting(options.shown.open.contains(&Panel::Profile)),
             macros: macros_ui::MacrosUi::starting(options.shown.open.contains(&Panel::Macros)),
             world_map: map_ui::MapUi::starting(options.shown.open.contains(&Panel::Map)),
@@ -374,6 +380,8 @@ impl eframe::App for WatchApp {
                         covered.extend(self.deals.draw(ui, rect, frame, &mut tools));
                         covered.extend(self.pages.draw(ui, rect, frame, &mut tools));
                         covered.extend(self.map_items.draw(ui, rect, frame, &mut tools));
+                        covered.extend(self.build.draw(ui, rect, frame, &mut tools));
+                        covered.extend(self.chat.draw(ui, rect, frame, &mut tools));
                         covered.extend(self.profiles.draw(ui, rect, frame, &mut tools));
                         covered.extend(self.world_map.draw(
                             ui,
@@ -407,6 +415,8 @@ impl eframe::App for WatchApp {
                             world_map: &mut self.world_map,
                             macros: &mut self.macros,
                             profiles: &mut self.profiles,
+                            chat: &mut self.chat,
+                            build: &self.build,
                         };
                         self.control_ui
                             .draw(ui, rect, frame, &self.hud, &mut tools, places);

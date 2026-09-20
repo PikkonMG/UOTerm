@@ -15,19 +15,20 @@ use std::thread;
 use std::time::Duration;
 use uoterm_runtime::tools::{
     ARG_HUMAN, TOOL_ATTACK, TOOL_BOARD_CLOSE, TOOL_BOARD_POST, TOOL_BOARD_READ, TOOL_BOARD_REMOVE,
-    TOOL_BOOK_CLOSE, TOOL_CAST, TOOL_CLOSE_MENU, TOOL_COMMAND, TOOL_CONTEXT_MENU, TOOL_DEPOSIT,
-    TOOL_DROP, TOOL_EQUIP, TOOL_FIND_LANDMARKS, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND,
-    TOOL_HOTKEYS, TOOL_LIFT, TOOL_LIST_SCRIPTS, TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN,
-    TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROFILE, TOOL_PROPERTIES, TOOL_RECORD_MACRO,
-    TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT, TOOL_SAY, TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE,
-    TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK, TOOL_STOP,
-    TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL,
-    TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK,
-    TOOL_WAR_MODE,
+    TOOL_BOOK_CLOSE, TOOL_CAST, TOOL_CHAT, TOOL_CLOSE_MENU, TOOL_COMMAND, TOOL_CONTEXT_MENU,
+    TOOL_DEPOSIT, TOOL_DROP, TOOL_EQUIP, TOOL_FIND_LANDMARKS, TOOL_FOLLOW, TOOL_GUMP_CLOSE,
+    TOOL_GUMP_RESPOND, TOOL_HELP, TOOL_HOTKEYS, TOOL_HOUSE_EDIT, TOOL_LIFT, TOOL_LIST_SCRIPTS,
+    TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN, TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROFILE,
+    TOOL_PROPERTIES, TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT, TOOL_SAY,
+    TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE,
+    TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL, TOOL_TARGET,
+    TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP,
+    TOOL_USE, TOOL_USE_SKILL, TOOL_WALK, TOOL_WAR_MODE,
 };
 
 /// The shard refuses a drop that comes too soon after the lift.
 const LIFT_TO_DROP: Duration = Duration::from_millis(650);
+const NOT_SURE: &str = "Jev is not sure which one you mean. Pick it from the list.";
 const NO_PLACE_ON_MAP: &str = "The marker file names no place on this map.";
 const NO_SUCH_PLACE: &str = "Jev is not sure which place you mean. Click the map instead.";
 const ORDER_OFF: &str = "Orders need a TypeSafe key. Put TYPESAFE_API_KEY in the environment.";
@@ -112,6 +113,25 @@ pub enum Act {
         serial: u32,
         text: String,
     },
+    /// One step of the house designer.
+    HouseEdit {
+        action: &'static str,
+        graphic: u16,
+        x: i32,
+        y: i32,
+        z: i32,
+    },
+    /// The level the designer works on, from 1.
+    HouseFloor(u8),
+    /// A step of the designer that names no part: clear, revert, commit,
+    /// exit, backup, restore.
+    HouseCommand(&'static str),
+    /// Ask the shard for its help menu.
+    Help,
+    ChatOpen(String),
+    ChatJoin(String),
+    ChatSay(String),
+    ChatLeave,
     /// Buy or sell the rows of the cart: the item and how many.
     Checkout(Vec<(u32, u16)>),
     ShopClose,
@@ -177,6 +197,17 @@ pub enum Ask {
     ScriptStatus,
     /// Plain words that Jev turns into the script lines of one hotkey.
     LinesFor(String),
+    /// Which part of the house catalog the words mean. The answer is its
+    /// place in the list the window holds.
+    HousePart {
+        wish: String,
+        options: Vec<String>,
+    },
+    /// Which chat channel the words mean.
+    Channel {
+        wish: String,
+        options: Vec<String>,
+    },
     /// The named places that lie on a map, and which one the words mean.
     /// The answer is the tile of the place Jev picked.
     PlaceOnMap {
@@ -199,6 +230,8 @@ pub enum Answer {
     Lines(Result<String, String>),
     /// The tile of the place that was asked for, or words for the human.
     Place(Result<(u16, u16), String>),
+    /// The place in the list that Jev picked, or words for the human.
+    Picked(Result<usize, String>),
 }
 
 /// What came of an act, in words for the human.
@@ -283,6 +316,32 @@ impl Act {
             Self::ProfileWrite { serial, text } => {
                 vec![(TOOL_PROFILE, json!({ "serial": serial, "text": text }))]
             }
+            Self::HouseEdit {
+                action,
+                graphic,
+                x,
+                y,
+                z,
+            } => vec![(
+                TOOL_HOUSE_EDIT,
+                json!({ "action": action, "graphic": graphic, "x": x, "y": y, "z": z }),
+            )],
+            Self::HouseFloor(level) => vec![(
+                TOOL_HOUSE_EDIT,
+                json!({ "action": "floor", "level": level }),
+            )],
+            Self::HouseCommand(action) => {
+                vec![(TOOL_HOUSE_EDIT, json!({ "action": action }))]
+            }
+            Self::Help => vec![(TOOL_HELP, json!({}))],
+            Self::ChatOpen(name) => {
+                vec![(TOOL_CHAT, json!({ "action": "open", "name": name }))]
+            }
+            Self::ChatJoin(channel) => {
+                vec![(TOOL_CHAT, json!({ "action": "join", "channel": channel }))]
+            }
+            Self::ChatSay(text) => vec![(TOOL_CHAT, json!({ "action": "say", "text": text }))],
+            Self::ChatLeave => vec![(TOOL_CHAT, json!({ "action": "leave" }))],
             Self::Checkout(rows) => {
                 let items: Vec<Value> = rows
                     .iter()
@@ -364,6 +423,15 @@ impl Act {
             Self::MapClear => "Pins cleared.".into(),
             Self::MapEdit | Self::MapClose(_) | Self::ProfileRead(_) => String::new(),
             Self::ProfileWrite { .. } => "Profile written.".into(),
+            // A designer step comes with each click, so it says nothing.
+            Self::HouseEdit { .. } => String::new(),
+            Self::HouseFloor(level) => format!("Floor {level}."),
+            Self::HouseCommand(action) => format!("House: {action}."),
+            Self::Help => "Help asked for.".into(),
+            Self::ChatOpen(_) => "Chat opened.".into(),
+            Self::ChatJoin(channel) => format!("Joined {channel}."),
+            Self::ChatSay(_) => String::new(),
+            Self::ChatLeave => "Left the channel.".into(),
             Self::OldMenuPick(Some(_)) => "Menu answered.".into(),
             Self::OldMenuPick(None) => "Menu closed.".into(),
             Self::MenuPick { .. } => "Menu line picked.".into(),
@@ -566,6 +634,12 @@ async fn answer_one(link: &Link, key: Option<&str>, ask: Ask) -> Answer {
             let status = link.call(TOOL_SCRIPT_STATUS, json!({})).await.ok();
             Answer::ScriptStatus(status_words(status.as_ref()))
         }
+        Ask::HousePart { wish, options } => {
+            Answer::Picked(pick_one(key, orders::ASK_HOUSE_PART, &wish, &options).await)
+        }
+        Ask::Channel { wish, options } => {
+            Answer::Picked(pick_one(key, orders::ASK_CHANNEL, &wish, &options).await)
+        }
         Ask::PlaceOnMap {
             wish,
             map,
@@ -586,6 +660,20 @@ async fn answer_one(link: &Link, key: Option<&str>, ask: Ask) -> Answer {
             }
         }),
     }
+}
+
+/// Asks Jev which of `options` the wish names, and gives its place.
+async fn pick_one(
+    key: Option<&str>,
+    ask: &str,
+    wish: &str,
+    options: &[String],
+) -> Result<usize, String> {
+    let key = key.ok_or(ORDER_OFF)?;
+    let names: Vec<&str> = options.iter().map(String::as_str).collect();
+    orders::pick(key, ask, wish, &names)
+        .await?
+        .ok_or_else(|| NOT_SURE.to_string())
 }
 
 /// The named places that lie between `from` and `to` of a map, with their
@@ -825,6 +913,20 @@ mod tests {
                 serial: ITEM,
                 text: "hi".into(),
             },
+            Act::HouseEdit {
+                action: "add",
+                graphic: 10,
+                x: 1,
+                y: 2,
+                z: 0,
+            },
+            Act::HouseFloor(2),
+            Act::HouseCommand("commit"),
+            Act::Help,
+            Act::ChatOpen("Mara".into()),
+            Act::ChatJoin("General".into()),
+            Act::ChatSay("hail".into()),
+            Act::ChatLeave,
             Act::Checkout(vec![(ITEM, 1)]),
             Act::ShopClose,
             Act::TradeWith(ITEM),

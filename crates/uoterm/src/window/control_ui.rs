@@ -6,6 +6,7 @@
 //! control first, so a stray click never takes the character from the agent.
 
 use super::boxes_ui::{BoxesUi, Tools};
+use super::build_ui::{BuildUi, ChatUi};
 use super::control::{Act, Hand, Report};
 use super::deck_ui::DeckUi;
 use super::hud::Hud;
@@ -24,7 +25,7 @@ use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2}
 
 /// The top panel has one width in each state, so nothing in it moves when
 /// the buttons change.
-const STRIP_WIDTH: f32 = 720.0;
+const STRIP_WIDTH: f32 = 880.0;
 const STRIP_PAD: f32 = 10.0;
 const STRIP_ROW: f32 = 24.0;
 const RULE_GAP: f32 = 8.0;
@@ -52,6 +53,8 @@ const WORDS_SHEET: &str = "Sheet";
 const WORDS_MAP: &str = "Map";
 const WORDS_MACROS: &str = "Macros";
 const WORDS_PROFILE: &str = "Profile";
+const WORDS_CHAT: &str = "Chat";
+const WORDS_HELP: &str = "Help";
 const WORDS_PIN: &str = "Pin";
 const PIN_WIDTH: f32 = 48.0;
 const REPORT_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
@@ -91,6 +94,8 @@ pub struct Places<'a> {
     pub world_map: &'a mut MapUi,
     pub macros: &'a mut MacrosUi,
     pub profiles: &'a mut ProfileUi,
+    pub chat: &'a mut ChatUi,
+    pub build: &'a BuildUi,
 }
 
 /// The click sense of the whole map. Call this before any button is made.
@@ -132,6 +137,7 @@ enum Press {
     Macros,
     /// Opens the profile of the character, or closes it.
     Profile,
+    Chat,
     Options,
 }
 
@@ -271,6 +277,7 @@ impl ControlUi {
                 map,
                 &on_controls,
                 places.boxes,
+                places.build,
             );
         }
     }
@@ -288,6 +295,7 @@ fn act_on_map(
     map: &egui::Response,
     on_controls: &[Rect],
     boxes: &mut BoxesUi,
+    builder: &BuildUi,
 ) {
     let hand = tools.hand;
     if frame.target_cursor && ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -306,6 +314,20 @@ fn act_on_map(
         return;
     };
     if tools.desk.carries() || steered {
+        return;
+    }
+    // While the designer is open, a click on the house builds with the
+    // part the human picked.
+    if frame.designing.is_some() {
+        let (x, y, z) = tools.scene.tile_at(rect, frame, mouse);
+        super::tips::label(ui, builder.hint(), "");
+        if map.clicked() {
+            if let Some(act) =
+                builder.click_on_house(frame, i32::from(x), i32::from(y), i32::from(z))
+            {
+                hand.act(act);
+            }
+        }
         return;
     }
     // A building that waits for its place shows where the mouse points.
@@ -387,6 +409,8 @@ impl ControlUi {
                     (WORDS_MAP, Press::Map),
                     (WORDS_MACROS, Press::Macros),
                     (WORDS_PROFILE, Press::Profile),
+                    (WORDS_CHAT, Press::Chat),
+                    (WORDS_HELP, Press::Act(Act::Help)),
                     (war_words, Press::Act(Act::War(!frame.war))),
                     (WORDS_STOP, Press::Act(Act::Stop)),
                     (WORDS_GIVE_BACK, Press::Act(Act::GiveBack)),
@@ -485,6 +509,7 @@ impl ControlUi {
                 Press::Macros => places.macros.toggle(),
                 Press::Profile if places.profiles.shows(frame.serial) => places.profiles.close(),
                 Press::Profile => places.profiles.show(frame.serial, hand),
+                Press::Chat => places.chat.toggle(),
                 Press::Bag(bag) if places.boxes.shows(frame, bag) => places.boxes.close(bag),
                 Press::Bag(bag) => {
                     places.boxes.used(bag);

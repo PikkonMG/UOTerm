@@ -310,6 +310,24 @@ pub struct WatchProfile {
     pub own_words: String,
 }
 
+/// The chat of the shard: its channels, the one we are in, and the lines.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchChat {
+    /// The name the character chats under.
+    pub name: String,
+    pub channels: Vec<(String, bool)>,
+    pub in_channel: String,
+    pub lines: Vec<(String, String)>,
+}
+
+/// The house the designer works on now.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WatchDesigning {
+    pub serial: u32,
+    /// The level the designer works on, from 1.
+    pub floor: u8,
+}
+
 /// A building the shard waits for a place for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WatchPlacing {
@@ -418,6 +436,12 @@ pub struct WatchFrame {
     pub profiles: Vec<WatchProfile>,
     /// A building that waits for its place.
     pub placing: Option<WatchPlacing>,
+    pub chat: Option<WatchChat>,
+    /// The shard asks for the name the character chats under.
+    pub chat_asks_for_name: bool,
+    pub designing: Option<WatchDesigning>,
+    /// The parts a house can be built from, while the designer is open.
+    pub house_parts: Vec<uoterm_nav::HousePart>,
     pub buffs: Vec<String>,
     pub party: Vec<String>,
     pub containers: Vec<WatchContainer>,
@@ -561,6 +585,31 @@ impl WatchFrame {
                 shard_words: string_field(Some(profile), "shard_words"),
                 own_words: string_field(Some(profile), "own_words"),
             }),
+            chat: shown(value, "chat").map(|chat| WatchChat {
+                name: string_field(Some(chat), "name"),
+                channels: list_of(chat.get("channels"), |channel| {
+                    (
+                        string_field(Some(channel), "name"),
+                        bool_field(Some(channel), "has_password"),
+                    )
+                }),
+                in_channel: string_field(Some(chat), "in_channel"),
+                lines: list_of(chat.get("lines"), |line| {
+                    (
+                        string_field(Some(line), "who"),
+                        string_field(Some(line), "words"),
+                    )
+                }),
+            }),
+            chat_asks_for_name: bool_at(value, "chat_asks_for_name"),
+            designing: shown(value, "designing").map(|designing| WatchDesigning {
+                serial: serial_field(designing, "serial"),
+                floor: num_field(Some(designing), "floor") as u8,
+            }),
+            house_parts: value
+                .get("house_parts")
+                .and_then(|parts| serde_json::from_value(parts.clone()).ok())
+                .unwrap_or_default(),
             placing: shown(value, "placing").map(|placing| WatchPlacing {
                 multi_id: num_field(Some(placing), "multi_id"),
                 x_offset: num_field(Some(placing), "x_offset") as i16,
@@ -1199,6 +1248,12 @@ mod tests {
                 "shard_words": "Guild", "own_words": "I dig ore." }],
             "designed_houses": [{ "serial": 70, "revision": 3,
                 "tiles": [{ "graphic": 100, "dx": 1, "dy": 2, "dz": 7 }] }],
+            "chat": { "name": "Mara", "in_channel": "General",
+                "channels": [{ "name": "General", "has_password": false }],
+                "lines": [{ "who": "Ann", "words": "Anyone selling ore?" }] },
+            "chat_asks_for_name": false,
+            "designing": { "serial": 70, "floor": 2 },
+            "house_parts": [{ "kind": "wall", "name": "Dark Wood", "pieces": [10, 7] }],
             "placing": { "multi_id": 100, "x_offset": -3, "y_offset": -3, "hue": 0 },
             "season": 3,
             "light": 18,
@@ -1241,6 +1296,14 @@ mod tests {
         assert_eq!(frame.profiles[0].own_words, "I dig ore.");
         assert_eq!(frame.designed_houses[0].tiles[0].graphic, 100);
         assert_eq!(frame.placing.unwrap().multi_id, 100);
+        let chat = frame.chat.as_ref().unwrap();
+        assert_eq!(
+            (chat.in_channel.as_str(), chat.channels[0].1),
+            ("General", false)
+        );
+        assert_eq!(chat.lines[0], ("Ann".into(), "Anyone selling ore?".into()));
+        assert_eq!(frame.designing.unwrap().floor, 2);
+        assert_eq!(frame.house_parts[0].pieces, vec![10, 7]);
         assert_eq!(
             frame.multis,
             vec![WatchMulti {
