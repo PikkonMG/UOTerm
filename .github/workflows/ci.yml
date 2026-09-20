@@ -20,6 +20,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The watch window draws with eframe and plays sound with rodio. Both
+      # link to Linux system libraries that the runner image does not carry.
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libssl-dev
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
