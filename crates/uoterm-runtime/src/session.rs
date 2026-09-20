@@ -87,6 +87,11 @@ const PLAN_NOT_LISTED: &str = "the persona's play-along plans do not list this";
 const HAND_PUT_AWAY: &str = "one hand's item went to the pack; cast again after the action delay";
 /// The graphic a ground target names when the caller names none: bare land.
 const BARE_LAND_GRAPHIC: u16 = 0;
+/// UOTerm plays as the Classic Client only. A shard reads a version with a
+/// major of 66 as the Kingdom Reborn client and a larger one as the Enhanced
+/// Client, and would then speak packets UOTerm does not read.
+const NOT_A_CLASSIC_VERSION: &str =
+    "UOTerm is a Classic Client; this client version is not a Classic Client one";
 const LOGIN_DEADLINE: Duration = Duration::from_secs(15);
 const LOGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_WORLD_DRAIN: Duration = Duration::from_millis(100);
@@ -304,6 +309,12 @@ pub async fn start(
     multi_shapes: Arc<FacetCache<MultiData>>,
     clilocs: Arc<FacetCache<ClilocData>>,
 ) -> Result<SessionHandle> {
+    if !opts.version.is_classic() {
+        return Err(RuntimeError::Config(format!(
+            "{NOT_A_CLASSIC_VERSION}: {}",
+            opts.version.as_string()
+        )));
+    }
     let world = Arc::new(RwLock::new(World {
         flags_mean_flying: opts.version.reads_flying_flag(),
         answer_when_named: opts.answer_when_named,
@@ -1060,7 +1071,10 @@ async fn write_sealed(
     tcp_write(writer, &seal_outbound(inner, pkt)).await
 }
 
-async fn send_client_identity(
+/// Answer the shard's version question (`0xBD`). UOTerm never says this on
+/// its own: a shard that does not ask learns nothing, and a shard that asks
+/// gets a Classic Client version and nothing else.
+async fn answer_version_request(
     inner: &mut Inner,
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
     opts: &ConnectOptions,
@@ -1180,7 +1194,6 @@ async fn login(
                         count = characters.len(),
                         "login character list"
                     );
-                    send_client_identity(inner, &mut writer, opts).await?;
                     write_sealed(
                         inner,
                         &mut writer,
@@ -1192,7 +1205,7 @@ async fn login(
                 }
                 Inbound::VersionRequest => {
                     tracing::info!("login version request 0xBD");
-                    send_client_identity(inner, &mut writer, opts).await?;
+                    answer_version_request(inner, &mut writer, opts).await?;
                     tcp_flush(&mut writer).await?;
                 }
                 Inbound::LoginConfirm {

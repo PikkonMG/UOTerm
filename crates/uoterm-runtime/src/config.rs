@@ -250,11 +250,12 @@ impl Default for ConnectOptions {
 }
 
 impl ConnectOptions {
+    /// The expansion bits the play-character request carries. They come from
+    /// the client version, the same way the reference Classic Client builds
+    /// them, so a shard gives the session every map and rule that version has
+    /// and still holds it as a Classic Client.
     pub fn client_flag(&self) -> u32 {
-        match self.era {
-            Era::T2a => 0x00,
-            Era::Modern => 0x20,
-        }
+        self.version.expansion_flags()
     }
 
     pub fn cipher(&self, seed: u32) -> Box<dyn StreamCipher> {
@@ -428,6 +429,24 @@ answer_when_named = false
     #[test]
     fn encryption_parse_rejects_unknown() {
         assert!(parse_encryption_mode("blowfish").is_err());
+    }
+
+    #[test]
+    fn the_play_flags_come_from_the_client_version() {
+        let modern = ConnectOptions {
+            version: ClientVersion::MODERN,
+            ..ConnectOptions::default()
+        };
+        assert_eq!(
+            modern.client_flag(),
+            ClientVersion::MODERN.expansion_flags()
+        );
+        let old = ConnectOptions {
+            version: ClientVersion::T2A,
+            ..ConnectOptions::default()
+        };
+        assert_eq!(old.client_flag(), ClientVersion::T2A.expansion_flags());
+        assert!(old.version.is_classic());
     }
 
     #[test]
