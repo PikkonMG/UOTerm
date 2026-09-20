@@ -38,6 +38,7 @@ pub use radar::{
     RADAR_MAX, RADAR_MIN, RADAR_SIZE,
 };
 pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
+pub use state::Waypoint;
 pub use state::{
     facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem, DoorUpdate, Harm,
     Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Trade, World,

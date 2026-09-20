@@ -243,6 +243,18 @@ pub struct Trade {
     pub they_accept: bool,
 }
 
+/// A mark the shard put on the world map.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waypoint {
+    pub serial: Serial,
+    pub x: u16,
+    pub y: u16,
+    pub z: i8,
+    pub map: u8,
+    pub kind: u16,
+    pub name: String,
+}
+
 /// A door the server sent as an item.
 ///
 /// Only such a door can be opened: it has a serial to click, and the server
@@ -429,6 +441,24 @@ pub struct World {
     /// How dark the world is: 0 for day, and up to the darkest night.
     #[serde(default)]
     pub light: u8,
+    /// How much light the character carries. 0 is the brightest.
+    #[serde(default)]
+    pub personal_light: u8,
+    /// The clock of the shard: the hour, the minute and the second.
+    #[serde(default)]
+    pub time: (u8, u8, u8),
+    /// A place the shard points an arrow at.
+    #[serde(default)]
+    pub quest_arrow: Option<(u16, u16)>,
+    /// The marks the shard put on the world map, by their serial.
+    #[serde(default)]
+    pub waypoints: HashMap<Serial, Waypoint>,
+    /// The last web page and the last scroll of words the shard sent.
+    /// UOTerm never opens a page by itself.
+    #[serde(default)]
+    pub shard_url: Option<String>,
+    #[serde(default)]
+    pub shard_notice: Option<String>,
     /// The weather the shard set: its kind and how many drops. None for
     /// clear sky.
     #[serde(default)]
@@ -942,6 +972,63 @@ impl World {
                 ));
             }
             Inbound::GlobalLight { level } => self.light = *level,
+            Inbound::PersonalLight { serial, level } if *serial == self.self_state.serial => {
+                self.personal_light = *level;
+            }
+            Inbound::PersonalLight { .. } => {}
+            Inbound::Time {
+                hour,
+                minute,
+                second,
+            } => self.time = (*hour, *minute, *second),
+            // The shard took the item that was dropped, so the hand is free.
+            Inbound::DropAccepted => self.holding = None,
+            Inbound::CorpseEquipment { corpse, worn } => self.dress_corpse(*corpse, worn),
+            Inbound::QuestArrow { shown, x, y, .. } => {
+                self.quest_arrow = shown.then_some((*x, *y));
+            }
+            Inbound::WaypointAdded {
+                serial,
+                x,
+                y,
+                z,
+                map,
+                kind,
+                name,
+            } => {
+                self.waypoints.insert(
+                    *serial,
+                    Waypoint {
+                        serial: *serial,
+                        x: *x,
+                        y: *y,
+                        z: *z,
+                        map: *map,
+                        kind: *kind,
+                        name: name.clone(),
+                    },
+                );
+            }
+            Inbound::WaypointRemoved { serial } => {
+                self.waypoints.remove(serial);
+            }
+            Inbound::OpenUrl { url } => self.shard_url = Some(url.clone()),
+            Inbound::Tip { words, .. } => self.shard_notice = Some(words.clone()),
+            Inbound::NameChanged { serial, name } if !name.is_empty() => {
+                // The name book has it now, so it need not be asked for.
+                self.names.forget(*serial);
+                if let Some(mobile) = self.mobiles.get_mut(serial) {
+                    mobile.name = name.clone();
+                }
+                if let Some(item) = self.items.get_mut(serial) {
+                    item.name = name.clone();
+                }
+            }
+            Inbound::NameChanged { .. } => {}
+            // A boat carries everything on it, so its pieces move with it.
+            Inbound::BoatMoving { boat, x, y, z, .. } => {
+                self.move_multi(*boat, Point3::new(*x, *y, *z));
+            }
             Inbound::Weather { kind, count } => {
                 self.weather = (*kind != WEATHER_NONE && *count > 0).then_some((*kind, *count));
             }
@@ -1325,6 +1412,38 @@ impl World {
             ));
         } else if ghost {
             self.self_state.dead = true;
+        }
+    }
+
+    /// Puts the gear of a corpse into it, so it is drawn and looted whole.
+    fn dress_corpse(&mut self, corpse: Serial, worn: &[(u8, Serial)]) {
+        for (layer, serial) in worn {
+            if let Some(item) = self.items.get_mut(serial) {
+                item.parent = Some(corpse);
+                item.layer = Some(*layer);
+            }
+        }
+        let inside = self.containers.entry(corpse).or_insert(Container {
+            serial: corpse,
+            gump: 0,
+            items: Vec::new(),
+            opened: 0,
+        });
+        for (_, serial) in worn {
+            if !inside.items.contains(serial) {
+                inside.items.push(*serial);
+            }
+        }
+    }
+
+    /// Moves a building or a boat and everything that stands on it.
+    fn move_multi(&mut self, serial: Serial, to: Point3) {
+        let Some(multi) = self.multis.get_mut(&serial) else {
+            return;
+        };
+        multi.location = to;
+        if let Some(item) = self.items.get_mut(&serial) {
+            item.location = to;
         }
     }
 
@@ -1962,5 +2081,102 @@ mod tests {
             fighting: Some(me),
         });
         assert_eq!(world.combatant, None);
+    }
+
+    #[test]
+    fn a_corpse_keeps_the_gear_the_shard_lists_for_it() {
+        const CORPSE: Serial = Serial(0x4000_0B01);
+        const ROBE: Serial = Serial(0x4000_0B02);
+        let mut world = World::default();
+        world.apply(&Inbound::AddItem(ContainerItem {
+            serial: ROBE,
+            graphic: 0x1F03,
+            amount: 1,
+            x: 0,
+            y: 0,
+            grid: 0,
+            container: CORPSE,
+            hue: 0,
+        }));
+        world.apply(&Inbound::CorpseEquipment {
+            corpse: CORPSE,
+            worn: vec![(22, ROBE)],
+        });
+        let robe = world.items.get(&ROBE).unwrap();
+        assert_eq!((robe.parent, robe.layer), (Some(CORPSE), Some(22)));
+        let inside = world.containers.get(&CORPSE).unwrap();
+        assert_eq!(inside.items, vec![ROBE]);
+    }
+
+    #[test]
+    fn the_shard_sets_the_clock_the_light_and_the_arrow() {
+        let mut world = World::default();
+        let me = world.self_state.serial;
+        world.apply(&Inbound::Time {
+            hour: 13,
+            minute: 45,
+            second: 7,
+        });
+        assert_eq!(world.time, (13, 45, 7));
+        world.apply(&Inbound::PersonalLight {
+            serial: me,
+            level: 4,
+        });
+        assert_eq!(world.personal_light, 4);
+        // The light of another mobile is not ours.
+        world.apply(&Inbound::PersonalLight {
+            serial: Serial(0x0000_0A11),
+            level: 30,
+        });
+        assert_eq!(world.personal_light, 4);
+        world.apply(&Inbound::QuestArrow {
+            shown: true,
+            x: 1000,
+            y: 1200,
+            serial: Serial(0),
+        });
+        assert_eq!(world.quest_arrow, Some((1000, 1200)));
+        world.apply(&Inbound::QuestArrow {
+            shown: false,
+            x: 0,
+            y: 0,
+            serial: Serial(0),
+        });
+        assert_eq!(world.quest_arrow, None);
+    }
+
+    #[test]
+    fn a_waypoint_a_name_and_a_dropped_item_reach_the_world() {
+        const MARK: Serial = Serial(0x4000_0B04);
+        let mut world = World {
+            holding: Some(Serial(0x4000_0B05)),
+            ..World::default()
+        };
+        world.apply(&Inbound::DropAccepted);
+        assert_eq!(world.holding, None, "the hand is free again");
+        world.apply(&Inbound::WaypointAdded {
+            serial: MARK,
+            x: 1000,
+            y: 1200,
+            z: 5,
+            map: 1,
+            kind: 3,
+            name: "home".into(),
+        });
+        assert_eq!(world.waypoints.get(&MARK).unwrap().name, "home");
+        world.apply(&Inbound::WaypointRemoved { serial: MARK });
+        assert!(world.waypoints.is_empty());
+        world.apply(&Inbound::MobileIncoming(orc_at(1000, Vec::new())));
+        world.apply(&Inbound::NameChanged {
+            serial: ORC,
+            name: "Grimm".into(),
+        });
+        assert_eq!(world.mobiles.get(&ORC).unwrap().name, "Grimm");
+        // An empty name changes nothing.
+        world.apply(&Inbound::NameChanged {
+            serial: ORC,
+            name: String::new(),
+        });
+        assert_eq!(world.mobiles.get(&ORC).unwrap().name, "Grimm");
     }
 }
