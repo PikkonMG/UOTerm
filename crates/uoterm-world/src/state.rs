@@ -876,6 +876,20 @@ impl World {
             Inbound::Season { season, .. } => {
                 self.season = *season;
             }
+            // A building to place is a target cursor of its own kind: the
+            // answer is the tile the building goes on.
+            Inbound::MultiPlacement { cursor_id, .. } => {
+                self.pending_target = Some(TargetCursor {
+                    kind: uoterm_protocol::TARGET_GROUND,
+                    id: *cursor_id,
+                    flags: 0,
+                });
+                self.push_event(Event::new(
+                    EventKind::TargetRequested,
+                    None,
+                    "place a building",
+                ));
+            }
             Inbound::GlobalLight { level } => self.light = *level,
             Inbound::Weather { kind, count } => {
                 self.weather = (*kind != WEATHER_NONE && *count > 0).then_some((*kind, *count));

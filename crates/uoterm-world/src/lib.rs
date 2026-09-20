@@ -6,6 +6,7 @@ mod cues;
 mod events;
 mod gump;
 mod gump_layout;
+mod house;
 mod journal;
 mod names;
 mod observe;
@@ -22,6 +23,7 @@ pub use cues::{Cue, CueKind, Cues, CUE_CAP};
 pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 pub use gump::{read_gump, ChoiceKind, GumpButton, GumpChoice, GumpEntry, GumpText, GumpView};
 pub use gump_layout::{gump_layout, GumpLayout, GumpPiece, GumpPieceKind};
+pub use house::{house_tiles, DesignedHouse, HouseBounds, HouseTile};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
 };
