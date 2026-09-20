@@ -31,6 +31,8 @@ const OVERHEAD: i16 = 16;
 const CORPSE_GRAPHIC: u16 = 0x2006;
 /// The shard does not tell the window which way a corpse lies.
 const CORPSE_FACING: u8 = 3;
+/// A paperdoll faces the watcher.
+const DOLL_FACING: u8 = 4;
 
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 3.0;
@@ -801,6 +803,29 @@ impl Scene {
             Stroke::new(PAWN_RING_WIDTH * self.zoom, theme::GOAL),
         );
         true
+    }
+
+    /// The picture of a mobile as he stands and faces the watcher, for a
+    /// paperdoll. It carries what he wears.
+    pub fn doll_picture(
+        &mut self,
+        map: u8,
+        look: &crate::view::WatchLook,
+    ) -> Option<(egui::TextureId, Sprite)> {
+        let facing = crate::view::WatchLook {
+            direction: DOLL_FACING,
+            ..look.clone()
+        };
+        let pose = Pose {
+            action: Action::Stand,
+            tick: 0,
+        };
+        let atlas = self.atlas.as_mut()?;
+        let sprite =
+            self.client
+                .as_ref()?
+                .figure_sprite(atlas, map, &facing, pose, theme::SELF_FIGURE)?;
+        Some((atlas.texture_id(), sprite))
     }
 
     /// True when gumps can show in their own pictures.

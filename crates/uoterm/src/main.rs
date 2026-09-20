@@ -549,7 +549,9 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         if let Err(e) = tokio::task::block_in_place(|| window::open(options)) {
             tracing::error!(error = %e, "watch window");
         }
-        return wait_ctrl_c().await;
+        // Closing the window ends the program. The character leaves the
+        // world as she does on Ctrl+C.
+        return Ok(EXIT_OK as u8);
     }
     serve_until_ctrl_c(rt, bind).await
 }

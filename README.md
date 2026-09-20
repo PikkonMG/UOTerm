@@ -54,7 +54,7 @@ The examples below write `uoterm`. On a fresh machine use `./target/debug/uoterm
 
 ## How the process model works
 
-`uoterm connect` and `uoterm populate` stay in the foreground. They log in, then serve HTTP until you press Ctrl+C. `connect --view` opens the watch window in the same process, so the window reads the session with no HTTP step. When you close the window, the session stays connected until Ctrl+C. `uoterm watch` is a different process: it reads a running session through the HTTP API.
+`uoterm connect` and `uoterm populate` stay in the foreground. They log in, then serve HTTP until you press Ctrl+C. `connect --view` opens the watch window in the same process, so the window reads the session with no HTTP step. Closing the window ends the program. The "Quit" button of the window does the same, after it asks the shard to log the character out. `uoterm watch` is a different process: it reads a running session through the HTTP API.
 
 All other commands (`session`, `say`, `move`, `walk`, `open-door`, `look`, `state`, `agent`, `watch`, `mcp`) are clients. They call that HTTP API. They do not open a second game socket.
 
@@ -120,7 +120,7 @@ uoterm connect \
 
 Expected line: `session s1 started; api 127.0.0.1:7733; encryption none`. Leave this process running.
 
-Optional `--view` opens the watch window in the same process. `view = true` in `uoterm.toml` does the same on each `connect`. Optional `--text-view` prints the radar in that terminal. Those flags conflict with each other.
+Optional `--view` opens the watch window in the same process. Closing the window ends the program. `view = true` in `uoterm.toml` does the same on each `connect`. Optional `--text-view` prints the radar in that terminal. Those flags conflict with each other.
 
 Password is `UO_PASS`. Never put it in a file.
 
@@ -215,7 +215,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `--profile` | none | TOML profile |
 | `--persona` | built-in lumberjack | Persona TOML used by speech and reflex |
 | `--api-bind` | from config, `127.0.0.1:7733` | HTTP listen address |
-| `--view` | off | Open the watch window in the same process. Closing the window does not drop the socket. |
+| `--view` | off | Open the watch window in the same process. Closing the window ends the program, as Ctrl+C does. |
 | `--text-view` | off | Print a live radar in this terminal. Conflicts with `--view`. |
 
 ## MCP (LLM attach)

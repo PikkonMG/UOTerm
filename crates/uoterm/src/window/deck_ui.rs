@@ -4,7 +4,7 @@
 //! only while the human has control.
 
 use super::boxes_ui::{scrolled, Tools, CELL, CELL_GAP, CELL_RADIUS};
-use super::control::Act;
+use super::control::{Act, Answer, Ask};
 use super::desk::Zone;
 use super::kept;
 use super::ring_ui::Subject;
@@ -17,12 +17,11 @@ use uoterm_assist::spells::SpellBook;
 
 const SHEET_LEFT: f32 = 356.0;
 const SHEET_TOP: f32 = 150.0;
-const SHEET_WIDTH: f32 = 324.0;
+const SHEET_WIDTH: f32 = 430.0;
 const SHEET_ROWS: usize = 12;
 const ROW: f32 = 24.0;
 const TAB_HEIGHT: f32 = 28.0;
 const TAB_GAP: f32 = 6.0;
-const WORN_COLUMNS: usize = 6;
 const LOCK_SIDE: f32 = 16.0;
 const LOCK_MARK: f32 = 5.0;
 const USE_WIDTH: f32 = 40.0;
@@ -159,6 +158,11 @@ pub struct DeckUi {
     /// The spells of the standard schools. A shard's own spells go through
     /// the command box.
     spells: SpellBook,
+    /// The words the human typed about what to wear, and the things Jev
+    /// was asked about, in the order it was asked.
+    wear_wish: String,
+    wear_asked: Vec<WearChoice>,
+    wear_note: Option<(String, bool, f64)>,
     hotbars: KeptHotbars,
 }
 
@@ -170,6 +174,9 @@ impl DeckUi {
             first_skill: 0,
             first_spell: 0,
             spells: SpellBook::standard(),
+            wear_wish: String::new(),
+            wear_asked: Vec::new(),
+            wear_note: None,
             hotbars: kept::load(HOTBAR_FILE),
         }
     }
@@ -292,7 +299,7 @@ impl DeckUi {
     /// Draws the sheet and the hotbar. Gives the places they cover.
     pub fn draw(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         rect: Rect,
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
@@ -310,7 +317,7 @@ impl DeckUi {
 
     fn sheet(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         rect: Rect,
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
@@ -344,7 +351,7 @@ impl DeckUi {
             inner.right_bottom(),
         );
         match self.tab {
-            Tab::Character => character_tab(ui, body, frame, tools),
+            Tab::Character => character_tab(ui, body, frame, tools, self),
             Tab::Skills => self.skills_tab(ui, panel, body, frame, tools),
             Tab::Spells => self.spells_tab(ui, panel, body, frame, tools),
             Tab::Party => party_tab(ui, body, frame, tools),
@@ -562,9 +569,94 @@ impl DeckUi {
     }
 }
 
-fn character_tab(ui: &egui::Ui, body: Rect, frame: &WatchFrame, tools: &mut Tools<'_>) {
+/// The layers a person wears, in the order a paperdoll lists them, with
+/// the words for each.
+const WORN_LAYERS: [(u8, &str); 19] = [
+    (1, "right hand"),
+    (2, "left hand"),
+    (3, "shoes"),
+    (4, "trousers"),
+    (5, "shirt"),
+    (6, "head"),
+    (7, "gloves"),
+    (8, "ring"),
+    (9, "talisman"),
+    (10, "neck"),
+    (12, "waist"),
+    (13, "chest"),
+    (14, "bracelet"),
+    (16, "arms"),
+    (17, "cloak"),
+    (19, "robe"),
+    (20, "skirt"),
+    (21, "legs"),
+    (22, "earrings"),
+];
+const DOLL_WIDTH: f32 = 96.0;
+const DOLL_HEIGHT: f32 = 130.0;
+const SLOT_ROW: f32 = 22.0;
+const TAKE_OFF_WIDTH: f32 = 26.0;
+const WORN_ROWS: usize = 6;
+const WEAR_WIDTH: f32 = 54.0;
+const WORDS_WORN: &str = "Worn";
+const WORDS_TAKE_OFF: &str = "x";
+const WORDS_WEAR: &str = "Wear";
+const HINT_WEAR: &str = "Say what to wear or take off, for example: my viking sword";
+const HINT_WEAR_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
+const WORDS_LOOKING: &str = "Jev looks in your bag...";
+const WORDS_NOTHING_WORN: &str = "Nothing worn. Drag an item onto the figure.";
+
+/// One thing Jev may pick: an item of the bag to wear, or a worn item to
+/// take off.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WearChoice {
+    Wear(u32),
+    TakeOff(u8),
+}
+
+/// The words for a layer, or its number when it has no name here.
+fn layer_words(layer: u8) -> String {
+    WORN_LAYERS
+        .iter()
+        .find(|(known, _)| *known == layer)
+        .map_or_else(
+            || format!("layer {layer}"),
+            |(_, words)| (*words).to_string(),
+        )
+}
+
+/// What Jev reads about one thing the character could wear or take off.
+fn wear_words(name: &str, where_it_is: &str) -> String {
+    format!("{name} ({where_it_is})")
+}
+
+fn character_tab(
+    ui: &mut egui::Ui,
+    body: Rect,
+    frame: &WatchFrame,
+    tools: &mut Tools<'_>,
+    deck: &mut DeckUi,
+) {
+    // An item dropped anywhere on this tab is put on.
     tools.desk.zone(body, Zone::Wear);
     let painter = ui.painter();
+    let doll = Rect::from_min_size(body.left_top(), Vec2::new(DOLL_WIDTH, DOLL_HEIGHT));
+    painter.rect_filled(doll, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+    match tools.scene.doll_picture(frame.map, &frame.look) {
+        Some((texture, sprite)) => {
+            let area = theme::fit(doll, sprite.width, sprite.height);
+            painter.image(texture, area, sprite.uv, Color32::WHITE);
+        }
+        None => {
+            painter.text(
+                doll.center(),
+                Align2::CENTER_CENTER,
+                &frame.name,
+                title_font(theme::SIZE_PLATE),
+                theme::TEXT_DIM,
+            );
+        }
+    }
     let facts = [
         ("Strength", frame.stats.strength.to_string()),
         ("Dexterity", frame.stats.dexterity.to_string()),
@@ -572,10 +664,11 @@ fn character_tab(ui: &egui::Ui, body: Rect, frame: &WatchFrame, tools: &mut Tool
         ("Weight", format!("{} / {}", frame.weight, frame.weight_max)),
         ("Gold", frame.gold.to_string()),
     ];
+    let facts_left = doll.right() + theme::ROW_GAP * 2.0;
     for (i, (words, value)) in facts.iter().enumerate() {
         let y = body.top() + (i as f32 + 0.5) * ROW;
         painter.text(
-            Pos2::new(body.left(), y),
+            Pos2::new(facts_left, y),
             Align2::LEFT_CENTER,
             words,
             text_font(theme::SIZE_BODY),
@@ -589,60 +682,237 @@ fn character_tab(ui: &egui::Ui, body: Rect, frame: &WatchFrame, tools: &mut Tool
             theme::TEXT,
         );
     }
-    let worn_top = body.top() + (facts.len() as f32 + 0.5) * ROW;
-    let worn = frame
+    let mut y = doll.bottom() + theme::ROW_GAP;
+    painter.text(
+        Pos2::new(body.left(), y),
+        Align2::LEFT_TOP,
+        WORDS_WORN,
+        text_font(theme::SIZE_BODY),
+        theme::TEXT_DIM,
+    );
+    y += SLOT_ROW;
+    let worn: Vec<&crate::view::WatchEquip> = frame
         .look
         .equipment
         .iter()
-        .filter(|item| is_worn_layer(item.layer));
-    for (i, item) in worn.enumerate() {
-        let cell = Rect::from_min_size(
-            Pos2::new(
-                body.left() + (i % WORN_COLUMNS) as f32 * (CELL + CELL_GAP),
-                worn_top + (i / WORN_COLUMNS) as f32 * (CELL + CELL_GAP),
-            ),
-            Vec2::splat(CELL),
+        .filter(|item| is_worn_layer(item.layer))
+        .collect();
+    if worn.is_empty() {
+        painter.text(
+            Pos2::new(body.left(), y),
+            Align2::LEFT_TOP,
+            WORDS_NOTHING_WORN,
+            text_font(theme::SIZE_SMALL),
+            theme::TEXT_FAINT,
         );
-        let response = ui.interact(
-            cell,
-            Id::new(("worn-item", item.serial, item.layer)),
-            Sense::click_and_drag(),
+    }
+    for item in worn.iter().take(WORN_ROWS) {
+        let row = Rect::from_min_size(
+            Pos2::new(body.left(), y),
+            Vec2::new(body.width(), SLOT_ROW - 2.0),
         );
-        let fill = if response.hovered() {
-            theme::BUTTON_HOVER
-        } else {
-            theme::TRACK
-        };
-        painter.rect_filled(cell, CornerRadius::same(CELL_RADIUS), fill);
-        if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, item.hue)
+        worn_row(ui, row, item, frame, tools);
+        y += SLOT_ROW;
+    }
+    deck.wear_field(
+        ui,
+        Rect::from_min_max(
+            Pos2::new(body.left(), body.bottom() - ROW),
+            body.right_bottom(),
+        ),
+        frame,
+        tools,
+    );
+}
+
+impl DeckUi {
+    /// The things the words could mean: each item of the backpack to put
+    /// on, and each worn item to take off.
+    fn wear_choices(&self, frame: &WatchFrame) -> (Vec<WearChoice>, Vec<String>) {
+        let mut choices = Vec::new();
+        let mut words = Vec::new();
+        let bag = frame.backpack();
+        let in_bag = frame
+            .containers
+            .iter()
+            .filter(|container| Some(container.serial) == bag)
+            .flat_map(|container| container.items.iter());
+        for item in in_bag {
+            choices.push(WearChoice::Wear(item.serial));
+            words.push(wear_words(&item.name, "in your bag"));
+        }
+        for item in frame
+            .look
+            .equipment
+            .iter()
+            .filter(|item| is_worn_layer(item.layer))
         {
-            let area = theme::fit(cell, sprite.width, sprite.height);
-            painter.image(texture, area, sprite.uv, Color32::WHITE);
+            choices.push(WearChoice::TakeOff(item.layer));
+            words.push(wear_words(&layer_words(item.layer), "worn now"));
         }
-        if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
-            let footer = if frame.human_control { HINT_WORN } else { "" };
-            tools
-                .tips
-                .point_at(ui, tools.hand, item.serial, "", footer, tools.time);
+        (choices, words)
+    }
+
+    /// Takes the answer of Jev about what to wear or take off.
+    fn take_wear_answers(&mut self, tools: &Tools<'_>) {
+        for answer in tools.hand.new_answers() {
+            match answer {
+                Answer::Picked(Ok(place)) => {
+                    match self.wear_asked.get(place) {
+                        Some(WearChoice::Wear(serial)) => tools.hand.act(Act::Wear(*serial)),
+                        Some(WearChoice::TakeOff(layer)) => tools.hand.act(Act::TakeOff(*layer)),
+                        None => continue,
+                    }
+                    self.wear_wish.clear();
+                    self.wear_note = None;
+                }
+                Answer::Picked(Err(words)) => {
+                    self.wear_note = Some((words, true, tools.time));
+                }
+                // The other panels take the rest.
+                _ => {}
+            }
         }
+    }
+
+    /// The field that takes what to wear or take off in plain words.
+    fn wear_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: Rect,
+        frame: &WatchFrame,
+        tools: &mut Tools<'_>,
+    ) {
+        self.take_wear_answers(tools);
         if !frame.human_control {
-            continue;
+            return;
         }
-        if response.drag_started_by(egui::PointerButton::Primary) {
-            tools.desk.pick_up(&WatchPackItem {
-                serial: item.serial,
-                graphic: item.graphic,
-                hue: item.hue,
-                amount: 1,
-                name: String::new(),
+        let (choices, words) = self.wear_choices(frame);
+        let on = tools.hand.orders_on && !choices.is_empty();
+        let field = Rect::from_min_max(
+            row.min,
+            Pos2::new(row.right() - WEAR_WIDTH - theme::ROW_GAP, row.bottom()),
+        );
+        ui.painter()
+            .rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+        let hint = if tools.hand.orders_on {
+            HINT_WEAR
+        } else {
+            HINT_WEAR_OFF
+        };
+        let typed = ui.put(
+            field,
+            egui::TextEdit::singleline(&mut self.wear_wish)
+                .frame(false)
+                .margin(egui::Margin::symmetric(8, 4))
+                .hint_text(hint)
+                .font(text_font(theme::SIZE_SMALL))
+                .text_color(theme::TEXT),
+        );
+        let (_, pressed) = theme::button(
+            ui,
+            Pos2::new(field.right() + theme::ROW_GAP, row.top()),
+            WORDS_WEAR,
+            if on { theme::GOAL } else { theme::TEXT_FAINT },
+        );
+        let asked = pressed || (typed.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
+        if asked && on && !self.wear_wish.trim().is_empty() {
+            tools.hand.ask(Ask::WearItem {
+                wish: self.wear_wish.trim().to_string(),
+                options: words,
             });
-        } else if response.double_clicked() {
-            tools.hand.act(Act::TakeOff(item.layer));
-        } else if response.secondary_clicked() {
-            tools
-                .ring
-                .open_at(cell.center(), item.serial, "", Subject::Packed, tools.hand);
+            self.wear_asked = choices;
+            self.wear_note = Some((WORDS_LOOKING.into(), false, tools.time));
         }
+        if let Some((note, failed, since)) = &self.wear_note {
+            if tools.time - since > NOTE_SECONDS {
+                self.wear_note = None;
+            } else {
+                let color = if *failed {
+                    theme::ALARM
+                } else {
+                    theme::WAITING
+                };
+                ui.painter().text(
+                    Pos2::new(row.left(), row.top() - theme::ROW_GAP),
+                    Align2::LEFT_BOTTOM,
+                    note,
+                    text_font(theme::SIZE_SMALL),
+                    color,
+                );
+            }
+        }
+    }
+}
+
+/// How long the words about what Jev did stay on the sheet.
+const NOTE_SECONDS: f64 = 6.0;
+
+/// One worn item: its picture, the words for its layer, its name, and a
+/// cross that takes it off.
+fn worn_row(
+    ui: &egui::Ui,
+    row: Rect,
+    item: &crate::view::WatchEquip,
+    frame: &WatchFrame,
+    tools: &mut Tools<'_>,
+) {
+    let art = Rect::from_min_size(row.min, Vec2::splat(row.height()));
+    if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, item.hue) {
+        let area = theme::fit(art, sprite.width, sprite.height);
+        ui.painter().image(texture, area, sprite.uv, Color32::WHITE);
+    }
+    let response = ui.interact(
+        row,
+        Id::new(("worn-row", item.serial, item.layer)),
+        Sense::click_and_drag(),
+    );
+    ui.painter().text(
+        Pos2::new(art.right() + theme::ROW_GAP, row.center().y),
+        Align2::LEFT_CENTER,
+        layer_words(item.layer),
+        text_font(theme::SIZE_SMALL),
+        if response.hovered() {
+            theme::TEXT
+        } else {
+            theme::TEXT_DIM
+        },
+    );
+    if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
+        let footer = if frame.human_control { HINT_WORN } else { "" };
+        tools
+            .tips
+            .point_at(ui, tools.hand, item.serial, "", footer, tools.time);
+    }
+    if !frame.human_control {
+        return;
+    }
+    let cross = Rect::from_min_size(
+        Pos2::new(row.right() - TAKE_OFF_WIDTH, row.top()),
+        Vec2::new(TAKE_OFF_WIDTH, row.height()),
+    );
+    if theme::segment_keyed(
+        ui,
+        cross,
+        Id::new(("take-off", item.layer)),
+        WORDS_TAKE_OFF,
+        theme::ALARM,
+    ) {
+        tools.hand.act(Act::TakeOff(item.layer));
+    } else if response.drag_started_by(egui::PointerButton::Primary) {
+        tools.desk.pick_up(&WatchPackItem {
+            serial: item.serial,
+            graphic: item.graphic,
+            hue: item.hue,
+            amount: 1,
+            name: String::new(),
+        });
+    } else if response.double_clicked() {
+        tools.hand.act(Act::TakeOff(item.layer));
+    } else if response.secondary_clicked() {
+        tools
+            .ring
+            .open_at(row.center(), item.serial, "", Subject::Packed, tools.hand);
     }
 }
 
@@ -708,6 +978,53 @@ mod tests {
             lock,
             ..WatchSkill::default()
         }
+    }
+
+    #[test]
+    fn a_worn_place_has_words_a_player_knows() {
+        assert_eq!(layer_words(1), "right hand");
+        assert_eq!(layer_words(13), "chest");
+        assert_eq!(layer_words(99), "layer 99");
+    }
+
+    #[test]
+    fn jev_is_asked_about_the_bag_and_the_body() {
+        use crate::view::{WatchContainer, WatchEquip, WatchLook, WatchPackItem};
+        const BAG: u32 = 0x4000_0100;
+        let deck = DeckUi::starting(true);
+        let frame = WatchFrame {
+            look: WatchLook {
+                equipment: vec![
+                    WatchEquip {
+                        serial: BAG,
+                        layer: LAYER_BACKPACK,
+                        ..WatchEquip::default()
+                    },
+                    WatchEquip {
+                        serial: 9,
+                        layer: 1,
+                        ..WatchEquip::default()
+                    },
+                ],
+                ..WatchLook::default()
+            },
+            containers: vec![WatchContainer {
+                serial: BAG,
+                items: vec![WatchPackItem {
+                    serial: 7,
+                    name: "a viking sword".into(),
+                    ..WatchPackItem::default()
+                }],
+                ..WatchContainer::default()
+            }],
+            ..WatchFrame::default()
+        };
+        let (choices, words) = deck.wear_choices(&frame);
+        assert_eq!(choices, vec![WearChoice::Wear(7), WearChoice::TakeOff(1)]);
+        assert_eq!(words[0], "a viking sword (in your bag)");
+        assert_eq!(words[1], "right hand (worn now)");
+        // The backpack itself is no part of the body.
+        assert!(!words.iter().any(|w| w.starts_with("layer 21")));
     }
 
     #[test]

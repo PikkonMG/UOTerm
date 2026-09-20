@@ -55,6 +55,9 @@ const WORDS_MACROS: &str = "Macros";
 const WORDS_PROFILE: &str = "Profile";
 const WORDS_CHAT: &str = "Chat";
 const WORDS_HELP: &str = "Help";
+const WORDS_QUIT: &str = "Quit";
+const WORDS_QUIT_SURE: &str = "Quit?";
+const REPORT_QUITTING: &str = "Leaving the world...";
 const WORDS_PIN: &str = "Pin";
 const PIN_WIDTH: f32 = 48.0;
 const REPORT_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
@@ -64,7 +67,7 @@ const WORDS_SAY: &str = "Say";
 const WORDS_ORDER: &str = "Order";
 const WORDS_COMMAND: &str = "Do";
 const WORDS_ANSWER: &str = "Answer";
-const HINT_SAY: &str = "Words to say. Press Enter.";
+const HINT_SAY: &str = "Press Enter, then the words to say.";
 const HINT_COMMAND: &str = "A command, for example: useskill 'hiding'. Press Enter.";
 const HINT_ANSWER: &str = "The shard asks for words. Type them and press Enter.";
 const HINT_MAP: &str = "Double-click: use.  Right-click: more.";
@@ -138,6 +141,8 @@ enum Press {
     /// Opens the profile of the character, or closes it.
     Profile,
     Chat,
+    /// Leaves the world and closes the whole program.
+    Quit,
     Options,
 }
 
@@ -212,6 +217,8 @@ pub struct ControlUi {
     steer: Steer,
     /// The last report, and when it came.
     report: Option<(Report, f64)>,
+    /// The human pressed Quit once. The next press quits.
+    quit_asked: bool,
 }
 
 /// The act for a click on the map.
@@ -259,7 +266,7 @@ impl ControlUi {
         }
         let mut on_controls = places.covered.to_vec();
         let map = places.map;
-        let bar = self.bar(ui, rect, frame, tools.scene, hand, &mut places);
+        let bar = self.bar(ui, rect, frame, tools.scene, hand, &mut places, time);
         on_controls.push(bar);
         if let Some(row) = places.chat_row {
             self.chat(ui, row, frame, hand, places.deck, time);
@@ -382,11 +389,21 @@ fn act_on_map(
 }
 
 impl ControlUi {
+    /// The words of the quit button: it asks before it quits.
+    fn quit_words(&self) -> &'static str {
+        if self.quit_asked {
+            WORDS_QUIT_SURE
+        } else {
+            WORDS_QUIT
+        }
+    }
+
     /// The panel at the top middle of the window. Its first row is the
     /// location, with the arrow that folds the menu in its corner. Under a
     /// thin rule is the menu: who has control, then one row of equal buttons
     /// from edge to edge. Each part has the same left and right edge, so the
     /// panel reads as one piece. Folded, only the location row stays.
+    #[allow(clippy::too_many_arguments)]
     fn bar(
         &mut self,
         ui: &egui::Ui,
@@ -395,6 +412,7 @@ impl ControlUi {
         scene: &Scene,
         hand: &Hand,
         places: &mut Places<'_>,
+        time: f64,
     ) -> Rect {
         let war_words = if frame.war { WORDS_PEACE } else { WORDS_WAR };
         let buttons: Vec<(&str, Press)> = if frame.human_control {
@@ -415,6 +433,7 @@ impl ControlUi {
                     (WORDS_STOP, Press::Act(Act::Stop)),
                     (WORDS_GIVE_BACK, Press::Act(Act::GiveBack)),
                     (WORDS_OPTIONS, Press::Options),
+                    (self.quit_words(), Press::Quit),
                 ])
                 .collect()
         } else {
@@ -424,6 +443,7 @@ impl ControlUi {
                 (WORDS_MAP, Press::Map),
                 (WORDS_MACROS, Press::Macros),
                 (WORDS_OPTIONS, Press::Options),
+                (self.quit_words(), Press::Quit),
             ]
         };
         let status = match (frame.human_control, frame.target_cursor) {
@@ -510,6 +530,20 @@ impl ControlUi {
                 Press::Profile if places.profiles.shows(frame.serial) => places.profiles.close(),
                 Press::Profile => places.profiles.show(frame.serial, hand),
                 Press::Chat => places.chat.toggle(),
+                // One press asks, the next one quits. A stray click on
+                // the last button of the bar must not end the game.
+                Press::Quit if self.quit_asked => {
+                    hand.act(Act::Quit);
+                    self.report = Some((
+                        Report {
+                            text: REPORT_QUITTING.into(),
+                            failed: false,
+                        },
+                        time,
+                    ));
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Press::Quit => self.quit_asked = true,
                 Press::Bag(bag) if places.boxes.shows(frame, bag) => places.boxes.close(bag),
                 Press::Bag(bag) => {
                     places.boxes.used(bag);
@@ -581,8 +615,28 @@ impl ControlUi {
                 }
             }
         }
+        // The box keeps one id of its own, so it does not lose the focus
+        // when the buttons beside it come and go.
+        let key = Id::new("chat-box");
+        let typing = ui.ctx().memory(|m| m.has_focus(key));
+        // Enter opens the box, and Esc lets it go. While it has the focus
+        // the keys write words; while it has not, they walk the character.
+        if !typing && ui.input(|i| i.key_pressed(Key::Enter)) {
+            ui.ctx().memory_mut(|m| m.request_focus(key));
+        }
+        if typing && ui.input(|i| i.key_pressed(Key::Escape)) {
+            ui.ctx().memory_mut(|m| m.surrender_focus(key));
+        }
         ui.painter()
             .rect_filled(field, CornerRadius::same(FIELD_RADIUS), theme::TRACK);
+        if typing {
+            ui.painter().rect_stroke(
+                field,
+                CornerRadius::same(FIELD_RADIUS),
+                egui::Stroke::new(1.0, theme::GOAL),
+                egui::StrokeKind::Inside,
+            );
+        }
         let hint = match (asked, self.mode, hand.orders_on) {
             (Some(_), ..) => frame.text_entry.as_deref().unwrap_or(HINT_ANSWER),
             (None, ChatMode::Say, _) => HINT_SAY,
@@ -591,6 +645,7 @@ impl ControlUi {
             (None, ChatMode::Command, _) => HINT_COMMAND,
         };
         let edit = egui::TextEdit::singleline(&mut self.text)
+            .id(key)
             .frame(false)
             .font(text_font(theme::SIZE_BODY))
             .text_color(theme::TEXT)
@@ -598,8 +653,13 @@ impl ControlUi {
             .margin(egui::Margin::symmetric(8, 6));
         let response = ui.put(field, edit);
         let sent = response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        if !sent {
+            return;
+        }
+        // The box stays open after a line, so the next one needs no click.
+        response.request_focus();
         let words = self.text.trim().to_string();
-        if !sent || words.is_empty() {
+        if words.is_empty() {
             return;
         }
         hand.act(match (asked, self.mode) {
@@ -609,7 +669,6 @@ impl ControlUi {
             (None, ChatMode::Command) => Act::Command(words),
         });
         self.text.clear();
-        response.request_focus();
     }
 
     fn show_report(&mut self, ui: &egui::Ui, bar: Rect, time: f64) {

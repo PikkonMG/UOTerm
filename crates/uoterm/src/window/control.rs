@@ -18,12 +18,12 @@ use uoterm_runtime::tools::{
     TOOL_BOOK_CLOSE, TOOL_CAST, TOOL_CHAT, TOOL_CLOSE_MENU, TOOL_COMMAND, TOOL_CONTEXT_MENU,
     TOOL_DEPOSIT, TOOL_DROP, TOOL_EQUIP, TOOL_FIND_LANDMARKS, TOOL_FOLLOW, TOOL_GUMP_CLOSE,
     TOOL_GUMP_RESPOND, TOOL_HELP, TOOL_HOTKEYS, TOOL_HOUSE_EDIT, TOOL_LIFT, TOOL_LIST_SCRIPTS,
-    TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN, TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROFILE,
-    TOOL_PROPERTIES, TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT, TOOL_SAY,
-    TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE,
-    TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL, TOOL_TARGET,
-    TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP,
-    TOOL_USE, TOOL_USE_SKILL, TOOL_WALK, TOOL_WAR_MODE,
+    TOOL_LOGOUT, TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN, TOOL_MENU_PICK, TOOL_MOVE_TO,
+    TOOL_PROFILE, TOOL_PROPERTIES, TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT,
+    TOOL_SAY, TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT,
+    TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL,
+    TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD, TOOL_TRADE_OFFER,
+    TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK, TOOL_WAR_MODE,
 };
 
 /// The shard refuses a drop that comes too soon after the lift.
@@ -132,6 +132,8 @@ pub enum Act {
     ChatJoin(String),
     ChatSay(String),
     ChatLeave,
+    /// Leave the world. The window closes and the program ends.
+    Quit,
     /// Buy or sell the rows of the cart: the item and how many.
     Checkout(Vec<(u32, u16)>),
     ShopClose,
@@ -203,6 +205,11 @@ pub enum Ask {
         wish: String,
         options: Vec<String>,
     },
+    /// Which thing of the bag or of the body the words mean.
+    WearItem {
+        wish: String,
+        options: Vec<String>,
+    },
     /// Which chat channel the words mean.
     Channel {
         wish: String,
@@ -266,7 +273,14 @@ impl Act {
             Self::Step { direction, run } => {
                 vec![(
                     TOOL_WALK,
-                    json!({ "direction": direction, "running": run, "hold_ms": STEP_HOLD_MS }),
+                    json!({
+                        "direction": direction,
+                        "running": run,
+                        "hold_ms": STEP_HOLD_MS,
+                        // A held walk slides along a wall, so a doorway
+                        // taken a little off the line does not stop him.
+                        "slide": true,
+                    }),
                 )]
             }
             Self::Move { item, amount, to } => {
@@ -342,6 +356,7 @@ impl Act {
             }
             Self::ChatSay(text) => vec![(TOOL_CHAT, json!({ "action": "say", "text": text }))],
             Self::ChatLeave => vec![(TOOL_CHAT, json!({ "action": "leave" }))],
+            Self::Quit => vec![(TOOL_LOGOUT, json!({}))],
             Self::Checkout(rows) => {
                 let items: Vec<Value> = rows
                     .iter()
@@ -432,6 +447,7 @@ impl Act {
             Self::ChatJoin(channel) => format!("Joined {channel}."),
             Self::ChatSay(_) => String::new(),
             Self::ChatLeave => "Left the channel.".into(),
+            Self::Quit => "Leaving the world.".into(),
             Self::OldMenuPick(Some(_)) => "Menu answered.".into(),
             Self::OldMenuPick(None) => "Menu closed.".into(),
             Self::MenuPick { .. } => "Menu line picked.".into(),
@@ -636,6 +652,9 @@ async fn answer_one(link: &Link, key: Option<&str>, ask: Ask) -> Answer {
         }
         Ask::HousePart { wish, options } => {
             Answer::Picked(pick_one(key, orders::ASK_HOUSE_PART, &wish, &options).await)
+        }
+        Ask::WearItem { wish, options } => {
+            Answer::Picked(pick_one(key, orders::ASK_WEAR, &wish, &options).await)
         }
         Ask::Channel { wish, options } => {
             Answer::Picked(pick_one(key, orders::ASK_CHANNEL, &wish, &options).await)
@@ -927,6 +946,7 @@ mod tests {
             Act::ChatJoin("General".into()),
             Act::ChatSay("hail".into()),
             Act::ChatLeave,
+            Act::Quit,
             Act::Checkout(vec![(ITEM, 1)]),
             Act::ShopClose,
             Act::TradeWith(ITEM),

@@ -230,6 +230,8 @@ const ASK_HOTKEY: &str =
 pub const ASK_PROFILE: &str = "A player of an online role-playing game says in `wish` who he wants to play. Each option is one saved login: its name, its character and its shard. Which one does he mean?";
 /// The question of the house designer about the parts of the catalog.
 pub const ASK_HOUSE_PART: &str = "A player of an online role-playing game builds his own house. `wish` says which part he wants to build with. Each option is one style of part from the catalog of the client: its kind and its name. Which one does he mean?";
+/// The question of the character sheet about what to wear or take off.
+pub const ASK_WEAR: &str = "A player of an online role-playing game says in `wish` what his character should put on or take off. Each option is one thing: an item in his bag that he can put on, or a place on his body that he wears something on now. Which one does he mean?";
 /// The question of the chat about its channels.
 pub const ASK_CHANNEL: &str = "A player of an online role-playing game wants to talk in a chat channel. `wish` says which channel he means. Each option is the name of one channel. Which one does he mean?";
 /// The question of the map item about the named places on it.

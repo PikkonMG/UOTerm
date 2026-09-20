@@ -19,7 +19,9 @@ pub(super) const CELL_GAP: f32 = 4.0;
 pub(super) const CELL_RADIUS: u8 = 5;
 const COLUMNS: usize = 6;
 const MAX_ROWS: usize = 3;
-const MAX_CONTAINERS: usize = 2;
+/// How many containers the window shows at once. The newest comes first,
+/// so the one just opened always has a place.
+const MAX_CONTAINERS: usize = 3;
 const TITLE_ROW: f32 = 28.0;
 const CLOSE_SIDE: f32 = 20.0;
 const CLOSE_STROKE: f32 = 1.5;
