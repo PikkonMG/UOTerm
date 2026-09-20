@@ -397,6 +397,13 @@ pub struct Movement {
     pub fastwalk: [u32; FASTWALK_SLOTS],
     pub last_dir: Direction,
     pub run_override: Option<bool>,
+    /// True when the last step he sent was a running step. A window draws
+    /// his legs by it.
+    pub last_step_ran: bool,
+    /// True while a human has the character. His steps then go at the exact
+    /// pace of the game, as the steps of a client do, so the window draws one
+    /// even move. The uneven pace is for the agent, to look like a person.
+    pub steady_pace: bool,
     /// True while the character rides. A mount has a pace of its own, and the
     /// session sets this from the item the server puts on [`MOUNT_LAYER`].
     pub mounted: bool,
@@ -431,6 +438,8 @@ impl Default for Movement {
             fastwalk: [FASTWALK_KEY_EMPTY; FASTWALK_SLOTS],
             last_dir: Direction::North,
             run_override: None,
+            last_step_ran: false,
+            steady_pace: false,
             mounted: false,
             blocked: BlockedTiles::default(),
             refused_edges: RefusedEdges::default(),
@@ -457,6 +466,9 @@ impl Movement {
             (false, true) => STEP_RUN_MS,
             (false, false) => STEP_WALK_MS,
         };
+        if self.steady_pace {
+            return Duration::from_millis(base);
+        }
         let jitter = (base as u32 * JITTER_PCT) / 100;
         let lo = base.saturating_sub(jitter as u64);
         let hi = base + jitter as u64;
@@ -598,6 +610,7 @@ impl Movement {
             turn: false,
         });
         self.schedule_next(now, self.next_interval(running));
+        self.last_step_ran = running;
         self.last_dir = step.direction;
         encode::move_request(step.direction, running, sequence, key)
     }

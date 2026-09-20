@@ -67,6 +67,15 @@ pub const TOOL_JOB_START: &str = "job_start";
 pub const TOOL_JOB_STOP: &str = "job_stop";
 /// The watch window puts this in the arguments of each call a human makes.
 pub const ARG_HUMAN: &str = "human";
+pub const TOOL_WATCH: &str = "watch";
+pub const TOOL_PROPERTIES: &str = "properties";
+pub const TOOL_CLOSE_MENU: &str = "close_menu";
+pub const TOOL_SHOP_CHECKOUT: &str = "shop_checkout";
+pub const TOOL_SHOP_CLOSE: &str = "shop_close";
+pub const TOOL_MENU_PICK: &str = "menu_pick";
+pub const TOOL_BOOK_CLOSE: &str = "book_close";
+pub const TOOL_TRADE_GOLD: &str = "trade_gold";
+pub const TOOL_COMMAND: &str = "command";
 pub const TOOL_TAKE_CONTROL: &str = "take_control";
 pub const TOOL_RELEASE_CONTROL: &str = "release_control";
 
@@ -280,7 +289,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_ATTACK, "Attack mobile.", "mobile serial"),
     (TOOL_WAR_MODE, "Set war/peace.", "in world"),
     (TOOL_LIFT, "Pick up item.", "item serial"),
-    (TOOL_DROP, "Drop item.", "serial"),
+    (TOOL_DROP, "Drop the lifted item: dest for a container or a mobile, none for the ground. x, y (and z on the ground) give an exact place.", "serial"),
     (TOOL_EQUIP, "Lift and wear an item: serial, or who=last for the last weapon put away.", "item serial"),
     (TOOL_UNEQUIP, "Lift a worn item into the backpack; a weapon is remembered.", "layer occupied"),
     (TOOL_CAST, "Cast spell by number (required).", "enough mana"),
@@ -340,7 +349,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_GUMP_RESPOND,
-        "Click a gump button. Args: button (a button id), switches (the choices to tick). button 0 closes. observe gumps shows each button id and choice switch with its words.",
+        "Click a gump button. Args: button (a button id), switches (the choices to tick), texts ([{id, text}] for the text fields). button 0 closes. observe gumps shows each button id and choice switch with its words.",
         "open gump",
     ),
     (TOOL_GUMP_CLOSE, "Close gump.", "open gump"),
@@ -428,6 +437,51 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "a job is running",
     ),
     (
+        TOOL_WATCH,
+        "For the watch window. The whole screen in one picture: observe with each list at its full length, and the things only a screen draws: item places in containers, journal lines with speaker and hue, skills with names, party vitals, hit and animation cues, the target cursor, the shown context menu, the open shop list. An agent reads observe, which is short on purpose.",
+        "session exists",
+    ),
+    (
+        TOOL_PROPERTIES,
+        "The words of the tooltip of one object: serial. When the session has none yet, it asks the shard, and the next call has them.",
+        "in world",
+    ),
+    (
+        TOOL_CLOSE_MENU,
+        "Closes the context menu that context_menu showed, with no pick.",
+        "session exists",
+    ),
+    (
+        TOOL_SHOP_CHECKOUT,
+        "Buys or sells a cart from the shop list that is open: items is [{serial, amount}]. watch shows the list under shop.",
+        "a shop list is open",
+    ),
+    (
+        TOOL_SHOP_CLOSE,
+        "Forgets the open shop list with no trade.",
+        "session exists",
+    ),
+    (
+        TOOL_MENU_PICK,
+        "Answers the old-style menu that watch shows under menu: index picks that entry, from 1; no index walks away with no pick.",
+        "a menu is open",
+    ),
+    (
+        TOOL_BOOK_CLOSE,
+        "Forgets the open book that watch shows under book.",
+        "session exists",
+    ),
+    (
+        TOOL_TRADE_GOLD,
+        "Sets the gold and platinum offered in the open trade: gold, platinum.",
+        "a trade is open",
+    ),
+    (
+        TOOL_COMMAND,
+        "For the watch window, not for an agent. Runs one script command at once as one act of a human: text is the command line, as in docs/SCRIPTS.md. Needs human=true. A command that waits is not waited for.",
+        "session exists",
+    ),
+    (
         TOOL_TAKE_CONTROL,
         "For the watch window, not for an agent. A human takes the character: the goal, the job, the script and the macro agent stop, and each acting call without human=true is refused until release_control or 90 s with no human act. Sends control_taken.",
         "session exists",
@@ -441,8 +495,10 @@ const TOOLS: &[(&str, &str, &str)] = &[
 
 /// The tools that only look. An agent may call them while a human has the
 /// character.
-const READ_ONLY_TOOLS: [&str; 17] = [
+const READ_ONLY_TOOLS: [&str; 19] = [
     TOOL_OBSERVE,
+    TOOL_WATCH,
+    TOOL_PROPERTIES,
     TOOL_LOOK_AROUND,
     TOOL_FIND_MOBILES,
     TOOL_FIND_ITEMS,
@@ -476,6 +532,12 @@ pub fn mcp_tool_list() -> Value {
                     "type": "object",
                     "properties": {
                         "session_id": {"type": "string"},
+                        "index": {"type": "integer"},
+                        "layer": {"type": "integer"},
+                        "gold": {"type": "integer"},
+                        "platinum": {"type": "integer"},
+                        "items": {"type": "array", "items": {"type": "object"}},
+                        "texts": {"type": "array", "items": {"type": "object"}},
                         ARG_HUMAN: {"type": "boolean"},
                         "text": {"type": "string"},
                         "to": {"type": "string"},

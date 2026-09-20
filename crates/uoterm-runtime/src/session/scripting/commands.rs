@@ -1419,7 +1419,10 @@ fn reply_gump(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Resul
         Game::note(call, ctx, "no such gump is open");
         return Ok(Step::Done);
     };
-    answer_gump(game.inner, &gump, button, &switches);
+    // A script names no text fields, so each one sends the words it opened
+    // with, as `gump_respond` does for a field its caller leaves out.
+    let texts = gump_texts(&gump_view(game.inner, &gump), &Value::Null)?;
+    answer_gump(game.inner, &gump, button, &switches, &texts);
     Ok(Step::Acted)
 }
 

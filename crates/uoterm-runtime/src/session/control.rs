@@ -60,6 +60,7 @@ pub(super) fn take(inner: &mut Inner, now: Instant) -> ToolResult {
         inner.world.write().push_event(event);
     }
     inner.human.last_act = Some(now);
+    inner.movement.steady_pace = true;
     ToolResult::ok(json!({ "human_control": true }))
 }
 
@@ -69,6 +70,7 @@ pub(super) fn release(inner: &mut Inner) -> ToolResult {
 }
 
 fn give_back(inner: &mut Inner, reason: &str) {
+    inner.movement.steady_pace = false;
     if inner.human.last_act.take().is_some() {
         let event = Event::new(EventKind::ControlReleased, None, reason);
         inner.world.write().push_event(event);
@@ -105,6 +107,18 @@ mod tests {
     }
 
     #[test]
+    fn a_human_walks_at_the_exact_pace_and_the_agent_gets_his_own_pace_back() {
+        let mut inner = armed_session();
+        let walk = Duration::from_millis(crate::config::STEP_WALK_MS);
+        assert!(take(&mut inner, Instant::now()).ok);
+        for _ in 0..20 {
+            assert_eq!(inner.movement.next_interval(false), walk);
+        }
+        assert!(release(&mut inner).ok);
+        assert!(!inner.movement.steady_pace);
+    }
+
+    #[test]
     fn the_agent_may_look_but_not_act_while_a_human_has_control() {
         let mut inner = armed_session();
         inner.follow = Some(FOLLOWED);
@@ -137,6 +151,18 @@ mod tests {
         );
         assert!(event_kinds(&inner).contains(&EventKind::ControlReleased));
         assert!(answer_agent(&mut inner, call(TOOL_WAR_MODE, json!({ "on": false }))).ok);
+    }
+
+    #[test]
+    fn one_script_command_runs_for_a_human_and_not_for_an_agent() {
+        let mut inner = armed_session();
+        let line = json!({ "text": "sysmsg hello" });
+        let refused = answer_agent(&mut inner, call(TOOL_COMMAND, line));
+        assert!(!refused.ok, "an agent uses run_script");
+        let by_hand = json!({ "text": "sysmsg hello", "human": true });
+        let done = answer_agent(&mut inner, call(TOOL_COMMAND, by_hand));
+        assert!(done.ok, "{:?}", done.error);
+        assert_eq!(done.result["output"][0], "hello");
     }
 
     #[test]

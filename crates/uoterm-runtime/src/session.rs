@@ -53,6 +53,7 @@ mod agents;
 mod awareness;
 mod control;
 mod hotkeys;
+mod play;
 mod recorder;
 mod scripting;
 use agents::Agents;
@@ -410,6 +411,7 @@ struct Inner {
     /// Callers of `next_event` waiting for something important.
     event_waiters: Vec<awareness::EventWaiter>,
     human: control::HumanControl,
+    play: play::Play,
     aware: awareness::Awareness,
     loot: Option<LootJob>,
     /// A session job that runs on the tick and hands back with a reason.
@@ -863,6 +865,7 @@ async fn run_session(
         journal_waiters: Vec::new(),
         event_waiters: Vec::new(),
         human: control::HumanControl::default(),
+        play: play::Play::default(),
         aware: awareness::Awareness::default(),
         loot: None,
         hunt: None,
@@ -1654,6 +1657,7 @@ mod relay_tests {
             journal_waiters: Vec::new(),
             event_waiters: Vec::new(),
             human: control::HumanControl::default(),
+            play: play::Play::default(),
             aware: awareness::Awareness::default(),
             loot: None,
             hunt: None,
@@ -5825,7 +5829,8 @@ mod relay_tests {
             Serial(1),
             GATE_GUMP,
             OKAY,
-            &[MOONGLOW]
+            &[MOONGLOW],
+            &[]
         )));
         assert!(inner
             .world
@@ -6446,6 +6451,21 @@ mod relay_tests {
         const PACK: Serial = Serial(0x4000_0002);
         let p = encode::drop_into_container(ITEM, PACK, Some(0));
         assert_eq!(&p[5..9], &[0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn a_drop_with_a_place_goes_to_that_spot_of_the_container() {
+        const ITEM: Serial = Serial(0x4000_0001);
+        const PACK: Serial = Serial(0x4000_0002);
+        const SPOT_X: u16 = 44;
+        const SPOT_Y: u16 = 65;
+        let mut inner = test_session();
+        let args = json!({ "serial": ITEM, "dest": PACK, "x": SPOT_X, "y": SPOT_Y });
+        assert!(answer_agent(&mut inner, call(TOOL_DROP, args)).ok);
+        let grid = drop_grid(&inner);
+        assert!(inner
+            .outbound
+            .contains(&encode::drop(ITEM, SPOT_X, SPOT_Y, 0, PACK, grid)));
     }
 
     #[test]
@@ -7254,6 +7274,10 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                     }
                     if let Inbound::VendorBuyList { container, entries } = &msg {
                         agents::on_buy_list(inner, *container, entries);
+                        play::on_buy_list(inner, *container, entries);
+                    }
+                    if let Inbound::VendorClose { .. } = &msg {
+                        play::on_shop_closed(inner);
                     }
                     if let Inbound::Damage { serial, amount } = &msg {
                         inner.agents.note_damage(self_serial, *serial, *amount);
@@ -7262,6 +7286,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         agents::on_party_invite(inner, *leader);
                     }
                     if let Inbound::VendorSellList { vendor, entries } = &msg {
+                        play::on_sell_list(inner, *vendor, entries);
                         if inner.pending_vendor_sell_graphic.is_none() {
                             agents::on_sell_list(inner, *vendor, entries);
                         }
@@ -7278,7 +7303,9 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                             }
                         }
                     }
+                    play::on_book_or_menu(inner, &msg);
                     if let Inbound::ContextMenu { serial, entries } = &msg {
+                        play::on_context_menu(inner, *serial, entries);
                         // The request waits for the menu of the object it
                         // named. A menu for anything else is not ours to
                         // answer, and taking the request on it would leave the
@@ -7443,10 +7470,55 @@ fn gump_answer_fits(
     Ok(())
 }
 
+/// What the caller typed in the text fields of a gump: `texts` is
+/// `[{id, text}]`. A field the caller does not name sends the words it
+/// opened with, as a client does. A field that is not on the gump is
+/// refused, because a shard drops or disconnects on it.
+fn gump_texts(
+    view: &uoterm_world::GumpView,
+    args: &Value,
+) -> std::result::Result<Vec<(u16, String)>, String> {
+    let typed: Vec<(u16, String)> = args
+        .get("texts")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let id = u16::try_from(row.get("id")?.as_u64()?).ok()?;
+                    Some((id, row.get("text")?.as_str()?.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some((unknown, _)) = typed
+        .iter()
+        .find(|(id, _)| !view.entries.iter().any(|entry| entry.id == *id))
+    {
+        return Err(format!("text field {unknown} is not on that gump"));
+    }
+    Ok(view
+        .entries
+        .iter()
+        .map(|entry| {
+            let words = typed
+                .iter()
+                .find(|(id, _)| *id == entry.id)
+                .map_or_else(|| entry.text.clone(), |(_, words)| words.clone());
+            (entry.id, words)
+        })
+        .collect())
+}
+
 /// Answers an open gump with a button and its switches, and closes it. The
 /// log names both, so a choice such as a moongate's destination can be seen
 /// afterwards.
-fn answer_gump(inner: &mut Inner, gump: &uoterm_protocol::OpenGump, button: u32, switches: &[u32]) {
+fn answer_gump(
+    inner: &mut Inner,
+    gump: &uoterm_protocol::OpenGump,
+    button: u32,
+    switches: &[u32],
+    texts: &[(u16, String)],
+) {
     tracing::info!(
         gump = gump.gump_id,
         title = gump.text.first().map(String::as_str).unwrap_or_default(),
@@ -7459,6 +7531,7 @@ fn answer_gump(inner: &mut Inner, gump: &uoterm_protocol::OpenGump, button: u32,
         gump.gump_id,
         button,
         switches,
+        texts,
     ));
     inner.world.write().close_gump(gump.gump_id);
 }
@@ -8301,6 +8374,16 @@ fn send_double_click(inner: &mut Inner, serial: Serial) -> bool {
 /// for the ground.
 fn drop_destination(args: &Value) -> Option<Serial> {
     arg_serial_opt(args, "dest").filter(|d| d.is_valid())
+}
+
+/// The exact place of a drop, when the caller gave one: a spot inside the
+/// container, or a tile of the ground with its height.
+fn drop_place(args: &Value) -> Option<(u16, u16, Option<i8>)> {
+    let number = |key: &str| args.get(key).and_then(Value::as_i64);
+    let x = u16::try_from(number("x")?).ok()?;
+    let y = u16::try_from(number("y")?).ok()?;
+    let z = number("z").and_then(|z| i8::try_from(z).ok());
+    Some((x, y, z))
 }
 
 /// The layer a mount rides on.
@@ -9963,22 +10046,17 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let dest = drop_destination(args);
             let grid = drop_grid(inner);
             let serial = arg_serial(args, "serial");
-            match dest {
-                Some(into) => inner
-                    .outbound
-                    .push_back(encode::drop_into_container(serial, into, grid)),
-                None => {
-                    let loc = inner.world.read().self_state.location;
-                    inner.outbound.push_back(encode::drop(
-                        serial,
-                        loc.x,
-                        loc.y,
-                        loc.z,
-                        Serial::WORLD,
-                        grid,
-                    ));
+            let place = drop_place(args);
+            let packet = match (dest, place) {
+                (Some(into), Some((x, y, _))) => encode::drop(serial, x, y, 0, into, grid),
+                (Some(into), None) => encode::drop_into_container(serial, into, grid),
+                (None, place) => {
+                    let feet = inner.world.read().self_state.location;
+                    let (x, y, z) = place.unwrap_or((feet.x, feet.y, Some(feet.z)));
+                    encode::drop(serial, x, y, z.unwrap_or(feet.z), Serial::WORLD, grid)
                 }
-            }
+            };
+            inner.outbound.push_back(packet);
             inner.sent_drop = Some(serial);
             mark_action(inner);
             ToolResult::action(TOOL_DROP)
@@ -10108,10 +10186,15 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                         })
                         .unwrap_or_default()
                 };
-                if let Err(why) = gump_answer_fits(&gump_view(inner, &g), button, &switches) {
+                let view = gump_view(inner, &g);
+                if let Err(why) = gump_answer_fits(&view, button, &switches) {
                     return ToolResult::err(why);
                 }
-                answer_gump(inner, &g, button, &switches);
+                let texts = match gump_texts(&view, args) {
+                    Ok(texts) => texts,
+                    Err(why) => return ToolResult::err(why),
+                };
+                answer_gump(inner, &g, button, &switches, &texts);
                 let mut answered = ToolResult::action(if call.name == TOOL_GUMP_CLOSE {
                     TOOL_GUMP_CLOSE
                 } else {
@@ -10303,6 +10386,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .push_back(encode::vendor_buy(vendor, &[(item, amount)]));
             ToolResult::action(TOOL_VENDOR_BUY)
         }
+        // With a cliloc the menu is asked for and that line is picked at
+        // once, which is what an agent wants. With none it is a human who
+        // wants to see the lines first.
+        TOOL_CONTEXT_MENU if args.get("cliloc").is_none() => play::context_menu(inner, args),
         TOOL_CONTEXT_MENU => {
             let serial = arg_serial(args, "serial");
             let cliloc = arg_u32(args, "cliloc", 0);
@@ -10318,6 +10405,22 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_JOBS => jobs_status(inner),
         TOOL_JOB_START => job_start(inner, args),
         TOOL_JOB_STOP => job_stop(inner),
+        TOOL_WATCH => {
+            let size = args
+                .get("size")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u16)
+                .unwrap_or(RADAR_DEFAULT);
+            ToolResult::ok(play::watch_value(inner, size))
+        }
+        TOOL_PROPERTIES => play::properties(inner, args),
+        TOOL_CLOSE_MENU => play::close_menu(inner),
+        TOOL_SHOP_CHECKOUT => play::shop_checkout(inner, args),
+        TOOL_SHOP_CLOSE => play::shop_close(inner),
+        TOOL_MENU_PICK => play::menu_pick(inner, args),
+        TOOL_BOOK_CLOSE => play::book_close(inner),
+        TOOL_TRADE_GOLD => play::trade_gold(inner, args),
+        TOOL_COMMAND => scripting::command(inner, args),
         TOOL_TAKE_CONTROL => control::take(inner, Instant::now()),
         TOOL_RELEASE_CONTROL => control::release(inner),
         TOOL_RECORD_MACRO => recorder::record_macro(inner, args),

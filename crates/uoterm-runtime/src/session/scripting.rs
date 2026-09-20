@@ -42,6 +42,9 @@ const ARG_LOOP: &str = "loop";
 const A_SCRIPT_RUNS: &str = "a script is running; stop it first";
 const NO_SCRIPT_NAMED: &str = "no script by that name in the scripts folder";
 const RUN_NEEDS_SCRIPT: &str = "run_script needs name or text";
+const COMMAND_NEEDS_TEXT: &str = "command needs text: one script command";
+const COMMAND_IS_FOR_A_HUMAN: &str =
+    "command is for a human at the watch window; an agent uses run_script";
 
 /// What the session keeps for scripts.
 pub(super) struct Scripting {
@@ -231,6 +234,20 @@ pub(super) fn run_script(inner: &mut Inner, args: &Value) -> ToolResult {
         inner.scripting.output.clear();
     }
     started
+}
+
+/// Runs one script command at once, for a human at the watch window: a
+/// skill lock, an ability, a party invite, an answer to a prompt. One act of
+/// a human is not a macro, so the shard's macro switch does not apply.
+/// A command that must wait for the game is not waited for.
+pub(super) fn command(inner: &mut Inner, args: &Value) -> ToolResult {
+    let Some(text) = args.get(ARG_TEXT).and_then(|v| v.as_str()) else {
+        return ToolResult::err(COMMAND_NEEDS_TEXT);
+    };
+    if args.get(crate::tools::ARG_HUMAN).and_then(Value::as_bool) != Some(true) {
+        return ToolResult::err(COMMAND_IS_FOR_A_HUMAN);
+    }
+    run_now(inner, TOOL_COMMAND, text)
 }
 
 fn start_script(inner: &mut Inner, name: String, source: &str, looping: bool) -> ToolResult {

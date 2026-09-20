@@ -17,6 +17,7 @@ uoterm-protocol.workspace = true
 uoterm-world.workspace = true
 uoterm-nav.workspace = true
 uoterm-runtime.workspace = true
+uoterm-assist.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
