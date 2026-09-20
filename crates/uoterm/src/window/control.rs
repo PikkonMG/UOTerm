@@ -14,13 +14,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 use uoterm_runtime::tools::{
-    ARG_HUMAN, TOOL_ATTACK, TOOL_BOOK_CLOSE, TOOL_CAST, TOOL_CLOSE_MENU, TOOL_COMMAND,
-    TOOL_CONTEXT_MENU, TOOL_DEPOSIT, TOOL_DROP, TOOL_EQUIP, TOOL_FOLLOW, TOOL_GUMP_CLOSE,
-    TOOL_GUMP_RESPOND, TOOL_LIFT, TOOL_LOOT, TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROPERTIES,
-    TOOL_RELEASE_CONTROL, TOOL_SAY, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK,
-    TOOL_STOP, TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL,
-    TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK,
-    TOOL_WAR_MODE,
+    ARG_HUMAN, TOOL_ATTACK, TOOL_BOARD_CLOSE, TOOL_BOARD_POST, TOOL_BOARD_READ, TOOL_BOARD_REMOVE,
+    TOOL_BOOK_CLOSE, TOOL_CAST, TOOL_CLOSE_MENU, TOOL_COMMAND, TOOL_CONTEXT_MENU, TOOL_DEPOSIT,
+    TOOL_DROP, TOOL_EQUIP, TOOL_FOLLOW, TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_HOTKEYS,
+    TOOL_LIFT, TOOL_LIST_SCRIPTS, TOOL_LOOT, TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROPERTIES,
+    TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT, TOOL_SAY, TOOL_SCRIPT_READ,
+    TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK,
+    TOOL_STOP, TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT,
+    TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL,
+    TOOL_WALK, TOOL_WAR_MODE,
 };
 
 /// The shard refuses a drop that comes too soon after the lift.
@@ -83,6 +85,15 @@ pub enum Act {
     /// Answer the old-style menu: an entry from one, or none to walk away.
     OldMenuPick(Option<u16>),
     BookClose,
+    /// Ask for the lines of a message of the open bulletin board.
+    BoardRead(u32),
+    BoardPost {
+        subject: String,
+        text: String,
+        reply_to: Option<u32>,
+    },
+    BoardRemove(u32),
+    BoardClose,
     /// Buy or sell the rows of the cart: the item and how many.
     Checkout(Vec<(u32, u16)>),
     ShopClose,
@@ -97,6 +108,18 @@ pub enum Act {
     Cast(u16),
     /// One line of the script language: a prompt answer, a skill lock.
     Command(String),
+    ScriptRun {
+        text: String,
+        looping: bool,
+    },
+    ScriptStop,
+    ScriptSave {
+        name: String,
+        text: String,
+    },
+    /// Start to record what the human does as a macro with this name.
+    RecordStart(String),
+    RecordStop,
     GumpButton {
         gump: u32,
         button: u32,
@@ -126,6 +149,28 @@ pub enum DropTo {
 pub struct Tip {
     pub serial: u32,
     pub lines: Vec<String>,
+}
+
+/// A thing the macro editor asks the session, or Jev, for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Scripts,
+    ScriptText(String),
+    ScriptStatus,
+    /// Plain words that Jev turns into the script lines of one hotkey.
+    LinesFor(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Scripts(Vec<String>),
+    ScriptText {
+        name: String,
+        text: String,
+    },
+    /// The state of the running or last script, in words.
+    ScriptStatus(String),
+    Lines(Result<String, String>),
 }
 
 /// What came of an act, in words for the human.
@@ -189,6 +234,19 @@ impl Act {
             Self::OldMenuPick(Some(index)) => vec![(TOOL_MENU_PICK, json!({ "index": index }))],
             Self::OldMenuPick(None) => vec![(TOOL_MENU_PICK, json!({}))],
             Self::BookClose => vec![(TOOL_BOOK_CLOSE, json!({}))],
+            Self::BoardRead(message) => vec![(TOOL_BOARD_READ, json!({ "message": message }))],
+            Self::BoardPost {
+                subject,
+                text,
+                reply_to,
+            } => vec![(
+                TOOL_BOARD_POST,
+                json!({ "subject": subject, "text": text, "reply_to": reply_to }),
+            )],
+            Self::BoardRemove(message) => {
+                vec![(TOOL_BOARD_REMOVE, json!({ "message": message }))]
+            }
+            Self::BoardClose => vec![(TOOL_BOARD_CLOSE, json!({}))],
             Self::Checkout(rows) => {
                 let items: Vec<Value> = rows
                     .iter()
@@ -207,6 +265,18 @@ impl Act {
             Self::UseSkill(skill) => vec![(TOOL_USE_SKILL, json!({ "skill": skill }))],
             Self::Cast(spell) => vec![(TOOL_CAST, json!({ "spell": spell }))],
             Self::Command(text) => vec![(TOOL_COMMAND, json!({ "text": text }))],
+            Self::ScriptRun { text, looping } => {
+                vec![(TOOL_RUN_SCRIPT, json!({ "text": text, "loop": looping }))]
+            }
+            Self::ScriptStop => vec![(TOOL_STOP_SCRIPT, json!({}))],
+            Self::ScriptSave { name, text } => {
+                vec![(TOOL_SCRIPT_SAVE, json!({ "name": name, "text": text }))]
+            }
+            Self::RecordStart(name) => vec![(
+                TOOL_RECORD_MACRO,
+                json!({ "action": "start", "name": name }),
+            )],
+            Self::RecordStop => vec![(TOOL_RECORD_MACRO, json!({ "action": "stop" }))],
             Self::GumpButton {
                 gump,
                 button,
@@ -251,6 +321,9 @@ impl Act {
             Self::Wear(_) => "Put on.".into(),
             Self::TakeOff(_) => "Taken off.".into(),
             Self::Menu(_) | Self::MenuClose | Self::BookClose => String::new(),
+            Self::BoardRead(_) | Self::BoardClose => String::new(),
+            Self::BoardPost { .. } => "Message posted.".into(),
+            Self::BoardRemove(_) => "Message removed.".into(),
             Self::OldMenuPick(Some(_)) => "Menu answered.".into(),
             Self::OldMenuPick(None) => "Menu closed.".into(),
             Self::MenuPick { .. } => "Menu line picked.".into(),
@@ -263,6 +336,13 @@ impl Act {
             Self::UseSkill(_) => "Skill used.".into(),
             Self::Cast(_) => "Spell cast.".into(),
             Self::Command(text) => format!("Command: {text}"),
+            Self::ScriptRun { .. } => "Macro started.".into(),
+            Self::ScriptStop => "Macro stopped.".into(),
+            Self::ScriptSave { name, .. } => format!("Macro saved: {name}"),
+            Self::RecordStart(name) => {
+                format!("Recording: {name}. Play, then press Stop recording.")
+            }
+            Self::RecordStop => "Recording saved.".into(),
             Self::GumpButton { .. } => "Gump answered.".into(),
             Self::GumpClose(_) => "Gump closed.".into(),
             Self::Order(order, _) => format!("Order: {order}"),
@@ -276,6 +356,8 @@ pub struct Hand {
     reports: Receiver<Report>,
     wanted_tips: Sender<u32>,
     tips: Receiver<Tip>,
+    asks: Sender<Ask>,
+    answers: Receiver<Answer>,
     pub orders_on: bool,
 }
 
@@ -288,13 +370,29 @@ impl Hand {
         let (wanted_tips, tip_inbox) = mpsc::channel();
         let (tip_outbox, tips) = mpsc::channel();
         let (tip_link, tip_ctx) = (link.clone(), ctx.clone());
+        let (tip_link_for_asks, ctx_for_asks, key_for_asks) =
+            (link.clone(), ctx.clone(), key.clone());
         thread::spawn(move || work(&link, key.as_deref(), &inbox, &outbox, &ctx));
         thread::spawn(move || read_tips(&tip_link, &tip_inbox, &tip_outbox, &tip_ctx));
+        let (asks, ask_inbox) = mpsc::channel();
+        let (answer_outbox, answers) = mpsc::channel();
+        let (ask_link, ask_ctx, ask_key) = (tip_link_for_asks, ctx_for_asks, key_for_asks);
+        thread::spawn(move || {
+            answer_asks(
+                &ask_link,
+                ask_key.as_deref(),
+                &ask_inbox,
+                &answer_outbox,
+                &ask_ctx,
+            );
+        });
         Self {
             acts,
             reports,
             wanted_tips,
             tips,
+            asks,
+            answers,
             orders_on,
         }
     }
@@ -303,6 +401,16 @@ impl Hand {
     /// does not wait behind the acts.
     pub fn want_tip(&self, serial: u32) {
         let _ = self.wanted_tips.send(serial);
+    }
+
+    /// Asks for something that comes back as an answer. It does not wait
+    /// behind the acts.
+    pub fn ask(&self, ask: Ask) {
+        let _ = self.asks.send(ask);
+    }
+
+    pub fn new_answers(&self) -> Vec<Answer> {
+        self.answers.try_iter().collect()
     }
 
     pub fn new_tips(&self) -> Vec<Tip> {
@@ -378,9 +486,62 @@ fn read_tips(link: &Link, inbox: &Receiver<u32>, outbox: &Sender<Tip>, ctx: &egu
     }
 }
 
-fn tip_lines(answer: Option<&Value>) -> Vec<String> {
+fn answer_asks(
+    link: &Link,
+    key: Option<&str>,
+    inbox: &Receiver<Ask>,
+    outbox: &Sender<Answer>,
+    ctx: &egui::Context,
+) {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    for ask in inbox {
+        let answer = rt.block_on(answer_one(link, key, ask));
+        if outbox.send(answer).is_err() {
+            return;
+        }
+        ctx.request_repaint();
+    }
+}
+
+async fn answer_one(link: &Link, key: Option<&str>, ask: Ask) -> Answer {
+    match ask {
+        Ask::Scripts => {
+            let listed = link.call(TOOL_LIST_SCRIPTS, json!({})).await.ok();
+            Answer::Scripts(string_list(listed.as_ref(), "scripts"))
+        }
+        Ask::ScriptText(name) => {
+            let read = link.call(TOOL_SCRIPT_READ, json!({ "name": name })).await;
+            let text = read
+                .ok()
+                .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            Answer::ScriptText { name, text }
+        }
+        Ask::ScriptStatus => {
+            let status = link.call(TOOL_SCRIPT_STATUS, json!({})).await.ok();
+            Answer::ScriptStatus(status_words(status.as_ref()))
+        }
+        Ask::LinesFor(wish) => Answer::Lines(match key {
+            None => Err(ORDER_OFF.into()),
+            Some(key) => {
+                let hotkeys = |name: Option<String>| async move {
+                    let args = name.map_or_else(|| json!({}), |name| json!({ "name": name }));
+                    link.call(TOOL_HOTKEYS, args).await
+                };
+                orders::lines_for(key, &wish, hotkeys).await
+            }
+        }),
+    }
+}
+
+fn string_list(answer: Option<&Value>, key: &str) -> Vec<String> {
     answer
-        .and_then(|value| value.get("lines"))
+        .and_then(|value| value.get(key))
         .and_then(Value::as_array)
         .map(|lines| {
             lines
@@ -390,6 +551,25 @@ fn tip_lines(answer: Option<&Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The state of a script in words: its status, and the fault with its line.
+fn status_words(status: Option<&Value>) -> String {
+    let Some(status) = status else {
+        return String::new();
+    };
+    let word = status.get("status").and_then(Value::as_str).unwrap_or("");
+    match (
+        status.get("line").and_then(Value::as_u64),
+        status.get("error").and_then(Value::as_str),
+    ) {
+        (Some(line), Some(error)) => format!("{word}: line {line}: {error}"),
+        _ => word.to_string(),
+    }
+}
+
+fn tip_lines(answer: Option<&Value>) -> Vec<String> {
+    string_list(answer, "lines")
 }
 
 async fn perform(link: &Link, key: Option<&str>, act: Act) -> Report {
@@ -427,6 +607,20 @@ mod tests {
 
     const ITEM: u32 = 0x4000_0001;
     const BAG: u32 = 0x4000_0002;
+
+    #[test]
+    fn a_failed_script_tells_its_line_and_its_fault() {
+        let failed = json!({ "status": "failed", "line": 3, "error": "no such command" });
+        assert_eq!(
+            status_words(Some(&failed)),
+            "failed: line 3: no such command"
+        );
+        assert_eq!(
+            status_words(Some(&json!({ "status": "running" }))),
+            "running"
+        );
+        assert_eq!(status_words(None), "");
+    }
 
     #[test]
     fn a_tooltip_is_the_lines_of_the_answer() {
@@ -502,6 +696,14 @@ mod tests {
             Act::OldMenuPick(Some(1)),
             Act::OldMenuPick(None),
             Act::BookClose,
+            Act::BoardRead(ITEM),
+            Act::BoardPost {
+                subject: "Hi".into(),
+                text: "one".into(),
+                reply_to: None,
+            },
+            Act::BoardRemove(ITEM),
+            Act::BoardClose,
             Act::Checkout(vec![(ITEM, 1)]),
             Act::ShopClose,
             Act::TradeWith(ITEM),
@@ -514,6 +716,17 @@ mod tests {
             Act::UseSkill(1),
             Act::Cast(1),
             Act::Command("promptmsg 'hi'".into()),
+            Act::ScriptRun {
+                text: "msg 'hi'".into(),
+                looping: false,
+            },
+            Act::ScriptStop,
+            Act::ScriptSave {
+                name: "hi".into(),
+                text: "msg 'hi'".into(),
+            },
+            Act::RecordStart("hi".into()),
+            Act::RecordStop,
             Act::GumpButton {
                 gump: 1,
                 button: 1,

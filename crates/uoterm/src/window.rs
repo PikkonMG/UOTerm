@@ -17,9 +17,11 @@ mod deck_ui;
 mod desk;
 mod figure;
 mod floats;
+mod gump_ui;
 mod hud;
 mod kept;
 mod link;
+mod macros_ui;
 mod map_ui;
 mod options_ui;
 mod orders;
@@ -72,6 +74,7 @@ pub struct WatchOptions {
 pub enum Panel {
     Sheet,
     Map,
+    Macros,
 }
 
 /// How the window starts, and whether it is one picture only.
@@ -120,7 +123,9 @@ struct WatchApp {
     deck: deck_ui::DeckUi,
     deals: deal_ui::DealUi,
     pages: pages_ui::PagesUi,
+    gumps: gump_ui::GumpUi,
     world_map: map_ui::MapUi,
+    macros: macros_ui::MacrosUi,
     snapshot: Option<Snapshot>,
 }
 
@@ -167,6 +172,8 @@ impl WatchApp {
             deck: deck_ui::DeckUi::starting(options.shown.open.contains(&Panel::Sheet)),
             deals: deal_ui::DealUi::default(),
             pages: pages_ui::PagesUi::default(),
+            gumps: gump_ui::GumpUi::default(),
+            macros: macros_ui::MacrosUi::starting(options.shown.open.contains(&Panel::Macros)),
             world_map: map_ui::MapUi::starting(options.shown.open.contains(&Panel::Map)),
             snapshot: options.shown.snapshot.map(|path| Snapshot {
                 path,
@@ -277,7 +284,13 @@ impl eframe::App for WatchApp {
                             ring: &mut self.ring,
                             time,
                         };
-                        let mut covered = self.boxes_ui.draw(ui, rect, frame, &mut tools);
+                        let gumps_as_lists = !tools.scene.has_gump_art();
+                        let mut covered =
+                            self.boxes_ui
+                                .draw(ui, rect, frame, &mut tools, gumps_as_lists);
+                        if !gumps_as_lists {
+                            covered.extend(self.gumps.draw(ui, rect, frame, &mut tools));
+                        }
                         let notes = usize::from(!self.audio.note().is_empty());
                         covered.extend(self.options_ui.panel(rect, notes));
                         covered.extend(self.deck.draw(ui, rect, frame, &mut tools, drawn.pack));
@@ -290,6 +303,13 @@ impl eframe::App for WatchApp {
                             tools.scene,
                             tools.hand,
                         ));
+                        covered.extend(self.macros.draw(
+                            ui,
+                            rect,
+                            frame,
+                            &mut tools,
+                            &mut self.deck,
+                        ));
                         covered.extend(tools.ring.draw(ui, rect, frame, tools.hand));
                         covered.extend(tools.desk.split_box(ui, rect, tools.hand));
                         let places = Places {
@@ -300,6 +320,7 @@ impl eframe::App for WatchApp {
                             options: &mut self.options_ui,
                             deck: &mut self.deck,
                             world_map: &mut self.world_map,
+                            macros: &mut self.macros,
                         };
                         self.control_ui
                             .draw(ui, rect, frame, &self.hud, &mut tools, places);

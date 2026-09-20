@@ -19,7 +19,7 @@ use eframe::egui::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
-use uoterm_nav::Action;
+use uoterm_nav::{Action, Deed};
 
 /// Half the side of a tile picture. One tile step moves this far on each
 /// screen axis.
@@ -29,6 +29,8 @@ const Z_PIXELS: f32 = 4.0;
 /// A thing this far above the feet of the character is over his head.
 const OVERHEAD: i16 = 16;
 const CORPSE_GRAPHIC: u16 = 0x2006;
+/// The shard does not tell the window which way a corpse lies.
+const CORPSE_FACING: u8 = 3;
 
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 3.0;
@@ -154,7 +156,7 @@ pub struct Scene {
     /// When each walker last made a footstep sound.
     last_step: HashMap<u32, f64>,
     /// The action each mobile shows now, and when it began.
-    shows: HashMap<u32, (u8, f64)>,
+    shows: HashMap<u32, (Action, f64)>,
     /// The last cue that was taken. None until the first picture.
     last_cue: Option<u64>,
     /// The panels of the last frame. The wheel over one does not zoom.
@@ -688,10 +690,15 @@ impl Scene {
         let newest = frame.cues.iter().map(|cue| cue.seq).max();
         if let Some(seen) = self.last_cue {
             for cue in frame.cues.iter().filter(|cue| cue.seq > seen) {
-                if let WatchCueKind::Animation(action) = cue.kind {
-                    if let Ok(group) = u8::try_from(action) {
-                        self.shows.insert(cue.serial, (group, time));
+                let action = match cue.kind {
+                    WatchCueKind::Animation(group) => u8::try_from(group).ok().map(Action::Shown),
+                    WatchCueKind::Deed(kind, action) => {
+                        self.deed_of(frame, cue.serial, kind, action)
                     }
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    self.shows.insert(cue.serial, (action, time));
                 }
             }
         }
@@ -700,13 +707,38 @@ impl Scene {
             .retain(|_, (_, began)| time - *began < SHOW_SECONDS);
     }
 
+    /// The pictures for a deed of the newer animation packet. They depend
+    /// on the body of the mobile.
+    fn deed_of(&self, frame: &WatchFrame, serial: u32, kind: u16, action: u16) -> Option<Action> {
+        let look = if serial == frame.serial {
+            &frame.look
+        } else {
+            &frame.mobiles.iter().find(|m| m.serial == serial)?.look
+        };
+        self.client
+            .as_ref()?
+            .deed_action(look, Deed::from_packet(kind, action)?)
+    }
+
     /// The pose of a mobile that shows an action now.
     fn shown_pose(&self, serial: u32) -> Option<Pose> {
-        let (group, began) = self.shows.get(&serial)?;
+        let (action, began) = self.shows.get(&serial)?;
         Some(Pose {
-            action: Action::Shown(*group),
+            action: *action,
             tick: ((self.now - began) / SHOW_FRAME_SECONDS) as usize,
         })
+    }
+
+    /// True when gumps can show in their own pictures.
+    pub fn has_gump_art(&self) -> bool {
+        self.client.as_ref().is_some_and(ClientArt::has_gump_art)
+    }
+
+    /// A picture of a gump, for a window that is not the map.
+    pub fn gump_picture(&mut self, gump: u16, hue: u16) -> Option<(egui::TextureId, Sprite)> {
+        let atlas = self.atlas.as_mut()?;
+        let sprite = self.client.as_ref()?.gump_sprite(atlas, gump, hue)?;
+        Some((atlas.texture_id(), sprite))
     }
 
     /// The color of one tile on a map of the world.
@@ -1062,10 +1094,9 @@ impl Scene {
                 }
                 Standing::Corpse(item) => {
                     let center = self.project(rect, [x, y, f32::from(item.z)]);
-                    let radius = Vec2::new(PAWN_RING_RX, PAWN_RING_RY) * self.zoom;
-                    canvas.ring(center, radius, PAWN_RING_WIDTH * self.zoom, theme::CORPSE);
+                    let area = self.corpse(canvas, frame.map, item, center);
                     self.picks.push(Pick {
-                        area: Rect::from_center_size(center, radius * 2.0),
+                        area,
                         serial: item.serial,
                         name: item.name.clone(),
                         kind: PickKind::Corpse,
@@ -1203,7 +1234,13 @@ impl Scene {
             .client
             .as_ref()
             .zip(self.atlas.as_mut())
-            .and_then(|(client, atlas)| client.figure_sprite(atlas, map, look, pose, color));
+            .and_then(|(client, atlas)| {
+                let pose = Pose {
+                    action: client.stance_action(look, pose.action),
+                    ..pose
+                };
+                client.figure_sprite(atlas, map, look, pose, color)
+            });
         let Some(sprite) = sprite else {
             self.plain_figure(canvas, foot, color, alpha);
             return self.figure_rect(foot);
@@ -1213,6 +1250,33 @@ impl Scene {
             Vec2::new(sprite.width, sprite.height) * zoom,
         );
         canvas.sprite(sprite, area, theme::with_alpha(Color32::WHITE, alpha));
+        area
+    }
+
+    /// A corpse is the fallen body. The amount of a corpse item is the body
+    /// it was. With no picture of the death, a ring marks the place.
+    fn corpse(&mut self, canvas: &mut Canvas, map: u8, item: &WatchItem, center: Pos2) -> Rect {
+        let look = WatchLook {
+            body: item.amount,
+            hue: item.hue,
+            direction: CORPSE_FACING,
+            ..WatchLook::default()
+        };
+        let sprite = self
+            .client
+            .as_ref()
+            .zip(self.atlas.as_mut())
+            .and_then(|(client, atlas)| client.corpse_sprite(atlas, map, &look, theme::CORPSE));
+        let Some(sprite) = sprite else {
+            let radius = Vec2::new(PAWN_RING_RX, PAWN_RING_RY) * self.zoom;
+            canvas.ring(center, radius, PAWN_RING_WIDTH * self.zoom, theme::CORPSE);
+            return Rect::from_center_size(center, radius * 2.0);
+        };
+        let area = Rect::from_min_size(
+            center - sprite.anchor * self.zoom,
+            Vec2::new(sprite.width, sprite.height) * self.zoom,
+        );
+        canvas.sprite(sprite, area, Color32::WHITE);
         area
     }
 

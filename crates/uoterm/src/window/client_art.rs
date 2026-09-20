@@ -10,12 +10,14 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uoterm_nav::{
-    land_is_ignored, AnimData, ArtCycles, ArtData, ArtPixels, HueData, MulMap, MultiData,
-    MultiPiece, RadarColors, TileQuery, TILE_ANIMATED, TILE_PARTIAL_HUE,
+    land_is_ignored, Action, AnimData, ArtCycles, ArtData, ArtPixels, Deed, GumpArt, HueData,
+    MulMap, MultiData, MultiPiece, RadarColors, Stance, TileQuery, TILE_ANIMATED, TILE_PARTIAL_HUE,
 };
 
 /// How many tiles the window remembers. A full window shows about four
 /// thousand, so this is a few windows of walking.
+/// The layers of the two hands. A weapon or a shield is on one of them.
+const WEAPON_LAYERS: [u8; 2] = [1, 2];
 const CELL_CACHE_CAP: usize = 24_000;
 /// Item graphics that the client never draws.
 const NO_DRAW_GRAPHICS: [u16; 3] = [0x0001, 0x21BC, 0x63D3];
@@ -51,6 +53,8 @@ pub struct ClientArt {
     cycles: Option<ArtCycles>,
     /// None when the client files hold no houses and boats.
     multis: Option<MultiData>,
+    /// None when the client files hold no gump pictures.
+    gumps: Option<GumpArt>,
     /// None when the client files hold no colors for a world map.
     radar: Option<RadarColors>,
     /// None marks a map the client files do not hold.
@@ -73,6 +77,7 @@ impl ClientArt {
             cycles: ArtCycles::open(uopath).ok(),
             multis: MultiData::open(uopath).ok(),
             radar: RadarColors::open(uopath).ok(),
+            gumps: GumpArt::open(uopath).ok(),
             maps: HashMap::new(),
             cells: HashMap::new(),
         })
@@ -151,6 +156,19 @@ impl ClientArt {
         })
     }
 
+    /// True when the client files hold the pictures of gumps.
+    pub fn has_gump_art(&self) -> bool {
+        self.gumps.is_some()
+    }
+
+    pub fn gump_sprite(&self, atlas: &mut Atlas, gump: u16, hue: u16) -> Option<Sprite> {
+        atlas.sprite(ArtKey::Gump { gump, hue }, || {
+            let art = self.gumps.as_ref()?.gump(gump)?;
+            let ramp = self.hues.as_ref().and_then(|h| h.ramp(hue, false));
+            Some(picture_of(&art, ramp))
+        })
+    }
+
     /// The color of one tile on a map of the world: the color of its
     /// highest item, or of its land. None past the edge of the map.
     pub fn radar_rgb(&mut self, map_index: u8, x: u16, y: u16) -> Option<[u8; 3]> {
@@ -196,6 +214,49 @@ impl ClientArt {
     /// The color of words written in a hue.
     pub fn text_rgb(&self, hue: u16) -> Option<[u8; 3]> {
         self.hues.as_ref()?.text_rgb(hue)
+    }
+
+    /// The action that shows a deed of a mobile, such as a swing or a cast.
+    pub fn deed_action(&self, look: &WatchLook, deed: Deed) -> Option<Action> {
+        self.anim
+            .as_ref()?
+            .deed_action(look.body, deed, figure::is_mounted(look))
+    }
+
+    /// The action of a mobile for the way he holds himself. A person on
+    /// foot in war mode stands ready, and one with a weapon walks armed.
+    pub fn stance_action(&self, look: &WatchLook, action: Action) -> Action {
+        let Some(anim) = self.anim.as_ref().filter(|_| !figure::is_mounted(look)) else {
+            return action;
+        };
+        let armed = look
+            .equipment
+            .iter()
+            .any(|item| WEAPON_LAYERS.contains(&item.layer));
+        let stance = Stance {
+            armed,
+            war: look.war,
+        };
+        anim.stance_action(look.body, action, stance)
+    }
+
+    /// The picture of a fallen body: the last picture of its death.
+    pub fn corpse_sprite(
+        &self,
+        atlas: &mut Atlas,
+        map_index: u8,
+        look: &WatchLook,
+        outline: Color32,
+    ) -> Option<Sprite> {
+        let action = self.deed_action(look, Deed::Die)?;
+        let source = figure::Source {
+            anim: self.anim.as_ref()?,
+            hues: self.hues.as_ref(),
+            tiledata: self.tiledata(map_index)?,
+            cache: &self.frames,
+        };
+        let last = source.cycle(look, action).saturating_sub(1);
+        self.figure_sprite(atlas, map_index, look, Pose { action, tick: last }, outline)
     }
 
     /// True when the body is a person: a human, an elf, a gargoyle.

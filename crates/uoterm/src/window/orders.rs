@@ -193,24 +193,170 @@ pub fn api_key() -> Option<String> {
         .filter(|key| !key.is_empty())
 }
 
-/// Asks Jev about one order. The error is words for the human.
-pub async fn ask(key: &str, order: &str, frame: &WatchFrame) -> Result<Act, String> {
+/// Sends one request to Jev. The error is words for the human.
+async fn post(key: &str, request: &Value) -> Result<Value, String> {
     let response = reqwest::Client::new()
         .post(API_URL)
         .bearer_auth(key)
-        .json(&request(order, frame))
+        .json(request)
         .send()
         .await
         .map_err(|e| format!("TypeSafe did not answer: {e}"))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("TypeSafe refused the order: HTTP {status}"));
+        return Err(format!("TypeSafe refused the request: HTTP {status}"));
     }
-    let body: Value = response
+    response
         .json()
         .await
-        .map_err(|e| format!("TypeSafe gave a bad answer: {e}"))?;
-    decide(&body, frame)
+        .map_err(|e| format!("TypeSafe gave a bad answer: {e}"))
+}
+
+/// Asks Jev about one order. The error is words for the human.
+pub async fn ask(key: &str, order: &str, frame: &WatchFrame) -> Result<Act, String> {
+    decide(&post(key, &request(order, frame)).await?, frame)
+}
+
+// The macro editor: plain words become one hotkey, and the script lines of
+// that hotkey go into the macro. Jev answers two closed questions: which
+// group of hotkeys, and which hotkey of that group.
+
+const Q_GROUP: &str = "group";
+const Q_HOTKEY: &str = "hotkey";
+const HOTKEY_PREFIX: &str = "hotkey_";
+/// How many names of a group tell Jev what the group holds.
+const GROUP_SAMPLE: usize = 8;
+/// A group such as the spells has hundreds of hotkeys. Jev gets this many,
+/// the ones that share a word with the wish first.
+const MAX_HOTKEYS: usize = 80;
+const NO_SUCH_HOTKEY: &str = "No hotkey does that. Say it in different words, or write the line.";
+const NO_LINES: &str = "That hotkey is not made of script lines. Write the line.";
+
+/// The hotkeys of the session, by group.
+pub type HotkeyGroups = std::collections::BTreeMap<String, Vec<String>>;
+
+pub fn hotkey_groups(listed: &Value) -> HotkeyGroups {
+    listed
+        .get("hotkeys")
+        .and_then(Value::as_object)
+        .map(|groups| {
+            groups
+                .iter()
+                .map(|(group, names)| {
+                    let names = names
+                        .as_array()
+                        .map(|names| {
+                            names
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (group.clone(), names)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn group_request(wish: &str, groups: &HotkeyGroups) -> Value {
+    let mut criteria: Map<String, Value> = groups
+        .iter()
+        .map(|(group, names)| {
+            let sample: Vec<&str> = names
+                .iter()
+                .take(GROUP_SAMPLE)
+                .map(String::as_str)
+                .collect();
+            (
+                group.clone(),
+                json!(format!(
+                    "Hotkeys for {group}, such as: {}.",
+                    sample.join(", ")
+                )),
+            )
+        })
+        .collect();
+    criteria.insert(NO_THING.into(), json!("No group fits the wish."));
+    json!({
+        "model": MODEL,
+        "state": { "wish": wish },
+        "questions": { Q_GROUP: {
+            "type": "choice",
+            "instructions": "A player of an online role-playing game writes a macro. `wish` says what the next step of the macro must do. Which group of hotkeys holds that step?",
+            "criteria": criteria,
+        }}
+    })
+}
+
+/// The hotkeys of one group that Jev picks from: the ones that share a word
+/// with the wish first, then the others, up to the limit.
+pub fn hotkey_choices<'a>(wish: &str, names: &'a [String]) -> Vec<&'a str> {
+    let wish = wish.to_lowercase();
+    let wish_words: Vec<&str> = wish.split_whitespace().collect();
+    let shares = |name: &str| {
+        let name = name.to_lowercase();
+        name.split_whitespace()
+            .any(|word| wish_words.contains(&word))
+    };
+    let (near, far): (Vec<&str>, Vec<&str>) = names
+        .iter()
+        .map(String::as_str)
+        .partition(|name| shares(name));
+    near.into_iter().chain(far).take(MAX_HOTKEYS).collect()
+}
+
+pub fn hotkey_request(wish: &str, choices: &[&str]) -> Value {
+    let mut criteria: Map<String, Value> = choices
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (format!("{HOTKEY_PREFIX}{i}"), json!(name)))
+        .collect();
+    criteria.insert(NO_THING.into(), json!("No hotkey of this list does it."));
+    json!({
+        "model": MODEL,
+        "state": { "wish": wish },
+        "questions": { Q_HOTKEY: {
+            "type": "choice",
+            "instructions": "`wish` says what the next step of a macro must do. Which one hotkey does that?",
+            "criteria": criteria,
+        }}
+    })
+}
+
+/// The hotkey Jev picked from `choices`, when it is sure enough.
+pub fn picked_hotkey<'a>(response: &Value, choices: &[&'a str]) -> Option<&'a str> {
+    let answers = response.get("answers")?;
+    let index: usize = sure_choice(answers, Q_HOTKEY)?
+        .strip_prefix(HOTKEY_PREFIX)?
+        .parse()
+        .ok()?;
+    choices.get(index).copied()
+}
+
+/// The script lines for a wish in plain words. `hotkeys` asks the session:
+/// with no name for the groups, and with a name for the lines of one hotkey.
+pub async fn lines_for<F, Fut>(key: &str, wish: &str, hotkeys: F) -> Result<String, String>
+where
+    F: Fn(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    let groups = hotkey_groups(&hotkeys(None).await?);
+    let group_answer = post(key, &group_request(wish, &groups)).await?;
+    let answers = group_answer.get("answers").unwrap_or(&Value::Null);
+    let names = sure_choice(answers, Q_GROUP)
+        .and_then(|group| groups.get(group))
+        .ok_or(NO_SUCH_HOTKEY)?;
+    let choices = hotkey_choices(wish, names);
+    let hotkey_answer = post(key, &hotkey_request(wish, &choices)).await?;
+    let name = picked_hotkey(&hotkey_answer, &choices).ok_or(NO_SUCH_HOTKEY)?;
+    let hotkey = hotkeys(Some(name.to_string())).await?;
+    hotkey
+        .get("lines")
+        .and_then(Value::as_str)
+        .map(|lines| lines.trim_end().to_string())
+        .ok_or_else(|| NO_LINES.to_string())
 }
 
 #[cfg(test)]
@@ -255,6 +401,43 @@ mod tests {
             Q_ACT: { "type": "choice", "choice": act, "confidence": act_sure },
             Q_THING: { "type": "choice", "choice": thing, "confidence": thing_sure },
         }})
+    }
+
+    #[test]
+    fn a_wish_becomes_a_group_question_and_then_a_hotkey_question() {
+        let listed = json!({ "hotkeys": {
+            "actions": ["Bandage Self", "Open Door"],
+            "spells": ["Cast Heal", "Cast Greater Heal", "Cast Fireball"],
+        }});
+        let groups = hotkey_groups(&listed);
+        assert_eq!(groups["spells"].len(), 3);
+        let request = group_request("heal myself with a big spell", &groups);
+        let criteria = &request["questions"][Q_GROUP]["criteria"];
+        assert!(criteria["spells"].as_str().unwrap().contains("Cast Heal"));
+        assert!(criteria.get(NO_THING).is_some());
+        let choices = hotkey_choices("cast greater heal", &groups["spells"]);
+        assert_eq!(choices.len(), 3);
+        let request = hotkey_request("cast greater heal", &choices);
+        assert_eq!(
+            request["questions"][Q_HOTKEY]["criteria"]["hotkey_1"],
+            "Cast Greater Heal"
+        );
+        let sure = json!({ "answers": { Q_HOTKEY: { "choice": "hotkey_1", "confidence": 0.9 } } });
+        assert_eq!(picked_hotkey(&sure, &choices), Some("Cast Greater Heal"));
+        let unsure =
+            json!({ "answers": { Q_HOTKEY: { "choice": "hotkey_1", "confidence": 0.2 } } });
+        assert_eq!(picked_hotkey(&unsure, &choices), None);
+        let none = json!({ "answers": { Q_HOTKEY: { "choice": NO_THING, "confidence": 0.9 } } });
+        assert_eq!(picked_hotkey(&none, &choices), None);
+    }
+
+    #[test]
+    fn a_large_group_is_cut_with_the_near_names_first() {
+        let mut names: Vec<String> = (0..200).map(|i| format!("Cast Spell {i}")).collect();
+        names.push("Use Bandage".into());
+        let choices = hotkey_choices("bandage me", &names);
+        assert_eq!(choices.len(), MAX_HOTKEYS);
+        assert_eq!(choices[0], "Use Bandage");
     }
 
     #[test]

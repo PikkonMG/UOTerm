@@ -19,6 +19,11 @@ pub enum ArtKey {
         graphic: u16,
         hue: u16,
     },
+    /// A picture of a gump: a background, a button, a check box.
+    Gump {
+        gump: u16,
+        hue: u16,
+    },
     /// One mobile as he looks now, under the hash of his look.
     Figure(u64),
 }

@@ -35,7 +35,7 @@ const GUMP_MAX_ROWS: usize = 10;
 const GUMP_ROW: f32 = 26.0;
 const BOX_SIDE: f32 = 14.0;
 const BOX_RADIUS: u8 = 3;
-const FIRST_PAGE: u32 = 1;
+pub(super) const FIRST_PAGE: u32 = 1;
 const EVERY_PAGE: u32 = 0;
 
 const WORDS_CLOSE: &str = "Close";
@@ -146,7 +146,7 @@ fn next_first_row(first_row: usize, turned: f32, last_first_row: usize) -> usize
     next.min(last_first_row)
 }
 
-fn on_page(item_page: u32, shown: u32) -> bool {
+pub(super) fn on_page(item_page: u32, shown: u32) -> bool {
     item_page == EVERY_PAGE || item_page == shown
 }
 
@@ -174,6 +174,7 @@ impl BoxesUi {
         rect: Rect,
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
+        gumps_as_lists: bool,
     ) -> Vec<Rect> {
         let mut covered = Vec::new();
         let mut top = rect.top() + LEFT_COLUMN_TOP;
@@ -197,7 +198,9 @@ impl BoxesUi {
         }
         self.gumps
             .retain(|id, _| frame.gumps.iter().any(|g| g.gump == *id));
-        if let Some(gump) = frame.gumps.first() {
+        // With the gump art of the client, the gumps show in their own
+        // layout, not as lists.
+        if let Some(gump) = frame.gumps.first().filter(|_| gumps_as_lists) {
             let at = Pos2::new(
                 rect.right() - theme::SCREEN_MARGIN - GUMP_WIDTH,
                 rect.top() + GUMP_TOP,

@@ -62,6 +62,8 @@ pub struct WatchLook {
     pub direction: u8,
     /// His last step was a running step.
     pub running: bool,
+    /// He is in war mode.
+    pub war: bool,
     pub equipment: Vec<WatchEquip>,
 }
 
@@ -202,6 +204,8 @@ pub struct WatchPartyMember {
 pub enum WatchCueKind {
     Damage(u16),
     Animation(u16),
+    /// The kind and the action of the newer animation packet.
+    Deed(u16, u16),
     Effect(WatchEffect),
 }
 
@@ -273,6 +277,27 @@ pub struct WatchTrade {
 pub struct WatchOldMenu {
     pub question: String,
     pub entries: Vec<WatchPackItem>,
+}
+
+/// One message of a bulletin board. The lines come when it is read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchPost {
+    pub serial: u32,
+    /// The message this one answers.
+    pub parent: Option<u32>,
+    pub poster: String,
+    pub subject: String,
+    pub time: String,
+    pub lines: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchBoard {
+    pub serial: u32,
+    pub name: String,
+    /// The message that was read last.
+    pub reading: Option<u32>,
+    pub posts: Vec<WatchPost>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -351,6 +376,8 @@ pub struct WatchFrame {
     pub party: Vec<String>,
     pub containers: Vec<WatchContainer>,
     pub gumps: Vec<WatchGump>,
+    /// The open gumps as a screen draws them. Only `watch` sends them.
+    pub gump_layouts: Vec<uoterm_world::GumpLayout>,
     pub sounds: Vec<WatchSound>,
     /// The music the shard asked for. None for silence.
     pub music: Option<u16>,
@@ -371,6 +398,7 @@ pub struct WatchFrame {
     pub text_entry: Option<String>,
     pub old_menu: Option<WatchOldMenu>,
     pub book: Option<WatchBook>,
+    pub board: Option<WatchBoard>,
     pub context_menu: Option<WatchMenu>,
     pub shop: Option<WatchShop>,
     pub trade: Option<WatchTrade>,
@@ -475,6 +503,10 @@ impl WatchFrame {
             party: string_list(value.get("party")),
             containers: list_of(value.get("containers"), watch_container),
             gumps: list_of(value.get("gumps"), watch_gump),
+            gump_layouts: value
+                .get("gump_layouts")
+                .and_then(|layouts| serde_json::from_value(layouts.clone()).ok())
+                .unwrap_or_default(),
             sounds: list_of(value.get("sounds"), |cue| WatchSound {
                 seq: cue.get("seq").and_then(Value::as_u64).unwrap_or(0),
                 sound: num_field(Some(cue), "sound"),
@@ -517,6 +549,19 @@ impl WatchFrame {
             old_menu: shown(value, "menu").map(|menu| WatchOldMenu {
                 question: string_field(Some(menu), "question"),
                 entries: list_of(menu.get("entries"), pack_item),
+            }),
+            board: shown(value, "board").map(|board| WatchBoard {
+                serial: serial_field(board, "serial"),
+                name: string_field(Some(board), "name"),
+                reading: shown(board, "reading").map(|_| serial_field(board, "reading")),
+                posts: list_of(board.get("posts"), |post| WatchPost {
+                    serial: serial_field(post, "serial"),
+                    parent: shown(post, "parent").map(|_| serial_field(post, "parent")),
+                    poster: string_field(Some(post), "poster"),
+                    subject: string_field(Some(post), "subject"),
+                    time: string_field(Some(post), "time"),
+                    lines: shown(post, "lines").map(|lines| string_list(Some(lines))),
+                }),
             }),
             book: shown(value, "book").map(|book| WatchBook {
                 serial: serial_field(book, "serial"),
@@ -750,6 +795,8 @@ fn watch_mobiles(
 /// The running bit of a facing byte. The other bits are the direction.
 const DIRECTION_MASK: u16 = 0x07;
 const DIRECTION_RUN_BIT: u16 = 0x80;
+/// The bit of the flags of a mobile that says he is in war mode.
+const MOBILE_FLAG_WAR: u16 = 0x40;
 
 fn watch_look(mobile: Option<&Value>) -> WatchLook {
     let equipment = mobile
@@ -770,6 +817,7 @@ fn watch_look(mobile: Option<&Value>) -> WatchLook {
         body: num_field(mobile, "body"),
         hue: num_field(mobile, "hue"),
         direction: (num_field(mobile, "direction") & DIRECTION_MASK) as u8,
+        war: num_field(mobile, "flags") & MOBILE_FLAG_WAR != 0 || bool_field(mobile, "war"),
         running: bool_field(mobile, "running")
             || num_field(mobile, "direction") & DIRECTION_RUN_BIT != 0,
         equipment,
@@ -864,6 +912,7 @@ fn watch_cue(cue: &Value) -> Option<WatchCue> {
     let kind = match cue.get("kind").and_then(Value::as_str)? {
         "damage" => WatchCueKind::Damage(num_field(Some(cue), "amount")),
         "animation" => WatchCueKind::Animation(num_field(Some(cue), "action")),
+        "deed" => WatchCueKind::Deed(num_field(Some(cue), "deed"), num_field(Some(cue), "action")),
         "effect" => {
             let effect = cue.get("effect")?;
             let place = |key: &str| {
@@ -1046,6 +1095,7 @@ mod tests {
                 { "seq": 1, "serial": 5, "kind": "damage", "amount": 12 },
                 { "seq": 2, "serial": 5, "kind": "animation", "action": 9 },
                 { "seq": 3, "serial": 5, "kind": "unknown" },
+                { "seq": 5, "serial": 5, "kind": "deed", "deed": 11, "action": 1 },
                 { "seq": 4, "serial": 5, "kind": "effect", "effect": { "kind": 0, "source": 5,
                   "target": 9, "graphic": 14036, "hue": 33, "duration": 0, "speed": 7,
                   "from": { "x": 10, "y": 20, "z": 5 }, "to": { "x": 14, "y": 23, "z": -2 } } }
@@ -1053,6 +1103,12 @@ mod tests {
             "text_entry": { "title": "", "description": "Name your pet" },
             "menu": { "question": "What do you make?", "entries": [
                 { "graphic": 3922, "hue": 0, "name": "dagger" }
+            ]},
+            "board": { "serial": 50, "name": "town board", "reading": 52, "posts": [
+                { "serial": 51, "parent": null, "poster": "Ann", "subject": "Ore", "time": "Day 1",
+                  "lines": null },
+                { "serial": 52, "parent": 51, "poster": "Bob", "subject": "Re: Ore",
+                  "time": "Day 2", "lines": ["I buy."] }
             ]},
             "book": { "serial": 99, "title": "Tales", "author": "Ann", "page_count": 2,
                 "pages": [["Once", "upon"], []] },
@@ -1080,9 +1136,10 @@ mod tests {
         assert_eq!((frame.speech[0].seq, frame.speech[0].kind), (7, 9));
         assert_eq!((frame.skills[0].value, frame.skills[0].lock), (702, 2));
         assert_eq!(frame.party_members[0].hits_percent, Some(25));
-        assert_eq!(frame.cues.len(), 3);
-        let WatchCueKind::Effect(effect) = frame.cues[2].kind else {
-            panic!("the third cue is an effect");
+        assert_eq!(frame.cues.len(), 4);
+        assert_eq!(frame.cues[2].kind, WatchCueKind::Deed(11, 1));
+        let WatchCueKind::Effect(effect) = frame.cues[3].kind else {
+            panic!("the last cue is an effect");
         };
         assert_eq!(
             (effect.target, effect.graphic, effect.to),
@@ -1100,6 +1157,14 @@ mod tests {
             }]
         );
         assert_eq!(frame.old_menu.as_ref().unwrap().entries[0].name, "dagger");
+        let board = frame.board.as_ref().unwrap();
+        assert_eq!((board.reading, board.posts[0].parent), (Some(52), None));
+        assert_eq!(board.posts[1].parent, Some(51));
+        assert_eq!(
+            board.posts[1].lines.as_deref(),
+            Some(&["I buy.".to_string()][..])
+        );
+        assert!(board.posts[0].lines.is_none());
         let book = frame.book.as_ref().unwrap();
         assert_eq!((book.pages.len(), book.pages[0][1].as_str()), (2, "upon"));
         assert_eq!(frame.cues[0].kind, WatchCueKind::Damage(12));

@@ -1,11 +1,11 @@
-//! Two windows the shard opens that are not gumps: the old-style menu with
-//! a question and a list of answers, and the book. Each one shows at all
+//! Three windows the shard opens that are not gumps: the old-style menu
+//! with a question and a list of answers, the book, and the bulletin board. Each one shows at all
 //! times. The clicks work only while the human has control.
 
 use super::boxes_ui::{scrolled, Tools, CELL_RADIUS};
 use super::control::Act;
 use super::theme::{self, number_font, text_font, title_font};
-use crate::view::{WatchBook, WatchFrame, WatchOldMenu};
+use crate::view::{WatchBoard, WatchBook, WatchFrame, WatchOldMenu, WatchPost};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 
 const MENU_WIDTH: f32 = 340.0;
@@ -27,12 +27,31 @@ const WORDS_CANCEL: &str = "Cancel";
 const WORDS_CLOSE: &str = "Close";
 const WORDS_BACK: &str = "Back";
 const WORDS_NEXT: &str = "Next";
+const WORDS_POST: &str = "Post";
+const WORDS_REPLY: &str = "Reply";
+const WORDS_REMOVE: &str = "Remove";
+const WORDS_PICK_ONE: &str = "Click a message to read it.";
+const WORDS_LOADING: &str = "The message comes in a moment.";
+const HINT_SUBJECT: &str = "Subject";
+const HINT_TEXT: &str = "Your message";
+
+const BOARD_LIST_WIDTH: f32 = 300.0;
+const BOARD_TEXT_WIDTH: f32 = 330.0;
+const BOARD_ROWS: usize = 9;
+const BOARD_ROW: f32 = 36.0;
+const BOARD_WRITE_ROWS: usize = 4;
+/// An answer stands a little to the right of the message it answers.
+const REPLY_INDENT: f32 = 14.0;
+const MAX_INDENTS: usize = 4;
 
 #[derive(Default)]
 pub struct PagesUi {
     first_entry: usize,
     /// The book that is open, and the left page that shows, from zero.
     book_at: Option<(u32, usize)>,
+    first_post: usize,
+    subject: String,
+    text: String,
 }
 
 /// The left page after a turn, kept inside the book.
@@ -48,7 +67,7 @@ fn turned(left_page: usize, forward: bool, page_count: usize) -> usize {
 impl PagesUi {
     pub fn draw(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         rect: Rect,
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
@@ -61,6 +80,10 @@ impl PagesUi {
         match &frame.book {
             Some(book) => covered.push(self.book(ui, rect, book, frame, tools)),
             None => self.book_at = None,
+        }
+        match &frame.board {
+            Some(board) => covered.push(self.board(ui, rect, board, frame, tools)),
+            None => self.first_post = 0,
         }
         covered
     }
@@ -247,9 +270,221 @@ impl PagesUi {
     }
 }
 
+/// The messages of a board with each answer under its message, and how
+/// deep each one stands. A message whose parent is gone stands at the left.
+fn threaded(posts: &[WatchPost]) -> Vec<(&WatchPost, usize)> {
+    fn add<'a>(
+        posts: &'a [WatchPost],
+        parent: Option<u32>,
+        depth: usize,
+        out: &mut Vec<(&'a WatchPost, usize)>,
+    ) {
+        for post in posts.iter().filter(|post| post.parent == parent) {
+            out.push((post, depth));
+            add(posts, Some(post.serial), depth + 1, out);
+        }
+    }
+    let known = |serial: u32| posts.iter().any(|post| post.serial == serial);
+    let mut out = Vec::new();
+    add(posts, None, 0, &mut out);
+    for orphan in posts
+        .iter()
+        .filter(|post| post.parent.is_some_and(|parent| !known(parent)))
+    {
+        out.push((orphan, 0));
+        add(posts, Some(orphan.serial), 1, &mut out);
+    }
+    out
+}
+
+impl PagesUi {
+    fn board(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        board: &WatchBoard,
+        frame: &WatchFrame,
+        tools: &mut Tools<'_>,
+    ) -> Rect {
+        let list_height = BOARD_ROWS as f32 * BOARD_ROW;
+        let panel = Rect::from_center_size(
+            rect.center(),
+            Vec2::new(
+                BOARD_LIST_WIDTH + BOOK_GUTTER + BOARD_TEXT_WIDTH + theme::PANEL_PAD * 2.0,
+                TITLE_ROW + list_height + FOOT_ROW + theme::PANEL_PAD * 2.0,
+            ),
+        );
+        theme::panel(ui.painter(), panel);
+        let inner = panel.shrink(theme::PANEL_PAD);
+        let live = frame.human_control;
+        ui.painter().text(
+            inner.left_top(),
+            Align2::LEFT_TOP,
+            &board.name,
+            title_font(theme::SIZE_TITLE),
+            theme::TEXT,
+        );
+        let rows = threaded(&board.posts);
+        let last_first = rows.len().saturating_sub(BOARD_ROWS);
+        self.first_post = scrolled(ui, panel, self.first_post, last_first);
+        for (i, (post, depth)) in rows
+            .iter()
+            .skip(self.first_post)
+            .take(BOARD_ROWS)
+            .enumerate()
+        {
+            let indent = REPLY_INDENT * (*depth).min(MAX_INDENTS) as f32;
+            let row = Rect::from_min_size(
+                inner.left_top() + Vec2::new(indent, TITLE_ROW + i as f32 * BOARD_ROW),
+                Vec2::new(BOARD_LIST_WIDTH - indent, BOARD_ROW - theme::ROW_GAP / 2.0),
+            );
+            let response = ui.interact(row, Id::new(("board-post", post.serial)), Sense::click());
+            let fill = match (board.reading == Some(post.serial), response.hovered()) {
+                (true, _) => theme::BUTTON_HOVER,
+                (false, true) if live => theme::BUTTON_HOVER,
+                _ => theme::BUTTON,
+            };
+            let painter = ui.painter().with_clip_rect(row);
+            painter.rect_filled(row, CornerRadius::same(CELL_RADIUS), fill);
+            painter.text(
+                row.left_top() + Vec2::new(theme::ROW_GAP, 2.0),
+                Align2::LEFT_TOP,
+                &post.subject,
+                text_font(theme::SIZE_BODY),
+                theme::TEXT,
+            );
+            painter.text(
+                row.left_bottom() + Vec2::new(theme::ROW_GAP, -2.0),
+                Align2::LEFT_BOTTOM,
+                format!("{}  {}", post.poster, post.time),
+                text_font(theme::SIZE_SMALL),
+                theme::TEXT_FAINT,
+            );
+            if live && response.clicked() {
+                tools.hand.act(Act::BoardRead(post.serial));
+            }
+        }
+        let reading = board
+            .reading
+            .and_then(|serial| board.posts.iter().find(|post| post.serial == serial));
+        let text_left = inner.left() + BOARD_LIST_WIDTH + BOOK_GUTTER;
+        let write_height = BOARD_WRITE_ROWS as f32 * BOOK_LINE + BOARD_ROW;
+        let paper = Rect::from_min_max(
+            Pos2::new(text_left, inner.top() + TITLE_ROW),
+            Pos2::new(
+                inner.right(),
+                inner.top() + TITLE_ROW + list_height - write_height,
+            ),
+        );
+        ui.painter()
+            .rect_filled(paper, CornerRadius::same(CELL_RADIUS), PAPER);
+        let words = match reading.map(|post| post.lines.as_ref()) {
+            None => WORDS_PICK_ONE.to_string(),
+            Some(None) => WORDS_LOADING.to_string(),
+            Some(Some(lines)) => lines.join("\n"),
+        };
+        let mut job = egui::text::LayoutJob::single_section(
+            words,
+            egui::TextFormat::simple(text_font(theme::SIZE_BODY), INK),
+        );
+        job.wrap.max_width = paper.width() - theme::PANEL_PAD * 2.0;
+        let galley = ui.painter().layout_job(job);
+        ui.painter().with_clip_rect(paper).galley(
+            paper.left_top() + Vec2::splat(theme::PANEL_PAD / 2.0),
+            galley,
+            INK,
+        );
+        if !live {
+            return panel;
+        }
+        let subject_row = Rect::from_min_size(
+            Pos2::new(text_left, paper.bottom() + theme::ROW_GAP),
+            Vec2::new(BOARD_TEXT_WIDTH, BOARD_ROW - theme::ROW_GAP * 2.0),
+        );
+        let text_box = Rect::from_min_max(
+            Pos2::new(text_left, subject_row.bottom() + theme::ROW_GAP),
+            Pos2::new(inner.right(), inner.top() + TITLE_ROW + list_height),
+        );
+        for field in [subject_row, text_box] {
+            ui.painter()
+                .rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+        }
+        ui.put(
+            subject_row,
+            egui::TextEdit::singleline(&mut self.subject)
+                .frame(false)
+                .hint_text(HINT_SUBJECT)
+                .font(text_font(theme::SIZE_BODY))
+                .text_color(theme::TEXT),
+        );
+        ui.put(
+            text_box,
+            egui::TextEdit::multiline(&mut self.text)
+                .frame(false)
+                .hint_text(HINT_TEXT)
+                .font(text_font(theme::SIZE_BODY))
+                .text_color(theme::TEXT),
+        );
+        let foot = Pos2::new(inner.left(), inner.bottom() - FOOT_ROW + theme::ROW_GAP);
+        let (post_at, posted) = theme::button(ui, foot, WORDS_POST, theme::GOAL);
+        let mut next = Pos2::new(post_at.right() + theme::ROW_GAP, foot.y);
+        let mut replied = false;
+        let mut removed = false;
+        if reading.is_some() {
+            let (at, pressed) = theme::button(ui, next, WORDS_REPLY, theme::TEXT);
+            replied = pressed;
+            let (at, pressed) = theme::button(
+                ui,
+                Pos2::new(at.right() + theme::ROW_GAP, foot.y),
+                WORDS_REMOVE,
+                theme::ALARM,
+            );
+            removed = pressed;
+            next = Pos2::new(at.right() + theme::ROW_GAP, foot.y);
+        }
+        let (_, closed) = theme::button(ui, next, WORDS_CLOSE, theme::TEXT_DIM);
+        let ready = !self.subject.trim().is_empty();
+        if (posted || replied) && ready {
+            tools.hand.act(Act::BoardPost {
+                subject: self.subject.trim().to_string(),
+                text: self.text.clone(),
+                reply_to: reading.filter(|_| replied).map(|post| post.serial),
+            });
+            self.subject.clear();
+            self.text.clear();
+        } else if let Some(post) = reading.filter(|_| removed) {
+            tools.hand.act(Act::BoardRemove(post.serial));
+        } else if closed {
+            tools.hand.act(Act::BoardClose);
+        }
+        panel
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_stands_under_its_message_and_an_orphan_at_the_left() {
+        let post = |serial: u32, parent: Option<u32>| WatchPost {
+            serial,
+            parent,
+            ..WatchPost::default()
+        };
+        let posts = vec![
+            post(1, None),
+            post(2, None),
+            post(3, Some(1)),
+            post(4, Some(3)),
+            post(5, Some(99)),
+        ];
+        let order: Vec<(u32, usize)> = threaded(&posts)
+            .into_iter()
+            .map(|(post, depth)| (post.serial, depth))
+            .collect();
+        assert_eq!(order, vec![(1, 0), (3, 1), (4, 2), (2, 0), (5, 0)]);
+    }
 
     #[test]
     fn a_book_turns_two_pages_and_stops_at_its_ends() {
