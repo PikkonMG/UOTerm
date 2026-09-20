@@ -54,6 +54,9 @@ pub const TOOL_SCRIPT_STATUS: &str = "script_status";
 pub const TOOL_LIST_SCRIPTS: &str = "list_scripts";
 pub const TOOL_SCRIPT_READ: &str = "script_read";
 pub const TOOL_SCRIPT_SAVE: &str = "script_save";
+pub const TOOL_MAP_PIN: &str = "map_pin";
+pub const TOOL_MAP_CLOSE: &str = "map_close";
+pub const TOOL_PROFILE: &str = "profile";
 pub const TOOL_AGENTS: &str = "agents";
 pub const TOOL_AGENT_SET: &str = "agent_set";
 pub const TOOL_AGENT_ON: &str = "agent_on";
@@ -508,6 +511,21 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "session exists",
     ),
     (
+        TOOL_MAP_PIN,
+        "Works on the map item that is open (watch shows it under maps): x and y in pixels of its picture put a pin there; action clear takes every pin off; action edit asks the shard to let the map be drawn on.",
+        "a map is open",
+    ),
+    (
+        TOOL_MAP_CLOSE,
+        "Forgets the open map item: serial, or none for the one that opened last.",
+        "session exists",
+    ),
+    (
+        TOOL_PROFILE,
+        "The profile a player wrote about his character: serial. With text, writes the profile of your own character. The words come back in watch under profiles.",
+        "in world",
+    ),
+    (
         TOOL_TRADE_GOLD,
         "Sets the gold and platinum offered in the open trade: gold, platinum.",
         "a trade is open",
@@ -531,7 +549,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
 
 /// The tools that only look. An agent may call them while a human has the
 /// character.
-const READ_ONLY_TOOLS: [&str; 20] = [
+const READ_ONLY_TOOLS: [&str; 21] = [
     TOOL_OBSERVE,
     TOOL_WATCH,
     TOOL_PROPERTIES,
@@ -547,6 +565,7 @@ const READ_ONLY_TOOLS: [&str; 20] = [
     TOOL_SCRIPT_STATUS,
     TOOL_LIST_SCRIPTS,
     TOOL_SCRIPT_READ,
+    TOOL_MAP_CLOSE,
     TOOL_AGENTS,
     TOOL_DAMAGE_METER,
     TOOL_HOTKEYS,

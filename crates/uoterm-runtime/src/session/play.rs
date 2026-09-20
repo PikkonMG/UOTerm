@@ -7,7 +7,8 @@
 
 use super::*;
 use uoterm_protocol::{
-    BulletinEvent, ContextMenuEntry, Inbound, MenuEntry, VendorBuyEntry, VendorSellEntry,
+    BulletinEvent, ContextMenuEntry, DisplayMap, Inbound, MapChange, MenuEntry, VendorBuyEntry,
+    VendorSellEntry,
 };
 
 /// How many journal lines a window gets. It shows the last few and draws the
@@ -22,6 +23,16 @@ const NO_MENU_SHOWN: &str = "no context menu is shown for this object; ask for i
 const NO_SHOP_OPEN: &str = "no shop list is open";
 const NO_TRADE_OPEN: &str = "no trade is open";
 const NO_MENU_OPEN: &str = "no menu is open";
+const NO_MAP_OPEN: &str = "no map item is open; use a map first";
+const NEEDS_PLACE: &str = "needs x and y, in pixels of the map picture";
+const ARG_ACTION: &str = "action";
+const ARG_SERIAL: &str = "serial";
+const ARG_X: &str = "x";
+const ARG_Y: &str = "y";
+const ACTION_CLEAR: &str = "clear";
+const ACTION_EDIT: &str = "edit";
+/// How many profiles the session keeps. A window shows one at a time.
+const PROFILES_KEPT: usize = 8;
 const NO_BOARD_OPEN: &str = "no bulletin board is open; use one first";
 const NEEDS_MESSAGE: &str = "needs message: the serial of a message of the board";
 const NEEDS_SUBJECT: &str = "needs subject";
@@ -90,6 +101,25 @@ struct Board {
     reading: Option<Serial>,
 }
 
+/// A map item the character opened: a treasure map or a city map.
+#[derive(Clone, Debug)]
+struct OpenMap {
+    what: DisplayMap,
+    /// The pins, in pixels of the picture.
+    pins: Vec<(u16, u16)>,
+    /// The shard lets the player draw on this map.
+    may_plot: bool,
+}
+
+/// The profile a player wrote about a character.
+#[derive(Clone, Debug)]
+struct CharacterProfile {
+    serial: Serial,
+    title: String,
+    shard_words: String,
+    own_words: String,
+}
+
 #[derive(Default)]
 pub(super) struct Play {
     /// The object whose context menu the human waits for.
@@ -99,6 +129,12 @@ pub(super) struct Play {
     old_menu: Option<OldMenu>,
     book: Option<Book>,
     board: Option<Board>,
+    maps: Vec<OpenMap>,
+    profiles: Vec<CharacterProfile>,
+    /// The houses players designed, by the item their foundation is.
+    houses: std::collections::HashMap<Serial, uoterm_world::DesignedHouse>,
+    /// The building the shard waits for a place for.
+    placing: Option<Value>,
 }
 
 /// The shard sent a context menu. It is kept when the human asked for it.
@@ -289,6 +325,159 @@ pub(super) fn on_book_or_menu(inner: &mut Inner, msg: &Inbound) {
         }
         _ => {}
     }
+}
+
+/// Keeps the map items and the profiles the shard sends.
+pub(super) fn on_map_or_profile(inner: &mut Inner, msg: &Inbound) {
+    match msg {
+        Inbound::MapOpened(what) => {
+            inner.play.maps.retain(|map| map.what.serial != what.serial);
+            inner.play.maps.push(OpenMap {
+                what: *what,
+                pins: Vec::new(),
+                may_plot: false,
+            });
+        }
+        Inbound::MapChanged { serial, change } => {
+            let Some(map) = inner
+                .play
+                .maps
+                .iter_mut()
+                .find(|map| map.what.serial == *serial)
+            else {
+                return;
+            };
+            match change {
+                MapChange::Pin { x, y } => map.pins.push((*x, *y)),
+                MapChange::Clear => map.pins.clear(),
+                MapChange::MayPlot(may) => map.may_plot = *may,
+            }
+        }
+        Inbound::MultiPlacement {
+            multi_id,
+            x_offset,
+            y_offset,
+            z_offset,
+            hue,
+            ..
+        } => {
+            inner.play.placing = Some(json!({
+                "multi_id": multi_id,
+                "x_offset": x_offset,
+                "y_offset": y_offset,
+                "z_offset": z_offset,
+                "hue": hue,
+            }));
+        }
+        Inbound::Profile {
+            serial,
+            title,
+            own_words,
+            shard_words,
+        } => {
+            inner.play.profiles.retain(|kept| kept.serial != *serial);
+            inner.play.profiles.push(CharacterProfile {
+                serial: *serial,
+                title: title.clone(),
+                shard_words: shard_words.clone(),
+                own_words: own_words.clone(),
+            });
+            while inner.play.profiles.len() > PROFILES_KEPT {
+                inner.play.profiles.remove(0);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Keeps the design of a house. Without the client files the house has no
+/// bounds, so its tiles cannot be placed and it is left out.
+pub(super) fn on_custom_house(
+    inner: &mut Inner,
+    house: &uoterm_protocol::CustomHouse,
+    bounds: Option<uoterm_world::HouseBounds>,
+) {
+    let Some(bounds) = bounds else {
+        return;
+    };
+    inner.play.houses.insert(
+        house.serial,
+        uoterm_world::DesignedHouse {
+            serial: house.serial,
+            revision: house.revision,
+            tiles: uoterm_world::house_tiles(house, bounds),
+        },
+    );
+}
+
+/// The map the call names, or the one that opened last.
+fn open_map(inner: &Inner, args: &Value) -> std::result::Result<Serial, &'static str> {
+    let named = arg_serial_opt(args, ARG_SERIAL).filter(|serial| serial.is_valid());
+    match named {
+        Some(serial) => inner
+            .play
+            .maps
+            .iter()
+            .any(|map| map.what.serial == serial)
+            .then_some(serial)
+            .ok_or(NO_MAP_OPEN),
+        None => inner
+            .play
+            .maps
+            .last()
+            .map(|map| map.what.serial)
+            .ok_or(NO_MAP_OPEN),
+    }
+}
+
+/// `map_pin`: puts a pin on the open map, clears its pins, or asks the
+/// shard to let it be drawn on.
+pub(super) fn map_pin(inner: &mut Inner, args: &Value) -> ToolResult {
+    let serial = match open_map(inner, args) {
+        Ok(serial) => serial,
+        Err(words) => return ToolResult::err(words),
+    };
+    let packet = match args.get(ARG_ACTION).and_then(Value::as_str) {
+        Some(ACTION_CLEAR) => encode::map_clear_pins(serial),
+        Some(ACTION_EDIT) => encode::map_toggle_edit(serial),
+        _ => {
+            let place = args
+                .get(ARG_X)
+                .and_then(Value::as_u64)
+                .zip(args.get(ARG_Y).and_then(Value::as_u64));
+            let Some((x, y)) = place else {
+                return ToolResult::err(NEEDS_PLACE);
+            };
+            encode::map_add_pin(serial, x as u16, y as u16)
+        }
+    };
+    inner.outbound.push_back(packet);
+    ToolResult::action(TOOL_MAP_PIN)
+}
+
+pub(super) fn map_close(inner: &mut Inner, args: &Value) -> ToolResult {
+    match arg_serial_opt(args, ARG_SERIAL).filter(|serial| serial.is_valid()) {
+        Some(serial) => inner.play.maps.retain(|map| map.what.serial != serial),
+        None => {
+            inner.play.maps.pop();
+        }
+    }
+    ToolResult::ok(json!({ "maps": inner.play.maps.len() }))
+}
+
+/// `profile`: asks for the profile of a character, or writes your own.
+pub(super) fn profile(inner: &mut Inner, args: &Value) -> ToolResult {
+    let serial = arg_serial(args, ARG_SERIAL);
+    if serial == Serial(0) {
+        return ToolResult::err(format!("{TOOL_PROFILE} {NEEDS_SERIAL}"));
+    }
+    let words = args.get(ARG_TEXT).and_then(Value::as_str);
+    let packet = match words {
+        Some(words) => encode::profile_write(serial, words),
+        None => encode::profile_request(serial),
+    };
+    inner.outbound.push_back(packet);
+    ToolResult::action(TOOL_PROFILE)
 }
 
 /// Asks for the list line of a message, once.
@@ -666,6 +855,43 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         "page_count": book.page_count,
         "pages": book.pages.values().collect::<Vec<_>>(),
     })));
+    picture["maps"] = json!(inner
+        .play
+        .maps
+        .iter()
+        .map(|map| json!({
+            "serial": map.what.serial,
+            "gump": map.what.gump_id,
+            "facet": map.what.facet,
+            "start_x": map.what.start_x,
+            "start_y": map.what.start_y,
+            "end_x": map.what.end_x,
+            "end_y": map.what.end_y,
+            "width": map.what.width,
+            "height": map.what.height,
+            "may_plot": map.may_plot,
+            "pins": map.pins.iter().map(|(x, y)| json!({ "x": x, "y": y })).collect::<Vec<_>>(),
+        }))
+        .collect::<Vec<_>>());
+    picture["profiles"] = json!(inner
+        .play
+        .profiles
+        .iter()
+        .map(|profile| json!({
+            "serial": profile.serial,
+            "name": world.name_of(profile.serial),
+            "title": profile.title,
+            "shard_words": profile.shard_words,
+            "own_words": profile.own_words,
+        }))
+        .collect::<Vec<_>>());
+    // A building shows only while the cursor that places it is up.
+    picture["placing"] = json!(inner
+        .play
+        .placing
+        .as_ref()
+        .filter(|_| world.pending_target.is_some()));
+    picture["designed_houses"] = json!(inner.play.houses.values().collect::<Vec<_>>());
     picture["board"] = json!(inner.play.board.as_ref().map(|board| json!({
         "serial": board.serial,
         "name": board.name,
@@ -784,6 +1010,10 @@ mod tests {
             "cues",
             "multis",
             "gump_layouts",
+            "maps",
+            "profiles",
+            "designed_houses",
+            "placing",
             "running",
             "season",
             "light",
@@ -928,6 +1158,106 @@ mod tests {
             .is_empty());
         assert!(board_close(&mut inner).ok);
         assert!(watch_value(&inner, RADAR_DEFAULT)["board"].is_null());
+    }
+
+    #[test]
+    fn a_map_item_keeps_its_pins_and_takes_a_new_one() {
+        const MAP: Serial = Serial(0x4000_0F01);
+        let mut inner = test_session();
+        assert!(!map_pin(&mut inner, &json!({ "x": 5, "y": 6 })).ok);
+        let opened = Inbound::MapOpened(DisplayMap {
+            serial: MAP,
+            gump_id: 0x139D,
+            start_x: 1000,
+            start_y: 1200,
+            end_x: 1400,
+            end_y: 1600,
+            width: 200,
+            height: 200,
+            facet: 0,
+        });
+        on_map_or_profile(&mut inner, &opened);
+        on_map_or_profile(
+            &mut inner,
+            &Inbound::MapChanged {
+                serial: MAP,
+                change: MapChange::Pin { x: 40, y: 90 },
+            },
+        );
+        on_map_or_profile(
+            &mut inner,
+            &Inbound::MapChanged {
+                serial: MAP,
+                change: MapChange::MayPlot(true),
+            },
+        );
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["maps"][0]["pins"][0]["x"], 40);
+        assert_eq!(shown["maps"][0]["may_plot"], true);
+        assert!(!map_pin(&mut inner, &json!({})).ok, "a pin needs a place");
+        assert!(map_pin(&mut inner, &json!({ "x": 5, "y": 6 })).ok);
+        assert!(inner.outbound.contains(&encode::map_add_pin(MAP, 5, 6)));
+        assert!(map_pin(&mut inner, &json!({ "action": "clear" })).ok);
+        assert!(inner.outbound.contains(&encode::map_clear_pins(MAP)));
+        assert!(map_close(&mut inner, &json!({})).ok);
+        assert!(watch_value(&inner, RADAR_DEFAULT)["maps"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_profile_is_asked_for_and_written_and_shows_in_watch() {
+        const ANN: Serial = Serial(0x0000_0A05);
+        let mut inner = test_session();
+        assert!(!profile(&mut inner, &json!({})).ok);
+        assert!(profile(&mut inner, &json!({ "serial": ANN })).ok);
+        assert!(inner.outbound.contains(&encode::profile_request(ANN)));
+        assert!(profile(&mut inner, &json!({ "serial": ANN, "text": "I dig ore." })).ok);
+        assert!(inner
+            .outbound
+            .contains(&encode::profile_write(ANN, "I dig ore.")));
+        on_map_or_profile(
+            &mut inner,
+            &Inbound::Profile {
+                serial: ANN,
+                title: "Ann the miner".into(),
+                own_words: "I dig ore.".into(),
+                shard_words: "Guild of Miners".into(),
+            },
+        );
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["profiles"][0]["title"], "Ann the miner");
+        assert_eq!(shown["profiles"][0]["own_words"], "I dig ore.");
+    }
+
+    #[test]
+    fn a_house_is_kept_only_when_its_bounds_are_known() {
+        const FOUNDATION: Serial = Serial(0x4000_0F02);
+        let mut inner = test_session();
+        let house = uoterm_protocol::CustomHouse {
+            serial: FOUNDATION,
+            revision: 3,
+            planes: vec![uoterm_protocol::HousePlane {
+                z_index: 0,
+                mode: 0,
+                data: vec![0x00, 0x64, 1, 2, 0],
+            }],
+        };
+        on_custom_house(&mut inner, &house, None);
+        assert!(watch_value(&inner, RADAR_DEFAULT)["designed_houses"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let bounds = uoterm_world::HouseBounds {
+            min_x: -3,
+            min_y: -3,
+            max_y: 3,
+        };
+        on_custom_house(&mut inner, &house, Some(bounds));
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["designed_houses"][0]["revision"], 3);
+        assert_eq!(shown["designed_houses"][0]["tiles"][0]["graphic"], 0x64);
     }
 
     #[test]

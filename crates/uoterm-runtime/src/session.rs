@@ -1309,6 +1309,14 @@ async fn pick_character(
     filled.first().copied()
 }
 
+/// The corners of the multi a house item stands on. None when the client
+/// files do not describe it.
+fn multi_bounds(inner: &Inner, foundation: Serial) -> Option<uoterm_world::HouseBounds> {
+    let multi_id = inner.world.read().multis.get(&foundation)?.multi_id;
+    let shapes = inner.multi_shapes.as_deref()?;
+    uoterm_world::HouseBounds::of(shapes.pieces(multi_id).iter().map(|p| (p.dx, p.dy)))
+}
+
 fn select_shard(servers: &[uoterm_protocol::ServerEntry], wanted: Option<&str>) -> u16 {
     if let Some(name) = wanted {
         if let Some(s) = servers.iter().find(|s| s.name.eq_ignore_ascii_case(name)) {
@@ -7424,6 +7432,11 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         }
                     }
                     play::on_book_or_menu(inner, &msg);
+                    play::on_map_or_profile(inner, &msg);
+                    if let Inbound::CustomHouse(house) = &msg {
+                        let bounds = multi_bounds(inner, house.serial);
+                        play::on_custom_house(inner, house, bounds);
+                    }
                     if let Inbound::ContextMenu { serial, entries } = &msg {
                         play::on_context_menu(inner, *serial, entries);
                         // The request waits for the menu of the object it
@@ -10563,6 +10576,9 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_LIST_SCRIPTS => scripting::list_scripts(),
         TOOL_SCRIPT_READ => scripting::script_read(args),
         TOOL_SCRIPT_SAVE => scripting::script_save(args),
+        TOOL_MAP_PIN => play::map_pin(inner, args),
+        TOOL_MAP_CLOSE => play::map_close(inner, args),
+        TOOL_PROFILE => play::profile(inner, args),
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
                 p.clamp_rates();
