@@ -13,6 +13,7 @@ mod mul;
 mod multi;
 mod path;
 mod radarcol;
+mod seasons;
 mod skills;
 mod sound;
 mod speech;
@@ -37,6 +38,7 @@ pub use path::{
     SAME_MOVE_HEIGHT, SAME_SPOT_HEIGHT,
 };
 pub use radarcol::RadarColors;
+pub use seasons::{SeasonArt, SEASONS_NAME};
 pub use skills::{read_skills, SkillEntry};
 pub use sound::{MusicList, MusicTrack, SoundData, SOUND_SAMPLE_RATE};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};
