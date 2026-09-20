@@ -931,9 +931,12 @@ fn contained(item: &uoterm_world::Item) -> Value {
 pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
     let mut picture = observe_value(inner, size);
     let world = inner.world.read();
-    let containers: Vec<Value> = world
-        .containers
-        .values()
+    // The newest first: the container the player just opened is the one
+    // he wants to see, and a window shows only the first few.
+    let mut open: Vec<&uoterm_world::Container> = world.containers.values().collect();
+    open.sort_by_key(|container| std::cmp::Reverse(container.opened));
+    let containers: Vec<Value> = open
+        .into_iter()
         .map(|container| {
             let record = world.items.get(&container.serial);
             let contents: Vec<Value> = container
@@ -1392,6 +1395,28 @@ mod tests {
             .is_empty());
         assert!(board_close(&mut inner).ok);
         assert!(watch_value(&inner, RADAR_DEFAULT)["board"].is_null());
+    }
+
+    #[test]
+    fn the_container_that_opened_last_comes_first() {
+        const PACK: Serial = Serial(0x4000_1001);
+        const BANK: Serial = Serial(0x4000_1002);
+        let inner = test_session();
+        let open = |serial: Serial| Inbound::OpenContainer { serial, gump: 0x3C };
+        inner.world.write().apply(&open(PACK));
+        inner.world.write().apply(&open(BANK));
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        let order: Vec<u64> = shown["containers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|container| container["serial"].as_u64().unwrap())
+            .collect();
+        assert_eq!(order, vec![u64::from(BANK.0), u64::from(PACK.0)]);
+        // Opening the pack again brings it to the front.
+        inner.world.write().apply(&open(PACK));
+        let again = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(again["containers"][0]["serial"], u64::from(PACK.0));
     }
 
     #[test]

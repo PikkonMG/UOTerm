@@ -4996,6 +4996,53 @@ mod relay_tests {
     }
 
     #[test]
+    fn a_held_walk_slides_along_a_wall_instead_of_stopping() {
+        use uoterm_nav::MockMap;
+        // A wall runs north and south, with one gap in it.
+        let mut map = MockMap::new(16, 16);
+        for y in 0..16u16 {
+            if y != 8 {
+                map.set_block(5, y, true);
+            }
+        }
+        let from = Point3::new(4, 7, 0);
+        // East walks into the wall. The corner blocks the diagonal too, so
+        // he slides south, onto the row of the gap.
+        assert_eq!(
+            slide_direction(&map, from, Direction::East),
+            Some(Direction::South)
+        );
+        // With the way open, the way that was asked for wins.
+        assert_eq!(
+            slide_direction(&map, Point3::new(4, 8, 0), Direction::East),
+            Some(Direction::East)
+        );
+        // From the other side he slides north, toward the same gap.
+        assert_eq!(
+            slide_direction(&map, Point3::new(4, 9, 0), Direction::East),
+            Some(Direction::North)
+        );
+        // A wall on every side gives no way at all.
+        let mut boxed = MockMap::new(8, 8);
+        for (x, y) in [
+            (3, 4),
+            (4, 3),
+            (5, 4),
+            (4, 5),
+            (3, 3),
+            (5, 5),
+            (3, 5),
+            (5, 3),
+        ] {
+            boxed.set_block(x, y, true);
+        }
+        assert_eq!(
+            slide_direction(&boxed, Point3::new(4, 4, 0), Direction::East),
+            None
+        );
+    }
+
+    #[test]
     fn hold_step_count_one_without_hold_ms() {
         assert_eq!(hold_step_count(HOLD_MS_NONE, true), WALK_STEPS_ONE);
         assert_eq!(hold_step_count(STEP_RUN_MS * 10, true), 10);
@@ -9676,6 +9723,47 @@ fn hold_step_count(hold_ms: u64, running: bool) -> usize {
 /// The walk ends at the first step the map has no answer for. That answer is
 /// the arrival height, so a step without one is a step with no height to
 /// record, and the map has just said it is not a step he can take.
+/// The ways beside the one asked for, nearest first. A held walk that meets
+/// a wall tries these, so the character slides along the wall instead of
+/// stopping dead in a doorway.
+const SLIDE_TURNS: [i8; 4] = [-1, 1, -2, 2];
+const DIRECTIONS: i8 = 8;
+
+fn turned(direction: Direction, eighths: i8) -> Direction {
+    Direction::from_byte((direction as i8 + eighths).rem_euclid(DIRECTIONS) as u8)
+}
+
+/// The way a held walk really goes. The way that was asked for comes first.
+/// When a wall blocks it, a way beside it wins, and a way that opens the
+/// asked way again wins over one that only moves.
+fn slide_direction<M: TileQuery + ?Sized>(
+    map: &M,
+    from: Point3,
+    dir: Direction,
+) -> Option<Direction> {
+    let step = |from: Point3, dir: Direction| -> Option<Point3> {
+        let next = from.neighbour(dir)?;
+        let z = map.can_step(from, next.x, next.y)?;
+        Some(Point3::new(next.x, next.y, z))
+    };
+    if step(from, dir).is_some() {
+        return Some(dir);
+    }
+    let mut any_way = None;
+    for turn in SLIDE_TURNS {
+        let beside = turned(dir, turn);
+        let Some(at) = step(from, beside) else {
+            continue;
+        };
+        // From there the way he asked for opens again: that is the doorway.
+        if step(at, dir).is_some() {
+            return Some(beside);
+        }
+        any_way.get_or_insert(beside);
+    }
+    any_way
+}
+
 fn hold_path<M: TileQuery + ?Sized>(
     map: &M,
     from: Point3,
@@ -9725,6 +9813,13 @@ fn walk_hold(inner: &mut Inner, args: &Value) -> ToolResult {
     // The map is what says how high each of these steps lands, so the facet
     // is opened before it is asked.
     inner.ensure_facet();
+    // A held walk that meets a wall goes on beside it, as a player does
+    // when he pushes through a doorway a little off the line.
+    let slide = args.get("slide").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dir = match slide.then(|| slide_direction(inner.tiles(), from, dir)) {
+        Some(Some(way)) => way,
+        _ => dir,
+    };
     let mut points = hold_path(inner.tiles(), from, dir, asked_for);
     // A shard may place the character on a boat, teleporter landing, or other
     // server-supported surface absent from the static client map. Permit an

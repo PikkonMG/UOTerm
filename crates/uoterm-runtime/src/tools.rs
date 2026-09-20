@@ -285,7 +285,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_WALK,
-        "Send 0x02 steps in a direction (Classic Client hold-right-click analog). Args: direction, running, hold_ms.",
+        "Send 0x02 steps in a direction (Classic Client hold-right-click analog). Args: direction, running, hold_ms, slide (a held walk that meets a wall goes on beside it).",
         "in world",
     ),
     (
