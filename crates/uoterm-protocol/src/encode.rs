@@ -908,6 +908,187 @@ pub fn profile_write(serial: Serial, words: &str) -> Vec<u8> {
     var_bytes(w)
 }
 
+/// The `0xD7` commands that design a house. The reference client sends
+/// each one as the serial of the player, the command, its numbers, and a
+/// `0x0A` at the end.
+const HOUSE_BACKUP: u16 = 0x02;
+const HOUSE_RESTORE: u16 = 0x03;
+const HOUSE_COMMIT: u16 = 0x04;
+const HOUSE_REMOVE: u16 = 0x05;
+const HOUSE_ADD: u16 = 0x06;
+const HOUSE_EXIT: u16 = 0x0C;
+const HOUSE_ADD_STAIR: u16 = 0x0D;
+const HOUSE_CLEAR: u16 = 0x10;
+const HOUSE_GO_TO_FLOOR: u16 = 0x12;
+const HOUSE_ADD_ROOF: u16 = 0x13;
+const HOUSE_REMOVE_ROOF: u16 = 0x14;
+const HOUSE_REVERT: u16 = 0x1A;
+/// Each number of a command comes after a zero byte.
+const AOS_NUMBER_MARK: u8 = 0x00;
+const AOS_END: u8 = 0x0A;
+
+/// What a designer command does to a house.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HouseEdit {
+    /// Puts a wall, a floor, a door or an archway on a tile of the house.
+    Add {
+        graphic: u16,
+        x: i32,
+        y: i32,
+    },
+    Remove {
+        graphic: u16,
+        x: i32,
+        y: i32,
+        z: i32,
+    },
+    AddStair {
+        graphic: u16,
+        x: i32,
+        y: i32,
+    },
+    AddRoof {
+        graphic: u16,
+        x: i32,
+        y: i32,
+        z: i32,
+    },
+    RemoveRoof {
+        graphic: u16,
+        x: i32,
+        y: i32,
+        z: i32,
+    },
+    /// The level the designer works on, from 1.
+    GoToFloor(u8),
+    /// Takes every part off the house.
+    Clear,
+    /// Keeps the design as it was when the designing began.
+    Revert,
+    /// Saves the design, and the shard charges for it.
+    Commit,
+    /// Leaves the designer with no change.
+    Exit,
+    Backup,
+    Restore,
+}
+
+fn aos_command(player: Serial, command: u16) -> PacketWriter {
+    let mut w = PacketWriter::with_variable(PKT_AOS_COMMAND);
+    w.serial(player).u16(command);
+    w
+}
+
+fn aos_number(w: &mut PacketWriter, number: i32) {
+    w.u8(AOS_NUMBER_MARK).u32(number as u32);
+}
+
+/// `0xD7`: one command of the house designer.
+pub fn house_edit(player: Serial, edit: HouseEdit) -> Vec<u8> {
+    let (command, numbers): (u16, Vec<i32>) = match edit {
+        HouseEdit::Add { graphic, x, y } => (HOUSE_ADD, vec![i32::from(graphic), x, y]),
+        HouseEdit::AddStair { graphic, x, y } => (HOUSE_ADD_STAIR, vec![i32::from(graphic), x, y]),
+        HouseEdit::Remove { graphic, x, y, z } => (HOUSE_REMOVE, vec![i32::from(graphic), x, y, z]),
+        HouseEdit::AddRoof { graphic, x, y, z } => {
+            (HOUSE_ADD_ROOF, vec![i32::from(graphic), x, y, z])
+        }
+        HouseEdit::RemoveRoof { graphic, x, y, z } => {
+            (HOUSE_REMOVE_ROOF, vec![i32::from(graphic), x, y, z])
+        }
+        HouseEdit::GoToFloor(floor) => (HOUSE_GO_TO_FLOOR, vec![0, i32::from(floor)]),
+        HouseEdit::Clear => (HOUSE_CLEAR, Vec::new()),
+        HouseEdit::Revert => (HOUSE_REVERT, Vec::new()),
+        HouseEdit::Commit => (HOUSE_COMMIT, Vec::new()),
+        HouseEdit::Exit => (HOUSE_EXIT, Vec::new()),
+        HouseEdit::Backup => (HOUSE_BACKUP, Vec::new()),
+        HouseEdit::Restore => (HOUSE_RESTORE, Vec::new()),
+    };
+    let mut w = aos_command(player, command);
+    // The floor command writes its numbers with no mark before the last one.
+    if let HouseEdit::GoToFloor(floor) = edit {
+        w.u32(0).u8(floor);
+    } else {
+        for number in numbers {
+            aos_number(&mut w, number);
+        }
+    }
+    w.u8(AOS_END);
+    var_bytes(w)
+}
+
+/// `0x9B`: ask the shard for help. The shard answers with its help menu.
+pub fn help_request() -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_HELP_REQUEST);
+    w.bytes(&[0; HELP_REQUEST_BYTES]);
+    w.finish()
+}
+
+/// The empty block a help request carries.
+const HELP_REQUEST_BYTES: usize = 257;
+
+const CHAT_JOIN: u16 = 0x62;
+const CHAT_SAY: u16 = 0x61;
+const CHAT_LEAVE: u16 = 0x63;
+/// The quote mark that a channel name is written between.
+const CHAT_QUOTE: u16 = 0x22;
+/// The space between a channel name and its password.
+const CHAT_SPACE: u16 = 0x20;
+/// The language the client says it speaks.
+const CHAT_LANGUAGE: &str = "ENU";
+
+fn chat_command(command: u16) -> PacketWriter {
+    let mut w = PacketWriter::with_variable(PKT_CHAT_COMMAND);
+    w.ascii_fixed(CHAT_LANGUAGE, 4).u16(command);
+    w
+}
+
+fn utf16be(w: &mut PacketWriter, text: &str) {
+    for unit in text.encode_utf16() {
+        w.u16(unit);
+    }
+}
+
+/// `0xB3`: join a chat channel, with its password when it has one.
+pub fn chat_join(channel: &str, password: Option<&str>) -> Vec<u8> {
+    let mut w = chat_command(CHAT_JOIN);
+    w.u16(CHAT_QUOTE);
+    utf16be(&mut w, channel);
+    w.u16(CHAT_QUOTE);
+    w.u16(CHAT_SPACE);
+    if let Some(password) = password {
+        utf16be(&mut w, password);
+    }
+    w.u16(0);
+    var_bytes(w)
+}
+
+/// `0xB3`: say words in the chat channel the character is in.
+pub fn chat_say(words: &str) -> Vec<u8> {
+    let mut w = chat_command(CHAT_SAY);
+    utf16be(&mut w, words);
+    w.u16(0);
+    var_bytes(w)
+}
+
+/// `0xB3`: leave the chat channel.
+pub fn chat_leave() -> Vec<u8> {
+    let mut w = chat_command(CHAT_LEAVE);
+    w.u16(0);
+    var_bytes(w)
+}
+
+/// `0xB5`: open the chat of the shard under this name.
+pub fn chat_open(name: &str) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_OPEN_CHAT);
+    w.u8(0);
+    let name: String = name.chars().take(CHAT_NAME_MAX_CHARS).collect();
+    utf16be(&mut w, &name);
+    var_bytes(w)
+}
+
+/// The most characters of a name the chat takes.
+const CHAT_NAME_MAX_CHARS: usize = 30;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,6 +1147,53 @@ mod tests {
 
     fn regular_keyword_speech(keywords: &[u16], text: &str) -> Vec<u8> {
         keyword_speech(SPEECH_REGULAR, DEFAULT_SPEECH_HUE, keywords, text)
+    }
+
+    #[test]
+    fn a_house_designer_command_is_byte_exact() {
+        const ME: Serial = Serial(0x0000_00AB);
+        const WALL: u16 = 10;
+        let add = house_edit(
+            ME,
+            HouseEdit::Add {
+                graphic: WALL,
+                x: -3,
+                y: 4,
+            },
+        );
+        assert_eq!(add[0], PKT_AOS_COMMAND);
+        assert_eq!(usize::from(u16::from_be_bytes([add[1], add[2]])), add.len());
+        assert_eq!(&add[3..7], &ME.0.to_be_bytes());
+        assert_eq!(&add[7..9], &HOUSE_ADD.to_be_bytes());
+        assert_eq!(&add[9..14], &[AOS_NUMBER_MARK, 0, 0, 0, WALL as u8]);
+        assert_eq!(&add[14..19], &[AOS_NUMBER_MARK, 0xFF, 0xFF, 0xFF, 0xFD]);
+        assert_eq!(add[add.len() - 1], AOS_END);
+        assert_eq!(
+            house_edit(ME, HouseEdit::Commit)[7..9],
+            HOUSE_COMMIT.to_be_bytes()
+        );
+        let floor = house_edit(ME, HouseEdit::GoToFloor(2));
+        assert_eq!(&floor[7..9], &HOUSE_GO_TO_FLOOR.to_be_bytes());
+        assert_eq!(&floor[9..14], &[0, 0, 0, 0, 2]);
+    }
+
+    #[test]
+    fn chat_and_help_packets_are_byte_exact() {
+        let help = help_request();
+        assert_eq!(help.len(), 1 + HELP_REQUEST_BYTES);
+        assert_eq!(help[0], PKT_HELP_REQUEST);
+        let say = chat_say("hail");
+        assert_eq!(say[0], PKT_CHAT_COMMAND);
+        assert_eq!(&say[3..7], b"ENU\0");
+        assert_eq!(&say[7..9], &CHAT_SAY.to_be_bytes());
+        assert_eq!(&say[9..17], &[0, b'h', 0, b'a', 0, b'i', 0, b'l']);
+        let join = chat_join("General", None);
+        assert_eq!(&join[7..9], &CHAT_JOIN.to_be_bytes());
+        assert_eq!(&join[9..13], &[0, 0x22, 0, b'G']);
+        assert_eq!(chat_leave()[7..9], CHAT_LEAVE.to_be_bytes());
+        let open = chat_open("Mara");
+        assert_eq!((open[0], open[3]), (PKT_OPEN_CHAT, 0));
+        assert_eq!(&open[4..6], &[0, b'M']);
     }
 
     #[test]

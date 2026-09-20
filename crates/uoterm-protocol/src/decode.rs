@@ -451,6 +451,37 @@ pub struct CustomHouse {
     pub planes: Vec<HousePlane>,
 }
 
+/// `0xB2` from the shard: what happened in the chat of the shard.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChatEvent {
+    /// A channel came, with whether it asks for a password.
+    ChannelAdded {
+        name: String,
+        has_password: bool,
+    },
+    ChannelRemoved {
+        name: String,
+    },
+    /// The character is in this channel now.
+    Joined {
+        name: String,
+    },
+    Left {
+        name: String,
+    },
+    /// The shard asks for the name the character chats under.
+    AsksForName,
+    /// The chat is open, under this name.
+    Opened {
+        name: String,
+    },
+    Closed,
+    Said {
+        who: String,
+        words: String,
+    },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Inbound {
     ServerList {
@@ -698,6 +729,14 @@ pub enum Inbound {
     Bulletin(BulletinEvent),
     /// `0xD8`. The design of a house a player made.
     CustomHouse(CustomHouse),
+    /// `0xBF` `0x20`. The house designer opened or closed.
+    HouseDesigner {
+        serial: Serial,
+        /// True while the player designs the house.
+        designing: bool,
+    },
+    /// `0xB2`. The chat of the shard.
+    Chat(ChatEvent),
     /// `0x90` or `0xF5`. A map item opened.
     MapOpened(DisplayMap),
     /// `0x56` from the shard, about one open map.
@@ -829,6 +868,7 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_DISPLAY_MAP | PKT_DISPLAY_MAP_FACET => parse_display_map(packet),
         PKT_MAP_MESSAGE => parse_map_message(packet),
         PKT_CUSTOM_HOUSE => parse_custom_house(packet),
+        PKT_CHAT_EVENT => parse_chat(packet),
         PKT_PROFILE => parse_profile(packet),
         PKT_MULTI_PLACEMENT => parse_multi_placement(packet),
         PKT_SEASON => parse_season(packet),
@@ -1859,8 +1899,29 @@ fn parse_extended(packet: &[u8]) -> Result<Inbound> {
         EXT_MAP_CHANGE => Ok(Inbound::MapChange { map: r.u8()? }),
         EXT_CONTEXT_MENU_DISPLAY => parse_context_menu(&mut r),
         EXT_PARTY => parse_party(&mut r, packet),
+        EXT_HOUSE_DESIGNER => parse_house_designer(&mut r),
         _ => Ok(Inbound::Extended {
             sub,
+            payload: r.rest().to_vec(),
+        }),
+    }
+}
+
+/// The kinds of the `0xBF` `0x20` packet. The designer opens on 4 and
+/// closes on 5.
+const DESIGNER_BEGIN: u8 = 4;
+const DESIGNER_END: u8 = 5;
+
+fn parse_house_designer(r: &mut PacketReader<'_>) -> Result<Inbound> {
+    let serial = r.serial()?;
+    let kind = r.u8()?;
+    match kind {
+        DESIGNER_BEGIN | DESIGNER_END => Ok(Inbound::HouseDesigner {
+            serial,
+            designing: kind == DESIGNER_BEGIN,
+        }),
+        _ => Ok(Inbound::Extended {
+            sub: EXT_HOUSE_DESIGNER,
             payload: r.rest().to_vec(),
         }),
     }
@@ -2387,6 +2448,86 @@ fn parse_map_message(packet: &[u8]) -> Result<Inbound> {
     Ok(Inbound::MapChanged { serial, change })
 }
 
+const CHAT_CHANNEL_ADDED: u16 = 0x03E8;
+const CHAT_CHANNEL_REMOVED: u16 = 0x03E9;
+const CHAT_ASKS_FOR_NAME: u16 = 0x03EB;
+const CHAT_CLOSED: u16 = 0x03EC;
+const CHAT_OPENED: u16 = 0x03ED;
+const CHAT_JOINED: u16 = 0x03F1;
+const CHAT_LEFT: u16 = 0x03F4;
+/// The three kinds of line a chat carries: said, emoted, and the words of
+/// the shard itself.
+const CHAT_SAID: [u16; 3] = [0x0025, 0x0026, 0x0027];
+/// Each chat event carries four bytes before its words.
+const CHAT_SKIP: usize = 4;
+/// A password mark on a channel that asks for one.
+const CHAT_HAS_PASSWORD: u16 = 0x31;
+/// A shard marks the words of a line with braces. The marks are not words.
+const CHAT_MARK_OPEN: char = '{';
+const CHAT_MARK_CLOSE: char = '}';
+
+/// The words of a chat line, without the mark a shard puts in front.
+fn chat_words(said: &str) -> String {
+    let (Some(open), Some(close)) = (said.find(CHAT_MARK_OPEN), said.find(CHAT_MARK_CLOSE)) else {
+        return said.to_string();
+    };
+    if close < open {
+        return said.to_string();
+    }
+    let mut out = said.to_string();
+    out.replace_range(open..=close, "");
+    out.trim().to_string()
+}
+
+fn parse_chat(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let command = r.u16()?;
+    let words = |r: &mut PacketReader<'_>| -> Result<String> {
+        r.skip(CHAT_SKIP)?;
+        r.utf16be_z()
+    };
+    let event = match command {
+        CHAT_CHANNEL_ADDED => {
+            let name = words(&mut r)?;
+            ChatEvent::ChannelAdded {
+                name,
+                has_password: r.u16().unwrap_or(0) == CHAT_HAS_PASSWORD,
+            }
+        }
+        CHAT_CHANNEL_REMOVED => ChatEvent::ChannelRemoved {
+            name: words(&mut r)?,
+        },
+        CHAT_ASKS_FOR_NAME => ChatEvent::AsksForName,
+        CHAT_CLOSED => ChatEvent::Closed,
+        CHAT_OPENED => ChatEvent::Opened {
+            name: words(&mut r)?,
+        },
+        CHAT_JOINED => ChatEvent::Joined {
+            name: words(&mut r)?,
+        },
+        CHAT_LEFT => ChatEvent::Left {
+            name: words(&mut r)?,
+        },
+        said if CHAT_SAID.contains(&said) => {
+            r.skip(CHAT_SKIP)?;
+            r.u16()?;
+            ChatEvent::Said {
+                who: r.utf16be_z()?,
+                words: chat_words(&r.utf16be_z()?),
+            }
+        }
+        _ => {
+            return Ok(Inbound::Unknown {
+                id: PKT_CHAT_EVENT,
+                payload: packet.to_vec(),
+            })
+        }
+    };
+    Ok(Inbound::Chat(event))
+}
+
 /// The bytes between the revision and the count of planes.
 const HOUSE_HEADER_SKIP: usize = 4;
 /// No real house has more planes than this.
@@ -2564,6 +2705,94 @@ const BUFF_TRAILING_TEXTS: usize = 1;
 mod tests {
     use super::*;
     use crate::encode;
+
+    #[test]
+    fn the_house_designer_says_when_it_opens_and_when_it_closes() {
+        let designer = |kind: u8| {
+            let mut w = crate::buf::PacketWriter::with_variable(PKT_EXTENDED);
+            w.u16(EXT_HOUSE_DESIGNER)
+                .serial(Serial(70))
+                .u8(kind)
+                .u16(0)
+                .u16(0)
+                .u16(0)
+                .i8(0);
+            parse(&w.finish_variable().unwrap()).unwrap()
+        };
+        assert!(matches!(
+            designer(DESIGNER_BEGIN),
+            Inbound::HouseDesigner {
+                serial: Serial(70),
+                designing: true
+            }
+        ));
+        assert!(matches!(
+            designer(DESIGNER_END),
+            Inbound::HouseDesigner {
+                designing: false,
+                ..
+            }
+        ));
+        assert!(matches!(designer(1), Inbound::Extended { .. }));
+    }
+
+    #[test]
+    fn a_chat_line_gives_who_said_it_and_the_words() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CHAT_EVENT);
+        w.u16(CHAT_SAID[0])
+            .u32(0)
+            .u16(0)
+            .utf16be_z("Ann")
+            .utf16be_z("{0}Anyone selling ore?");
+        let Inbound::Chat(ChatEvent::Said { who, words }) =
+            parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not a chat line");
+        };
+        assert_eq!(
+            (who.as_str(), words.as_str()),
+            ("Ann", "Anyone selling ore?")
+        );
+        assert_eq!(chat_words("no marks"), "no marks");
+        assert_eq!(chat_words("}backwards{"), "}backwards{");
+    }
+
+    #[test]
+    fn the_chat_says_which_channels_there_are_and_which_one_we_are_in() {
+        let event = |command: u16, name: &str, tail: Option<u16>| {
+            let mut w = crate::buf::PacketWriter::with_variable(PKT_CHAT_EVENT);
+            w.u16(command).u32(0).utf16be_z(name);
+            if let Some(tail) = tail {
+                w.u16(tail);
+            }
+            parse(&w.finish_variable().unwrap()).unwrap()
+        };
+        assert!(matches!(
+            event(CHAT_CHANNEL_ADDED, "General", Some(CHAT_HAS_PASSWORD)),
+            Inbound::Chat(ChatEvent::ChannelAdded { name, has_password: true }) if name == "General"
+        ));
+        assert!(matches!(
+            event(CHAT_CHANNEL_ADDED, "General", None),
+            Inbound::Chat(ChatEvent::ChannelAdded {
+                has_password: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            event(CHAT_JOINED, "Trade", None),
+            Inbound::Chat(ChatEvent::Joined { name }) if name == "Trade"
+        ));
+        assert!(matches!(
+            event(CHAT_LEFT, "Trade", None),
+            Inbound::Chat(ChatEvent::Left { .. })
+        ));
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CHAT_EVENT);
+        w.u16(CHAT_CLOSED);
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::Chat(ChatEvent::Closed)
+        ));
+    }
 
     #[test]
     fn a_house_plane_header_holds_the_mode_the_level_and_the_two_lengths() {

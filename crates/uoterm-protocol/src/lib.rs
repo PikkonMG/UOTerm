@@ -11,13 +11,14 @@ pub mod lengths;
 pub mod types;
 
 pub use decode::{
-    parse, parse_with_version, BookPage, BuffEntry, BulletinEvent, CharacterSlot, ContainerItem,
-    ContextMenuEntry, CustomHouse, DisplayMap, EquipItem, GraphicEffect, GroundItem,
+    parse, parse_with_version, BookPage, BuffEntry, BulletinEvent, CharacterSlot, ChatEvent,
+    ContainerItem, ContextMenuEntry, CustomHouse, DisplayMap, EquipItem, GraphicEffect, GroundItem,
     HealthBarStatus, HousePlane, Inbound, MapChange, MenuEntry, MobileView, ObjectProperty,
     OpenGump, PartyEvent, PromptRequest, SecureTrade, ServerEntry, SkillEntry, SpeechLine,
     StatusExtra, TargetCursor, TextEntryDialog, VendorBuyEntry, VendorSellEntry, EFFECT_AT_PLACE,
     EFFECT_LIGHTNING, EFFECT_MOVING, EFFECT_ON_MOBILE,
 };
+pub use encode::HouseEdit;
 pub use error::{ProtocolError, Result};
 pub use frame::{compress_packet, FrameDecoder, GameDecoder, RawPacket};
 pub use huffman::{Huffman, HuffmanDecoder};

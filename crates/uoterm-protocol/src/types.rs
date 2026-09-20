@@ -68,6 +68,13 @@ pub const PKT_DISPLAY_MAP_FACET: u8 = 0xF5;
 pub const PKT_PROFILE: u8 = 0xB8;
 pub const PKT_MULTI_PLACEMENT: u8 = 0x99;
 pub const PKT_CUSTOM_HOUSE: u8 = 0xD8;
+pub const PKT_AOS_COMMAND: u8 = 0xD7;
+pub const PKT_HELP_REQUEST: u8 = 0x9B;
+pub const PKT_CHAT_EVENT: u8 = 0xB2;
+pub const PKT_CHAT_COMMAND: u8 = 0xB3;
+pub const PKT_OPEN_CHAT: u8 = 0xB5;
+/// `0xBF` `0x20`: the house designer opens or closes.
+pub const EXT_HOUSE_DESIGNER: u16 = 0x20;
 pub const PKT_PLAY_CHARACTER: u8 = 0x5D;
 /// `0x66`. Server: the pages of an open book. Client: one edited page, or a
 /// request for a page it has not read yet.
