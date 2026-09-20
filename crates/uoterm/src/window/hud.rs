@@ -82,8 +82,21 @@ const KINDS_SYSTEM: [u8; 2] = [1, 6];
 /// The lines of the journal in words. The full journal of `watch` can be
 /// filtered; the short one of `observe` shows as it is.
 fn journal_texts(frame: &WatchFrame, filter: JournalFilter) -> Vec<String> {
+    // A notice of the shard, and a web page it points at, are lines of
+    // their own. UOTerm never opens a page by itself.
+    let from_shard = |words: &Option<String>, mark: &str| {
+        words
+            .iter()
+            .filter(|_| filter != JournalFilter::Talk)
+            .map(move |words| format!("{mark}{words}"))
+            .collect::<Vec<_>>()
+    };
+    let notices: Vec<String> = from_shard(&frame.shard_notice, "")
+        .into_iter()
+        .chain(from_shard(&frame.shard_url, WEB_PAGE_MARK))
+        .collect();
     if frame.speech.is_empty() {
-        return frame.journal.clone();
+        return frame.journal.iter().cloned().chain(notices).collect();
     }
     frame
         .speech
@@ -103,8 +116,12 @@ fn journal_texts(frame: &WatchFrame, filter: JournalFilter) -> Vec<String> {
                 format!("{}: {}", line.name, line.text)
             }
         })
+        .chain(notices)
         .collect()
 }
+
+/// The mark in front of a web page the shard pointed at.
+const WEB_PAGE_MARK: &str = "The shard points at ";
 
 /// What the panels tell the rest of the window after they are drawn.
 pub struct Drawn {
@@ -324,6 +341,8 @@ impl Hud {
         self.panels.clear();
         activity(painter, &mut self.panels, area, frame);
         roster(painter, &mut self.panels, area, frame);
+        // A notice of the shard goes into the journal, so the operator
+        // reads it with the rest.
         let lines = journal_texts(frame, self.journal_filter);
         let (chat_row, title_row) =
             journal(painter, &mut self.panels, area, frame, &lines, chat_row);
@@ -707,6 +726,15 @@ fn pack(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFram
         number_font(theme::SIZE_BODY),
         theme::NOTO_SELF,
     );
+    // The clock of the shard, and the lantern the character carries.
+    let clock = format!("{:02}:{:02}", frame.time.0, frame.time.1);
+    painter.text(
+        Pos2::new(rows.left, panel.bottom() - theme::PANEL_PAD),
+        Align2::LEFT_BOTTOM,
+        clock,
+        number_font(theme::SIZE_SMALL),
+        theme::TEXT_FAINT,
+    );
     rows.pair(
         "Weight",
         &format!("{}/{} stones", frame.weight, frame.weight_max),
@@ -854,6 +882,17 @@ mod tests {
             journal_texts(&from_observe, JournalFilter::Talk),
             vec!["short journal"]
         );
+        // A notice of the shard is a line, and a web page is named, not
+        // opened.
+        let with_notice = WatchFrame {
+            shard_notice: Some("The world will save.".into()),
+            shard_url: Some("http://example.com".into()),
+            ..from_observe.clone()
+        };
+        let lines = journal_texts(&with_notice, JournalFilter::All);
+        assert_eq!(lines[1], "The world will save.");
+        assert_eq!(lines[2], "The shard points at http://example.com");
+        assert_eq!(journal_texts(&with_notice, JournalFilter::Talk).len(), 1);
     }
 
     #[test]

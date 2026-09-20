@@ -31,6 +31,29 @@ const OVERHEAD: i16 = 16;
 const CORPSE_GRAPHIC: u16 = 0x2006;
 /// The shard does not tell the window which way a corpse lies.
 const CORPSE_FACING: u8 = 3;
+/// Where the quest arrow stands, and the way it points. A place in view
+/// keeps its own spot; one out of view is held at the edge of the window,
+/// as a compass needle is.
+fn arrow_at(rect: Rect, at: Pos2) -> (Pos2, Vec2) {
+    let room = rect.shrink(ARROW_EDGE);
+    let point = Pos2::new(
+        at.x.clamp(room.left(), room.right()),
+        at.y.clamp(room.top(), room.bottom()),
+    );
+    let away = at - rect.center();
+    let away = if away.length() > f32::EPSILON {
+        away.normalized()
+    } else {
+        Vec2::new(0.0, -1.0)
+    };
+    (point, away)
+}
+
+/// The room the quest arrow keeps from the edge of the window.
+const ARROW_EDGE: f32 = 28.0;
+const ARROW_LENGTH: f32 = 22.0;
+const ARROW_WIDTH: f32 = 7.0;
+const ARROW_EDGE_WIDTH: f32 = 1.5;
 /// A paperdoll faces the watcher.
 const DOLL_FACING: u8 = 4;
 
@@ -803,6 +826,24 @@ impl Scene {
             Stroke::new(PAWN_RING_WIDTH * self.zoom, theme::GOAL),
         );
         true
+    }
+
+    /// The arrow the shard points at a place. It stands at the edge of the
+    /// window when the place is out of view, as a compass needle does.
+    pub fn draw_quest_arrow(&self, painter: &Painter, rect: Rect, frame: &WatchFrame) {
+        let Some((x, y)) = frame.quest_arrow else {
+            return;
+        };
+        let at = self.project(rect, [f32::from(x), f32::from(y), self.camera[2]]);
+        let (point, away) = arrow_at(rect, at);
+        let tip = point + away * ARROW_LENGTH / 2.0;
+        let back = point - away * ARROW_LENGTH / 2.0;
+        let side = egui::vec2(-away.y, away.x) * ARROW_WIDTH;
+        painter.add(Shape::convex_polygon(
+            vec![tip, back + side, back - side],
+            theme::GOAL,
+            Stroke::new(ARROW_EDGE_WIDTH, theme::TEXT),
+        ));
     }
 
     /// The picture of a mobile as he stands and faces the watcher, for a
@@ -1672,6 +1713,21 @@ mod tests {
 
     const WINDOW: Rect = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(100.0, 100.0));
     const MIDDLE: Pos2 = Pos2::new(50.0, 50.0);
+
+    #[test]
+    fn the_quest_arrow_is_held_at_the_edge_when_its_place_is_out_of_view() {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+        // A place far to the right is held at the right edge.
+        let (point, away) = arrow_at(rect, Pos2::new(5000.0, 400.0));
+        assert_eq!(point.x, rect.right() - ARROW_EDGE);
+        assert!(away.x > 0.9, "it points to the right");
+        // A place in view keeps its own spot.
+        let inside = Pos2::new(700.0, 500.0);
+        assert_eq!(arrow_at(rect, inside).0, inside);
+        // A place under the character points up, not nowhere.
+        let (_, away) = arrow_at(rect, rect.center());
+        assert_eq!(away, Vec2::new(0.0, -1.0));
+    }
 
     #[test]
     fn a_piece_of_a_house_is_drawn_in_height_order_with_the_rest() {

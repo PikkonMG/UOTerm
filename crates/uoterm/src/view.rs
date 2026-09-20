@@ -462,6 +462,18 @@ pub struct WatchFrame {
     pub light: u8,
     /// The kind of weather and how many drops. None for clear sky.
     pub weather: Option<(u8, u8)>,
+    /// How much light the character carries. 0 is the brightest.
+    pub personal_light: u8,
+    /// The clock of the shard: the hour and the minute.
+    pub time: (u8, u8),
+    /// A place the shard points an arrow at.
+    pub quest_arrow: Option<(u16, u16)>,
+    /// The marks the shard put on the world map.
+    pub waypoints: Vec<uoterm_world::Waypoint>,
+    /// A web page the shard pointed at. UOTerm never opens it.
+    pub shard_url: Option<String>,
+    /// The last scroll of words from the shard.
+    pub shard_notice: Option<String>,
     /// The shard waits for typed words.
     pub prompt: bool,
     /// The title of a dialog that waits for typed words.
@@ -660,6 +672,26 @@ impl WatchFrame {
             },
             season: num_opt_at(value, "season").unwrap_or(0) as u8,
             light: num_opt_at(value, "light").unwrap_or(0) as u8,
+            personal_light: num_opt_at(value, "personal_light").unwrap_or(0) as u8,
+            time: {
+                let clock = value.get("time");
+                (
+                    num_field(clock, "hour") as u8,
+                    num_field(clock, "minute") as u8,
+                )
+            },
+            quest_arrow: shown(value, "quest_arrow")
+                .map(|at| (num_field(Some(at), "x"), num_field(Some(at), "y"))),
+            waypoints: value
+                .get("waypoints")
+                .and_then(|marks| serde_json::from_value(marks.clone()).ok())
+                .unwrap_or_default(),
+            shard_url: shown(value, "shard_url")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            shard_notice: shown(value, "shard_notice")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             weather: shown(value, "weather").map(|weather| {
                 (
                     num_field(Some(weather), "kind") as u8,
@@ -1254,9 +1286,17 @@ mod tests {
             "chat_asks_for_name": false,
             "designing": { "serial": 70, "floor": 2 },
             "house_parts": [{ "kind": "wall", "name": "Dark Wood", "pieces": [10, 7] }],
-            "placing": { "multi_id": 100, "x_offset": -3, "y_offset": -3, "hue": 0 },
+            "placing": { "multi_id": 100, "x_offset": -3, "y_offset": -3, "hue": 0 }
+        });
+        let more = json!({
             "season": 3,
             "light": 18,
+            "personal_light": 4,
+            "time": { "hour": 13, "minute": 45, "second": 7 },
+            "quest_arrow": { "x": 1000, "y": 1200 },
+            "waypoints": [{ "serial": 60, "x": 1000, "y": 1200, "z": 5, "map": 1, "kind": 3,
+                "name": "home" }],
+            "shard_notice": "The world will save.",
             "weather": { "kind": 2, "count": 40 },
             "prompt": true,
             "target_cursor": { "cursor_id": 1 },
@@ -1272,6 +1312,15 @@ mod tests {
             "gumps": [{ "gump": 1, "texts": [], "buttons": [], "choices": [],
                 "entries": [{ "id": 7, "label": "Price", "text": "100", "limit": 12 }] }],
         });
+        // One literal of this size passes the limit of the json macro, so
+        // the picture is built from two and joined.
+        let mut value = value;
+        let (Some(value_map), Some(more_map)) = (value.as_object_mut(), more.as_object()) else {
+            panic!("the picture is an object");
+        };
+        for (key, part) in more_map {
+            value_map.insert(key.clone(), part.clone());
+        }
         let frame = WatchFrame::from_observe(&value);
         assert_eq!(frame.stats.strength, 90);
         assert_eq!((frame.speech[0].seq, frame.speech[0].kind), (7, 9));
@@ -1287,6 +1336,11 @@ mod tests {
             (9, 14036, (14, 23, -2))
         );
         assert_eq!((frame.light, frame.weather), (18, Some((2, 40))));
+        assert_eq!((frame.personal_light, frame.time), (4, (13, 45)));
+        assert_eq!(frame.quest_arrow, Some((1000, 1200)));
+        assert_eq!(frame.waypoints[0].name, "home");
+        assert_eq!(frame.shard_notice.as_deref(), Some("The world will save."));
+        assert_eq!(frame.shard_url, None);
         assert_eq!(frame.text_entry.as_deref(), Some("Name your pet"));
         assert_eq!(
             (frame.maps[0].width, frame.maps[0].pins[0]),

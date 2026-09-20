@@ -182,6 +182,22 @@ impl MapUi {
                 egui::Stroke::new(1.5, theme::GOAL),
             );
         }
+        // The marks the shard put on the map, each with its name.
+        for mark in frame.waypoints.iter().filter(|mark| mark.map == frame.map) {
+            let step = Vec2::new(
+                f32::from(mark.x) - f32::from(frame.x),
+                f32::from(mark.y) - f32::from(frame.y),
+            );
+            let at = center + turned(step, unit);
+            painter.circle_filled(at, DOT_RADIUS, theme::WAITING);
+            painter.text(
+                at + Vec2::new(DOT_RADIUS * 2.0, 0.0),
+                Align2::LEFT_CENTER,
+                &mark.name,
+                text_font(theme::SIZE_SMALL),
+                theme::WAITING,
+            );
+        }
         painter.circle_filled(center, SELF_RADIUS, theme::SELF_FIGURE);
         let response = ui.interact(field, Id::new("world-map"), Sense::click());
         if !frame.human_control {

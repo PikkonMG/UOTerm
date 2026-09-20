@@ -354,6 +354,9 @@ impl eframe::App for WatchApp {
                         moving |= self.floats.draw(&painter, rect, frame, &self.scene, time);
                         self.audio.play(frame, &self.scene.take_steps());
                         let drawn = self.hud.draw(&painter, rect, frame, true, time, dt);
+                        // The arrow goes over the panels, as a compass
+                        // needle does: it must never be hidden.
+                        self.scene.draw_quest_arrow(&painter, rect, frame);
                         moving |= drawn.moving;
                         let map = control_ui::map_sense(ui, rect);
                         self.hud.journal_filters(ui);
