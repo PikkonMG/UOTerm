@@ -52,6 +52,11 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
+# Full debug data made `target` grow to tens of gigabytes. Line tables keep
+# the file and line in a backtrace, and the build is much smaller.
+[profile.dev]
+debug = "line-tables-only"
+
 # Path searches read thousands of map tiles. Unoptimized, one search that
 # cannot finish took seconds and froze a debug client; optimized, it takes a
 # fraction of a second. The rest of a debug build stays unoptimized.
