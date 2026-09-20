@@ -1,6 +1,7 @@
 //! Client-side map query and A* navigation.
 
 mod anim;
+mod animdata;
 mod art;
 mod cliloc;
 mod hues;
@@ -8,6 +9,7 @@ mod mounts;
 mod mul;
 mod multi;
 mod path;
+mod radarcol;
 mod skills;
 mod sound;
 mod speech;
@@ -16,6 +18,7 @@ mod tiles;
 mod uop;
 
 pub use anim::{Action, AnimData, AnimFrame, EquipConv, Facing};
+pub use animdata::{ArtCycles, TILE_ANIMATED};
 pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
 pub use cliloc::ClilocData;
 pub use hues::{HueData, HueRamp};
@@ -29,6 +32,7 @@ pub use path::{
     pathfind, pathfind_flat, same_spot, BlockedMove, Obstacles, Path, PathError, Step,
     SAME_MOVE_HEIGHT, SAME_SPOT_HEIGHT,
 };
+pub use radarcol::RadarColors;
 pub use skills::{read_skills, SkillEntry};
 pub use sound::{MusicList, MusicTrack, SoundData, SOUND_SAMPLE_RATE};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};

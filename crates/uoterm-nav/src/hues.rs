@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use crate::art::channel;
 use crate::mul::{read_file, MapError};
 
 pub const HUES_NAME: &str = "hues.mul";
@@ -23,6 +24,8 @@ const RED_SHIFT: u16 = 10;
 const GREEN_SHIFT: u16 = 5;
 const CHANNEL_MASK: u16 = 0x1F;
 const KEEP_FLAGS: u16 = 0x8000;
+/// The step of a ramp that words take. The last steps are near white.
+const TEXT_RAMP_STEP: usize = 24;
 
 pub struct HueData {
     ramps: Vec<[u16; HUE_RAMP_LEN]>,
@@ -71,6 +74,17 @@ impl HueData {
         Self { ramps }
     }
 
+    /// The color of words written in a hue, as red, green and blue bytes.
+    /// The game writes words with a bright step of the ramp.
+    pub fn text_rgb(&self, hue: u16) -> Option<[u8; 3]> {
+        let color = self.ramp(hue, false)?.colors[TEXT_RAMP_STEP];
+        Some([
+            channel(color >> RED_SHIFT),
+            channel(color >> GREEN_SHIFT),
+            channel(color),
+        ])
+    }
+
     /// The ramp a hue number names. None for hue zero and for a number the
     /// file does not hold. `partial_item` is the tiledata word that the item
     /// takes color on its grey pixels only.
@@ -92,6 +106,16 @@ mod tests {
     const PURE_RED: u16 = 31 << RED_SHIFT;
     const RAMP_MARK: u16 = 0x0123;
     const FIRST_HUE: u16 = 1;
+
+    #[test]
+    fn words_take_a_bright_step_of_the_ramp() {
+        let mut data = vec![0u8; GROUP_BYTES];
+        let at = GROUP_HEADER_BYTES + TEXT_RAMP_STEP * WORD;
+        data[at..at + WORD].copy_from_slice(&PURE_RED.to_le_bytes());
+        let hues = HueData::parse(&data);
+        assert_eq!(hues.text_rgb(FIRST_HUE), Some([u8::MAX, 0, 0]));
+        assert_eq!(hues.text_rgb(0), None);
+    }
 
     fn one_group() -> Vec<u8> {
         let mut data = vec![0u8; GROUP_BYTES];

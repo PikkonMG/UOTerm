@@ -87,6 +87,21 @@ pub enum Action {
     Stand,
     Walk,
     Run,
+    /// An action the shard named by its group in the files of the body:
+    /// a swing, a bow, a cast.
+    Shown(u8),
+}
+
+impl Action {
+    /// The group of the action, from the three groups of the kind of body.
+    fn group(self, groups: [u32; 3]) -> u32 {
+        match self {
+            Self::Stand => groups[0],
+            Self::Walk => groups[1],
+            Self::Run => groups[2],
+            Self::Shown(group) => u32::from(group),
+        }
+    }
 }
 
 /// The five directions the files hold. The other three are these, mirrored.
@@ -380,7 +395,7 @@ impl AnimData {
             let (kind, flags) = self.kind_of(body, body_in_file, file);
             let read = |action: Action| {
                 let (first, groups) = first_record_and_groups(body_in_file, kind, flags, mounted)?;
-                let record = first + groups[action as usize] * DIRECTIONS_STORED + facing.stored;
+                let record = first + action.group(groups) * DIRECTIONS_STORED + facing.stored;
                 self.read_frames(file, record)
             };
             if let Some(frames) = read(action).or_else(|| read(Action::Stand)) {
@@ -525,7 +540,8 @@ mod tests {
             first_record_and_groups(BODY_MAN, BodyKind::Person, 0, true),
             Some((35_000, GROUPS_PEOPLE_MOUNTED))
         );
-        assert_eq!(GROUPS_PEOPLE[Action::Run as usize], 2);
+        assert_eq!(Action::Run.group(GROUPS_PEOPLE), 2);
+        assert_eq!(Action::Shown(9).group(GROUPS_PEOPLE), 9);
         assert_eq!(at(BODY_OGRE, BodyKind::Animal), None);
     }
 

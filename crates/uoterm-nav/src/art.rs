@@ -80,7 +80,7 @@ impl ArtPixels {
 }
 
 /// One 5-bit color channel as a byte.
-fn channel(bits: u16) -> u8 {
+pub(crate) fn channel(bits: u16) -> u8 {
     let value = u32::from(bits & CHANNEL_MASK);
     ((value * BYTE_MAX + COLOR_CHANNEL_MAX / 2) / COLOR_CHANNEL_MAX) as u8
 }
