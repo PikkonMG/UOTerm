@@ -1030,6 +1030,16 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
     picture["running"] = json!(inner.movement.last_step_ran);
     picture["season"] = json!(world.season);
     picture["light"] = json!(world.light);
+    picture["personal_light"] = json!(world.personal_light);
+    picture["time"] = json!({
+        "hour": world.time.0,
+        "minute": world.time.1,
+        "second": world.time.2,
+    });
+    picture["quest_arrow"] = json!(world.quest_arrow.map(|(x, y)| json!({ "x": x, "y": y })));
+    picture["waypoints"] = json!(world.waypoints.values().collect::<Vec<_>>());
+    picture["shard_url"] = json!(world.shard_url);
+    picture["shard_notice"] = json!(world.shard_notice);
     picture["weather"] = json!(world
         .weather
         .map(|(kind, count)| json!({ "kind": kind, "count": count })));
@@ -1254,6 +1264,8 @@ mod tests {
             "running",
             "season",
             "light",
+            "time",
+            "waypoints",
             "weather",
             "prompt",
             "target_cursor",
