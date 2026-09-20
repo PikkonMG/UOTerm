@@ -389,7 +389,18 @@ pub fn cancel_target(cursor_id: u32) -> Vec<u8> {
     w.finish()
 }
 
-pub fn gump_response(serial: Serial, gump_id: u32, button: u32, switches: &[u32]) -> Vec<u8> {
+/// `texts` is what the player typed in each text field: the field id and
+/// the words. A field holds at most [`GUMP_TEXT_MAX_CHARS`] characters.
+/// The longest text a gump field sends.
+pub const GUMP_TEXT_MAX_CHARS: usize = 239;
+
+pub fn gump_response(
+    serial: Serial,
+    gump_id: u32,
+    button: u32,
+    switches: &[u32],
+    texts: &[(u16, String)],
+) -> Vec<u8> {
     let mut w = PacketWriter::with_variable(PKT_GUMP_RESPONSE);
     w.serial(serial)
         .u32(gump_id)
@@ -398,12 +409,19 @@ pub fn gump_response(serial: Serial, gump_id: u32, button: u32, switches: &[u32]
     for s in switches {
         w.u32(*s);
     }
-    w.u32(0);
+    w.u32(texts.len() as u32);
+    for (id, words) in texts {
+        let units: Vec<u16> = words.encode_utf16().take(GUMP_TEXT_MAX_CHARS).collect();
+        w.u16(*id).u16(units.len() as u16);
+        for unit in units {
+            w.u16(unit);
+        }
+    }
     var_bytes(w)
 }
 
 pub fn gump_close(serial: Serial, gump_id: u32) -> Vec<u8> {
-    gump_response(serial, gump_id, 0, &[])
+    gump_response(serial, gump_id, 0, &[], &[])
 }
 
 pub fn trade_start(mobile: Serial) -> Vec<u8> {

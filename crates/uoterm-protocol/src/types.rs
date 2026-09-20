@@ -55,6 +55,11 @@ pub const PKT_SKILLS: u8 = 0x3A;
 pub const PKT_VENDOR_BUY: u8 = 0x3B;
 pub const PKT_CONTAINER_CONTENTS: u8 = 0x3C;
 pub const PKT_SOUND_EFFECT: u8 = 0x54;
+pub const PKT_GLOBAL_LIGHT: u8 = 0x4F;
+pub const PKT_WEATHER: u8 = 0x65;
+pub const PKT_GRAPHIC_EFFECT: u8 = 0x70;
+pub const PKT_HUED_EFFECT: u8 = 0xC0;
+pub const PKT_PARTICLE_EFFECT: u8 = 0xC7;
 pub const PKT_PLAY_CHARACTER: u8 = 0x5D;
 /// `0x66`. Server: the pages of an open book. Client: one edited page, or a
 /// request for a page it has not read yet.

@@ -349,6 +349,29 @@ pub struct BookPage {
     pub lines: Vec<String>,
 }
 
+/// An effect flies from `from` to `to`.
+pub const EFFECT_MOVING: u8 = 0;
+/// A lightning bolt strikes `source`.
+pub const EFFECT_LIGHTNING: u8 = 1;
+/// An effect stays at `from`.
+pub const EFFECT_AT_PLACE: u8 = 2;
+/// An effect stays on `source` and moves with it.
+pub const EFFECT_ON_MOBILE: u8 = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphicEffect {
+    pub kind: u8,
+    pub source: Serial,
+    pub target: Serial,
+    pub graphic: u16,
+    pub from: Point3,
+    pub to: Point3,
+    pub speed: u8,
+    /// How long an effect that stays shows, in the ticks of the shard.
+    pub duration: u8,
+    pub hue: u16,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Inbound {
     ServerList {
@@ -466,6 +489,18 @@ pub enum Inbound {
     Season {
         season: u8,
         play_sound: bool,
+    },
+    /// `0x70`, `0xC0`, `0xC7`. A picture that flies, flashes or stays for a
+    /// moment: a fireball, a lightning bolt, the sparkle of a heal.
+    Effect(GraphicEffect),
+    /// `0x4F`. How dark the world is, 0 for day and up.
+    GlobalLight {
+        level: u8,
+    },
+    /// `0x65`. Rain, a storm or snow, and how many drops.
+    Weather {
+        kind: u8,
+        count: u8,
     },
     VersionRequest,
     /// `0x2E`. A mobile put an item on. The shard sends it to everyone in
@@ -673,6 +708,9 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_GUMP | PKT_COMPRESSED_GUMP => parse_gump(packet),
         PKT_DEATH => parse_death(packet),
         PKT_SEASON => parse_season(packet),
+        PKT_GRAPHIC_EFFECT | PKT_HUED_EFFECT | PKT_PARTICLE_EFFECT => parse_effect(packet),
+        PKT_GLOBAL_LIGHT => parse_global_light(packet),
+        PKT_WEATHER => parse_weather(packet),
         PKT_CLIENT_VERSION => Ok(Inbound::VersionRequest),
         PKT_EQUIPPED => parse_equipped(packet),
         PKT_SWING => parse_swing(packet),
@@ -1594,6 +1632,63 @@ fn parse_death(packet: &[u8]) -> Result<Inbound> {
     })
 }
 
+/// The first 28 bytes are the same in the three effect packets. The two
+/// newer ones put a hue after them.
+fn parse_effect(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    let id = r.u8()?;
+    let kind = r.u8()?;
+    let source = r.serial()?;
+    let target = r.serial()?;
+    let graphic = r.u16()?;
+    let from = Point3 {
+        x: r.u16()?,
+        y: r.u16()?,
+        z: r.i8()?,
+    };
+    let to = Point3 {
+        x: r.u16()?,
+        y: r.u16()?,
+        z: r.i8()?,
+    };
+    let speed = r.u8()?;
+    let duration = r.u8()?;
+    r.u16()?;
+    r.u8()?;
+    r.u8()?;
+    let hue = if id == PKT_GRAPHIC_EFFECT {
+        0
+    } else {
+        r.u32()? as u16
+    };
+    Ok(Inbound::Effect(GraphicEffect {
+        kind,
+        source,
+        target,
+        graphic,
+        from,
+        to,
+        speed,
+        duration,
+        hue,
+    }))
+}
+
+fn parse_global_light(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::GlobalLight { level: r.u8()? })
+}
+
+fn parse_weather(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::Weather {
+        kind: r.u8()?,
+        count: r.u8()?,
+    })
+}
+
 fn parse_season(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -2138,6 +2233,48 @@ const BUFF_TRAILING_TEXTS: usize = 1;
 mod tests {
     use super::*;
     use crate::encode;
+
+    #[test]
+    fn an_effect_packet_gives_its_picture_its_path_and_its_hue() {
+        const FIREBALL: u16 = 0x36D4;
+        const HUE: u32 = 0x21;
+        let mut w = crate::buf::PacketWriter::new(PKT_HUED_EFFECT);
+        w.u8(EFFECT_MOVING)
+            .serial(Serial(1))
+            .serial(Serial(2))
+            .u16(FIREBALL)
+            .u16(100)
+            .u16(200)
+            .i8(5)
+            .u16(104)
+            .u16(203)
+            .i8(-2)
+            .u8(7)
+            .u8(0)
+            .u16(0)
+            .u8(0)
+            .u8(1)
+            .u32(HUE)
+            .u32(0);
+        let Inbound::Effect(effect) = parse(&w.finish()).unwrap() else {
+            panic!("not an effect");
+        };
+        assert_eq!((effect.kind, effect.graphic), (EFFECT_MOVING, FIREBALL));
+        assert_eq!((effect.from.x, effect.to.y, effect.to.z), (100, 203, -2));
+        assert_eq!(effect.hue, HUE as u16);
+    }
+
+    #[test]
+    fn light_and_weather_packets_give_their_numbers() {
+        assert!(matches!(
+            parse(&[PKT_GLOBAL_LIGHT, 12]).unwrap(),
+            Inbound::GlobalLight { level: 12 }
+        ));
+        assert!(matches!(
+            parse(&[PKT_WEATHER, 2, 40, 0]).unwrap(),
+            Inbound::Weather { kind: 2, count: 40 }
+        ));
+    }
 
     #[test]
     fn mobile_incoming_reads_framed_length() {
