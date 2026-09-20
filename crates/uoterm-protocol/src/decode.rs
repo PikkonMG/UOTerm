@@ -399,6 +399,58 @@ pub enum BulletinEvent {
     },
 }
 
+/// `0x90` or `0xF5`. A map item the character opened: a treasure map or a
+/// city map. The picture is the land between `start` and `end` of `facet`,
+/// drawn into a gump of `width` by `height` pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayMap {
+    pub serial: Serial,
+    pub gump_id: u16,
+    pub start_x: u16,
+    pub start_y: u16,
+    pub end_x: u16,
+    pub end_y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub facet: u8,
+}
+
+/// `0x56` from the shard. A pin was added to a map, the pins were cleared,
+/// or the shard said whether the map may be drawn on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MapChange {
+    Pin {
+        x: u16,
+        y: u16,
+    },
+    Clear,
+    /// True when the player may add and move pins.
+    MayPlot(bool),
+}
+
+/// One layer of a house a player designed. Its tiles are packed in one of
+/// three ways; [`crate::house_tiles`] unpacks them with the bounds of the
+/// foundation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HousePlane {
+    /// 0 for the floor of the ground level, then one for each level up.
+    pub z_index: u8,
+    /// 0 holds a tile with its own place, 1 a tile of one level, 2 a row
+    /// of tiles with no places at all.
+    pub mode: u8,
+    /// The bytes of the plane, unpacked.
+    pub data: Vec<u8>,
+}
+
+/// `0xD8`. The walls, floors and doors a player designed for his house.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomHouse {
+    pub serial: Serial,
+    /// Counts up each time the house changes.
+    pub revision: u32,
+    pub planes: Vec<HousePlane>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Inbound {
     ServerList {
@@ -644,6 +696,34 @@ pub enum Inbound {
     },
     /// `0x71`.
     Bulletin(BulletinEvent),
+    /// `0xD8`. The design of a house a player made.
+    CustomHouse(CustomHouse),
+    /// `0x90` or `0xF5`. A map item opened.
+    MapOpened(DisplayMap),
+    /// `0x56` from the shard, about one open map.
+    MapChanged {
+        serial: Serial,
+        change: MapChange,
+    },
+    /// `0xB8`. The profile a player wrote about his character.
+    Profile {
+        serial: Serial,
+        title: String,
+        /// What only the owner of the character may change.
+        own_words: String,
+        /// What the shard writes and nobody may change.
+        shard_words: String,
+    },
+    /// `0x99`. The shard asks where to put a building. The answer is a
+    /// target reply with the tile it goes on.
+    MultiPlacement {
+        cursor_id: u32,
+        multi_id: u16,
+        x_offset: i16,
+        y_offset: i16,
+        z_offset: i16,
+        hue: u16,
+    },
     /// `0xE2`. What a mobile does, in words of the game and not as a number
     /// of his animation files: `kind` 0 attacks, 3 dies, 11 casts a spell.
     /// `action` says which attack, emote or spell.
@@ -746,6 +826,11 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_DEATH => parse_death(packet),
         PKT_NEW_ANIMATION => parse_new_animation(packet),
         PKT_BULLETIN_BOARD => parse_bulletin(packet),
+        PKT_DISPLAY_MAP | PKT_DISPLAY_MAP_FACET => parse_display_map(packet),
+        PKT_MAP_MESSAGE => parse_map_message(packet),
+        PKT_CUSTOM_HOUSE => parse_custom_house(packet),
+        PKT_PROFILE => parse_profile(packet),
+        PKT_MULTI_PLACEMENT => parse_multi_placement(packet),
         PKT_SEASON => parse_season(packet),
         PKT_GRAPHIC_EFFECT | PKT_HUED_EFFECT | PKT_PARTICLE_EFFECT => parse_effect(packet),
         PKT_GLOBAL_LIGHT => parse_global_light(packet),
@@ -2252,6 +2337,132 @@ fn parse_bulletin(packet: &[u8]) -> Result<Inbound> {
     Ok(Inbound::Bulletin(event))
 }
 
+const MAP_ADD_PIN: u8 = 1;
+const MAP_CLEAR_PINS: u8 = 5;
+const MAP_PLOT_STATE: u8 = 7;
+/// The bytes of the placement packet before the graphic of the building.
+const MULTI_PLACEMENT_SKIP: usize = 18;
+
+fn parse_display_map(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    let id = r.u8()?;
+    let mut map = DisplayMap {
+        serial: r.serial()?,
+        gump_id: r.u16()?,
+        start_x: r.u16()?,
+        start_y: r.u16()?,
+        end_x: r.u16()?,
+        end_y: r.u16()?,
+        width: r.u16()?,
+        height: r.u16()?,
+        facet: 0,
+    };
+    if id == PKT_DISPLAY_MAP_FACET {
+        map.facet = r.u16()? as u8;
+    }
+    Ok(Inbound::MapOpened(map))
+}
+
+fn parse_map_message(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    let serial = r.serial()?;
+    let change = match r.u8()? {
+        MAP_ADD_PIN => {
+            r.u8()?;
+            MapChange::Pin {
+                x: r.u16()?,
+                y: r.u16()?,
+            }
+        }
+        MAP_CLEAR_PINS => MapChange::Clear,
+        MAP_PLOT_STATE => MapChange::MayPlot(r.u8()? != 0),
+        _ => {
+            return Ok(Inbound::Unknown {
+                id: PKT_MAP_MESSAGE,
+                payload: packet.to_vec(),
+            })
+        }
+    };
+    Ok(Inbound::MapChanged { serial, change })
+}
+
+/// The bytes between the revision and the count of planes.
+const HOUSE_HEADER_SKIP: usize = 4;
+/// No real house has more planes than this.
+const HOUSE_PLANE_MAX: usize = 64;
+/// No plane of a real house unpacks to more bytes than this.
+const HOUSE_PLANE_BYTES_MAX: usize = 0x1_0000;
+
+/// A plane header packs four numbers into one word: the mode, the level,
+/// how many bytes the plane has packed, and how many it has unpacked.
+fn plane_header(header: u32) -> (u8, u8, usize, usize) {
+    let unpacked = ((header & 0x00FF_0000) >> 16) | ((header & 0x0000_00F0) << 4);
+    let packed = ((header & 0x0000_FF00) >> 8) | ((header & 0x0000_000F) << 8);
+    let z_index = ((header & 0x0F00_0000) >> 24) as u8;
+    let mode = ((header & 0xF000_0000) >> 28) as u8;
+    (mode, z_index, packed as usize, unpacked as usize)
+}
+
+fn parse_custom_house(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    r.u8()?;
+    r.u8()?;
+    let serial = r.serial()?;
+    let revision = r.u32()?;
+    r.skip(HOUSE_HEADER_SKIP)?;
+    let count = usize::from(r.u8()?).min(HOUSE_PLANE_MAX);
+    let mut planes = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (mode, z_index, packed, unpacked) = plane_header(r.u32()?);
+        if packed == 0 || unpacked == 0 || unpacked > HOUSE_PLANE_BYTES_MAX {
+            continue;
+        }
+        let data = inflate_zlib(r.take(packed)?, unpacked)?;
+        planes.push(HousePlane {
+            z_index,
+            mode,
+            data,
+        });
+    }
+    Ok(Inbound::CustomHouse(CustomHouse {
+        serial,
+        revision,
+        planes,
+    }))
+}
+
+fn parse_profile(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    Ok(Inbound::Profile {
+        serial: r.serial()?,
+        title: r.ascii_z()?,
+        shard_words: r.utf16be_z()?,
+        own_words: r.utf16be_z()?,
+    })
+}
+
+fn parse_multi_placement(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u8()?;
+    let cursor_id = r.u32()?;
+    r.u8()?;
+    r.skip(MULTI_PLACEMENT_SKIP)?;
+    Ok(Inbound::MultiPlacement {
+        cursor_id,
+        multi_id: r.u16()?,
+        x_offset: r.u16()? as i16,
+        y_offset: r.u16()? as i16,
+        z_offset: r.u16()? as i16,
+        hue: r.u16().unwrap_or(0),
+    })
+}
+
 fn parse_new_animation(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -2353,6 +2564,128 @@ const BUFF_TRAILING_TEXTS: usize = 1;
 mod tests {
     use super::*;
     use crate::encode;
+
+    #[test]
+    fn a_house_plane_header_holds_the_mode_the_level_and_the_two_lengths() {
+        // The low nibbles of the header carry the top bits of each length.
+        let header: u32 = (1 << 28) | (2 << 24) | (0x45 << 16) | (0x01 << 8) | (0x6 << 4) | 0x2;
+        assert_eq!(plane_header(header), (1, 2, 0x201, 0x645));
+    }
+
+    #[test]
+    fn a_custom_house_unpacks_each_of_its_planes() {
+        use std::io::Write;
+        const FOUNDATION: Serial = Serial(0x4000_0070);
+        // One plane of mode 0: a wall at an offset of its own.
+        let plain: Vec<u8> = vec![0x00, 0x64, 1, 2, 0];
+        let mut zip = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        zip.write_all(&plain).unwrap();
+        let packed = zip.finish().unwrap();
+        let (unpacked, packed_len) = (plain.len() as u32, packed.len() as u32);
+        let header = ((unpacked & 0xFF0) << 12)
+            | ((unpacked & 0x00F) << 4)
+            | ((packed_len & 0x0FF) << 8)
+            | ((packed_len & 0xF00) >> 8);
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CUSTOM_HOUSE);
+        w.u8(0x03)
+            .u8(0)
+            .serial(FOUNDATION)
+            .u32(7)
+            .u32(0)
+            .u8(1)
+            .u32(header)
+            .bytes(&packed);
+        let Inbound::CustomHouse(house) = parse(&w.finish_variable().unwrap()).unwrap() else {
+            panic!("not a house");
+        };
+        assert_eq!((house.serial, house.revision), (FOUNDATION, 7));
+        assert_eq!(house.planes.len(), 1);
+        assert_eq!((house.planes[0].mode, house.planes[0].z_index), (0, 0));
+        assert_eq!(house.planes[0].data, plain);
+    }
+
+    #[test]
+    fn a_map_item_opens_with_its_land_and_takes_pins() {
+        let mut w = crate::buf::PacketWriter::new(PKT_DISPLAY_MAP_FACET);
+        w.serial(Serial(60))
+            .u16(0x139D)
+            .u16(1000)
+            .u16(1200)
+            .u16(1400)
+            .u16(1600)
+            .u16(200)
+            .u16(200)
+            .u16(1);
+        let Inbound::MapOpened(map) = parse(&w.finish()).unwrap() else {
+            panic!("not a map");
+        };
+        assert_eq!(
+            (map.start_x, map.end_y, map.width, map.facet),
+            (1000, 1600, 200, 1)
+        );
+        let mut w = crate::buf::PacketWriter::new(PKT_MAP_MESSAGE);
+        w.serial(Serial(60)).u8(MAP_ADD_PIN).u8(0).u16(40).u16(90);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::MapChanged {
+                change: MapChange::Pin { x: 40, y: 90 },
+                ..
+            }
+        ));
+        let mut w = crate::buf::PacketWriter::new(PKT_MAP_MESSAGE);
+        w.serial(Serial(60)).u8(MAP_PLOT_STATE).u8(1).u16(0).u16(0);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::MapChanged {
+                change: MapChange::MayPlot(true),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_profile_gives_the_words_of_the_shard_and_of_the_player() {
+        // The answer of the shard carries no sub-command byte.
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_PROFILE);
+        w.serial(Serial(9))
+            .ascii_z("Mara the miner")
+            .utf16be_z("Guild of Miners")
+            .utf16be_z("I dig ore.");
+        let Inbound::Profile {
+            title,
+            shard_words,
+            own_words,
+            ..
+        } = parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not a profile");
+        };
+        assert_eq!(title, "Mara the miner");
+        assert_eq!(
+            (shard_words.as_str(), own_words.as_str()),
+            ("Guild of Miners", "I dig ore.")
+        );
+    }
+
+    #[test]
+    fn a_house_placement_gives_the_building_and_its_offsets() {
+        let mut w = crate::buf::PacketWriter::new(PKT_MULTI_PLACEMENT);
+        w.u8(1).u32(0x1234).u8(0);
+        for _ in 0..MULTI_PLACEMENT_SKIP {
+            w.u8(0);
+        }
+        w.u16(0x0064).u16(2).u16(3).u16(0).u16(0);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::MultiPlacement {
+                cursor_id: 0x1234,
+                multi_id: 0x0064,
+                x_offset: 2,
+                y_offset: 3,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn an_effect_packet_gives_its_picture_its_path_and_its_hue() {

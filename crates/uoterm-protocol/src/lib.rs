@@ -12,10 +12,11 @@ pub mod types;
 
 pub use decode::{
     parse, parse_with_version, BookPage, BuffEntry, BulletinEvent, CharacterSlot, ContainerItem,
-    ContextMenuEntry, EquipItem, GraphicEffect, GroundItem, HealthBarStatus, Inbound, MenuEntry,
-    MobileView, ObjectProperty, OpenGump, PartyEvent, PromptRequest, SecureTrade, ServerEntry,
-    SkillEntry, SpeechLine, StatusExtra, TargetCursor, TextEntryDialog, VendorBuyEntry,
-    VendorSellEntry, EFFECT_AT_PLACE, EFFECT_LIGHTNING, EFFECT_MOVING, EFFECT_ON_MOBILE,
+    ContextMenuEntry, CustomHouse, DisplayMap, EquipItem, GraphicEffect, GroundItem,
+    HealthBarStatus, HousePlane, Inbound, MapChange, MenuEntry, MobileView, ObjectProperty,
+    OpenGump, PartyEvent, PromptRequest, SecureTrade, ServerEntry, SkillEntry, SpeechLine,
+    StatusExtra, TargetCursor, TextEntryDialog, VendorBuyEntry, VendorSellEntry, EFFECT_AT_PLACE,
+    EFFECT_LIGHTNING, EFFECT_MOVING, EFFECT_ON_MOBILE,
 };
 pub use error::{ProtocolError, Result};
 pub use frame::{compress_packet, FrameDecoder, GameDecoder, RawPacket};

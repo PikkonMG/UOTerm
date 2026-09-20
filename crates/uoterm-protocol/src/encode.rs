@@ -852,6 +852,62 @@ pub fn bulletin_remove(board: Serial, message: Serial) -> Vec<u8> {
     var_bytes(bulletin(BULLETIN_REMOVE, board, message))
 }
 
+/// The `0x56` actions a client sends about an open map.
+const MAP_ADD_PIN: u8 = 1;
+const MAP_CLEAR_PINS: u8 = 5;
+const MAP_TOGGLE_EDIT: u8 = 6;
+/// The pin byte of an action that names no pin.
+const NO_PIN: u8 = 0;
+
+fn map_message(serial: Serial, action: u8, pin: u8, x: u16, y: u16) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_MAP_MESSAGE);
+    w.serial(serial).u8(action).u8(pin).u16(x).u16(y);
+    w.finish()
+}
+
+/// `0x56`: put a pin on an open map. `x` and `y` are pixels of the map
+/// picture, not tiles of the world.
+pub fn map_add_pin(serial: Serial, x: u16, y: u16) -> Vec<u8> {
+    map_message(serial, MAP_ADD_PIN, NO_PIN, x, y)
+}
+
+/// `0x56`: take every pin off an open map.
+pub fn map_clear_pins(serial: Serial) -> Vec<u8> {
+    map_message(serial, MAP_CLEAR_PINS, NO_PIN, 0, 0)
+}
+
+/// `0x56`: ask to draw on the map, or to stop drawing on it. The shard
+/// answers with the state it allows.
+pub fn map_toggle_edit(serial: Serial) -> Vec<u8> {
+    map_message(serial, MAP_TOGGLE_EDIT, NO_PIN, 0, 0)
+}
+
+const PROFILE_READ: u8 = 0;
+const PROFILE_WRITE: u8 = 1;
+/// The word before the words of a profile a player writes.
+const PROFILE_WRITE_MARK: u16 = 1;
+
+/// `0xB8`: ask for the profile a player wrote about his character.
+pub fn profile_request(serial: Serial) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_PROFILE);
+    w.u8(PROFILE_READ).serial(serial);
+    var_bytes(w)
+}
+
+/// `0xB8`: write the profile of the character. Only his own profile.
+pub fn profile_write(serial: Serial, words: &str) -> Vec<u8> {
+    let units: Vec<u16> = words.encode_utf16().collect();
+    let mut w = PacketWriter::with_variable(PKT_PROFILE);
+    w.u8(PROFILE_WRITE)
+        .serial(serial)
+        .u16(PROFILE_WRITE_MARK)
+        .u16(units.len() as u16);
+    for unit in units {
+        w.u16(unit);
+    }
+    var_bytes(w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,6 +966,26 @@ mod tests {
 
     fn regular_keyword_speech(keywords: &[u16], text: &str) -> Vec<u8> {
         keyword_speech(SPEECH_REGULAR, DEFAULT_SPEECH_HUE, keywords, text)
+    }
+
+    #[test]
+    fn map_and_profile_packets_are_byte_exact() {
+        const MAP: Serial = Serial(0x4000_0060);
+        let pin = map_add_pin(MAP, 40, 90);
+        assert_eq!(pin.len(), 11);
+        assert_eq!(
+            (pin[0], pin[5], pin[6]),
+            (PKT_MAP_MESSAGE, MAP_ADD_PIN, NO_PIN)
+        );
+        assert_eq!(&pin[7..11], &[0, 40, 0, 90]);
+        assert_eq!(map_clear_pins(MAP)[5], MAP_CLEAR_PINS);
+        assert_eq!(map_toggle_edit(MAP)[5], MAP_TOGGLE_EDIT);
+        let ask = profile_request(MAP);
+        assert_eq!((ask[0], ask[3]), (PKT_PROFILE, PROFILE_READ));
+        assert_eq!(usize::from(u16::from_be_bytes([ask[1], ask[2]])), ask.len());
+        let write = profile_write(MAP, "hi");
+        assert_eq!(write[3], PROFILE_WRITE);
+        assert_eq!(&write[8..], &[0, 1, 0, 2, 0, b'h', 0, b'i']);
     }
 
     #[test]

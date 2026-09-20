@@ -62,6 +62,12 @@ pub const PKT_HUED_EFFECT: u8 = 0xC0;
 pub const PKT_PARTICLE_EFFECT: u8 = 0xC7;
 pub const PKT_NEW_ANIMATION: u8 = 0xE2;
 pub const PKT_BULLETIN_BOARD: u8 = 0x71;
+pub const PKT_MAP_MESSAGE: u8 = 0x56;
+pub const PKT_DISPLAY_MAP: u8 = 0x90;
+pub const PKT_DISPLAY_MAP_FACET: u8 = 0xF5;
+pub const PKT_PROFILE: u8 = 0xB8;
+pub const PKT_MULTI_PLACEMENT: u8 = 0x99;
+pub const PKT_CUSTOM_HOUSE: u8 = 0xD8;
 pub const PKT_PLAY_CHARACTER: u8 = 0x5D;
 /// `0x66`. Server: the pages of an open book. Client: one edited page, or a
 /// request for a page it has not read yet.
