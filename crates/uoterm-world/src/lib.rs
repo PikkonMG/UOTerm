@@ -5,6 +5,7 @@ mod assist;
 mod cues;
 mod events;
 mod gump;
+mod gump_layout;
 mod journal;
 mod names;
 mod observe;
@@ -20,6 +21,7 @@ pub use assist::{AssistFeature, AssistRules};
 pub use cues::{Cue, CueKind, Cues, CUE_CAP};
 pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 pub use gump::{read_gump, ChoiceKind, GumpButton, GumpChoice, GumpEntry, GumpText, GumpView};
+pub use gump_layout::{gump_layout, GumpLayout, GumpPiece, GumpPieceKind};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
 };

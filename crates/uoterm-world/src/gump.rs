@@ -16,7 +16,7 @@ use uoterm_protocol::OpenGump;
 const ROW_SLACK: i32 = 10;
 /// A `button` whose type is this sends a reply; the other type turns the
 /// page.
-const BUTTON_TYPE_REPLY: u32 = 1;
+pub(crate) const BUTTON_TYPE_REPLY: u32 = 1;
 /// Marks the ends of the arguments of an `xmfhtmltok` or a `tooltip`.
 const ARGUMENTS_MARK: char = '@';
 /// A line break inside the words of a gump.
@@ -161,6 +161,50 @@ struct Placed<T> {
     what: T,
 }
 
+/// One command of a gump layout: its name in small letters, its numbers,
+/// and the arguments between the marks of an `xmfhtmltok` or a `tooltip`.
+pub(crate) struct Command<'a> {
+    pub(crate) name: String,
+    numbers: Vec<&'a str>,
+    pub(crate) arguments: &'a str,
+}
+
+impl Command<'_> {
+    /// The number at a place, or zero when the command has none there.
+    pub(crate) fn n(&self, place: usize) -> i64 {
+        self.numbers
+            .get(place)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
+    }
+
+    /// A word at a place, such as `hue=33` on a `gumppic`.
+    pub(crate) fn word(&self, place: usize) -> Option<&str> {
+        self.numbers.get(place).copied()
+    }
+}
+
+/// The commands of a layout, in the order the gump draws them.
+pub(crate) fn commands(layout: &str) -> Vec<Command<'_>> {
+    layout
+        .split('{')
+        .filter_map(|c| c.split('}').next())
+        .filter_map(|command| {
+            let (head, arguments) = match command.split_once(ARGUMENTS_MARK) {
+                Some((head, rest)) => (head, rest.trim_end().trim_end_matches(ARGUMENTS_MARK)),
+                None => (command, ""),
+            };
+            let mut fields = head.split_whitespace();
+            let name = fields.next()?.to_ascii_lowercase();
+            Some(Command {
+                name,
+                numbers: fields.collect(),
+                arguments,
+            })
+        })
+        .collect()
+}
+
 /// Reads an open gump into words. `words` gives the sentence for a text
 /// number with its tab separated arguments, from the client files; a number
 /// it does not know stays as `#number`.
@@ -172,21 +216,9 @@ pub fn read_gump(gump: &OpenGump, words: &dyn Fn(u32, &str) -> Option<String>) -
     let mut texts: Vec<Placed<String>> = Vec::new();
     let mut controls: Vec<Placed<Control>> = Vec::new();
     let mut tips: Vec<(usize, String)> = Vec::new();
-    for command in gump.layout.split('{').filter_map(|c| c.split('}').next()) {
-        let (head, arguments) = match command.split_once(ARGUMENTS_MARK) {
-            Some((head, rest)) => (head, rest.trim_end().trim_end_matches(ARGUMENTS_MARK)),
-            None => (command, ""),
-        };
-        let fields: Vec<&str> = head.split_whitespace().collect();
-        let Some((name, numbers)) = fields.split_first() else {
-            continue;
-        };
-        let n = |i: usize| {
-            numbers
-                .get(i)
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(0)
-        };
+    for command in commands(&gump.layout) {
+        let (name, arguments) = (command.name.as_str(), command.arguments);
+        let n = |i: usize| command.n(i);
         let at = Spot {
             page,
             x: n(0) as i32,
@@ -198,7 +230,7 @@ pub fn read_gump(gump: &OpenGump, words: &dyn Fn(u32, &str) -> Option<String>) -
                 .and_then(|i| gump.text.get(i))
                 .map(|line| plain(line))
         };
-        match name.to_ascii_lowercase().as_str() {
+        match name {
             "page" => page = n(0) as u32,
             "button" | "buttontileart" => {
                 let reply = n(4) as u32 == BUTTON_TYPE_REPLY;
@@ -337,7 +369,7 @@ fn label_for(at: Spot, texts: &[Placed<String>], used: &mut [bool]) -> String {
 }
 
 /// Words without the HTML a gump draws them with.
-fn plain(html: &str) -> String {
+pub(crate) fn plain(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(open) = rest.find('<') {

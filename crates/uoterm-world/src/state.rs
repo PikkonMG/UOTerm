@@ -951,6 +951,17 @@ impl World {
             Inbound::CharacterAnimation { serial, action, .. } => self
                 .cues
                 .push(*serial, crate::CueKind::Animation { action: *action }),
+            Inbound::NewCharacterAnimation {
+                serial,
+                kind,
+                action,
+            } => self.cues.push(
+                *serial,
+                crate::CueKind::Deed {
+                    deed: *kind,
+                    action: *action,
+                },
+            ),
             Inbound::SoundEffect { sound, x, y, .. } => self.sounds.heard(*sound, *x, *y),
             Inbound::Music { index, stop } => self.sounds.music_changed(*index, *stop),
             Inbound::BuffDebuff {

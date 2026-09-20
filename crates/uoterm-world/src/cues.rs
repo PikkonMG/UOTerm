@@ -16,6 +16,9 @@ pub enum CueKind {
     Damage { amount: u16 },
     /// The body of the mobile plays this action.
     Animation { action: u16 },
+    /// What the mobile does, from the newer packet: `deed` 0 attacks, 3
+    /// dies, 11 casts. The window finds the pictures for the body.
+    Deed { deed: u16, action: u16 },
     /// A picture that flies, flashes or stays for a moment. The serial of
     /// the cue is the source of the effect.
     Effect {
