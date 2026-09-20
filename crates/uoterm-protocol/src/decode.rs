@@ -750,6 +750,83 @@ pub enum Inbound {
         serial: Serial,
         fighting: Option<Serial>,
     },
+    /// `0x89`. What a corpse wears, so it is drawn and looted whole.
+    CorpseEquipment {
+        corpse: Serial,
+        /// Each worn item with the layer it lay on.
+        worn: Vec<(u8, Serial)>,
+    },
+    /// `0x29`. The shard took the item that was dropped.
+    DropAccepted,
+    /// `0xF6`. A boat and everything on it moved.
+    BoatMoving {
+        boat: Serial,
+        speed: u8,
+        moving: u8,
+        facing: u8,
+        x: u16,
+        y: u16,
+        z: i8,
+    },
+    /// `0xBA`. An arrow that points at a place, or the end of one.
+    QuestArrow {
+        shown: bool,
+        x: u16,
+        y: u16,
+        serial: Serial,
+    },
+    /// `0x5B`. The clock of the shard.
+    Time {
+        hour: u8,
+        minute: u8,
+        second: u8,
+    },
+    /// `0x4E`. How much light the character carries: 0 is the brightest.
+    PersonalLight {
+        serial: Serial,
+        level: u8,
+    },
+    /// `0xA5`. A web page the shard points at. UOTerm never opens it.
+    OpenUrl {
+        url: String,
+    },
+    /// `0xA6`. A scroll of words from the shard.
+    Tip {
+        id: u32,
+        /// True for a tip of the day, false for a shard notice.
+        is_tip: bool,
+        words: String,
+    },
+    /// `0x97`. The shard walks the character itself.
+    ForcedWalk {
+        direction: u8,
+        running: bool,
+    },
+    /// `0x38`. The shard sends the character to a tile.
+    Pathfind {
+        x: u16,
+        y: u16,
+        z: i8,
+    },
+    /// `0x98`. The name of a mobile changed.
+    NameChanged {
+        serial: Serial,
+        name: String,
+    },
+    /// `0xE5`. A mark the shard puts on the world map.
+    WaypointAdded {
+        serial: Serial,
+        x: u16,
+        y: u16,
+        z: i8,
+        map: u8,
+        kind: u16,
+        name: String,
+    },
+    /// `0xE6`. The mark is gone.
+    WaypointRemoved {
+        serial: Serial,
+    },
     /// `0xB2`. The chat of the shard.
     Chat(ChatEvent),
     /// `0x90` or `0xF5`. A map item opened.
@@ -866,6 +943,19 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_UPDATE_CHARACTER => parse_update_character(packet),
         PKT_MOBILE_ATTRIBUTES => parse_mobile_attributes(packet),
         PKT_MOBILE_STATUS => parse_mobile_status(packet),
+        PKT_CORPSE_EQUIPMENT => parse_corpse_equipment(packet),
+        PKT_DROP_ACCEPTED => Ok(Inbound::DropAccepted),
+        PKT_BOAT_MOVING => parse_boat_moving(packet),
+        PKT_QUEST_ARROW => parse_quest_arrow(packet, version),
+        PKT_SET_TIME => parse_time(packet),
+        PKT_PERSONAL_LIGHT => parse_personal_light(packet),
+        PKT_OPEN_URL => parse_open_url(packet),
+        PKT_TIP_WINDOW => parse_tip(packet),
+        PKT_FORCED_WALK => parse_forced_walk(packet),
+        PKT_PATHFIND => parse_pathfind(packet),
+        PKT_UPDATE_NAME => parse_name_changed(packet),
+        PKT_WAYPOINT_ADD => parse_waypoint_added(packet),
+        PKT_WAYPOINT_REMOVE => parse_waypoint_removed(packet),
         PKT_WORLD_ITEM => parse_world_item(packet),
         PKT_WORLD_ITEM_SA => parse_world_item_sa(packet),
         PKT_PACKET_LIST => parse_packet_list(packet, version),
@@ -2686,6 +2776,174 @@ fn parse_mobile_status(packet: &[u8]) -> Result<Inbound> {
     Ok(Inbound::MobileStatus { serial, fighting })
 }
 
+/// The layer byte that ends the list of what a corpse wears. Each layer
+/// of the list is one more than the layer the item really lay on.
+const CORPSE_LAYER_END: u8 = 0;
+/// The running bit of a forced walk.
+const WALK_RUNNING: u8 = 0x80;
+const DIRECTION_BITS: u8 = 0x07;
+/// A tip of the day, not a notice of the shard.
+const TIP_OF_THE_DAY: u8 = 0;
+/// The brightest light a character can carry.
+const LIGHT_MAX: u8 = 0x1E;
+
+fn parse_corpse_equipment(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let corpse = r.serial()?;
+    let mut worn = Vec::new();
+    while r.remaining() > 0 {
+        let layer = r.u8()?;
+        if layer == CORPSE_LAYER_END || r.remaining() < 4 {
+            break;
+        }
+        // The shard counts the layers from one here.
+        worn.push((layer - 1, r.serial()?));
+    }
+    Ok(Inbound::CorpseEquipment { corpse, worn })
+}
+
+fn parse_boat_moving(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    Ok(Inbound::BoatMoving {
+        boat: r.serial()?,
+        speed: r.u8()?,
+        moving: r.u8()? & DIRECTION_BITS,
+        facing: r.u8()? & DIRECTION_BITS,
+        x: r.u16()?,
+        y: r.u16()?,
+        z: r.u16()? as i8,
+    })
+}
+
+fn parse_quest_arrow(packet: &[u8], version: ClientVersion) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    let shown = r.u8()? != 0;
+    let x = r.u16()?;
+    let y = r.u16()?;
+    let serial = if version.has_quest_arrow_serial() {
+        r.serial().unwrap_or(Serial(0))
+    } else {
+        Serial(0)
+    };
+    Ok(Inbound::QuestArrow {
+        shown,
+        x,
+        y,
+        serial,
+    })
+}
+
+fn parse_time(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::Time {
+        hour: r.u8()?,
+        minute: r.u8()?,
+        second: r.u8()?,
+    })
+}
+
+fn parse_personal_light(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::PersonalLight {
+        serial: r.serial()?,
+        level: r.u8()?.min(LIGHT_MAX),
+    })
+}
+
+fn parse_open_url(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    Ok(Inbound::OpenUrl { url: r.ascii_z()? })
+}
+
+fn parse_tip(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let flag = r.u8()?;
+    let id = r.u32()?;
+    let len = usize::from(r.u16()?);
+    let words = String::from_utf8_lossy(r.take(len.min(r.remaining()))?)
+        .replace('\r', "\n")
+        .trim_end_matches('\0')
+        .to_string();
+    Ok(Inbound::Tip {
+        id,
+        is_tip: flag == TIP_OF_THE_DAY,
+        words,
+    })
+}
+
+fn parse_forced_walk(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    let byte = r.u8()?;
+    Ok(Inbound::ForcedWalk {
+        direction: byte & DIRECTION_BITS,
+        running: byte & WALK_RUNNING != 0,
+    })
+}
+
+fn parse_pathfind(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::Pathfind {
+        x: r.u16()?,
+        y: r.u16()?,
+        z: r.u16()? as i8,
+    })
+}
+
+fn parse_name_changed(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    Ok(Inbound::NameChanged {
+        serial: r.serial()?,
+        name: r.ascii_z()?,
+    })
+}
+
+fn parse_waypoint_added(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    let serial = r.serial()?;
+    let x = r.u16()?;
+    let y = r.u16()?;
+    let z = r.i8()?;
+    let map = r.u8()?;
+    let kind = r.u16()?;
+    r.u16()?;
+    r.u32()?;
+    Ok(Inbound::WaypointAdded {
+        serial,
+        x,
+        y,
+        z,
+        map,
+        kind,
+        name: r.utf16le_z().unwrap_or_default(),
+    })
+}
+
+fn parse_waypoint_removed(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    r.u16()?;
+    Ok(Inbound::WaypointRemoved {
+        serial: r.serial()?,
+    })
+}
+
 fn parse_new_animation(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
@@ -2787,6 +3045,152 @@ const BUFF_TRAILING_TEXTS: usize = 1;
 mod tests {
     use super::*;
     use crate::encode;
+
+    #[test]
+    fn a_corpse_gives_what_it_wears_with_the_right_layers() {
+        const CORPSE: Serial = Serial(0x4000_0B01);
+        const ROBE: Serial = Serial(0x4000_0B02);
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CORPSE_EQUIPMENT);
+        // The shard counts the layers from one.
+        w.serial(CORPSE).u8(23).serial(ROBE).u8(CORPSE_LAYER_END);
+        let Inbound::CorpseEquipment { corpse, worn } =
+            parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not corpse gear");
+        };
+        assert_eq!(corpse, CORPSE);
+        assert_eq!(worn, vec![(22, ROBE)]);
+    }
+
+    #[test]
+    fn a_boat_moves_with_its_way_and_its_facing() {
+        const BOAT: Serial = Serial(0x4000_0B03);
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_BOAT_MOVING);
+        w.serial(BOAT)
+            .u8(2)
+            .u8(0x82)
+            .u8(0x04)
+            .u16(1000)
+            .u16(1200)
+            .u16(5);
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::BoatMoving {
+                boat: BOAT,
+                speed: 2,
+                moving: 2,
+                facing: 4,
+                x: 1000,
+                z: 5,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_small_world_packets_read_their_numbers() {
+        assert!(matches!(
+            parse(&[PKT_SET_TIME, 13, 45, 7]).unwrap(),
+            Inbound::Time {
+                hour: 13,
+                minute: 45,
+                second: 7
+            }
+        ));
+        let mut w = crate::buf::PacketWriter::new(PKT_PERSONAL_LIGHT);
+        w.serial(Serial(9)).u8(0xFF);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::PersonalLight {
+                level: LIGHT_MAX,
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse(&[PKT_FORCED_WALK, 0x82]).unwrap(),
+            Inbound::ForcedWalk {
+                direction: 2,
+                running: true
+            }
+        ));
+        let mut w = crate::buf::PacketWriter::new(PKT_PATHFIND);
+        w.u16(1000).u16(1200).u16(5);
+        assert!(matches!(
+            parse(&w.finish()).unwrap(),
+            Inbound::Pathfind {
+                x: 1000,
+                y: 1200,
+                z: 5
+            }
+        ));
+        assert!(matches!(
+            parse(&[PKT_DROP_ACCEPTED]).unwrap(),
+            Inbound::DropAccepted
+        ));
+    }
+
+    #[test]
+    fn the_shard_can_name_a_mobile_a_page_and_a_tip() {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_UPDATE_NAME);
+        w.serial(Serial(9)).ascii_z("Ann the healer");
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::NameChanged { name, .. } if name == "Ann the healer"
+        ));
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_OPEN_URL);
+        w.ascii_z("http://example.com/rules");
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::OpenUrl { url } if url == "http://example.com/rules"
+        ));
+        let words = "Read the rules.\rThey are short.";
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_TIP_WINDOW);
+        w.u8(TIP_OF_THE_DAY)
+            .u32(7)
+            .u16(words.len() as u16)
+            .bytes(words.as_bytes());
+        let Inbound::Tip { id, is_tip, words } = parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not a tip");
+        };
+        assert_eq!((id, is_tip), (7, true));
+        assert_eq!(words, "Read the rules.\nThey are short.");
+    }
+
+    #[test]
+    fn a_waypoint_comes_and_goes() {
+        const MARK: Serial = Serial(0x4000_0B04);
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_WAYPOINT_ADD);
+        w.serial(MARK)
+            .u16(1000)
+            .u16(1200)
+            .i8(5)
+            .u8(1)
+            .u16(3)
+            .u16(0)
+            .u32(0)
+            .utf16le("home")
+            .u16(0);
+        let Inbound::WaypointAdded {
+            serial,
+            x,
+            map,
+            kind,
+            name,
+            ..
+        } = parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not a waypoint");
+        };
+        assert_eq!((serial, x, map, kind), (MARK, 1000, 1, 3));
+        assert_eq!(name, "home");
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_WAYPOINT_REMOVE);
+        w.serial(MARK);
+        assert!(matches!(
+            parse(&w.finish_variable().unwrap()).unwrap(),
+            Inbound::WaypointRemoved { serial: MARK }
+        ));
+    }
 
     #[test]
     fn the_newer_mobile_packets_read_the_same_mobile_as_the_older_ones() {

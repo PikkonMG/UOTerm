@@ -77,6 +77,31 @@ pub const PKT_UPDATE_CHARACTER: u8 = 0xD2;
 pub const PKT_UPDATE_OBJECT: u8 = 0xD3;
 /// `0xDE`. Whether a mobile fights, and whom.
 pub const PKT_MOBILE_STATUS: u8 = 0xDE;
+/// `0x89`. What a corpse wears.
+pub const PKT_CORPSE_EQUIPMENT: u8 = 0x89;
+/// `0x29`. The shard took the item that was dropped.
+pub const PKT_DROP_ACCEPTED: u8 = 0x29;
+/// `0xF6`. A boat and everything on it moved.
+pub const PKT_BOAT_MOVING: u8 = 0xF6;
+/// `0xBA`. An arrow that points at a place.
+pub const PKT_QUEST_ARROW: u8 = 0xBA;
+/// `0x5B`. The clock of the shard.
+pub const PKT_SET_TIME: u8 = 0x5B;
+/// `0x4E`. How much light the character carries.
+pub const PKT_PERSONAL_LIGHT: u8 = 0x4E;
+/// `0xA5`. A web page the shard points at.
+pub const PKT_OPEN_URL: u8 = 0xA5;
+/// `0xA6`. A scroll of words from the shard.
+pub const PKT_TIP_WINDOW: u8 = 0xA6;
+/// `0x97`. The shard walks the character itself.
+pub const PKT_FORCED_WALK: u8 = 0x97;
+/// `0x38`. The shard sends the character to a tile.
+pub const PKT_PATHFIND: u8 = 0x38;
+/// `0x98`. The name of a mobile changed.
+pub const PKT_UPDATE_NAME: u8 = 0x98;
+/// `0xE5` and `0xE6`. A mark on the world map.
+pub const PKT_WAYPOINT_ADD: u8 = 0xE5;
+pub const PKT_WAYPOINT_REMOVE: u8 = 0xE6;
 pub const PKT_AOS_COMMAND: u8 = 0xD7;
 pub const PKT_HELP_REQUEST: u8 = 0x9B;
 pub const PKT_CHAT_EVENT: u8 = 0xB2;
@@ -698,6 +723,11 @@ pub struct ClientVersion {
 }
 
 impl ClientVersion {
+    /// From 7.0.9.0 a quest arrow carries the serial it points at.
+    pub fn has_quest_arrow_serial(&self) -> bool {
+        (self.major, self.minor, self.revision) >= (7, 0, 9)
+    }
+
     pub const T2A: Self = Self {
         major: 2,
         minor: 0,
