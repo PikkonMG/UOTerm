@@ -15,15 +15,28 @@ use eframe::egui::{
 const SPAN: usize = 256;
 /// The picture is made again when the character is this far from its middle.
 const REDRAW_TILES: u16 = 48;
+/// The smallest the map field is drawn, whatever the size of the window.
 const PANEL_SIDE: f32 = 470.0;
+/// On a large screen the map grows to this share of the shorter side of the
+/// window, so a person who plays at a high resolution can still read it.
+const PANEL_SHARE: f32 = 0.7;
 const TITLE_ROW: f32 = 30.0;
+/// At this zoom the whole picture fits the field. Above it the map comes
+/// closer and shows fewer tiles.
+const ZOOM_MIN: f32 = 1.0;
+const ZOOM_MAX: f32 = 8.0;
+/// How much one notch of the wheel changes the zoom.
+const ZOOM_PER_NOTCH: f32 = 1.15;
+/// The wheel gives its step in points. This many points are one notch.
+const WHEEL_NOTCH: f32 = 50.0;
 const DOT_RADIUS: f32 = 2.5;
 const SELF_RADIUS: f32 = 4.0;
 const UNKNOWN: Color32 = Color32::from_rgb(10, 12, 18);
 
 const WORDS_TITLE: &str = "Map";
 const WORDS_NO_FILES: &str = "The map needs the client files.";
-const HINT_WALK: &str = "Click: walk there.";
+const HINT_WALK: &str = "Click: walk there. Wheel: zoom.";
+const HINT_ZOOM: &str = "Wheel: zoom.";
 
 struct Picture {
     map: u8,
@@ -35,6 +48,18 @@ struct Picture {
 pub struct MapUi {
     open: bool,
     picture: Option<Picture>,
+    zoom: f32,
+}
+
+/// The zoom after `notches` of the wheel, held inside the two bounds.
+fn zoomed(zoom: f32, notches: f32) -> f32 {
+    (zoom * ZOOM_PER_NOTCH.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
+/// How wide one side of the map field is in a window of this size.
+fn field_side(rect: Rect) -> f32 {
+    let room = rect.height().min(rect.width()) * PANEL_SHARE - TITLE_ROW - theme::PANEL_PAD * 2.0;
+    room.max(PANEL_SIDE)
 }
 
 /// Where a tile is on the turned map, as a step from the character. One
@@ -54,6 +79,7 @@ impl MapUi {
         Self {
             open,
             picture: None,
+            zoom: ZOOM_MIN,
         }
     }
 
@@ -112,9 +138,10 @@ impl MapUi {
         if !self.open {
             return None;
         }
+        let side = field_side(rect);
         let panel = Rect::from_center_size(
             rect.center(),
-            Vec2::new(PANEL_SIDE, PANEL_SIDE + TITLE_ROW) + Vec2::splat(theme::PANEL_PAD * 2.0),
+            Vec2::new(side, side + TITLE_ROW) + Vec2::splat(theme::PANEL_PAD * 2.0),
         );
         theme::panel(ui.painter(), panel);
         let inner = panel.shrink(theme::PANEL_PAD);
@@ -139,8 +166,16 @@ impl MapUi {
         let Some(picture) = &self.picture else {
             return Some(panel);
         };
-        // The turned picture is a diamond as wide as the field.
-        let unit = field.width() / (SPAN as f32 * 2.0);
+        let response = ui.interact(field, Id::new("world-map"), Sense::click());
+        if response.hovered() {
+            let notches = ui.input(|input| input.raw_scroll_delta.y) / WHEEL_NOTCH;
+            if notches != 0.0 {
+                self.zoom = zoomed(self.zoom, notches);
+            }
+        }
+        // The turned picture is a diamond as wide as the field, and the zoom
+        // spreads it wider than that.
+        let unit = field.width() / (SPAN as f32 * 2.0) * self.zoom;
         let center = field.center();
         let from_character = Vec2::new(
             f32::from(picture.middle.0) - f32::from(frame.x),
@@ -199,8 +234,10 @@ impl MapUi {
             );
         }
         painter.circle_filled(center, SELF_RADIUS, theme::SELF_FIGURE);
-        let response = ui.interact(field, Id::new("world-map"), Sense::click());
         if !frame.human_control {
+            if response.hovered() {
+                super::tips::label(ui, HINT_ZOOM, "");
+            }
             return Some(panel);
         }
         if let Some(mouse) = response.hover_pos() {
@@ -219,6 +256,24 @@ impl MapUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wheel_zooms_between_the_two_bounds() {
+        assert!(zoomed(ZOOM_MIN, 1.0) > ZOOM_MIN, "a notch up comes closer");
+        assert_eq!(zoomed(ZOOM_MIN, -5.0), ZOOM_MIN, "never below the fit");
+        assert_eq!(zoomed(ZOOM_MAX, 20.0), ZOOM_MAX, "never above the bound");
+        let twice = zoomed(zoomed(ZOOM_MIN, 1.0), -1.0);
+        assert!((twice - ZOOM_MIN).abs() < 0.001, "up then down comes back");
+    }
+
+    #[test]
+    fn a_large_window_gets_a_large_map() {
+        let small = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0));
+        assert_eq!(field_side(small), PANEL_SIDE);
+        let large = Rect::from_min_size(Pos2::ZERO, Vec2::new(2560.0, 1440.0));
+        assert!(field_side(large) > PANEL_SIDE, "a big screen shows more");
+        assert!(field_side(large) < large.height(), "it stays in the window");
+    }
 
     #[test]
     fn a_click_on_the_turned_map_finds_its_tile_again() {
