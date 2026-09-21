@@ -22,10 +22,31 @@ use crate::names::{display_name, display_title, NameBook};
 use crate::observe::Observe;
 use crate::radar::{default_tile, render_radar, RadarOptions, TileKind, RADAR_DEFAULT};
 
+pub const BODY_HUMAN_MALE: u16 = 0x190;
+pub const BODY_HUMAN_FEMALE: u16 = 0x191;
 pub const BODY_GHOST_MALE: u16 = 0x192;
 pub const BODY_GHOST_FEMALE: u16 = 0x193;
+pub const BODY_ELF_MALE: u16 = 0x25D;
+pub const BODY_ELF_FEMALE: u16 = 0x25E;
 pub const BODY_GHOST_ELF_MALE: u16 = 0x25F;
 pub const BODY_GHOST_ELF_FEMALE: u16 = 0x260;
+pub const BODY_GARGOYLE_MALE: u16 = 0x29A;
+pub const BODY_GARGOYLE_FEMALE: u16 = 0x29B;
+pub const BODY_GHOST_GARGOYLE_FEMALE: u16 = 0x2B6;
+pub const BODY_GHOST_GARGOYLE_MALE: u16 = 0x2B7;
+
+/// Every ghost body a shard gives a dead player, with the body the same
+/// player wears alive. A ghost body has no pictures of its own in the client
+/// files, so a screen draws the living body and makes it pale. The pairs come
+/// from the race table both server families keep.
+pub const GHOST_BODIES: [(u16, u16); 6] = [
+    (BODY_GHOST_MALE, BODY_HUMAN_MALE),
+    (BODY_GHOST_FEMALE, BODY_HUMAN_FEMALE),
+    (BODY_GHOST_ELF_MALE, BODY_ELF_MALE),
+    (BODY_GHOST_ELF_FEMALE, BODY_ELF_FEMALE),
+    (BODY_GHOST_GARGOYLE_MALE, BODY_GARGOYLE_MALE),
+    (BODY_GHOST_GARGOYLE_FEMALE, BODY_GARGOYLE_FEMALE),
+];
 
 /// Anyone may move over anyone else on a facet that carries this rule.
 ///
@@ -1985,10 +2006,16 @@ fn item_named(item: &Item, word: &str) -> bool {
 }
 
 pub fn is_ghost_body(body: u16) -> bool {
-    matches!(
-        body,
-        BODY_GHOST_MALE | BODY_GHOST_FEMALE | BODY_GHOST_ELF_MALE | BODY_GHOST_ELF_FEMALE
-    )
+    body_when_alive(body).is_some()
+}
+
+/// The body a ghost wears when he lives again. None when the body is not a
+/// ghost body.
+pub fn body_when_alive(body: u16) -> Option<u16> {
+    GHOST_BODIES
+        .iter()
+        .find(|(ghost, _)| *ghost == body)
+        .map(|(_, alive)| *alive)
 }
 
 fn paperdoll_name(text: &str) -> &str {
@@ -2178,5 +2205,17 @@ mod tests {
             name: String::new(),
         });
         assert_eq!(world.mobiles.get(&ORC).unwrap().name, "Grimm");
+    }
+
+    #[test]
+    fn every_race_has_a_ghost_body_that_maps_to_a_living_one() {
+        for (ghost, alive) in GHOST_BODIES {
+            assert!(is_ghost_body(ghost), "{ghost:#06x} is a ghost");
+            assert_eq!(body_when_alive(ghost), Some(alive));
+            assert!(!is_ghost_body(alive), "{alive:#06x} is alive");
+        }
+        assert!(is_ghost_body(BODY_GHOST_ELF_MALE));
+        assert!(is_ghost_body(BODY_GHOST_GARGOYLE_MALE));
+        assert_eq!(body_when_alive(BODY_HUMAN_MALE), None);
     }
 }

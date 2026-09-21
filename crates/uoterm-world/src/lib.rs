@@ -40,11 +40,13 @@ pub use radar::{
 pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
 pub use state::Waypoint;
 pub use state::{
-    facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem, DoorUpdate, Harm,
-    Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Trade, World,
-    BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_MALE,
-    FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, MAP_RULE_FREE_MOVEMENT, SPEECH_KIND_PARTY,
-    SPEECH_KIND_PARTY_PRIVATE,
+    body_when_alive, facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem,
+    DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Trade, World,
+    BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE, BODY_GARGOYLE_MALE,
+    BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_GARGOYLE_FEMALE,
+    BODY_GHOST_GARGOYLE_MALE, BODY_GHOST_MALE, BODY_HUMAN_FEMALE, BODY_HUMAN_MALE,
+    FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, GHOST_BODIES, MAP_RULE_FREE_MOVEMENT,
+    SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE,
 };
 
 #[cfg(test)]

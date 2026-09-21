@@ -67,14 +67,6 @@ const PAINT_ORDER: [u8; 22] = [
 const FACING_NORTH: u8 = 0;
 const FACING_SOUTH_EAST: u8 = 3;
 
-/// A ghost shows as the body he had, and the window makes him pale.
-const GHOST_BODIES: [(u16, u16); 4] = [
-    (0x0192, 0x0190),
-    (0x0193, 0x0191),
-    (0x02B6, 0x029B),
-    (0x02B7, 0x029A),
-];
-
 /// The game lifts each mobile this far above the center of his tile.
 const LIFT: i32 = 3;
 const OUTLINE: usize = 1;
@@ -223,11 +215,10 @@ fn paint_order(direction: u8) -> Vec<u8> {
     order
 }
 
+/// A ghost shows as the body he had, and the window makes him pale. A ghost
+/// body has no pictures of its own in the client files.
 fn shown_body(look: &WatchLook) -> u16 {
-    GHOST_BODIES
-        .iter()
-        .find(|(ghost, _)| *ghost == look.body)
-        .map_or(look.body, |(_, alive)| *alive)
+    uoterm_world::body_when_alive(look.body).unwrap_or(look.body)
 }
 
 fn mount_item(look: &WatchLook) -> Option<&WatchEquip> {
@@ -353,6 +344,23 @@ mod tests {
     use super::*;
 
     const WEST: u8 = 6;
+
+    #[test]
+    fn real_files_draw_every_ghost_body() {
+        let Some(dir) = uoterm_nav::client_data_dir_from_env() else {
+            return;
+        };
+        let anim = AnimData::open(&dir).expect("animation files open");
+        for (ghost, alive) in uoterm_world::GHOST_BODIES {
+            let shown = shown_body(&WatchLook {
+                body: ghost,
+                ..WatchLook::default()
+            });
+            assert_eq!(shown, alive, "ghost {ghost:#06x}");
+            let frames = anim.frames(shown, Facing::from_direction(0), Action::Stand, false);
+            assert!(frames.is_some(), "body {shown:#06x} for ghost {ghost:#06x}");
+        }
+    }
 
     #[test]
     fn the_cloak_moves_with_the_facing() {
