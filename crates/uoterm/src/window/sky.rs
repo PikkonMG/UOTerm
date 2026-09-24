@@ -82,13 +82,27 @@ fn night_alpha(light: u8) -> f32 {
     (f32::from(light) / LIGHT_DARKEST).clamp(0.0, 1.0) * NIGHT_ALPHA_MAX
 }
 
+/// The constants of a 32-bit hash finalizer: every bit of the input moves
+/// about half the bits of the output.
+const SCATTER_SALT_MIX: u32 = 0x9E37_79B9;
+const SCATTER_MIX_A: u32 = 0x85EB_CA6B;
+const SCATTER_MIX_B: u32 = 0xC2B2_AE35;
+const SCATTER_SHIFT_WIDE: u32 = 16;
+const SCATTER_SHIFT_NARROW: u32 = 13;
+const SCATTER_MASK: u32 = 0xFFFF;
+
 /// A number from 0 to 1 that is the same each time for one drop and one
-/// use, so a drop keeps its column while it falls.
+/// use, so a drop keeps its column while it falls. The uses of one drop
+/// have no link to each other, so the drops scatter over the whole window
+/// and do not stand in a line.
 fn scatter(drop: usize, salt: u32) -> f32 {
-    let mixed = (drop as u32)
-        .wrapping_mul(2_654_435_761)
-        .wrapping_add(salt.wrapping_mul(40_503));
-    ((mixed >> 8) & 0xFFFF) as f32 / 65_535.0
+    let mut mixed = (drop as u32) ^ salt.wrapping_mul(SCATTER_SALT_MIX);
+    mixed ^= mixed >> SCATTER_SHIFT_WIDE;
+    mixed = mixed.wrapping_mul(SCATTER_MIX_A);
+    mixed ^= mixed >> SCATTER_SHIFT_NARROW;
+    mixed = mixed.wrapping_mul(SCATTER_MIX_B);
+    mixed ^= mixed >> SCATTER_SHIFT_WIDE;
+    (mixed & SCATTER_MASK) as f32 / SCATTER_MASK as f32
 }
 
 impl Sky {
@@ -270,5 +284,23 @@ mod tests {
         assert_eq!(scatter(7, 2), scatter(7, 2));
         assert_ne!(scatter(7, 2), scatter(8, 2));
         assert!((0.0..=1.0).contains(&scatter(12_345, 9)));
+    }
+
+    /// The place across and the place down of a drop have no link, so the
+    /// rain fills the window and does not fall as one slanted line.
+    #[test]
+    fn the_drops_do_not_stand_in_a_line() {
+        const DROPS: usize = 1_000;
+        const BANDS: usize = 10;
+        const FEWEST_IN_A_BAND: usize = DROPS / BANDS / 2;
+        let mut bands = [0usize; BANDS];
+        for drop in 0..DROPS {
+            let gap = (scatter(drop, 2) - scatter(drop, 1)).rem_euclid(1.0);
+            bands[((gap * BANDS as f32) as usize).min(BANDS - 1)] += 1;
+        }
+        assert!(
+            bands.iter().all(|&n| n >= FEWEST_IN_A_BAND),
+            "the gaps between across and down spread out: {bands:?}"
+        );
     }
 }
