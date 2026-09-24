@@ -11,7 +11,7 @@ UOTerm speaks the Ultima Online login and game streams the way a Classic Client 
 | `t2a` | `2.0.7.0` | 1.26–2.0.x style. The mock shard uses this. |
 | `modern` (default) | `7.0.102.3` | Classic Client 7.x: 32-bit `0xB9` features, container grid, `0xF3` world item |
 
-`--version` is the string sent as packet `0xBD`. If you omit it, the session uses the default for the era.
+`--version` is the string sent as packet `0xBD`. If you omit it, a `modern` session sends the version of `client.exe` in the `uopath` folder. Many shards compare the version with their own copy of `client.exe` and kick an older client. With no `client.exe`, or in the `t2a` era, the session uses the default for the era.
 
 The version, not the era, picks the rest, the same way a Classic Client does:
 
@@ -77,17 +77,69 @@ The character is in the world when the server has sent `0x1B`.
 | `0x74` / `0x9E` / `0x3B` / `0x6F` | Shop buy and sell lists, shop close, secure trade | |
 | `0xD6` / `0xDC` | Property list and its revision | |
 | `0x6C` / `0x99` | Target cursor / multi placement | |
-| `0x2F` / `0xAA` / `0x0B` / `0xAF` / `0x2C` / `0xDF` | Combat, damage, death, death menu, buffs | |
+| `0x2F` / `0xAA` / `0x0B` / `0xAF` / `0xDF` | Combat, damage, death, buffs | |
+| `0x2C` | Death screen | One action byte. Every action but `1` is a death: the world marks the character dead, ends war mode and the weather, cues the death screen (`watch` cue `death_screen`) and files a `died` event when the death is new. The session then sends `0x72` peace, as the reference client does |
 | `0x66` / `0x93` / `0xD4` / `0x71` | Books and bulletin boards | |
 | `0x56` / `0x90` / `0xF5` / `0xBA` / `0xE5` / `0xE6` | Maps, quest arrow and waypoints | |
 | `0x6E` / `0xE2` / `0x70` / `0xC0` / `0xC7` / `0x54` / `0x6D` | Animations, effects, sound and music | |
 | `0x4E` / `0x4F` / `0x65` / `0xBC` / `0x5B` | Light, weather, season and time | |
 | `0xD8` / `0xB2` / `0xB8` / `0x88` / `0xA5` / `0xA6` / `0x95` / `0x38` | Custom house, chat, profile, paperdoll, web link, tip, dye, pathfind | |
-| `0x73` / `0xBD` / `0xBE` / `0xF0` | Ping, version request, assistant version and assistant features | |
-| `0xBF` | Extended | Sub-commands: `0x01` / `0x02` fastwalk keys, `0x04` close gump, `0x06` party, `0x08` map change, `0x10` equip info (crafter, unidentified, attributes), `0x14` context menu, `0x16` close window, `0x18` map patches, `0x19` bonded pets and stat locks, `0x1B` spellbook content, `0x1D` house revision, `0x20` house designer, `0x22` damage, `0x26` speed mode |
+| `0x73` / `0xBD` / `0xBE` | Ping, version request, assistant version | The echo of the last ping gives the round trip: `latency_ms` in `observe` and `watch` |
+| `0xF0` | Assistant and tracking | `0xFE` forbidden features. `0x00` tracking accepted. `0x01` party places and `0x02` guild places: serial, x, y, map (and a hits share for the guild), up to a zero serial. The guild list opens with a byte that says whether places follow. The world keeps them as `tracked_members` |
+| `0x3F` | UltimaLive | Block at byte 3, a count of seven-byte units at 7, the command at 13, the map at 14, the body from 15. `0xFF` hash query, `0x00` statics of one block, `0x01` map definitions (nine bytes each), `0x02` login with the shard name. Nothing is answered or changed before the login. See UltimaLive below |
+| `0x40` | UltimaLive land | Block, the 192 bytes of land in the layout of the map file, and the map at byte 200 |
+| `0xBF` | Extended | Sub-commands: `0x01` / `0x02` fastwalk keys, `0x04` close gump, `0x06` party, `0x08` map change, `0x10` equip info (crafter, unidentified, attributes), `0x14` context menu, `0x16` close window, `0x18` map patches, `0x19` bonded pets and stat locks, `0x1B` spellbook content, `0x1D` house revision, `0x20` house designer, `0x22` damage, `0x26` speed mode, `0x0C` close status bar (`watch` cue `status_bar_closed`), `0x21` clear the armed weapon move, `0x25` a spell or stance on or off (`abilities` in `observe` and `watch`), `0x2A` race change: the sex and the race from 1, any other race closes it (`race_change` in `observe` and `watch`) |
 | other | | Log and skip. The session does not panic |
 
 Packet lengths live in era tables in `uoterm-protocol`. Unknown ids with a plausible variable length are skipped.
+
+## Outbound packets on request
+
+Each of these goes out only when a tool asks for it, or as the answer to a
+shard. UOTerm never sends `0xBF` `0x05`, `0x0B` or `0x0F`, or `0xC8`, on its
+own: a shard that hears none of them reads the session as a Classic Client.
+
+| Id | Name | Sent by | Layout |
+| --- | --- | --- | --- |
+| `0x12` `0x27` | Cast from a book | `cast` with `book` | Text: the spell number and the book serial in decimal, parted by a space |
+| `0x12` `0x43` | Open spellbook | `open_spellbook` | Text: the kind as a number, 1 magery to 7 mysticism. Both server families read the kind as text; the reference client writes a raw byte, which they read as magery |
+| `0xBF` `0x1C` | Cast | `cast`, scripts, hotkeys, from client 6.0.14.2 | Word 2 (no book named), then the spell number. Older clients send `0x12` `0x56` |
+| `0x98` | Name request | the name pump, for a mobile on a shard with no property lists | The serial. The shard answers with `0x98` |
+| `0xA7` | Tip request | `tip` | Fixed 4 bytes: the tip number, then 1 for the next tip or 0 for the one before |
+| `0xBF` `0x07` | Quest arrow click | `quest_arrow` | One byte: 1 for the right button |
+| `0xBF` `0x0C` | Close status bar | `mobile_status` with `close` | The serial |
+| `0xBF` `0x10` | Property request | the name pump and `properties`, for clients older than 5.0.9.0 | One serial. Newer clients send the `0xD6` batch |
+| `0xBF` `0x33` | Boat move | `boat_move` | The pilot serial, the direction twice, the speed: 0 stop, 1 slow, 2 fast |
+| `0xBF` `0x2A` | Race change answer | `race_change` | Skin hue, hair, hair hue, beard, beard hue, one word each. Nothing after the sub-command says no |
+| `0xB3` `0x43` | Chat leave | `chat` action `leave` | Language and the command alone |
+| `0xB3` `0x63` | Chat create | `chat` action `create` | The channel name, then the password between `{` and `}` |
+| `0xD7` `0x0E` | House design sync | `house_edit` action `sync` | Player serial, command, `0x0A` |
+| `0xD7` `0x1E` | Equip last weapon | `equip` with `who=last` when no weapon went to the pack here | Player serial, command, `0x0A` |
+| `0xF0` `0x00` / `0x01` | Party / guild places | `track_members` | The command; the guild query adds 1 to ask for the places |
+| `0xFB` | Public house content | `house_content` | Fixed 2 bytes: 1 to show |
+| `0x93` | Book cover, old form | `book_write` for a book the shard opened with `0x93` | Fixed 99 bytes: serial, `0`, `1`, a zero word, a 60-byte title and a 30-byte author |
+| `0x66` | Book page request | `book_read` for a page the shard has not sent | One page, line count `0xFFFF` |
+| `0x3F` | UltimaLive hashes | a hash query | Block, six spare bytes, `0xFF`, the map, then 25 checksum words |
+| `0x73` | Ping | every 30 seconds, and the `ping` script command | A number that counts up; its echo times the round trip |
+
+## UltimaLive
+
+A shard that runs UltimaLive changes blocks of the map while the game runs.
+After its `0x3F` login the session takes the land (`0x40`) and statics
+(`0x3F` `0x00`) of each changed block of the map underfoot. The map files are
+shared by every session on the same client directory, so the first change
+moves the session to a copy of the map of its own, with every change laid
+over the files; walking, the radar and line of sight read it at once. A new
+map form (patches) opens the copy again with every change on it.
+
+A hash query asks for the checksums of the 5 by 5 blocks around one block,
+column by column. Each checksum is the Fletcher-16 sum of the 192 bytes of
+land and then the statics records of the block. The square wraps at the wrap
+size of the map definitions while the middle block lies inside it.
+
+`watch` sends the changed blocks within four blocks of the character under
+`live_map`, as hex, with a revision that counts the changes, so a window can
+lay them over its own map files.
 
 ## Movement
 

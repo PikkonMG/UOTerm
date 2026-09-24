@@ -24,6 +24,10 @@ pub enum CueKind {
     Effect {
         effect: uoterm_protocol::GraphicEffect,
     },
+    /// The character died: the screen of death shows and its music plays.
+    DeathScreen,
+    /// The shard shut the status bar of the mobile of the cue.
+    StatusBarClosed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

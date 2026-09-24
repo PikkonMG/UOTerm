@@ -61,6 +61,49 @@ pub enum EventKind {
     ControlTaken,
     /// The agent has the character again, and why.
     ControlReleased,
+    /// The shard played a sound: its number and where.
+    Sound,
+    /// A picture flew, flashed or stayed for a moment: a fireball, a heal.
+    Effect,
+    /// A mobile played an action: a swing, a cast, a bow.
+    Animation,
+    /// An item left the world: used up, taken away or out of sight.
+    ItemDeleted,
+    /// The shard put up a quest arrow, or took it down.
+    QuestArrow,
+    /// A map item opened: a treasure map or a city map.
+    MapOpened,
+    /// A skill went up or down, with the change.
+    SkillChanged,
+    /// Strength, dexterity or intelligence went up or down, with the change.
+    StatChanged,
+    /// The shard told where the party or the guild members out of sight
+    /// stand.
+    MemberPositions,
+    /// The weapon move was spent or cleared, or a spell or stance that stays
+    /// on came on or went off.
+    AbilityChanged,
+    /// The shard asks the character to pick new looks for another race.
+    /// `observe` holds the race and the looks it may pick.
+    RaceChangeOpened,
+}
+
+/// The kinds that come many times a second in a busy place. `next_event`
+/// gives them only when the caller asks for them, and a full log drops them
+/// before the others.
+pub const AMBIENT_EVENT_KINDS: [EventKind; 5] = [
+    EventKind::Sound,
+    EventKind::Effect,
+    EventKind::Animation,
+    EventKind::ItemDeleted,
+    EventKind::MemberPositions,
+];
+
+impl EventKind {
+    /// True for one of the [`AMBIENT_EVENT_KINDS`].
+    pub fn is_ambient(self) -> bool {
+        AMBIENT_EVENT_KINDS.contains(&self)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

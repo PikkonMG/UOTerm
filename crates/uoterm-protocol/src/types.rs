@@ -135,6 +135,27 @@ pub const PKT_ASSISTANT: u8 = 0xF0;
 pub const ASSIST_CMD_FEATURES: u8 = 0xFE;
 /// Assistant command from the client: it has the shard's list.
 pub const ASSIST_CMD_ACK: u8 = 0xFF;
+/// Assistant commands from the client that ask where the party members, or
+/// the guild members, stand out of sight. The guild ask carries one byte
+/// more: whether the answer holds the places.
+pub const ASSIST_CMD_QUERY_PARTY: u8 = 0x00;
+pub const ASSIST_CMD_QUERY_GUILD: u8 = 0x01;
+/// Assistant commands from the shard: it takes the position queries, and the
+/// places of the party members or of the guild members.
+pub const ASSIST_CMD_TRACKING_ACCEPTED: u8 = 0x00;
+pub const ASSIST_CMD_PARTY_POSITIONS: u8 = 0x01;
+pub const ASSIST_CMD_GUILD_POSITIONS: u8 = 0x02;
+/// `0x3F`. UltimaLive, both ways: the shard changes blocks of the map while
+/// the game runs, and asks the client for the checksums of the blocks it
+/// holds. A command byte says which.
+pub const PKT_ULTIMA_LIVE: u8 = 0x3F;
+/// `0x40`. UltimaLive: the land of one block of the map, in the layout of
+/// the map file.
+pub const PKT_LIVE_TERRAIN: u8 = 0x40;
+/// `0xA7`. The client asks for the next or the previous tip of the day.
+pub const PKT_TIP_REQUEST: u8 = 0xA7;
+/// `0xFB`. Whether the client shows what stands inside public houses.
+pub const PKT_PUBLIC_HOUSE_CONTENT: u8 = 0xFB;
 pub const PKT_MUSIC: u8 = 0x6D;
 pub const PKT_CHARACTER_ANIMATION: u8 = 0x6E;
 pub const PKT_SECURE_TRADE: u8 = 0x6F;
@@ -233,6 +254,36 @@ pub const EXT_STAT_LOCK: u16 = 0x001A;
 /// Use a tool on the resource it gathers, with no cursor.
 pub const EXT_RESOURCE_TARGET: u16 = 0x0030;
 pub const EXT_TOGGLE_FLYING: u16 = 0x0032;
+/// `0xBF` sub-command: the player clicked the quest arrow, with the left or
+/// the right button.
+pub const EXT_QUEST_ARROW_CLICK: u16 = 0x0007;
+/// `0xBF` sub-command, both ways: a status bar of one mobile closed. The
+/// client says it shut the bar, and the shard shuts it on the client.
+pub const EXT_CLOSE_STATUS_BAR: u16 = 0x000C;
+/// `0xBF` sub-command from the client that asks for the property list of one
+/// object, as clients older than the `0xD6` request ask for it. The shard
+/// sends its `0xBF` `0x10` click info under the same number.
+pub const EXT_QUERY_PROPERTIES: u16 = 0x0010;
+/// `0xBF` sub-command that casts a spell, which clients from 6.0.14.2 send in
+/// place of the `0x12` text command.
+pub const EXT_CAST_SPELL: u16 = 0x001C;
+/// The cast carries no spellbook: the shard finds the book itself.
+pub const CAST_WITHOUT_BOOK: u16 = 0x0002;
+/// `0xBF` sub-command that clears the weapon move the character armed.
+pub const EXT_CLEAR_WEAPON_ABILITY: u16 = 0x0021;
+/// `0xBF` sub-command that lights or darkens a spell or a stance: a spell
+/// number and whether it is on.
+pub const EXT_SPECIAL_ABILITY: u16 = 0x0025;
+/// `0xBF` sub-command that steers a boat the character pilots.
+pub const EXT_BOAT_MOVE: u16 = 0x0033;
+/// `0xBF` sub-command, both ways: the shard asks the character to pick new
+/// looks for another race, or closes that window; the client answers with
+/// the looks, or with nothing to say no.
+pub const EXT_RACE_CHANGE: u16 = 0x002A;
+/// The speeds a pilot asks of a boat.
+pub const BOAT_SPEED_STOP: u8 = 0;
+pub const BOAT_SPEED_SLOW: u8 = 1;
+pub const BOAT_SPEED_FAST: u8 = 2;
 pub const PARTY_ADD: u8 = 0x01;
 pub const PARTY_REMOVE: u8 = 0x02;
 pub const PARTY_PRIVATE_MESSAGE: u8 = 0x03;
@@ -257,6 +308,9 @@ pub const PKT_ENCODED: u8 = 0xD7;
 pub const ENCODED_SET_ABILITY: u16 = 0x0019;
 pub const ENCODED_GUILD_MENU: u16 = 0x0028;
 pub const ENCODED_QUEST_MENU: u16 = 0x0032;
+/// The encoded command that asks the shard to wear the last weapon the
+/// character held.
+pub const ENCODED_EQUIP_LAST_WEAPON: u16 = 0x001E;
 pub const PKT_LOGOUT: u8 = 0xD1;
 pub const TEXT_CMD_EMOTE_ANIMATION: u8 = 0xC7;
 pub const TEXT_CMD_INVOKE_VIRTUE: u8 = 0xF4;
@@ -429,6 +483,23 @@ pub const OPL_LIST_TERMINATOR: u32 = 0;
 pub const TEXT_CMD_USE_SKILL: u8 = 0x24;
 pub const TEXT_CMD_CAST_SPELL: u8 = 0x56;
 pub const TEXT_CMD_OPEN_DOOR: u8 = 0x58;
+/// Text command that casts a spell from one named spellbook: the spell
+/// number and the serial of the book, parted by a space.
+pub const TEXT_CMD_CAST_FROM_BOOK: u8 = 0x27;
+/// Text command that opens the spellbook of one kind: its number as text.
+pub const TEXT_CMD_OPEN_SPELLBOOK: u8 = 0x43;
+/// The kinds of spellbook a `0x43` text command opens, as the shards number
+/// them.
+pub const SPELLBOOK_MAGERY: u8 = 1;
+pub const SPELLBOOK_NECROMANCY: u8 = 2;
+pub const SPELLBOOK_CHIVALRY: u8 = 3;
+pub const SPELLBOOK_NINJITSU: u8 = 4;
+pub const SPELLBOOK_BUSHIDO: u8 = 5;
+pub const SPELLBOOK_SPELLWEAVING: u8 = 6;
+pub const SPELLBOOK_MYSTICISM: u8 = 7;
+/// A `0x2C` death screen with this action is the character alive again.
+/// Every other action is his death.
+pub const DEATH_SCREEN_ALIVE: u8 = 1;
 
 /// Gump id of the `0x24` that opens a shopkeeper's buy window. A server writes
 /// it; every other container gets its own gump.
@@ -1015,6 +1086,18 @@ impl ClientVersion {
         })
     }
 
+    /// Clients from 6.0.14.2 up cast a spell with `0xBF` `0x1C`; older ones
+    /// send the `0x12` text command.
+    pub fn has_extended_cast(self) -> bool {
+        self.at_least(Self::new(6, 0, 14, 2))
+    }
+
+    /// Clients from 5.0.9.0 up ask for property lists with the `0xD6` batch;
+    /// older ones ask for one object at a time with `0xBF` `0x10`.
+    pub fn has_batch_property_request(self) -> bool {
+        self.at_least(Self::new(5, 0, 9, 0))
+    }
+
     /// Clients from 5.0.0a up read the `0x16` health bar packet as `0x17`.
     pub fn reads_old_health_bar(self) -> bool {
         self.at_least(Self {
@@ -1202,6 +1285,18 @@ mod tests {
         let p = Point3::new(100, 100, ON_A_HILLSIDE);
         let n = p.neighbour(Direction::North).unwrap();
         assert_eq!(n, Point3::new(100, 99, ON_A_HILLSIDE));
+    }
+
+    /// The cast packet and the property request follow the reference
+    /// client's version gates.
+    #[test]
+    fn the_cast_and_property_forms_follow_the_version() {
+        assert!(ClientVersion::MODERN.has_extended_cast());
+        assert!(ClientVersion::new(6, 0, 14, 2).has_extended_cast());
+        assert!(!ClientVersion::new(6, 0, 14, 1).has_extended_cast());
+        assert!(ClientVersion::new(5, 0, 9, 0).has_batch_property_request());
+        assert!(!ClientVersion::new(5, 0, 8, 9).has_batch_property_request());
+        assert!(!ClientVersion::T2A.has_batch_property_request());
     }
 
     #[test]

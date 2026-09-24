@@ -286,8 +286,40 @@ pub fn use_skill(skill_id: u16) -> Vec<u8> {
     text_command(TEXT_CMD_USE_SKILL, &format!("{skill_id} 0"))
 }
 
+/// Casts a spell by its number with the `0x12` text command, the form of
+/// clients older than 6.0.14.2.
 pub fn cast_spell(spell_id: u16) -> Vec<u8> {
     text_command(TEXT_CMD_CAST_SPELL, &spell_id.to_string())
+}
+
+/// `0xBF` `0x1C`: casts a spell by its number with no spellbook named, the
+/// form of clients from 6.0.14.2.
+pub fn cast_spell_extended(spell_id: u16) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_CAST_SPELL).u16(CAST_WITHOUT_BOOK).u16(spell_id);
+    var_bytes(w)
+}
+
+/// Casts a spell in the form the client version sends.
+pub fn cast(spell_id: u16, version: ClientVersion) -> Vec<u8> {
+    if version.has_extended_cast() {
+        cast_spell_extended(spell_id)
+    } else {
+        cast_spell(spell_id)
+    }
+}
+
+/// `0x12` `0x27`: casts a spell from one spellbook, as a click on the spell
+/// in an open book does. The book goes as its serial in decimal.
+pub fn cast_from_book(spell_id: u16, book: Serial) -> Vec<u8> {
+    text_command(TEXT_CMD_CAST_FROM_BOOK, &format!("{spell_id} {}", book.0))
+}
+
+/// `0x12` `0x43`: opens the spellbook of one kind, see the `SPELLBOOK_*`
+/// kinds. Both server families read the kind as a number in text, so it
+/// goes as text.
+pub fn open_spellbook(kind: u8) -> Vec<u8> {
+    text_command(TEXT_CMD_OPEN_SPELLBOOK, &kind.to_string())
 }
 
 pub fn open_door() -> Vec<u8> {
@@ -724,6 +756,138 @@ fn encoded_button(player: Serial, command: u16, end: u8) -> Vec<u8> {
     var_bytes(w)
 }
 
+/// `0xD7` `0x1E`: asks the shard to wear the last weapon the character held.
+pub fn equip_last_weapon(player: Serial) -> Vec<u8> {
+    encoded_button(player, ENCODED_EQUIP_LAST_WEAPON, ENCODED_END)
+}
+
+/// `0x98`: asks for the name of a mobile. The shard answers with `0x98`.
+pub fn name_request(mobile: Serial) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_UPDATE_NAME);
+    w.serial(mobile);
+    var_bytes(w)
+}
+
+/// The way a `0xA7` turns the tips: back or on.
+const TIP_PREVIOUS: u8 = 0;
+const TIP_NEXT: u8 = 1;
+
+/// `0xA7`: asks for the tip after, or before, the tip with this number.
+pub fn tip_request(tip: u16, next: bool) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_TIP_REQUEST);
+    w.u16(tip).u8(if next { TIP_NEXT } else { TIP_PREVIOUS });
+    w.finish()
+}
+
+/// `0xBF` `0x07`: the player clicked the quest arrow, with the right button
+/// or the left.
+pub fn quest_arrow_click(right_button: bool) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_QUEST_ARROW_CLICK).u8(u8::from(right_button));
+    var_bytes(w)
+}
+
+/// The looks a character picks in the race change window. A style of zero
+/// is none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NewLooks {
+    pub skin_hue: u16,
+    pub hair: u16,
+    pub hair_hue: u16,
+    pub beard: u16,
+    pub beard_hue: u16,
+}
+
+/// `0xBF` `0x2A`: the answer to the race change of the shard. With looks
+/// the character takes the race; with none he says no, and the packet ends
+/// after the sub-command, as the shard reads a refusal.
+pub fn race_change_answer(looks: Option<NewLooks>) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_RACE_CHANGE);
+    if let Some(looks) = looks {
+        w.u16(looks.skin_hue)
+            .u16(looks.hair)
+            .u16(looks.hair_hue)
+            .u16(looks.beard)
+            .u16(looks.beard_hue);
+    }
+    var_bytes(w)
+}
+
+/// `0xBF` `0x0C`: the client shut the status bar of this mobile, so the
+/// shard may stop sending its hits.
+pub fn close_status_bar(mobile: Serial) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_CLOSE_STATUS_BAR).serial(mobile);
+    var_bytes(w)
+}
+
+/// `0xBF` `0x33`: steers the boat the character pilots, in a direction at
+/// one of the `BOAT_SPEED_*` speeds. The direction goes twice, as the
+/// reference client writes it; a shard reads the first.
+pub fn boat_move(player: Serial, direction: Direction, speed: u8) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_BOAT_MOVE)
+        .serial(player)
+        .u8(direction as u8)
+        .u8(direction as u8)
+        .u8(speed);
+    var_bytes(w)
+}
+
+/// `0xBF` `0x10`: asks for the property list of one object, the way clients
+/// older than 5.0.9.0 ask. The shard answers with a `0xD6` list.
+pub fn query_properties_old(serial: Serial) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_QUERY_PROPERTIES).serial(serial);
+    var_bytes(w)
+}
+
+/// `0xF0` `0x00`: asks where the party members out of sight stand.
+pub fn query_party_positions() -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_ASSISTANT);
+    w.u8(ASSIST_CMD_QUERY_PARTY);
+    var_bytes(w)
+}
+
+/// The guild query asks for the places, not the names alone.
+const GUILD_QUERY_WITH_PLACES: u8 = 1;
+
+/// `0xF0` `0x01`: asks where the guild members out of sight stand.
+pub fn query_guild_positions() -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_ASSISTANT);
+    w.u8(ASSIST_CMD_QUERY_GUILD).u8(GUILD_QUERY_WITH_PLACES);
+    var_bytes(w)
+}
+
+/// `0xFB`: whether the client shows what stands inside public houses.
+pub fn public_house_content(show: bool) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_PUBLIC_HOUSE_CONTENT);
+    w.u8(u8::from(show));
+    w.finish()
+}
+
+/// The fields of a `0x3F` hash answer: six bytes nobody reads, then the
+/// command byte of a hash query.
+const LIVE_ANSWER_SPARE: usize = 6;
+const LIVE_HASH_COMMAND: u8 = 0xFF;
+/// A hash answer holds the checksums of the 5 by 5 blocks around one block.
+pub const LIVE_HASH_COUNT: usize = 25;
+
+/// `0x3F`: the checksums of the 5 by 5 blocks around `block`, column by
+/// column, answering an UltimaLive hash query.
+pub fn ultima_live_hashes(block: u32, map: u8, hashes: &[u16; LIVE_HASH_COUNT]) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_ULTIMA_LIVE);
+    w.u32(block)
+        .pad(LIVE_ANSWER_SPARE)
+        .u8(LIVE_HASH_COMMAND)
+        .u8(map);
+    for hash in hashes {
+        w.u16(*hash);
+    }
+    var_bytes(w)
+}
+
 /// Tells the shard the character logs out.
 pub fn logout() -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_LOGOUT);
@@ -768,6 +932,22 @@ pub fn book_page(serial: Serial, page: u16, lines: &[&str]) -> Vec<u8> {
     }
     w.u8(0);
     var_bytes(w)
+}
+
+/// The first two bytes of a `0x93` cover change, as the reference client
+/// writes them.
+const BOOK_HEADER_OLD_MARK: [u8; 2] = [0, 1];
+
+/// The old book header change (`0x93`): rename a book and its author at the
+/// fixed widths, for a shard that opened the book with a `0x93` cover.
+pub fn book_header_old(serial: Serial, title: &str, author: &str) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_BOOK_HEADER_OLD);
+    w.serial(serial)
+        .bytes(&BOOK_HEADER_OLD_MARK)
+        .u16(0)
+        .ascii_fixed(title, BOOK_TITLE_LEN)
+        .ascii_fixed(author, BOOK_AUTHOR_LEN);
+    w.finish()
 }
 
 /// The Classic Client book header change (`0xD4`): rename a book and its
@@ -846,6 +1026,8 @@ pub fn bulletin_remove(board: Serial, message: Serial) -> Vec<u8> {
 
 /// The `0x56` actions a client sends about an open map.
 const MAP_ADD_PIN: u8 = 1;
+const MAP_MOVE_PIN: u8 = 3;
+const MAP_REMOVE_PIN: u8 = 4;
 const MAP_CLEAR_PINS: u8 = 5;
 const MAP_TOGGLE_EDIT: u8 = 6;
 /// The pin byte of an action that names no pin.
@@ -861,6 +1043,17 @@ fn map_message(serial: Serial, action: u8, pin: u8, x: u16, y: u16) -> Vec<u8> {
 /// picture, not tiles of the world.
 pub fn map_add_pin(serial: Serial, x: u16, y: u16) -> Vec<u8> {
     map_message(serial, MAP_ADD_PIN, NO_PIN, x, y)
+}
+
+/// `0x56`: move one pin of an open map, by its place in the list from 0,
+/// to pixels of the map picture.
+pub fn map_move_pin(serial: Serial, pin: u8, x: u16, y: u16) -> Vec<u8> {
+    map_message(serial, MAP_MOVE_PIN, pin, x, y)
+}
+
+/// `0x56`: take one pin off an open map, by its place in the list from 0.
+pub fn map_remove_pin(serial: Serial, pin: u8) -> Vec<u8> {
+    map_message(serial, MAP_REMOVE_PIN, pin, 0, 0)
 }
 
 /// `0x56`: take every pin off an open map.
@@ -909,6 +1102,7 @@ const HOUSE_COMMIT: u16 = 0x04;
 const HOUSE_REMOVE: u16 = 0x05;
 const HOUSE_ADD: u16 = 0x06;
 const HOUSE_EXIT: u16 = 0x0C;
+const HOUSE_SYNC: u16 = 0x0E;
 const HOUSE_ADD_STAIR: u16 = 0x0D;
 const HOUSE_CLEAR: u16 = 0x10;
 const HOUSE_GO_TO_FLOOR: u16 = 0x12;
@@ -963,6 +1157,8 @@ pub enum HouseEdit {
     Exit,
     Backup,
     Restore,
+    /// Asks the shard to send the design being worked on again.
+    Sync,
 }
 
 fn aos_command(player: Serial, command: u16) -> PacketWriter {
@@ -994,6 +1190,7 @@ pub fn house_edit(player: Serial, edit: HouseEdit) -> Vec<u8> {
         HouseEdit::Exit => (HOUSE_EXIT, Vec::new()),
         HouseEdit::Backup => (HOUSE_BACKUP, Vec::new()),
         HouseEdit::Restore => (HOUSE_RESTORE, Vec::new()),
+        HouseEdit::Sync => (HOUSE_SYNC, Vec::new()),
     };
     let mut w = aos_command(player, command);
     // The floor command writes its numbers with no mark before the last one.
@@ -1020,7 +1217,11 @@ const HELP_REQUEST_BYTES: usize = 257;
 
 const CHAT_JOIN: u16 = 0x62;
 const CHAT_SAY: u16 = 0x61;
-const CHAT_LEAVE: u16 = 0x63;
+const CHAT_LEAVE: u16 = 0x43;
+const CHAT_CREATE: u16 = 0x63;
+/// The marks a password of a new channel is written between.
+const CHAT_PASSWORD_OPEN: u16 = 0x7B;
+const CHAT_PASSWORD_CLOSE: u16 = 0x7D;
 /// The quote mark that a channel name is written between.
 const CHAT_QUOTE: u16 = 0x22;
 /// The space between a channel name and its password.
@@ -1062,11 +1263,24 @@ pub fn chat_say(words: &str) -> Vec<u8> {
     var_bytes(w)
 }
 
+/// `0xB3`: make a chat channel and join it. A password goes between braces
+/// after the name, as the reference client writes it.
+pub fn chat_create(channel: &str, password: Option<&str>) -> Vec<u8> {
+    let mut w = chat_command(CHAT_CREATE);
+    utf16be(&mut w, channel);
+    w.u16(0);
+    if let Some(password) = password {
+        w.u16(CHAT_PASSWORD_OPEN);
+        utf16be(&mut w, password);
+        w.u16(0);
+        w.u16(CHAT_PASSWORD_CLOSE);
+    }
+    var_bytes(w)
+}
+
 /// `0xB3`: leave the chat channel.
 pub fn chat_leave() -> Vec<u8> {
-    let mut w = chat_command(CHAT_LEAVE);
-    w.u16(0);
-    var_bytes(w)
+    var_bytes(chat_command(CHAT_LEAVE))
 }
 
 /// `0xB5`: open the chat of the shard under this name.
@@ -1125,6 +1339,15 @@ pub struct NewCharacter<'a> {
     pub skin_hue: u16,
     pub hair: u16,
     pub hair_hue: u16,
+    /// Zero is no beard.
+    pub beard: u16,
+    pub beard_hue: u16,
+    /// The hues of the shirt and the trousers he starts in.
+    pub shirt_hue: u16,
+    pub pants_hue: u16,
+    /// The number of the profession of the client's list, or zero when the
+    /// numbers above say what he is.
+    pub profession: u8,
     /// The town he starts in, and the slot he takes.
     pub start_city: u16,
     pub slot: u16,
@@ -1153,8 +1376,7 @@ pub fn create_character(new: &NewCharacter<'_>, version: ClientVersion) -> Vec<u
         .u32(version.expansion_flags())
         .u32(CREATE_MARK)
         .u32(0)
-        // No profession: the numbers below say what he is.
-        .u8(0)
+        .u8(new.profession)
         .bytes(&[0; CREATE_SPARE])
         .u8(race_and_sex(new, version))
         .u8(new.strength)
@@ -1167,16 +1389,14 @@ pub fn create_character(new: &NewCharacter<'_>, version: ClientVersion) -> Vec<u
     w.u16(new.skin_hue)
         .u16(new.hair)
         .u16(new.hair_hue)
-        // No beard on a new character.
-        .u16(0)
-        .u16(0)
+        .u16(new.beard)
+        .u16(new.beard_hue)
         .u16(new.start_city)
         .u16(0)
         .u16(new.slot)
         .u32(0)
-        // The shirt and the trousers he starts in.
-        .u16(0)
-        .u16(0);
+        .u16(new.shirt_hue)
+        .u16(new.pants_hue);
     w.finish()
 }
 
@@ -1302,6 +1522,11 @@ mod tests {
             skin_hue: 0x83EA,
             hair: 0x203B,
             hair_hue: 0x044E,
+            beard: 0x2040,
+            beard_hue: 0x044E,
+            shirt_hue: 0x0003,
+            pants_hue: 0x0008,
+            profession: 1,
             start_city: 0,
             slot: 1,
         };
@@ -1326,6 +1551,15 @@ mod tests {
         let newer = create_character(&new, new_client);
         assert_eq!(newer[0], PKT_CREATE_CHARACTER_NEW);
         assert_eq!(newer.len(), made.len() + 2);
+        // The profession sits before the spare bytes, and the beard, the
+        // shirt and the trousers after the hair and the slot.
+        assert_eq!(made[RACE_BYTE_AT - CREATE_SPARE - 1], new.profession);
+        let word = |bytes: &[u8], at: usize| u16::from_be_bytes([bytes[at], bytes[at + 1]]);
+        let hair_at = RACE_BYTE_AT + 4 + CREATE_SKILLS_OLD * 2 + 2;
+        assert_eq!(word(&made, hair_at + 4), new.beard);
+        assert_eq!(word(&made, hair_at + 6), new.beard_hue);
+        assert_eq!(word(&made, made.len() - 4), new.shirt_hue);
+        assert_eq!(word(&made, made.len() - 2), new.pants_hue);
     }
 
     /// The offset of the race and sex byte: id, two patterns, a zero byte,
@@ -1351,6 +1585,11 @@ mod tests {
             skin_hue: 0,
             hair: 0,
             hair_hue: 0,
+            beard: 0,
+            beard_hue: 0,
+            shirt_hue: 0,
+            pants_hue: 0,
+            profession: 0,
             start_city: 0,
             slot: 0,
         };
@@ -1411,7 +1650,27 @@ mod tests {
         let join = chat_join("General", None);
         assert_eq!(&join[7..9], &CHAT_JOIN.to_be_bytes());
         assert_eq!(&join[9..13], &[0, 0x22, 0, b'G']);
-        assert_eq!(chat_leave()[7..9], CHAT_LEAVE.to_be_bytes());
+        // ServUO registers 0x43 as leave and 0x63 as create in its chat
+        // action handlers.
+        const SERVER_LEAVE: [u8; 2] = [0x00, 0x43];
+        const SERVER_CREATE: [u8; 2] = [0x00, 0x63];
+        let leave = chat_leave();
+        assert_eq!(leave[7..9], SERVER_LEAVE);
+        assert_eq!(leave.len(), 9, "leave carries nothing after its command");
+        let create = chat_create("Trade", Some("pw"));
+        assert_eq!(create[7..9], SERVER_CREATE);
+        assert_eq!(
+            &create[9..],
+            &[
+                0, b'T', 0, b'r', 0, b'a', 0, b'd', 0, b'e', 0, 0, 0, b'{', 0, b'p', 0, b'w', 0, 0,
+                0, b'}'
+            ]
+        );
+        assert_eq!(framed_len(&create), create.len());
+        assert_eq!(
+            &chat_create("Trade", None)[9..],
+            &[0, b'T', 0, b'r', 0, b'a', 0, b'd', 0, b'e', 0, 0]
+        );
         let open = chat_open("Mara");
         assert_eq!((open[0], open[3]), (PKT_OPEN_CHAT, 0));
         assert_eq!(&open[4..6], &[0, b'M']);
@@ -1429,6 +1688,15 @@ mod tests {
         assert_eq!(&pin[7..11], &[0, 40, 0, 90]);
         assert_eq!(map_clear_pins(MAP)[5], MAP_CLEAR_PINS);
         assert_eq!(map_toggle_edit(MAP)[5], MAP_TOGGLE_EDIT);
+        let moved = map_move_pin(MAP, 2, 41, 91);
+        assert_eq!((moved[5], moved[6]), (MAP_MOVE_PIN, 2));
+        assert_eq!(&moved[7..11], &[0, 41, 0, 91]);
+        let removed = map_remove_pin(MAP, 1);
+        assert_eq!(
+            (removed.len(), removed[5], removed[6]),
+            (11, MAP_REMOVE_PIN, 1)
+        );
+        assert_eq!(&removed[7..11], &[0, 0, 0, 0]);
         let ask = profile_request(MAP);
         assert_eq!((ask[0], ask[3]), (PKT_PROFILE, PROFILE_READ));
         assert_eq!(usize::from(u16::from_be_bytes([ask[1], ask[2]])), ask.len());
@@ -2390,5 +2658,200 @@ mod tests {
         let packet = book_header(BOOK, "Tale", "Bob");
         assert_eq!(packet, BOOK_HEADER_PACKET);
         assert_eq!(framed_len(&packet), packet.len());
+    }
+
+    /// The spell packets of each client version, as the reference client
+    /// and both server families write and read them.
+    #[test]
+    fn spell_packets_are_byte_exact() {
+        const GREATER_HEAL: u16 = 29;
+        const SPELLBOOK: Serial = Serial(0x4000_0001);
+        let extended = cast_spell_extended(GREATER_HEAL);
+        assert_eq!(
+            extended,
+            [PKT_EXTENDED, 0x00, 0x09, 0x00, 0x1C, 0x00, 0x02, 0x00, 29]
+        );
+        assert_eq!(cast(GREATER_HEAL, ClientVersion::MODERN), extended);
+        assert_eq!(
+            cast(GREATER_HEAL, ClientVersion::T2A),
+            cast_spell(GREATER_HEAL)
+        );
+        assert_eq!(
+            cast(GREATER_HEAL, ClientVersion::new(6, 0, 14, 1)),
+            cast_spell(GREATER_HEAL)
+        );
+        let from_book = cast_from_book(GREATER_HEAL, SPELLBOOK);
+        assert_eq!(
+            &from_book[..4],
+            &[PKT_TEXT_COMMAND, 0x00, 0x12, TEXT_CMD_CAST_FROM_BOOK]
+        );
+        assert_eq!(&from_book[4..], b"29 1073741825\0");
+        let open = open_spellbook(SPELLBOOK_NECROMANCY);
+        assert_eq!(
+            open,
+            [
+                PKT_TEXT_COMMAND,
+                0x00,
+                0x06,
+                TEXT_CMD_OPEN_SPELLBOOK,
+                b'2',
+                0
+            ]
+        );
+    }
+
+    /// The small client requests, each at the length its server handler
+    /// reads.
+    #[test]
+    fn small_client_requests_are_byte_exact() {
+        const MOBILE: Serial = Serial(0x0000_0102);
+        const TIP: u16 = 7;
+        assert_eq!(
+            name_request(MOBILE),
+            [PKT_UPDATE_NAME, 0x00, 0x07, 0, 0, 0x01, 0x02]
+        );
+        assert_eq!(tip_request(TIP, true), [PKT_TIP_REQUEST, 0x00, 0x07, 0x01]);
+        assert_eq!(tip_request(TIP, false), [PKT_TIP_REQUEST, 0x00, 0x07, 0x00]);
+        assert_eq!(
+            quest_arrow_click(true),
+            [PKT_EXTENDED, 0x00, 0x06, 0x00, 0x07, 0x01]
+        );
+        assert_eq!(
+            close_status_bar(MOBILE),
+            [PKT_EXTENDED, 0x00, 0x09, 0x00, 0x0C, 0, 0, 0x01, 0x02]
+        );
+        let looks = NewLooks {
+            skin_hue: 0x03EA,
+            hair: 0x203B,
+            hair_hue: 0x044E,
+            beard: 0x2040,
+            beard_hue: 0x044F,
+        };
+        assert_eq!(
+            race_change_answer(Some(looks)),
+            [
+                PKT_EXTENDED,
+                0x00,
+                0x0F,
+                0x00,
+                0x2A,
+                0x03,
+                0xEA,
+                0x20,
+                0x3B,
+                0x04,
+                0x4E,
+                0x20,
+                0x40,
+                0x04,
+                0x4F
+            ]
+        );
+        assert_eq!(
+            race_change_answer(None),
+            [PKT_EXTENDED, 0x00, 0x05, 0x00, 0x2A]
+        );
+        assert_eq!(
+            query_properties_old(MOBILE),
+            [PKT_EXTENDED, 0x00, 0x09, 0x00, 0x10, 0, 0, 0x01, 0x02]
+        );
+        assert_eq!(
+            boat_move(MOBILE, Direction::East, BOAT_SPEED_FAST),
+            [
+                PKT_EXTENDED,
+                0x00,
+                0x0C,
+                0x00,
+                0x33,
+                0,
+                0,
+                0x01,
+                0x02,
+                2,
+                2,
+                2
+            ]
+        );
+        assert_eq!(query_party_positions(), [PKT_ASSISTANT, 0x00, 0x04, 0x00]);
+        assert_eq!(
+            query_guild_positions(),
+            [PKT_ASSISTANT, 0x00, 0x05, 0x01, 0x01]
+        );
+        assert_eq!(public_house_content(true), [PKT_PUBLIC_HOUSE_CONTENT, 1]);
+        assert_eq!(
+            equip_last_weapon(MOBILE),
+            [PKT_ENCODED, 0x00, 0x0A, 0, 0, 0x01, 0x02, 0x00, 0x1E, 0x0A]
+        );
+        let sync = house_edit(MOBILE, HouseEdit::Sync);
+        assert_eq!(
+            sync,
+            [
+                PKT_AOS_COMMAND,
+                0x00,
+                0x0A,
+                0,
+                0,
+                0x01,
+                0x02,
+                0x00,
+                0x0E,
+                0x0A
+            ]
+        );
+    }
+
+    /// The old cover change is the fixed 99 bytes a server reads for `0x93`.
+    #[test]
+    fn the_old_book_header_is_fixed_width() {
+        const OLD_HEADER_LEN: usize = 99;
+        let packet = book_header_old(BOOK, "Tale", "Bob");
+        assert_eq!(packet.len(), OLD_HEADER_LEN);
+        assert_eq!(
+            &packet[..9],
+            &[PKT_BOOK_HEADER_OLD, 0x40, 0x00, 0x00, 0xCC, 0, 1, 0, 0]
+        );
+        assert_eq!(&packet[9..14], b"Tale\0");
+        assert_eq!(&packet[69..73], b"Bob\0");
+        assert_eq!(
+            crate::lengths::PacketTable::t2a().fixed_len(PKT_BOOK_HEADER_OLD),
+            Some(OLD_HEADER_LEN as u16)
+        );
+    }
+
+    /// The hash answer: the block, six spare bytes, the query command, the
+    /// map, then 25 checksums, as the reference client writes it.
+    #[test]
+    fn the_ultima_live_answer_is_byte_exact() {
+        const BLOCK: u32 = 0x0001_0203;
+        const MAP: u8 = 1;
+        let mut hashes = [0u16; LIVE_HASH_COUNT];
+        hashes[0] = 0xABCD;
+        hashes[LIVE_HASH_COUNT - 1] = 0x0102;
+        let packet = ultima_live_hashes(BLOCK, MAP, &hashes);
+        assert_eq!(packet.len(), 15 + 2 * LIVE_HASH_COUNT);
+        assert_eq!(framed_len(&packet), packet.len());
+        assert_eq!(
+            &packet[..17],
+            &[
+                PKT_ULTIMA_LIVE,
+                0x00,
+                0x41,
+                0,
+                1,
+                2,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0xFF,
+                MAP,
+                0xAB,
+                0xCD
+            ]
+        );
+        assert_eq!(&packet[packet.len() - 2..], &[0x01, 0x02]);
     }
 }

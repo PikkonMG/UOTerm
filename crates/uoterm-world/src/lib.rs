@@ -1,6 +1,7 @@
 //! Per-session world model. Packets and local map data are the only writers.
 
 mod addressed;
+mod appearance;
 mod assist;
 mod cues;
 mod events;
@@ -18,11 +19,12 @@ pub use addressed::{
     asks_if_bot, names_character, Channel, ChannelGroup, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
     CHAT_MODE_PLAY_ALONG, SPOKEN_TO_FRESH_MS, SPOKEN_TO_KEEP,
 };
+pub use appearance::{Race, RaceChange, RaceChangeView, Style, StyleChoice, PALETTE_ROWS};
 pub use assist::{AssistFeature, AssistRules};
 pub use cues::{Cue, CueKind, Cues, CUE_CAP};
-pub use events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
+pub use events::{unix_now_ms, Event, EventKind, AMBIENT_EVENT_KINDS, EVENT_LOG_CAP};
 pub use gump::{read_gump, ChoiceKind, GumpButton, GumpChoice, GumpEntry, GumpText, GumpView};
-pub use gump_layout::{gump_layout, GumpLayout, GumpPiece, GumpPieceKind};
+pub use gump_layout::{gump_layout, GumpLayout, GumpPiece, GumpPieceKind, GumpScroll, GumpTileArt};
 pub use house::{house_tiles, DesignedHouse, HouseBounds, HouseTile};
 pub use journal::{
     Journal, JournalEntry, JOURNAL_CAP, JOURNAL_DEFAULT_WINDOW, JOURNAL_RECENT_LINES,
@@ -40,13 +42,14 @@ pub use radar::{
 pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
 pub use state::Waypoint;
 pub use state::{
-    body_when_alive, facet_free_movement, facet_rules, is_ghost_body, Buff, ClickAnswer, Container,
-    DoorItem, DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, ShownPaperdoll,
-    SkillValue, Spellbook, Trade, World, BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE,
-    BODY_GARGOYLE_MALE, BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE,
-    BODY_GHOST_GARGOYLE_FEMALE, BODY_GHOST_GARGOYLE_MALE, BODY_GHOST_MALE, BODY_HUMAN_FEMALE,
-    BODY_HUMAN_MALE, FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, GHOST_BODIES,
-    MAP_RULE_FREE_MOVEMENT, SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE,
+    body_when_alive, facet_free_movement, facet_rules, is_ghost_body, spell_school_named, Buff,
+    ClickAnswer, Container, DoorItem, DoorUpdate, Harm, Item, Mobile, MobilePools, MultiItem,
+    MultiUpdate, SelfState, ShownPaperdoll, SkillValue, SpellSchool, Spellbook, TrackedMember,
+    Trade, World, BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE, BODY_GARGOYLE_MALE,
+    BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_GARGOYLE_FEMALE,
+    BODY_GHOST_GARGOYLE_MALE, BODY_GHOST_MALE, BODY_HUMAN_FEMALE, BODY_HUMAN_MALE,
+    FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, GHOST_BODIES, MAP_RULE_FREE_MOVEMENT,
+    SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE, SPELL_SCHOOLS,
 };
 
 #[cfg(test)]
@@ -154,6 +157,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         assert_eq!(
             w.names.take_batch(1),
@@ -197,6 +201,7 @@ mod tests {
                 hue: 0,
                 multi,
                 flags: 0,
+                direction: 0,
             })
         };
         w.self_state.location = Point3::new(100 + OFF, 100, 0);
@@ -399,6 +404,7 @@ mod tests {
                 flags: 0,
                 hits: None,
                 hits_max: None,
+                pools: Default::default(),
                 equipment: Vec::new(),
             },
         );
@@ -494,8 +500,10 @@ mod tests {
         let mut w = me();
         let me = w.self_state.serial;
         w.apply(&Inbound::Party(PartyEvent::Members(vec![LEADER, me])));
+        w.party_can_loot = true;
         w.apply(&Inbound::Party(PartyEvent::Members(vec![me])));
         assert!(w.party.is_empty());
+        assert!(!w.party_can_loot, "the loot choice ends with the party");
     }
 
     #[test]
@@ -791,6 +799,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         assert_eq!(w.find_mobiles(None, None, None).len(), 1);
         assert_eq!(w.find_items(Some(GRAPHIC_GOLD), None, None).len(), 1);
@@ -955,6 +964,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         w.apply(&Inbound::AddItem(in_container(
             CHEST,
@@ -1195,8 +1205,16 @@ mod tests {
         let first = open_doll(&mut w);
         assert_eq!(first.serial, STRANGER);
         assert_eq!(first.text, "Someone the Brave");
+        assert!(!first.can_lift);
         let second = open_doll(&mut w);
         assert!(second.seq > first.seq, "the same doll again is a new one");
+        const MAY_LIFT: u8 = 0x02;
+        w.apply(&Inbound::Paperdoll {
+            serial: STRANGER,
+            text: "Someone the Brave".into(),
+            flags: MAY_LIFT,
+        });
+        assert!(w.paperdoll.as_ref().is_some_and(|doll| doll.can_lift));
     }
 
     #[test]
@@ -1291,6 +1309,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         w.apply(&Inbound::OpenContainer {
             serial: CORPSE,
@@ -1753,6 +1772,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         let radar = render_radar(&w, RadarOptions { size: 5 }, default_tile);
         assert!(radar.contains('m'));
@@ -2049,6 +2069,20 @@ mod tests {
         assert_eq!(obs.spoken_to.len(), 1);
         assert_eq!(obs.spoken_to[0].name, "Ann");
         assert!(obs.spoken_to[0].asks_if_bot);
+    }
+
+    #[test]
+    fn with_a_listen_range_any_line_said_near_counts() {
+        const RANGE: u16 = 3;
+        let mut w = mara_and_ann(true);
+        say(&mut w, TALKER, 0, "anyone selling reagents?");
+        assert_eq!(spoken_to_events(&w), 0, "off by default");
+        w.listen_range = Some(RANGE);
+        say(&mut w, TALKER, 0, "anyone selling reagents?");
+        assert_eq!(spoken_to_events(&w), 1);
+        w.self_state.location = Point3::new(10, 10, 0);
+        say(&mut w, TALKER, 0, "hello out there");
+        assert_eq!(spoken_to_events(&w), 1, "too far to count");
     }
 
     #[test]

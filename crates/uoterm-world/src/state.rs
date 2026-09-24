@@ -1,22 +1,26 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
     weapon_range, BuffEntry, ContainerItem, EquipInfo, EquipItem, GroundItem, HealthBarStatus,
-    Inbound, MapPatchCount, MobileView, ObjectProperty, OpenGump, PartyEvent, Point3,
-    PromptRequest, SecureTrade, Serial, StatusExtra, TargetCursor, TextEntryDialog,
-    ACCOUNT_FLAG_CONTEXT_MENUS, ACCOUNT_FLAG_PROPERTY_LISTS, DIR_RUNNING, FLAG_BLESSED,
-    FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW,
-    LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED,
-    SPEECH_GUILD, SPEECH_LABEL, SPEECH_REGULAR, SPEECH_SYSTEM, SPEECH_WHISPER, SPEECH_YELL,
-    SPEED_MODE_NORMAL, TRADE_CLOSE, TRADE_DISPLAY, TRADE_UPDATE, WINDOW_CONTAINER,
+    Inbound, MapPatchCount, MemberPosition, MobileView, ObjectProperty, OpenGump, PartyEvent,
+    Point3, PromptRequest, SecureTrade, Serial, StatusExtra, TargetCursor, TextEntryDialog,
+    ACCOUNT_FLAG_CONTEXT_MENUS, ACCOUNT_FLAG_PROPERTY_LISTS, DEATH_SCREEN_ALIVE, DIR_RUNNING,
+    FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON,
+    HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE,
+    SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD, SPEECH_LABEL, SPEECH_REGULAR, SPEECH_SYSTEM,
+    SPEECH_WHISPER, SPEECH_YELL, SPEED_MODE_NORMAL, SPELLBOOK_BUSHIDO, SPELLBOOK_CHIVALRY,
+    SPELLBOOK_MAGERY, SPELLBOOK_MYSTICISM, SPELLBOOK_NECROMANCY, SPELLBOOK_NINJITSU,
+    SPELLBOOK_SPELLWEAVING, TRADE_CLOSE, TRADE_DISPLAY, TRADE_UPDATE, TRADE_UPDATE_GOLD,
+    TRADE_UPDATE_LEDGER, WINDOW_CONTAINER,
 };
 
 use crate::addressed::{
-    asks_if_bot, names_character, Channel, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
+    asks_if_bot, names_character, Channel, ChannelGroup, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
     CHAT_MODE_PLAY_ALONG,
 };
+use crate::appearance::{Race, RaceChange};
 use crate::assist::AssistRules;
 use crate::events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 use crate::journal::{Journal, JournalEntry};
@@ -138,6 +142,16 @@ pub struct SelfState {
     /// The walking speed rules the shard set. See the `SPEED_MODE_*` values.
     #[serde(default)]
     pub speed_mode: u8,
+    /// The status says the character is female.
+    #[serde(default)]
+    pub female: bool,
+    /// The weapon move the character armed, by its number, until the shard
+    /// says it is spent or cleared.
+    #[serde(default)]
+    pub armed_ability: Option<u8>,
+    /// The spells and stances the shard says stay on now, by spell number.
+    #[serde(default)]
+    pub active_spells: BTreeSet<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -185,6 +199,9 @@ impl Default for SelfState {
             status: StatusExtra::default(),
             stat_locks: [0; 3],
             speed_mode: SPEED_MODE_NORMAL,
+            female: false,
+            armed_ability: None,
+            active_spells: BTreeSet::new(),
         }
     }
 }
@@ -206,7 +223,25 @@ pub struct Mobile {
     pub flags: u8,
     pub hits: Option<u16>,
     pub hits_max: Option<u16>,
+    /// The mana and the stamina, when the shard told them.
+    #[serde(default, flatten)]
+    pub pools: MobilePools,
     pub equipment: Vec<EquipItem>,
+}
+
+/// The mana and the stamina of a mobile other than the character. A shard
+/// sends them for a party member (`0x2D`, `0xA2`, `0xA3`), and some shards
+/// for pets; None until it does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MobilePools {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mana: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mana_max: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stam: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stam_max: Option<u16>,
 }
 
 impl Mobile {
@@ -233,6 +268,7 @@ impl From<&MobileView> for Mobile {
             flags: v.flags,
             hits: v.hits,
             hits_max: v.hits_max,
+            pools: MobilePools::default(),
             equipment: v.equipment.clone(),
         }
     }
@@ -289,6 +325,9 @@ pub struct ShownPaperdoll {
     pub serial: Serial,
     pub text: String,
     pub seq: u32,
+    /// The character may take items off this paperdoll and put them on.
+    #[serde(default)]
+    pub can_lift: bool,
 }
 
 /// The spells a spellbook holds.
@@ -301,7 +340,52 @@ pub struct Spellbook {
     pub spells: u64,
 }
 
+/// A school of spells: the number of its first spell as the shards count
+/// them, its name, and the kind a command to open its book takes. The
+/// masteries open from no command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpellSchool {
+    pub first_spell: u16,
+    pub name: &'static str,
+    pub book_kind: Option<u8>,
+}
+
+const fn school(first_spell: u16, name: &'static str, book_kind: Option<u8>) -> SpellSchool {
+    SpellSchool {
+        first_spell,
+        name,
+        book_kind,
+    }
+}
+
+/// Every school a spellbook holds, as a shard sends its contents: the first
+/// spell is the offset of the book plus one.
+pub const SPELL_SCHOOLS: [SpellSchool; 8] = [
+    school(1, "magery", Some(SPELLBOOK_MAGERY)),
+    school(101, "necromancy", Some(SPELLBOOK_NECROMANCY)),
+    school(201, "chivalry", Some(SPELLBOOK_CHIVALRY)),
+    school(401, "bushido", Some(SPELLBOOK_BUSHIDO)),
+    school(501, "ninjitsu", Some(SPELLBOOK_NINJITSU)),
+    school(601, "spellweaving", Some(SPELLBOOK_SPELLWEAVING)),
+    school(678, "mysticism", Some(SPELLBOOK_MYSTICISM)),
+    school(701, "mastery", None),
+];
+
+/// The school of this name, in any case.
+pub fn spell_school_named(name: &str) -> Option<&'static SpellSchool> {
+    SPELL_SCHOOLS
+        .iter()
+        .find(|school| school.name.eq_ignore_ascii_case(name.trim()))
+}
+
 impl Spellbook {
+    /// The school of the book, read from its first spell.
+    pub fn school(&self) -> Option<&'static SpellSchool> {
+        SPELL_SCHOOLS
+            .iter()
+            .find(|school| school.first_spell == self.first_spell)
+    }
+
     /// The numbers of the spells in the book, lowest first.
     pub fn spell_numbers(&self) -> Vec<u16> {
         (0..u64::BITS as u16)
@@ -309,6 +393,16 @@ impl Spellbook {
             .map(|bit| self.first_spell + bit)
             .collect()
     }
+}
+
+/// A party or guild member out of sight, where the shard last said he
+/// stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedMember {
+    #[serde(flatten)]
+    pub position: MemberPosition,
+    /// A guild member; otherwise a party member.
+    pub guild: bool,
 }
 
 /// A secure trade window: the other player, and the two containers the
@@ -321,6 +415,17 @@ pub struct Trade {
     pub theirs: Serial,
     pub i_accept: bool,
     pub they_accept: bool,
+    /// The gold and platinum the other player offers.
+    #[serde(default)]
+    pub their_gold: u32,
+    #[serde(default)]
+    pub their_platinum: u32,
+    /// The gold and platinum the character has to offer, as the shard's
+    /// ledger says.
+    #[serde(default)]
+    pub my_gold: u32,
+    #[serde(default)]
+    pub my_platinum: u32,
 }
 
 /// A mark the shard put on the world map.
@@ -437,8 +542,22 @@ const FLAG_POISONED_OR_FLYING: u8 = FLAG_POISONED;
 /// A party list this short is no party.
 const PARTY_OF_ONE: usize = 1;
 
+/// The names of the three stats, in the order the status carries them.
+const STAT_NAMES: [&str; 3] = ["strength", "dexterity", "intelligence"];
+/// Skill values come in tenths of a point.
+const SKILL_TENTHS: i32 = 10;
+
+/// A skill value in tenths, written as points: 702 is "70.2".
+fn tenths(value: i32) -> String {
+    let sign = if value < 0 { "-" } else { "" };
+    let value = value.abs();
+    format!("{sign}{}.{}", value / SKILL_TENTHS, value % SKILL_TENTHS)
+}
+
 /// Bit 1 of the paperdoll (`0x88`) flags byte: the mobile is in war mode.
 const PAPERDOLL_FLAG_WAR: u8 = 0x01;
+/// Bit 2 of the paperdoll flags byte: items may be taken off and put on.
+const PAPERDOLL_FLAG_CAN_LIFT: u8 = 0x02;
 
 /// The health bar colours of one mobile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -560,6 +679,10 @@ pub struct World {
     pub prompt: Option<PromptRequest>,
     /// A one-field text dialog the shard is waiting on.
     pub text_entry: Option<TextEntryDialog>,
+    /// The race change the shard waits on. The answer clears it, and so
+    /// does the shard when it closes the window.
+    #[serde(default)]
+    pub race_change: Option<RaceChange>,
     /// Flag bit 4 means "flying", and poison comes on the health bar packet.
     /// Clients from 7.0.0.0 up read the bits this way; older clients read bit
     /// 4 as poison. The session sets this from the client version.
@@ -567,24 +690,41 @@ pub struct World {
     /// The poison and yellow health bars of other mobiles, as the health bar
     /// packet last set them.
     pub bars: HashMap<Serial, BarState>,
+    /// The mobiles the character may rename: his followers, as their last
+    /// status told.
+    #[serde(default)]
+    pub renamable: HashSet<Serial>,
+    /// The direction byte each item on the ground came with. A corpse lies
+    /// this way, and a light on the ground takes its shape from it.
+    #[serde(default)]
+    pub item_directions: HashMap<Serial, u8>,
     /// The party members, the character among them. Empty outside a party.
     pub party: Vec<Serial>,
     /// The leader of a party the character was asked to join.
     pub party_invite: Option<Serial>,
+    /// The party may loot what the character kills, as the character last
+    /// told the shard. The shard never says, so it starts false and goes
+    /// back to false when the party ends.
+    #[serde(default)]
+    pub party_can_loot: bool,
     /// The assistant features the shard forbids, when the user lets the
     /// shard decide. The session fills it in.
     pub assist: AssistRules,
     /// Notes the lines where another character says this one's name. The
     /// session sets it from the `answer_when_named` switch.
     pub answer_when_named: bool,
+    /// With `answer_when_named`, a line said aloud by anyone this many tiles
+    /// away or nearer counts as said to the character, name or no name. The
+    /// session sets it from its `listen_range` option; None is off.
+    pub listen_range: Option<u16>,
     /// With `answer_when_named`, lets the agent party up with, follow and
     /// fight beside a player who spoke to the character. The session sets
     /// it from the `play_along` switch.
     pub play_along: bool,
     /// The lines other characters said to this one by name.
     pub spoken_to: SpokenToLog,
-    /// The secure trade window open with another player.
-    pub trade: Option<Trade>,
+    /// The secure trade windows open with other players, the newest last.
+    pub trades: Vec<Trade>,
     /// The doors seen to open without leaving their doorway.
     pub doors_open_in_place: HashSet<Serial>,
     /// The names of mobiles that went out of sight. A party or guild line
@@ -603,6 +743,14 @@ pub struct World {
     pub paperdoll: Option<ShownPaperdoll>,
     /// What the last click on each object brought back.
     pub click_answers: HashMap<Serial, ClickAnswer>,
+    /// The party and guild members out of sight, by serial, where the shard
+    /// last said they stand.
+    #[serde(default)]
+    pub tracked_members: HashMap<Serial, TrackedMember>,
+    /// The number of the tip of the day the shard shows, to ask for the
+    /// one before or after it. None when the words shown are a notice.
+    #[serde(default)]
+    pub tip: Option<u32>,
 }
 
 /// The channel of a speech line that can name the character. System lines,
@@ -639,13 +787,15 @@ impl World {
             .is_none_or(|flags| flags & ACCOUNT_FLAG_CONTEXT_MENUS != 0)
     }
 
+    /// Files an event. A full log drops its oldest ambient event first, so
+    /// sounds and swings in a busy place never push out a death or a gump.
     pub fn push_event(&mut self, mut event: Event) {
         self.event_seq = self.event_seq.saturating_add(1);
         event.seq = self.event_seq;
         self.events.push(event);
-        if self.events.len() > EVENT_LOG_CAP {
-            let extra = self.events.len() - EVENT_LOG_CAP;
-            self.events.drain(..extra);
+        while self.events.len() > EVENT_LOG_CAP {
+            let oldest_ambient = self.events.iter().position(|e| e.kind.is_ambient());
+            self.events.remove(oldest_ambient.unwrap_or(0));
         }
     }
 
@@ -742,6 +892,8 @@ impl World {
         self.multis.remove(&serial);
         self.self_state.equipment.retain(|e| e.serial != serial);
         self.bars.remove(&serial);
+        self.renamable.remove(&serial);
+        self.item_directions.remove(&serial);
         self.properties.remove(&serial);
         self.equip_info.remove(&serial);
         self.click_answers.remove(&serial);
@@ -880,6 +1032,9 @@ impl World {
                 }
             }
             Inbound::Delete(serial) => {
+                if serial.is_item() {
+                    self.push_event(Event::new(EventKind::ItemDeleted, Some(*serial), ""));
+                }
                 self.forget_object(*serial);
                 // The held item is left held. Lifting takes an item off the
                 // map and the shard reports that with a delete, so a delete of
@@ -953,12 +1108,8 @@ impl World {
                 stam_max,
             } => {
                 self.set_hits(*serial, *hits, *hits_max);
-                if *serial == self.self_state.serial {
-                    self.self_state.mana = *mana;
-                    self.self_state.mana_max = *mana_max;
-                    self.self_state.stam = *stam;
-                    self.self_state.stam_max = *stam_max;
-                }
+                self.set_mana(*serial, *mana, *mana_max);
+                self.set_stam(*serial, *stam, *stam_max);
             }
             // `0xDE` says whom a mobile fights. Only our own fight is kept.
             Inbound::MobileStatus { serial, fighting } if *serial == self.self_state.serial => {
@@ -979,24 +1130,19 @@ impl World {
                 serial,
                 current,
                 max,
-            } if *serial == self.self_state.serial => {
-                self.self_state.mana = *current;
-                self.self_state.mana_max = *max;
-            }
+            } => self.set_mana(*serial, *current, *max),
             Inbound::UpdateStam {
                 serial,
                 current,
                 max,
-            } if *serial == self.self_state.serial => {
-                self.self_state.stam = *current;
-                self.self_state.stam_max = *max;
-            }
+            } => self.set_stam(*serial, *current, *max),
             Inbound::Status {
                 serial,
                 name,
                 hits,
                 hits_max,
-                female: _,
+                renamable,
+                female,
                 str_,
                 dex,
                 int_,
@@ -1017,6 +1163,11 @@ impl World {
                     }
                     self.self_state.hits = *hits;
                     self.self_state.hits_max = *hits_max;
+                    // A status of the lowest level carries no stats at all.
+                    if *str_ > 0 {
+                        self.note_stats([*str_, *dex, *int_]);
+                        self.self_state.female = *female;
+                    }
                     self.self_state.str_ = *str_;
                     self.self_state.dex = *dex;
                     self.self_state.int_ = *int_;
@@ -1035,10 +1186,16 @@ impl World {
                     }
                     mob.hits = Some(*hits);
                     mob.hits_max = Some(*hits_max);
+                    if *renamable {
+                        self.renamable.insert(*serial);
+                    } else {
+                        self.renamable.remove(serial);
+                    }
                 }
             }
             Inbound::Skills { skills } => {
                 for s in skills {
+                    self.note_skill(s);
                     self.self_state.skills.insert(
                         s.id,
                         SkillValue {
@@ -1127,13 +1284,57 @@ impl World {
                 self.map_patches.clone_from(maps);
             }
             Inbound::Death { serial, corpse } => {
-                if *serial == self.self_state.serial {
+                let me = *serial == self.self_state.serial;
+                // The death screen may have told of this death already.
+                if !(me && self.self_state.dead) {
+                    self.push_event(Event::new(
+                        EventKind::Died,
+                        Some(*serial),
+                        format!("corpse {corpse}"),
+                    ));
+                }
+                if me {
                     self.self_state.dead = true;
                 }
+            }
+            Inbound::DeathScreen { action } if *action != DEATH_SCREEN_ALIVE => {
+                self.see_death_screen();
+            }
+            Inbound::CloseStatusBar { serial } => {
+                self.cues.push(*serial, crate::CueKind::StatusBarClosed);
+            }
+            Inbound::WeaponAbilityCleared => {
+                if let Some(ability) = self.self_state.armed_ability.take() {
+                    self.push_event(Event::new(
+                        EventKind::AbilityChanged,
+                        None,
+                        format!("weapon move {ability} off"),
+                    ));
+                }
+            }
+            Inbound::SpecialAbility { spell, active } => {
+                let changed = if *active {
+                    self.self_state.active_spells.insert(*spell)
+                } else {
+                    self.self_state.active_spells.remove(spell)
+                };
+                if changed {
+                    let state = if *active { "on" } else { "off" };
+                    self.push_event(Event::new(
+                        EventKind::AbilityChanged,
+                        None,
+                        format!("spell {spell} {state}"),
+                    ));
+                }
+            }
+            Inbound::MemberPositions { guild, members } => {
+                self.track_members(*guild, members);
+            }
+            Inbound::MapOpened(map) => {
                 self.push_event(Event::new(
-                    EventKind::Died,
-                    Some(*serial),
-                    format!("corpse {corpse}"),
+                    EventKind::MapOpened,
+                    Some(map.serial),
+                    format!("gump {}", map.gump_id),
                 ));
             }
             Inbound::Equipped { owner, item } => {
@@ -1174,7 +1375,15 @@ impl World {
             Inbound::DropAccepted => self.holding = None,
             Inbound::CorpseEquipment { corpse, worn } => self.dress_corpse(*corpse, worn),
             Inbound::QuestArrow { shown, x, y, .. } => {
-                self.quest_arrow = shown.then_some((*x, *y));
+                let arrow = shown.then_some((*x, *y));
+                if arrow != self.quest_arrow {
+                    let words = match arrow {
+                        Some((x, y)) => format!("shown at {x},{y}"),
+                        None => "removed".to_string(),
+                    };
+                    self.push_event(Event::new(EventKind::QuestArrow, None, words));
+                }
+                self.quest_arrow = arrow;
             }
             Inbound::WaypointAdded {
                 serial,
@@ -1202,7 +1411,10 @@ impl World {
                 self.waypoints.remove(serial);
             }
             Inbound::OpenUrl { url } => self.shard_url = Some(url.clone()),
-            Inbound::Tip { words, .. } => self.shard_notice = Some(words.clone()),
+            Inbound::Tip { id, is_tip, words } => {
+                self.shard_notice = Some(words.clone());
+                self.tip = is_tip.then_some(*id);
+            }
             Inbound::NameChanged { serial, name } if !name.is_empty() => {
                 // The name book has it now, so it need not be asked for.
                 self.names.forget(*serial);
@@ -1231,9 +1443,18 @@ impl World {
             Inbound::Weather { kind, count } => {
                 self.weather = (*kind != WEATHER_NONE && *count > 0).then_some((*kind, *count));
             }
-            Inbound::Effect(effect) => self
-                .cues
-                .push(effect.source, crate::CueKind::Effect { effect: *effect }),
+            Inbound::Effect(effect) => {
+                self.cues
+                    .push(effect.source, crate::CueKind::Effect { effect: *effect });
+                self.push_event(Event::new(
+                    EventKind::Effect,
+                    Some(effect.source),
+                    format!(
+                        "kind {} graphic 0x{:04X} to {}",
+                        effect.kind, effect.graphic, effect.target
+                    ),
+                ));
+            }
             // The paperdoll byte is not the mobile flags byte: bit 1 is war
             // mode and bit 2 says the viewer may lift from the doll.
             Inbound::Paperdoll {
@@ -1251,6 +1472,7 @@ impl World {
                     serial: *serial,
                     text: text.clone(),
                     seq,
+                    can_lift: flags & PAPERDOLL_FLAG_CAN_LIFT != 0,
                 });
                 let name = paperdoll_name(text);
                 if *serial == self.self_state.serial {
@@ -1309,21 +1531,41 @@ impl World {
             } => {
                 self.accept_properties(*serial, *hash, properties);
             }
-            Inbound::CharacterAnimation { serial, action, .. } => self
-                .cues
-                .push(*serial, crate::CueKind::Animation { action: *action }),
+            Inbound::CharacterAnimation { serial, action, .. } => {
+                self.cues
+                    .push(*serial, crate::CueKind::Animation { action: *action });
+                self.push_event(Event::new(
+                    EventKind::Animation,
+                    Some(*serial),
+                    format!("action {action}"),
+                ));
+            }
             Inbound::NewCharacterAnimation {
                 serial,
                 kind,
                 action,
-            } => self.cues.push(
-                *serial,
-                crate::CueKind::Deed {
-                    deed: *kind,
-                    action: *action,
-                },
-            ),
-            Inbound::SoundEffect { sound, x, y, .. } => self.sounds.heard(*sound, *x, *y),
+            } => {
+                self.cues.push(
+                    *serial,
+                    crate::CueKind::Deed {
+                        deed: *kind,
+                        action: *action,
+                    },
+                );
+                self.push_event(Event::new(
+                    EventKind::Animation,
+                    Some(*serial),
+                    format!("deed {kind} action {action}"),
+                ));
+            }
+            Inbound::SoundEffect { sound, x, y, .. } => {
+                self.sounds.heard(*sound, *x, *y);
+                self.push_event(Event::new(
+                    EventKind::Sound,
+                    None,
+                    format!("0x{sound:04X} at {x},{y}"),
+                ));
+            }
             Inbound::Music { index, stop } => self.sounds.music_changed(*index, *stop),
             Inbound::BuffDebuff {
                 serial,
@@ -1377,6 +1619,19 @@ impl World {
                     dialog.description.clone(),
                 ));
             }
+            Inbound::RaceChange { female, race } => {
+                self.race_change = Race::from_number(*race).map(|race| RaceChange {
+                    race,
+                    female: *female,
+                });
+                if let Some(change) = self.race_change {
+                    self.push_event(Event::new(
+                        EventKind::RaceChangeOpened,
+                        None,
+                        change.words(),
+                    ));
+                }
+            }
             Inbound::Trade(trade) => self.apply_trade(trade),
             Inbound::Party(event) => self.apply_party(event),
             Inbound::Unknown { id, .. } => {
@@ -1386,6 +1641,91 @@ impl World {
         }
     }
 
+    /// The death screen: the character is dead and out of war mode, and the
+    /// weather ends, as the reference client clears it. A death the world
+    /// did not know of yet is an event.
+    fn see_death_screen(&mut self) {
+        let knew = self.self_state.dead;
+        self.self_state.dead = true;
+        self.self_state.war = false;
+        self.weather = None;
+        self.cues
+            .push(self.self_state.serial, crate::CueKind::DeathScreen);
+        if !knew {
+            self.push_event(Event::new(
+                EventKind::Died,
+                Some(self.self_state.serial),
+                self.self_state.name.clone(),
+            ));
+        }
+    }
+
+    /// A skill value that moved is an event, with how far it moved. The
+    /// first list names no change.
+    fn note_skill(&mut self, entry: &uoterm_protocol::SkillEntry) {
+        let Some(before) = self.self_state.skills.get(&entry.id) else {
+            return;
+        };
+        if before.value == entry.value {
+            return;
+        }
+        let delta = i32::from(entry.value) - i32::from(before.value);
+        self.push_event(Event::new(
+            EventKind::SkillChanged,
+            None,
+            format!(
+                "skill {} {} ({}{})",
+                entry.id,
+                tenths(i32::from(entry.value)),
+                if delta > 0 { "+" } else { "" },
+                tenths(delta)
+            ),
+        ));
+    }
+
+    /// A stat that moved is an event, with how far it moved. The first
+    /// status names no change.
+    fn note_stats(&mut self, now: [u16; 3]) {
+        let before = [
+            self.self_state.str_,
+            self.self_state.dex,
+            self.self_state.int_,
+        ];
+        for ((name, was), is) in STAT_NAMES.iter().zip(before).zip(now) {
+            if was == 0 || was == is {
+                continue;
+            }
+            let delta = i32::from(is) - i32::from(was);
+            self.push_event(Event::new(
+                EventKind::StatChanged,
+                None,
+                format!("{name} {is} ({}{delta})", if delta > 0 { "+" } else { "" }),
+            ));
+        }
+    }
+
+    /// Takes a new list of party or guild places: it replaces the old list
+    /// of that kind.
+    fn track_members(&mut self, guild: bool, members: &[MemberPosition]) {
+        self.tracked_members
+            .retain(|_, tracked| tracked.guild != guild);
+        for position in members {
+            self.tracked_members.insert(
+                position.serial,
+                TrackedMember {
+                    position: *position,
+                    guild,
+                },
+            );
+        }
+        let kind = if guild { "guild" } else { "party" };
+        self.push_event(Event::new(
+            EventKind::MemberPositions,
+            None,
+            format!("{kind}: {}", members.len()),
+        ));
+    }
+
     fn apply_party(&mut self, event: &PartyEvent) {
         match event {
             // A list of one is the character alone: the party is over.
@@ -1393,6 +1733,7 @@ impl World {
                 if members.len() <= PARTY_OF_ONE =>
             {
                 self.party.clear();
+                self.party_can_loot = false;
             }
             PartyEvent::Members(members) => {
                 self.party.clone_from(members);
@@ -1444,7 +1785,14 @@ impl World {
     fn note_spoken_to(&mut self, serial: Serial, name: &str, text: &str, channel: Channel) {
         let from_other = serial != self.self_state.serial
             && (channel.reaches_far() || self.mobiles.contains_key(&serial));
-        if !self.answer_when_named || !from_other || !names_character(text, &self.self_state.name) {
+        let heard_near = channel.group() == ChannelGroup::Nearby
+            && self.listen_range.is_some_and(|range| {
+                self.mobiles.get(&serial).is_some_and(|m| {
+                    m.location.chebyshev(self.self_state.location) <= u32::from(range)
+                })
+            });
+        let named = names_character(text, &self.self_state.name);
+        if !self.answer_when_named || !from_other || !(named || heard_near) {
             return;
         }
         let spoken_to = SpokenTo {
@@ -1542,6 +1890,7 @@ impl World {
                 mob.hits = known.hits;
                 mob.hits_max = known.hits_max;
             }
+            mob.pools = known.pools;
             if !worn_list_is_complete {
                 mob.equipment = known.equipment;
             }
@@ -1624,6 +1973,11 @@ impl World {
                 .get(&serial)
                 .is_some_and(|m| m.flags & FLAG_POISONED_OR_FLYING != 0);
         by_bar || by_flag
+    }
+
+    /// True when the character may rename the mobile: it is his follower.
+    pub fn is_renamable(&self, serial: Serial) -> bool {
+        self.renamable.contains(&serial)
     }
 
     /// True when the mobile wears the yellow bar of the blessed.
@@ -1729,6 +2083,7 @@ impl World {
     fn upsert_ground(&mut self, item: &GroundItem) {
         let name = self.name_or_ask(item.serial);
         self.detach(item.serial);
+        self.item_directions.insert(item.serial, item.direction);
         self.items.insert(
             item.serial,
             Item {
@@ -1856,6 +2211,28 @@ impl World {
         } else if let Some(mob) = self.mobiles.get_mut(&serial) {
             mob.hits = Some(current);
             mob.hits_max = Some(max);
+        }
+    }
+
+    /// The mana of the character, or of another mobile in view.
+    fn set_mana(&mut self, serial: Serial, current: u16, max: u16) {
+        if serial == self.self_state.serial {
+            self.self_state.mana = current;
+            self.self_state.mana_max = max;
+        } else if let Some(mob) = self.mobiles.get_mut(&serial) {
+            mob.pools.mana = Some(current);
+            mob.pools.mana_max = Some(max);
+        }
+    }
+
+    /// The stamina of the character, or of another mobile in view.
+    fn set_stam(&mut self, serial: Serial, current: u16, max: u16) {
+        if serial == self.self_state.serial {
+            self.self_state.stam = current;
+            self.self_state.stam_max = max;
+        } else if let Some(mob) = self.mobiles.get_mut(&serial) {
+            mob.pools.stam = Some(current);
+            mob.pools.stam_max = Some(max);
         }
     }
 
@@ -2102,17 +2479,36 @@ impl World {
             .unwrap_or(RANGE_MELEE)
     }
 
-    /// Opens, updates and closes the secure trade window.
+    /// The open trade with this player, or with one of these boxes; the
+    /// newest when `with` is none.
+    pub fn trade_with(&self, with: Option<Serial>) -> Option<&Trade> {
+        match with {
+            None => self.trades.last(),
+            Some(serial) => self
+                .trades
+                .iter()
+                .rev()
+                .find(|t| t.with == serial || t.mine == serial || t.theirs == serial),
+        }
+    }
+
+    /// Opens, updates and closes the secure trade windows.
     fn apply_trade(&mut self, trade: &SecureTrade) {
         match trade.kind {
             TRADE_DISPLAY => {
-                self.trade = Some(Trade {
+                let mine = Serial(trade.first);
+                self.trades.retain(|open| open.mine != mine);
+                self.trades.push(Trade {
                     with: trade.serial,
                     name: trade.name.clone(),
-                    mine: Serial(trade.first),
+                    mine,
                     theirs: Serial(trade.second),
                     i_accept: false,
                     they_accept: false,
+                    their_gold: 0,
+                    their_platinum: 0,
+                    my_gold: 0,
+                    my_platinum: 0,
                 });
                 self.push_event(Event::new(
                     EventKind::TradeOpened,
@@ -2120,13 +2516,27 @@ impl World {
                     trade.name.clone(),
                 ));
             }
+            // An update and a close name the character's own box of the
+            // trade.
             TRADE_UPDATE => {
-                if let Some(open) = self.trade.as_mut() {
+                if let Some(open) = self.trades.iter_mut().find(|t| t.mine == trade.serial) {
                     open.i_accept = trade.first != 0;
                     open.they_accept = trade.second != 0;
                 }
             }
-            TRADE_CLOSE => self.trade = None,
+            TRADE_UPDATE_GOLD => {
+                if let Some(open) = self.trades.iter_mut().find(|t| t.mine == trade.serial) {
+                    open.their_gold = trade.first;
+                    open.their_platinum = trade.second;
+                }
+            }
+            TRADE_UPDATE_LEDGER => {
+                if let Some(open) = self.trades.iter_mut().find(|t| t.mine == trade.serial) {
+                    open.my_gold = trade.first;
+                    open.my_platinum = trade.second;
+                }
+            }
+            TRADE_CLOSE => self.trades.retain(|open| open.mine != trade.serial),
             _ => {}
         }
     }
@@ -2153,7 +2563,8 @@ impl World {
         self.doors_open_in_place.clear();
         self.multis.clear();
         self.bars.clear();
-        self.trade = None;
+        self.renamable.clear();
+        self.trades.clear();
         self.harmed_by = None;
         self.nav_goal = None;
         if self.combatant.is_some() {
@@ -2296,6 +2707,57 @@ fn paperdoll_name(text: &str) -> &str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn two_trades_stay_open_side_by_side_and_close_by_their_box() {
+        const ANN: Serial = Serial(0x0000_0C01);
+        const BOB: Serial = Serial(0x0000_0C02);
+        const ANN_MINE: u32 = 0x4000_0C11;
+        const BOB_MINE: u32 = 0x4000_0C21;
+        let mut w = World::new();
+        let open = |with: Serial, mine: u32, name: &str| SecureTrade {
+            kind: TRADE_DISPLAY,
+            serial: with,
+            first: mine,
+            second: mine + 1,
+            name: name.into(),
+        };
+        w.apply(&Inbound::Trade(open(ANN, ANN_MINE, "Ann")));
+        w.apply(&Inbound::Trade(open(BOB, BOB_MINE, "Bob")));
+        assert_eq!(w.trades.len(), 2);
+        assert_eq!(w.trade_with(None).map(|t| t.with), Some(BOB));
+        w.apply(&Inbound::Trade(SecureTrade {
+            kind: TRADE_UPDATE,
+            serial: Serial(ANN_MINE),
+            first: 0,
+            second: 1,
+            name: String::new(),
+        }));
+        assert!(w.trade_with(Some(ANN)).is_some_and(|t| t.they_accept));
+        assert!(w.trade_with(Some(BOB)).is_some_and(|t| !t.they_accept));
+        for (kind, first) in [(TRADE_UPDATE_GOLD, 500), (TRADE_UPDATE_LEDGER, 9000)] {
+            w.apply(&Inbound::Trade(SecureTrade {
+                kind,
+                serial: Serial(ANN_MINE),
+                first,
+                second: 1,
+                name: String::new(),
+            }));
+        }
+        let ann = w.trade_with(Some(ANN)).unwrap();
+        assert_eq!((ann.their_gold, ann.their_platinum), (500, 1));
+        assert_eq!((ann.my_gold, ann.my_platinum), (9000, 1));
+        w.apply(&Inbound::Trade(SecureTrade {
+            kind: TRADE_CLOSE,
+            serial: Serial(BOB_MINE),
+            first: 0,
+            second: 0,
+            name: String::new(),
+        }));
+        assert_eq!(w.trades.len(), 1);
+        assert_eq!(w.trade_with(None).map(|t| t.with), Some(ANN));
+        assert_eq!(w.observe_default().trades.len(), 1);
+    }
+
     const ORC: Serial = Serial(0x0000_0A11);
     const SWORD: Serial = Serial(0x4000_0A12);
 
@@ -2352,6 +2814,34 @@ mod tests {
         world.apply(&bars(ORC));
         let orc = world.mobiles.get(&ORC).unwrap();
         assert_eq!((orc.hits, orc.hits_max), (Some(60), Some(80)));
+        assert_eq!(
+            orc.pools,
+            MobilePools {
+                mana: Some(10),
+                mana_max: Some(20),
+                stam: Some(30),
+                stam_max: Some(40),
+            }
+        );
+        world.apply(&Inbound::UpdateMana {
+            serial: ORC,
+            current: 5,
+            max: 20,
+        });
+        world.apply(&Inbound::UpdateStam {
+            serial: ORC,
+            current: 7,
+            max: 40,
+        });
+        // A move keeps what the bars said.
+        world.apply(&Inbound::MobileMoving(orc_at(1001, Vec::new())));
+        let orc = world.mobiles.get(&ORC).unwrap();
+        assert_eq!((orc.pools.mana, orc.pools.stam), (Some(5), Some(7)));
+        let shown = serde_json::to_value(orc).unwrap();
+        assert_eq!(
+            (shown["mana"].as_u64(), shown["stam_max"].as_u64()),
+            (Some(5), Some(40))
+        );
         let me = world.self_state.serial;
         world.apply(&bars(me));
         assert_eq!((world.self_state.hits, world.self_state.hits_max), (60, 80));
@@ -2442,6 +2932,34 @@ mod tests {
         assert_eq!(world.quest_arrow, None);
     }
 
+    /// The shard asks for a race change, and the agent hears of it; the
+    /// shard closes the window with a race past the known ones.
+    #[test]
+    fn a_race_change_waits_until_the_shard_closes_it() {
+        const ELF: u8 = 2;
+        const CLOSED: u8 = 0xFF;
+        let mut world = World::default();
+        world.apply(&Inbound::RaceChange {
+            female: true,
+            race: ELF,
+        });
+        assert_eq!(
+            world.race_change,
+            Some(RaceChange {
+                race: Race::Elf,
+                female: true
+            })
+        );
+        let heard = world.events.last().unwrap();
+        assert_eq!(heard.kind, EventKind::RaceChangeOpened);
+        assert_eq!(heard.text, "elf, female");
+        world.apply(&Inbound::RaceChange {
+            female: false,
+            race: CLOSED,
+        });
+        assert_eq!(world.race_change, None);
+    }
+
     #[test]
     fn a_waypoint_a_name_and_a_dropped_item_reach_the_world() {
         const MARK: Serial = Serial(0x4000_0B04);
@@ -2487,5 +3005,322 @@ mod tests {
         assert!(is_ghost_body(BODY_GHOST_ELF_MALE));
         assert!(is_ghost_body(BODY_GHOST_GARGOYLE_MALE));
         assert_eq!(body_when_alive(BODY_HUMAN_MALE), None);
+    }
+
+    const ME: Serial = Serial(0x0000_0001);
+
+    #[test]
+    fn a_ground_item_keeps_its_direction_until_it_is_deleted() {
+        const CORPSE: Serial = Serial(0x4000_0C01);
+        const CORPSE_GRAPHIC: u16 = 0x2006;
+        const WEST: u8 = 6;
+        let mut world = me_in_world();
+        world.apply(&Inbound::WorldItem(GroundItem {
+            serial: CORPSE,
+            graphic: CORPSE_GRAPHIC,
+            amount: 1,
+            x: 10,
+            y: 10,
+            z: 0,
+            hue: 0,
+            multi: false,
+            flags: 0,
+            direction: WEST,
+        }));
+        assert_eq!(world.item_directions.get(&CORPSE), Some(&WEST));
+        world.apply(&Inbound::Delete(CORPSE));
+        assert!(world.item_directions.is_empty());
+    }
+
+    fn me_in_world() -> World {
+        let mut world = World::default();
+        world.self_state.serial = ME;
+        world.self_state.name = "Mara".into();
+        world
+    }
+
+    fn kinds(world: &World) -> Vec<EventKind> {
+        world.events.iter().map(|e| e.kind).collect()
+    }
+
+    fn status(str_: u16, dex: u16, int_: u16, female: bool) -> Inbound {
+        Inbound::Status {
+            serial: ME,
+            name: "Mara".into(),
+            hits: 50,
+            hits_max: 50,
+            renamable: false,
+            female,
+            str_,
+            dex,
+            int_,
+            stam: 50,
+            stam_max: 50,
+            mana: 20,
+            mana_max: 20,
+            gold: 0,
+            weight: 10,
+            weight_max: None,
+            extra: StatusExtra::default(),
+        }
+    }
+
+    /// The status of a follower says the character may rename him. A later
+    /// status without the mark, or his leaving, takes it away.
+    #[test]
+    fn a_follower_is_known_by_the_rename_mark_of_his_status() {
+        let mut world = me_in_world();
+        world.apply(&Inbound::MobileIncoming(orc_at(1000, Vec::new())));
+        let orc_status = |mark: bool| {
+            let mut orc = status(0, 0, 0, false);
+            if let Inbound::Status {
+                serial, renamable, ..
+            } = &mut orc
+            {
+                (*serial, *renamable) = (ORC, mark);
+            }
+            orc
+        };
+        world.apply(&orc_status(true));
+        assert!(world.is_renamable(ORC));
+        assert!(!world.is_renamable(ME));
+        assert_eq!(world.observe_default().followers, [ORC.to_string()]);
+        world.apply(&orc_status(false));
+        assert!(!world.is_renamable(ORC));
+        world.apply(&orc_status(true));
+        world.apply(&Inbound::Delete(ORC));
+        assert!(!world.is_renamable(ORC));
+    }
+
+    /// The death screen kills the character in the world, ends war mode and
+    /// the weather, cues the screen, and tells of the death once, even when
+    /// the death animation comes after it.
+    #[test]
+    fn the_death_screen_ends_war_and_tells_of_the_death_once() {
+        const DEAD: u8 = 2;
+        let mut world = me_in_world();
+        world.self_state.war = true;
+        world.weather = Some((0, 40));
+        world.apply(&Inbound::DeathScreen {
+            action: DEATH_SCREEN_ALIVE,
+        });
+        assert!(!world.self_state.dead, "action 1 is no death");
+        world.apply(&Inbound::DeathScreen { action: DEAD });
+        assert!(world.self_state.dead);
+        assert!(!world.self_state.war);
+        assert_eq!(world.weather, None);
+        assert!(world
+            .cues
+            .all()
+            .iter()
+            .any(|cue| cue.what == crate::CueKind::DeathScreen && cue.serial == ME));
+        world.apply(&Inbound::Death {
+            serial: ME,
+            corpse: SWORD,
+        });
+        let deaths = kinds(&world)
+            .into_iter()
+            .filter(|kind| *kind == EventKind::Died)
+            .count();
+        assert_eq!(deaths, 1);
+    }
+
+    #[test]
+    fn the_armed_move_and_the_stances_are_kept_until_the_shard_ends_them() {
+        const CONFIDENCE: u16 = 402;
+        const ARMOR_IGNORE: u8 = 1;
+        let mut world = me_in_world();
+        world.self_state.armed_ability = Some(ARMOR_IGNORE);
+        world.apply(&Inbound::WeaponAbilityCleared);
+        assert_eq!(world.self_state.armed_ability, None);
+        world.apply(&Inbound::WeaponAbilityCleared);
+        world.apply(&Inbound::SpecialAbility {
+            spell: CONFIDENCE,
+            active: true,
+        });
+        assert!(world.self_state.active_spells.contains(&CONFIDENCE));
+        world.apply(&Inbound::SpecialAbility {
+            spell: CONFIDENCE,
+            active: false,
+        });
+        assert!(world.self_state.active_spells.is_empty());
+        let changes: Vec<&str> = world
+            .events
+            .iter()
+            .filter(|e| e.kind == EventKind::AbilityChanged)
+            .map(|e| e.text.as_str())
+            .collect();
+        assert_eq!(
+            changes,
+            vec!["weapon move 1 off", "spell 402 on", "spell 402 off"]
+        );
+    }
+
+    #[test]
+    fn member_places_replace_the_list_of_their_kind() {
+        let place = |serial: u32, x: u16| MemberPosition {
+            serial: Serial(serial),
+            x,
+            y: 10,
+            map: 1,
+            hits_percent: None,
+        };
+        let mut world = me_in_world();
+        world.apply(&Inbound::MemberPositions {
+            guild: true,
+            members: vec![place(7, 1)],
+        });
+        world.apply(&Inbound::MemberPositions {
+            guild: false,
+            members: vec![place(5, 1), place(6, 2)],
+        });
+        world.apply(&Inbound::MemberPositions {
+            guild: false,
+            members: vec![place(6, 3)],
+        });
+        assert_eq!(world.tracked_members.len(), 2);
+        assert_eq!(world.tracked_members[&Serial(6)].position.x, 3);
+        assert!(world.tracked_members[&Serial(7)].guild);
+        assert!(!world.tracked_members.contains_key(&Serial(5)));
+        assert!(kinds(&world).contains(&EventKind::MemberPositions));
+    }
+
+    #[test]
+    fn a_skill_or_a_stat_that_moves_is_an_event_with_its_change() {
+        const TACTICS: u16 = 27;
+        let skill = |value: u16| Inbound::Skills {
+            skills: vec![uoterm_protocol::SkillEntry {
+                id: TACTICS,
+                value,
+                base: value,
+                lock: 0,
+                cap: 1000,
+            }],
+        };
+        let mut world = me_in_world();
+        world.apply(&skill(702));
+        world.apply(&status(50, 40, 30, true));
+        assert!(world.events.is_empty(), "the first word names no change");
+        assert!(world.self_state.female);
+        world.apply(&skill(703));
+        world.apply(&status(51, 40, 29, true));
+        let words: Vec<&str> = world.events.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(
+            words,
+            vec![
+                "skill 27 70.3 (+0.1)",
+                "strength 51 (+1)",
+                "intelligence 29 (-1)"
+            ]
+        );
+        assert_eq!(tenths(-5), "-0.5");
+    }
+
+    /// Sounds and swings fill a busy log, and the death in it stays.
+    #[test]
+    fn a_full_log_drops_ambient_events_first() {
+        let mut world = me_in_world();
+        world.push_event(Event::new(EventKind::Died, Some(ORC), "orc"));
+        for _ in 0..EVENT_LOG_CAP {
+            world.apply(&Inbound::SoundEffect {
+                sound: 0x2A,
+                volume: 0,
+                x: 1,
+                y: 2,
+                z: 0,
+            });
+        }
+        assert_eq!(world.events.len(), EVENT_LOG_CAP);
+        assert_eq!(world.events[0].kind, EventKind::Died);
+        assert_eq!(world.events[1].text, "0x002A at 1,2");
+    }
+
+    #[test]
+    fn effects_animations_deletes_arrows_maps_and_tips_are_told() {
+        const MAP_ITEM: Serial = Serial(0x4000_0B00);
+        let mut world = me_in_world();
+        world.apply(&Inbound::CharacterAnimation {
+            serial: ORC,
+            action: 9,
+            frame_count: 5,
+            repeat_count: 1,
+            forward: true,
+            repeat: false,
+            delay: 0,
+        });
+        world.apply(&Inbound::Delete(SWORD));
+        world.apply(&Inbound::Delete(ORC));
+        for shown in [true, true, false] {
+            world.apply(&Inbound::QuestArrow {
+                shown,
+                x: 100,
+                y: 200,
+                serial: Serial::INVALID,
+            });
+        }
+        world.apply(&Inbound::MapOpened(uoterm_protocol::DisplayMap {
+            serial: MAP_ITEM,
+            gump_id: 0x139D,
+            start_x: 0,
+            start_y: 0,
+            end_x: 100,
+            end_y: 100,
+            width: 200,
+            height: 200,
+            facet: 0,
+        }));
+        world.apply(&Inbound::CloseStatusBar { serial: ORC });
+        world.apply(&Inbound::Tip {
+            id: 12,
+            is_tip: true,
+            words: "Hello".into(),
+        });
+        assert_eq!(
+            kinds(&world),
+            vec![
+                EventKind::Animation,
+                EventKind::ItemDeleted,
+                EventKind::QuestArrow,
+                EventKind::QuestArrow,
+                EventKind::MapOpened,
+            ]
+        );
+        assert_eq!(world.events[2].text, "shown at 100,200");
+        assert_eq!(world.events[3].text, "removed");
+        assert_eq!(world.tip, Some(12));
+        world.apply(&Inbound::Tip {
+            id: 0,
+            is_tip: false,
+            words: "The world will save.".into(),
+        });
+        assert_eq!(world.tip, None, "a notice has no tips to turn");
+        assert!(world
+            .cues
+            .all()
+            .iter()
+            .any(|cue| cue.what == crate::CueKind::StatusBarClosed && cue.serial == ORC));
+    }
+
+    #[test]
+    fn a_spellbook_names_its_school_from_its_first_spell() {
+        let book = |first_spell: u16| Spellbook {
+            graphic: 0x2253,
+            first_spell,
+            spells: 0,
+        };
+        assert_eq!(book(101).school().map(|s| s.name), Some("necromancy"));
+        assert_eq!(
+            book(678).school().and_then(|s| s.book_kind),
+            Some(SPELLBOOK_MYSTICISM)
+        );
+        assert_eq!(book(5).school(), None);
+        assert_eq!(
+            spell_school_named(" Bushido ").map(|s| s.first_spell),
+            Some(401)
+        );
+        assert_eq!(
+            spell_school_named("mastery").and_then(|s| s.book_kind),
+            None
+        );
     }
 }

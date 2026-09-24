@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uoterm_protocol::Direction;
 
 use crate::addressed::SpokenTo;
+use crate::appearance::RaceChangeView;
 use crate::events::unix_now_ms;
 use crate::radar::legend;
 use crate::state::{Item, Mobile, SelfState, World};
@@ -144,6 +145,10 @@ pub struct Observe {
     pub buffs: Vec<String>,
     /// The party members by name. Empty outside a party.
     pub party: Vec<String>,
+    /// The followers of the character by serial: the mobiles the shard
+    /// lets him rename.
+    #[serde(default)]
+    pub followers: Vec<String>,
     /// Who asked the character to join a party, while the ask is open.
     pub party_invite: Option<String>,
     /// The shard waits for a line of text.
@@ -161,6 +166,10 @@ pub struct Observe {
     pub human_control: bool,
     /// The question of an open one-field text dialog.
     pub text_entry: Option<String>,
+    /// The race change the shard waits on: the race and the looks the
+    /// `race_change` tool may pick.
+    #[serde(default)]
+    pub race_change: Option<RaceChangeView>,
     /// Lines other characters said to this one by name in the last three
     /// minutes,
     /// oldest first. Empty when the `answer_when_named` switch is off.
@@ -174,8 +183,10 @@ pub struct Observe {
     /// The player the character plays along with now. The runtime fills
     /// this in.
     pub playing_along: Option<PlayingAlong>,
-    /// The secure trade window open with another player.
+    /// The newest secure trade window open with another player.
     pub trade: Option<TradeView>,
+    /// Every secure trade window open, the newest last.
+    pub trades: Vec<TradeView>,
     /// The nearest bank on this map within walking range, when the client
     /// knows one. The runtime fills this in.
     pub nearest_bank: Option<BankView>,
@@ -196,10 +207,18 @@ pub struct BankView {
 pub struct TradeView {
     pub with: String,
     pub serial: String,
+    /// The character's own box of this trade, which names the trade.
+    pub box_serial: String,
     pub theirs: Vec<ContainedItem>,
     pub mine: Vec<ContainedItem>,
     pub i_accept: bool,
     pub they_accept: bool,
+    /// The gold and platinum the other player offers.
+    pub their_gold: u32,
+    pub their_platinum: u32,
+    /// The gold and platinum the character has to offer.
+    pub my_gold: u32,
+    pub my_platinum: u32,
 }
 
 /// The player the character plays along with, and how long it has left.
@@ -208,6 +227,41 @@ pub struct PlayingAlong {
     pub name: String,
     pub serial: String,
     pub minutes_left: u64,
+}
+
+/// One open trade as an agent reads it.
+fn trade_view(world: &World, t: &crate::Trade) -> TradeView {
+    TradeView {
+        with: t.name.clone(),
+        serial: t.with.to_string(),
+        box_serial: t.mine.to_string(),
+        theirs: world
+            .items_inside(t.theirs, true)
+            .into_iter()
+            .map(ContainedItem::from)
+            .collect(),
+        mine: world
+            .items_inside(t.mine, true)
+            .into_iter()
+            .map(ContainedItem::from)
+            .collect(),
+        i_accept: t.i_accept,
+        they_accept: t.they_accept,
+        their_gold: t.their_gold,
+        their_platinum: t.their_platinum,
+        my_gold: t.my_gold,
+        my_platinum: t.my_platinum,
+    }
+}
+
+/// The followers of the character by serial, in serial order.
+fn followers(world: &World) -> Vec<String> {
+    let mut serials: Vec<_> = world.renamable.iter().copied().collect();
+    serials.sort_unstable_by_key(|serial| serial.0);
+    serials
+        .into_iter()
+        .map(|serial| serial.to_string())
+        .collect()
 }
 
 impl Observe {
@@ -297,32 +351,20 @@ impl Observe {
                 .collect(),
             buffs: Vec::new(),
             party: world.party.iter().map(|&m| world.name_of(m)).collect(),
+            followers: followers(world),
             party_invite: world.party_invite.map(|leader| world.name_of(leader)),
             prompt: world.prompt.is_some(),
             sounds: world.sounds.cues(),
             music: world.sounds.music(),
             human_control: false,
             text_entry: world.text_entry.as_ref().map(|d| d.description.clone()),
+            race_change: world.race_change.map(RaceChangeView::from),
             spoken_to: world.spoken_to.fresh(unix_now_ms()),
             chat_mode: world.chat_mode().map(String::from),
             reply_style: None,
             playing_along: None,
-            trade: world.trade.as_ref().map(|t| TradeView {
-                with: t.name.clone(),
-                serial: t.with.to_string(),
-                theirs: world
-                    .items_inside(t.theirs, true)
-                    .into_iter()
-                    .map(ContainedItem::from)
-                    .collect(),
-                mine: world
-                    .items_inside(t.mine, true)
-                    .into_iter()
-                    .map(ContainedItem::from)
-                    .collect(),
-                i_accept: t.i_accept,
-                they_accept: t.they_accept,
-            }),
+            trade: world.trade_with(None).map(|t| trade_view(world, t)),
+            trades: world.trades.iter().map(|t| trade_view(world, t)).collect(),
             nearest_bank: None,
         }
     }

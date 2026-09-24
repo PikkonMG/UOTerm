@@ -14,13 +14,14 @@ pub use decode::character_refusal;
 pub use decode::{
     parse, parse_with_version, Affix, BoatRider, BookPage, BuffEntry, BulletinEvent, CharacterSlot,
     ChatEvent, ContainerItem, ContextMenuEntry, CustomHouse, DisplayMap, EquipAttribute, EquipInfo,
-    EquipItem, GraphicEffect, GroundItem, HealthBarStatus, HousePlane, Inbound, MapChange,
-    MapPatchCount, MenuEntry, MobileView, ObjectProperty, OpenGump, PartyEvent, PromptRequest,
-    SecureTrade, ServerEntry, SkillEntry, SpeechLine, StatusExtra, TargetCursor, TextEntryDialog,
-    VendorBuyEntry, VendorSellEntry, EFFECT_AT_PLACE, EFFECT_LIGHTNING, EFFECT_MOVING,
-    EFFECT_ON_MOBILE, EQUIP_NO_CHARGES,
+    EquipItem, GraphicEffect, GroundItem, HealthBarStatus, HousePlane, Inbound, LiveMapDefinition,
+    LiveMapEvent, MapChange, MapPatchCount, MemberPosition, MenuEntry, MobileView, ObjectProperty,
+    OpenGump, PartyEvent, PromptRequest, SecureTrade, ServerEntry, SkillEntry, SpeechLine,
+    StartTown, StatusExtra, TargetCursor, TextEntryDialog, TownPlace, VendorBuyEntry,
+    VendorSellEntry, EFFECT_AT_PLACE, EFFECT_LIGHTNING, EFFECT_MOVING, EFFECT_ON_MOBILE,
+    EQUIP_NO_CHARGES, LIVE_LAND_BYTES,
 };
-pub use encode::{HouseEdit, NewCharacter};
+pub use encode::{HouseEdit, NewCharacter, NewLooks};
 pub use error::{ProtocolError, Result};
 pub use frame::{compress_packet, FrameDecoder, GameDecoder, RawPacket};
 pub use huffman::{Huffman, HuffmanDecoder};

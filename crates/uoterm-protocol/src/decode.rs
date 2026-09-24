@@ -60,6 +60,27 @@ pub struct CharacterSlot {
     pub name: String,
 }
 
+/// One start town of the character list: its number, its name and the
+/// building a new character wakes in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartTown {
+    pub index: u8,
+    pub name: String,
+    pub building: String,
+    /// Where it is, from 7.0.13.0 on. An older list names no place.
+    pub place: Option<TownPlace>,
+}
+
+/// Where a start town is, and the text number of the words about it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TownPlace {
+    pub x: u16,
+    pub y: u16,
+    pub z: i8,
+    pub map: u32,
+    pub description: u32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpeechLine {
     pub serial: Serial,
@@ -140,6 +161,10 @@ pub struct GroundItem {
     /// [`ITEM_FLAG_HIDDEN`].
     #[serde(default)]
     pub flags: u8,
+    /// The direction byte of the packet. A corpse lies this way, and a light
+    /// source on the ground takes its light shape from it.
+    #[serde(default)]
+    pub direction: u8,
 }
 
 /// One mobile or item a moving boat carries, at its new place.
@@ -300,8 +325,10 @@ pub enum PartyEvent {
 }
 
 /// The status fields past weight. Each group is present only from some status
-/// level up; a field the packet does not carry stays zero.
+/// level up; a field the packet does not carry stays zero, and so does a field
+/// a reader of the JSON form does not find.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StatusExtra {
     pub physical_resist: i16,
     pub race: u8,
@@ -552,6 +579,46 @@ pub enum ChatEvent {
     },
 }
 
+/// Where one party or guild member out of sight stands, as the shard tracks
+/// him for the world map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberPosition {
+    pub serial: Serial,
+    pub x: u16,
+    pub y: u16,
+    pub map: u8,
+    /// The share of his hits, from 0 to 100. Only a guild list carries it.
+    pub hits_percent: Option<u8>,
+}
+
+/// The size of one map an UltimaLive shard uses, and the size it wraps at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveMapDefinition {
+    pub map: u8,
+    pub width: u16,
+    pub height: u16,
+    pub wrap_width: u16,
+    pub wrap_height: u16,
+}
+
+/// A `0x3F` UltimaLive command from the shard.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LiveMapEvent {
+    /// The shard asks for the checksums of the 5 by 5 blocks around `block`.
+    HashQuery { block: u32, map: u8 },
+    /// The statics of one block, whole: seven bytes each, as the statics
+    /// file holds them. None at all empties the block.
+    Statics {
+        block: u32,
+        map: u8,
+        records: Vec<u8>,
+    },
+    /// The maps the shard uses, with their sizes.
+    MapDefinitions(Vec<LiveMapDefinition>),
+    /// The shard runs UltimaLive under this name.
+    Login { shard: String },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Inbound {
     ServerList {
@@ -574,6 +641,8 @@ pub enum Inbound {
     },
     CharacterList {
         characters: Vec<CharacterSlot>,
+        /// The towns a new character may start in.
+        towns: Vec<StartTown>,
         /// The account flags after the start towns, when the shard sent
         /// them. See the `ACCOUNT_FLAG_*` bits.
         account_flags: Option<u32>,
@@ -643,6 +712,8 @@ pub enum Inbound {
         name: String,
         hits: u16,
         hits_max: u16,
+        /// The character may rename this mobile: it is one of his followers.
+        renamable: bool,
         female: bool,
         str_: u16,
         dex: u16,
@@ -769,6 +840,9 @@ pub enum Inbound {
         page_count: u16,
         title: String,
         author: String,
+        /// The shard sent the fixed-width `0x93` cover, and reads a changed
+        /// cover in that form too.
+        old_form: bool,
     },
     ObjectPropertyList {
         serial: Serial,
@@ -779,8 +853,10 @@ pub enum Inbound {
         serial: Serial,
         hash: u32,
     },
-    ResurrectPrompt {
-        option: u8,
+    /// `0x2C`. The character died, or came back: see
+    /// [`crate::DEATH_SCREEN_ALIVE`].
+    DeathScreen {
+        action: u8,
     },
     /// `0x17`. An empty `bars` list is a server that sent no colour at all.
     HealthBarUpdate {
@@ -1014,6 +1090,42 @@ pub enum Inbound {
     },
     /// `0xBF` `0x26`. The walking speed rules. See the `SPEED_MODE_*` values.
     SpeedMode(u8),
+    /// `0xBF` `0x0C`. The shard shut the status bar of this mobile.
+    CloseStatusBar {
+        serial: Serial,
+    },
+    /// `0xBF` `0x21`. The weapon move the character armed is spent or gone.
+    WeaponAbilityCleared,
+    /// `0xBF` `0x25`. A spell or a stance that stays on, such as a Bushido
+    /// stance, came on or went off.
+    SpecialAbility {
+        spell: u16,
+        active: bool,
+    },
+    /// `0xBF` `0x2A`. The shard asks the character to pick new looks for a
+    /// race: 1 human, 2 elf, 3 gargoyle. Any other race closes the window
+    /// it opened; ModernUO closes it with 0xFF.
+    RaceChange {
+        female: bool,
+        race: u8,
+    },
+    /// `0xF0` `0x00`. The shard takes the queries for party and guild places.
+    TrackingAccepted,
+    /// `0xF0` `0x01` or `0x02`. Where the party members, or the guild
+    /// members, stand out of sight.
+    MemberPositions {
+        guild: bool,
+        members: Vec<MemberPosition>,
+    },
+    /// `0x3F`. An UltimaLive command.
+    UltimaLive(LiveMapEvent),
+    /// `0x40`. UltimaLive: the land of one block, in the layout of the map
+    /// file.
+    LiveTerrain {
+        block: u32,
+        map: u8,
+        land: Vec<u8>,
+    },
     Extended {
         sub: u16,
         payload: Vec<u8>,
@@ -1127,7 +1239,9 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_EXTENDED => parse_extended(packet),
         PKT_BATCH_QUERY_PROPERTIES => parse_object_property_list(packet),
         PKT_OPL_INFO => parse_opl_info(packet),
-        PKT_DEATH_MENU => parse_resurrect(packet),
+        PKT_DEATH_MENU => parse_death_screen(packet),
+        PKT_ULTIMA_LIVE => parse_ultima_live(packet),
+        PKT_LIVE_TERRAIN => parse_live_terrain(packet),
         PKT_DAMAGE => parse_damage(packet),
         PKT_CLILOC | PKT_CLILOC_AFFIX => parse_cliloc(packet),
         PKT_SECURE_TRADE => parse_trade(packet),
@@ -1282,17 +1396,55 @@ fn parse_assistant(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     r.u16()?;
-    if r.u8()? != ASSIST_CMD_FEATURES {
-        return Ok(Inbound::Unknown {
+    match r.u8()? {
+        ASSIST_CMD_FEATURES => {
+            let high = u64::from(r.u32()?);
+            let low = u64::from(r.u32()?);
+            Ok(Inbound::AssistantFeatures {
+                disallowed: high << u32::BITS | low,
+            })
+        }
+        ASSIST_CMD_TRACKING_ACCEPTED => Ok(Inbound::TrackingAccepted),
+        ASSIST_CMD_PARTY_POSITIONS => Ok(Inbound::MemberPositions {
+            guild: false,
+            members: read_member_positions(&mut r, false)?,
+        }),
+        ASSIST_CMD_GUILD_POSITIONS => {
+            let with_places = r.u8()? != 0;
+            let members = if with_places {
+                read_member_positions(&mut r, true)?
+            } else {
+                Vec::new()
+            };
+            Ok(Inbound::MemberPositions {
+                guild: true,
+                members,
+            })
+        }
+        _ => Ok(Inbound::Unknown {
             id: PKT_ASSISTANT,
             payload: packet.to_vec(),
+        }),
+    }
+}
+
+/// The members of a place list, up to the zero serial that ends it. A
+/// guild list carries a hits share after each place.
+fn read_member_positions(r: &mut PacketReader<'_>, with_hits: bool) -> Result<Vec<MemberPosition>> {
+    let mut members = Vec::new();
+    loop {
+        let serial = r.serial()?;
+        if serial == Serial::INVALID {
+            return Ok(members);
+        }
+        members.push(MemberPosition {
+            serial,
+            x: r.u16()?,
+            y: r.u16()?,
+            map: r.u8()?,
+            hits_percent: if with_hits { Some(r.u8()?) } else { None },
         });
     }
-    let high = u64::from(r.u32()?);
-    let low = u64::from(r.u32()?);
-    Ok(Inbound::AssistantFeatures {
-        disallowed: high << u32::BITS | low,
-    })
 }
 
 fn parse_popup_message(packet: &[u8]) -> Result<Inbound> {
@@ -1325,11 +1477,12 @@ fn parse_features(packet: &[u8]) -> Result<Inbound> {
 /// characters.
 const CHARACTER_NAME_LEN: usize = 30;
 
-/// The width of one start town in the character list: the older name and
-/// building fields, and from 7.0.13.0 wider ones with the place and a line of
-/// words.
-const START_TOWN_LEN_OLD: usize = 1 + 31 + 31;
-const START_TOWN_LEN_PLACED: usize = 1 + 32 + 32 + 4 * 5 + 4;
+/// The width of the name and of the building of one start town: the older
+/// fields, and from 7.0.13.0 wider ones followed by the place, the words
+/// about it and four spare bytes.
+const START_TOWN_WORDS_OLD: usize = 31;
+const START_TOWN_WORDS_PLACED: usize = 32;
+const START_TOWN_SPARE: usize = 4;
 
 fn parse_character_list(packet: &[u8], version: ClientVersion) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
@@ -1337,22 +1490,52 @@ fn parse_character_list(packet: &[u8], version: ClientVersion) -> Result<Inbound
     r.u16()?;
     let characters = read_character_slots(&mut r)?;
     // The start towns and the flags after them. A list that ends with the
-    // characters has no flags to give.
-    let account_flags = match r.u8() {
-        Ok(towns) => {
-            let town_len = if version.has_placed_start_towns() {
-                START_TOWN_LEN_PLACED
-            } else {
-                START_TOWN_LEN_OLD
-            };
-            r.skip(usize::from(towns) * town_len)?;
-            Some(r.u32()?)
+    // characters has no towns and no flags to give.
+    let (towns, account_flags) = match r.u8() {
+        Ok(count) => {
+            let placed = version.has_placed_start_towns();
+            let towns = (0..count)
+                .map(|_| read_start_town(&mut r, placed))
+                .collect::<Result<Vec<_>>>()?;
+            (towns, Some(r.u32()?))
         }
-        Err(_) => None,
+        Err(_) => (Vec::new(), None),
     };
     Ok(Inbound::CharacterList {
         characters,
+        towns,
         account_flags,
+    })
+}
+
+/// One start town, in the older form or in the placed form of 7.0.13.0.
+fn read_start_town(r: &mut PacketReader<'_>, placed: bool) -> Result<StartTown> {
+    let index = r.u8()?;
+    let words = if placed {
+        START_TOWN_WORDS_PLACED
+    } else {
+        START_TOWN_WORDS_OLD
+    };
+    let name = r.ascii_fixed(words)?;
+    let building = r.ascii_fixed(words)?;
+    let place = if placed {
+        let place = TownPlace {
+            x: r.u32()? as u16,
+            y: r.u32()? as u16,
+            z: r.u32()? as i8,
+            map: r.u32()?,
+            description: r.u32()?,
+        };
+        r.skip(START_TOWN_SPARE)?;
+        Some(place)
+    } else {
+        None
+    };
+    Ok(StartTown {
+        index,
+        name,
+        building,
+        place,
     })
 }
 
@@ -1603,9 +1786,7 @@ fn parse_world_item(packet: &[u8]) -> Result<Inbound> {
     let has_hue = y & WORLD_ITEM_HAS_HUE != 0;
     let has_flags = y & WORLD_ITEM_HAS_FLAGS != 0;
     y &= WORLD_ITEM_Y_MASK;
-    if has_direction {
-        r.u8()?;
-    }
+    let direction = if has_direction { r.u8()? } else { 0 };
     let z = r.i8()?;
     let hue = if has_hue { r.u16()? } else { 0 };
     let flags = if has_flags { r.u8()? } else { 0 };
@@ -1619,6 +1800,7 @@ fn parse_world_item(packet: &[u8]) -> Result<Inbound> {
         hue,
         multi,
         flags,
+        direction,
     }))
 }
 
@@ -1643,7 +1825,7 @@ fn parse_world_item_sa(packet: &[u8]) -> Result<Inbound> {
     let x = r.u16()?;
     let y = r.u16()?;
     let z = r.i8()?;
-    r.u8()?;
+    let direction = r.u8()?;
     let hue = r.u16()?;
     let flags = r.u8()?;
     Ok(Inbound::WorldItem(GroundItem {
@@ -1656,6 +1838,7 @@ fn parse_world_item_sa(packet: &[u8]) -> Result<Inbound> {
         hue,
         multi: kind == WORLD_ITEM_SA_TYPE_MULTI,
         flags,
+        direction,
     }))
 }
 
@@ -1810,7 +1993,7 @@ fn parse_status(packet: &[u8]) -> Result<Inbound> {
     let name = r.ascii_fixed(30)?;
     let hits = r.u16()?;
     let hits_max = r.u16()?;
-    r.u8()?;
+    let renamable = r.u8()? != 0;
     let flag = r.u8()?;
     if flag == 0 {
         return Ok(Inbound::Status {
@@ -1818,6 +2001,7 @@ fn parse_status(packet: &[u8]) -> Result<Inbound> {
             name,
             hits,
             hits_max,
+            renamable,
             female: false,
             str_: 0,
             dex: 0,
@@ -1899,6 +2083,7 @@ fn parse_status(packet: &[u8]) -> Result<Inbound> {
         name,
         hits,
         hits_max,
+        renamable,
         female,
         str_,
         dex,
@@ -2239,6 +2424,18 @@ fn parse_extended(packet: &[u8]) -> Result<Inbound> {
             })
         }
         EXT_SPEED_MODE => Ok(Inbound::SpeedMode(r.u8()?)),
+        EXT_CLOSE_STATUS_BAR => Ok(Inbound::CloseStatusBar {
+            serial: r.serial()?,
+        }),
+        EXT_CLEAR_WEAPON_ABILITY => Ok(Inbound::WeaponAbilityCleared),
+        EXT_SPECIAL_ABILITY => Ok(Inbound::SpecialAbility {
+            spell: r.u16()?,
+            active: r.u8()? != 0,
+        }),
+        EXT_RACE_CHANGE => Ok(Inbound::RaceChange {
+            female: r.u8()? != 0,
+            race: r.u8()?,
+        }),
         _ => Ok(Inbound::Extended {
             sub,
             payload: r.rest().to_vec(),
@@ -2663,6 +2860,7 @@ fn parse_book_header(packet: &[u8]) -> Result<Inbound> {
         page_count,
         title,
         author,
+        old_form: false,
     })
 }
 
@@ -2683,14 +2881,90 @@ fn parse_book_header_old(packet: &[u8]) -> Result<Inbound> {
         page_count,
         title,
         author,
+        old_form: true,
     })
 }
 
-fn parse_resurrect(packet: &[u8]) -> Result<Inbound> {
+fn parse_death_screen(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
-    Ok(Inbound::ResurrectPrompt {
-        option: r.u8().unwrap_or(0),
+    Ok(Inbound::DeathScreen { action: r.u8()? })
+}
+
+/// Where the fields of a `0x3F` sit: the block, a count of seven-byte
+/// records, the command byte and the map, then the body.
+const LIVE_BLOCK_AT: usize = 3;
+const LIVE_COMMAND_AT: usize = 13;
+/// The commands of a `0x3F` from the shard.
+const LIVE_STATICS: u8 = 0x00;
+const LIVE_MAP_DEFINITIONS: u8 = 0x01;
+const LIVE_LOGIN: u8 = 0x02;
+const LIVE_HASH_QUERY: u8 = 0xFF;
+/// The count of a `0x3F` is in seven-byte units, the width of one static.
+/// A map definition is nine bytes wide.
+const LIVE_RECORD_BYTES: usize = 7;
+const LIVE_MAP_DEFINITION_BYTES: usize = 9;
+/// The land of one block: 64 cells of a graphic word and a height byte.
+pub const LIVE_LAND_BYTES: usize = 192;
+/// Where the map byte of a `0x40` sits, past three bytes nobody reads.
+const LIVE_TERRAIN_MAP_AT: usize = 200;
+
+/// `0x3F` from the shard. The block, the count, the command and the map sit
+/// at fixed places for every command, as the reference client reads them.
+fn parse_ultima_live(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.skip(LIVE_BLOCK_AT)?;
+    let block = r.u32()?;
+    let count = r.u32()? as usize;
+    r.skip(LIVE_COMMAND_AT - LIVE_BLOCK_AT - 2 * std::mem::size_of::<u32>())?;
+    let command = r.u8()?;
+    let map = r.u8()?;
+    let event = match command {
+        LIVE_HASH_QUERY => LiveMapEvent::HashQuery { block, map },
+        LIVE_STATICS => LiveMapEvent::Statics {
+            block,
+            map,
+            records: r.take(count * LIVE_RECORD_BYTES)?.to_vec(),
+        },
+        LIVE_MAP_DEFINITIONS => {
+            let maps = count * LIVE_RECORD_BYTES / LIVE_MAP_DEFINITION_BYTES;
+            let mut definitions = Vec::with_capacity(maps);
+            for _ in 0..maps {
+                definitions.push(LiveMapDefinition {
+                    map: r.u8()?,
+                    width: r.u16()?,
+                    height: r.u16()?,
+                    wrap_width: r.u16()?,
+                    wrap_height: r.u16()?,
+                });
+            }
+            LiveMapEvent::MapDefinitions(definitions)
+        }
+        LIVE_LOGIN => LiveMapEvent::Login {
+            shard: r.ascii_z()?,
+        },
+        _ => {
+            return Ok(Inbound::Unknown {
+                id: PKT_ULTIMA_LIVE,
+                payload: packet.to_vec(),
+            })
+        }
+    };
+    Ok(Inbound::UltimaLive(event))
+}
+
+/// `0x40`: the block, its land, and the map it is on.
+fn parse_live_terrain(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    let block = r.u32()?;
+    let land = r.take(LIVE_LAND_BYTES)?.to_vec();
+    let mut at = PacketReader::new(packet);
+    at.skip(LIVE_TERRAIN_MAP_AT)?;
+    Ok(Inbound::LiveTerrain {
+        block,
+        map: at.u8()?,
+        land,
     })
 }
 
@@ -3418,6 +3692,70 @@ mod tests {
         assert_eq!(character_refusal(1), "that character does not exist");
         // A reason the shard invents still has words.
         assert_eq!(character_refusal(200), character_refusal(5));
+    }
+
+    /// The width of one start town, before 7.0.13.0 and from it on.
+    const START_TOWN_LEN_OLD: usize = 1 + START_TOWN_WORDS_OLD * 2;
+    const START_TOWN_LEN_PLACED: usize = 1 + START_TOWN_WORDS_PLACED * 2 + 4 * 5 + START_TOWN_SPARE;
+
+    /// A town of each form gives its name, its building and, when placed,
+    /// where it is and the text number of its words.
+    #[test]
+    fn the_character_list_gives_the_start_towns_of_each_form() {
+        const BRITAIN: (u32, u32, u32) = (1_496, 1_628, 10);
+        const TRAMMEL: u32 = 1;
+        const WORDS: u32 = 1_075_074;
+        let old: ClientVersion = "7.0.12.0".parse().unwrap();
+        let new: ClientVersion = "7.0.13.0".parse().unwrap();
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CHARACTER_LIST);
+        w.u8(0)
+            .u8(1)
+            .u8(3)
+            .ascii_fixed("Britain", START_TOWN_WORDS_OLD)
+            .ascii_fixed("Sweet Dreams Inn", START_TOWN_WORDS_OLD)
+            .u32(0);
+        let Inbound::CharacterList { towns, .. } =
+            parse_with_version(&w.finish_variable().unwrap(), old).unwrap()
+        else {
+            panic!("not a character list");
+        };
+        assert_eq!(
+            towns,
+            vec![StartTown {
+                index: 3,
+                name: "Britain".into(),
+                building: "Sweet Dreams Inn".into(),
+                place: None,
+            }]
+        );
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CHARACTER_LIST);
+        w.u8(0)
+            .u8(1)
+            .u8(0)
+            .ascii_fixed("Britain", START_TOWN_WORDS_PLACED)
+            .ascii_fixed("Sweet Dreams Inn", START_TOWN_WORDS_PLACED)
+            .u32(BRITAIN.0)
+            .u32(BRITAIN.1)
+            .u32(BRITAIN.2)
+            .u32(TRAMMEL)
+            .u32(WORDS)
+            .u32(0)
+            .u32(0);
+        let Inbound::CharacterList { towns, .. } =
+            parse_with_version(&w.finish_variable().unwrap(), new).unwrap()
+        else {
+            panic!("not a character list");
+        };
+        assert_eq!(
+            towns[0].place,
+            Some(TownPlace {
+                x: BRITAIN.0 as u16,
+                y: BRITAIN.1 as u16,
+                z: BRITAIN.2 as i8,
+                map: TRAMMEL,
+                description: WORDS,
+            })
+        );
     }
 
     /// The account flags sit after the start towns, whose width depends on
@@ -4356,6 +4694,7 @@ mod tests {
         assert_eq!((item.x, item.y, item.z), (AT_X, AT_Y, AT_Z));
         assert_eq!(item.hue, HUE);
         assert_eq!(item.flags, ITEM_FLAG_MOVABLE);
+        assert_eq!(item.direction, DIRECTION);
         assert!(!item.multi);
     }
 
@@ -5123,6 +5462,37 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The shard sends a short status of each follower with the rename
+    /// byte set, and the status of a stranger with it clear.
+    #[test]
+    fn a_status_tells_whether_the_mobile_may_be_renamed() {
+        const RENAMABLE: u8 = 1;
+        const NOT_RENAMABLE: u8 = 0;
+        const LEVEL_NAME_AND_HITS: u8 = 0;
+        let short_status = |rename: u8| {
+            let mut w = crate::buf::PacketWriter::with_variable(PKT_STATUS);
+            w.u32(0xBB).ascii_fixed("a horse", 30).u16(20).u16(25);
+            w.u8(rename).u8(LEVEL_NAME_AND_HITS);
+            parse(&w.finish_variable().unwrap()).unwrap()
+        };
+        assert!(matches!(
+            short_status(RENAMABLE),
+            Inbound::Status {
+                renamable: true,
+                hits: 20,
+                hits_max: 25,
+                ..
+            }
+        ));
+        assert!(matches!(
+            short_status(NOT_RENAMABLE),
+            Inbound::Status {
+                renamable: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -6577,12 +6947,14 @@ mod tests {
                 page_count,
                 title,
                 author,
+                old_form,
             } => {
                 assert_eq!(serial, Serial(0x4000_00CC));
                 assert!(writable);
                 assert_eq!(page_count, 2);
                 assert_eq!(title, "Tale");
                 assert_eq!(author, "Bob");
+                assert!(!old_form);
             }
             other => panic!("{other:?}"),
         }
@@ -6633,12 +7005,14 @@ mod tests {
                 page_count,
                 title,
                 author,
+                old_form,
             } => {
                 assert_eq!(serial, Serial(0x4000_00CC));
                 assert!(writable);
                 assert_eq!(page_count, 2);
                 assert_eq!(title, "Tale");
                 assert_eq!(author, "Bob");
+                assert!(old_form, "the answer goes back as 0x93");
             }
             other => panic!("{other:?}"),
         }
@@ -6652,6 +7026,293 @@ mod tests {
                 Err(ProtocolError::Truncated { .. }) => {}
                 other => panic!("cut {cut}: {other:?}"),
             }
+        }
+    }
+
+    /// A shard writes 0 or 2 for a death and the reference client reads
+    /// every action but 1 as one.
+    #[test]
+    fn the_death_screen_keeps_its_action() {
+        const DEAD_MODERNUO: u8 = 2;
+        match parse(&[PKT_DEATH_MENU, DEAD_MODERNUO]).unwrap() {
+            Inbound::DeathScreen { action } => assert_eq!(action, DEAD_MODERNUO),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            parse(&[PKT_DEATH_MENU]),
+            Err(ProtocolError::Truncated { .. })
+        ));
+    }
+
+    /// The head of a `0x3F`: id, length, block, count, two spare bytes, the
+    /// command and the map.
+    fn live_packet(block: u32, count: u32, command: u8, map: u8, body: &[u8]) -> Vec<u8> {
+        let mut packet = vec![PKT_ULTIMA_LIVE, 0, 0];
+        packet.extend_from_slice(&block.to_be_bytes());
+        packet.extend_from_slice(&count.to_be_bytes());
+        packet.extend_from_slice(&[0, 0, command, map]);
+        packet.extend_from_slice(body);
+        let len = (packet.len() as u16).to_be_bytes();
+        packet[1] = len[0];
+        packet[2] = len[1];
+        packet
+    }
+
+    #[test]
+    fn an_ultima_live_hash_query_names_the_block_and_the_map() {
+        const BLOCK: u32 = 0x0000_1234;
+        let packet = live_packet(BLOCK, 0, LIVE_HASH_QUERY, 1, &[]);
+        match parse(&packet).unwrap() {
+            Inbound::UltimaLive(LiveMapEvent::HashQuery { block, map }) => {
+                assert_eq!((block, map), (BLOCK, 1));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn ultima_live_statics_carry_their_records_whole() {
+        const RECORDS: u32 = 2;
+        let body: Vec<u8> = (0..RECORDS as u8 * 7).collect();
+        let packet = live_packet(9, RECORDS, LIVE_STATICS, 0, &body);
+        match parse(&packet).unwrap() {
+            Inbound::UltimaLive(LiveMapEvent::Statics {
+                block,
+                map,
+                records,
+            }) => {
+                assert_eq!((block, map), (9, 0));
+                assert_eq!(records, body);
+            }
+            other => panic!("{other:?}"),
+        }
+        let short = live_packet(9, RECORDS + 1, LIVE_STATICS, 0, &body);
+        assert!(matches!(
+            parse(&short),
+            Err(ProtocolError::Truncated { .. })
+        ));
+    }
+
+    #[test]
+    fn ultima_live_map_definitions_and_login_are_read() {
+        // Two maps of nine bytes: the count is in seven-byte units.
+        let body = [
+            0, 0x1C, 0x00, 0x10, 0x00, 0x13, 0x00, 0x10, 0x00, //
+            1, 0x0B, 0x40, 0x07, 0xD0, 0x0B, 0x40, 0x07, 0xD0, //
+            0, 0, 0, 0,
+        ];
+        let packet = live_packet(0, (2 * 9_u32).div_ceil(7), LIVE_MAP_DEFINITIONS, 0, &body);
+        match parse(&packet).unwrap() {
+            Inbound::UltimaLive(LiveMapEvent::MapDefinitions(maps)) => {
+                assert_eq!(
+                    maps,
+                    vec![
+                        LiveMapDefinition {
+                            map: 0,
+                            width: 7168,
+                            height: 4096,
+                            wrap_width: 4864,
+                            wrap_height: 4096,
+                        },
+                        LiveMapDefinition {
+                            map: 1,
+                            width: 2880,
+                            height: 2000,
+                            wrap_width: 2880,
+                            wrap_height: 2000,
+                        },
+                    ]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut name = b"MyShard".to_vec();
+        name.resize(28, 0);
+        let login = live_packet(0, 0, LIVE_LOGIN, 0, &name);
+        assert_eq!(login.len(), 43);
+        match parse(&login).unwrap() {
+            Inbound::UltimaLive(LiveMapEvent::Login { shard }) => assert_eq!(shard, "MyShard"),
+            other => panic!("{other:?}"),
+        }
+        let other = live_packet(0, 0, 0x03, 0, &[]);
+        assert!(matches!(
+            parse(&other).unwrap(),
+            Inbound::Unknown {
+                id: PKT_ULTIMA_LIVE,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn live_terrain_is_one_block_of_land_and_its_map() {
+        const BLOCK: u32 = 77;
+        const MAP: u8 = 2;
+        let mut packet = vec![PKT_LIVE_TERRAIN];
+        packet.extend_from_slice(&BLOCK.to_be_bytes());
+        let land: Vec<u8> = (0..LIVE_LAND_BYTES).map(|i| i as u8).collect();
+        packet.extend_from_slice(&land);
+        packet.extend_from_slice(&[0, 0, 0, MAP]);
+        assert_eq!(
+            Some(packet.len() as u16),
+            crate::lengths::PacketTable::t2a().fixed_len(PKT_LIVE_TERRAIN)
+        );
+        match parse(&packet).unwrap() {
+            Inbound::LiveTerrain {
+                block,
+                map,
+                land: read,
+            } => {
+                assert_eq!((block, map), (BLOCK, MAP));
+                assert_eq!(read, land);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn extended_packet(sub: u16, body: &[u8]) -> Vec<u8> {
+        let mut packet = vec![PKT_EXTENDED, 0, 0];
+        packet.extend_from_slice(&sub.to_be_bytes());
+        packet.extend_from_slice(body);
+        let len = (packet.len() as u16).to_be_bytes();
+        packet[1] = len[0];
+        packet[2] = len[1];
+        packet
+    }
+
+    #[test]
+    fn the_status_bar_and_ability_subcommands_are_read() {
+        const HORSE: Serial = Serial(0x0000_0555);
+        const CONFIDENCE: u16 = 402;
+        match parse(&extended_packet(
+            EXT_CLOSE_STATUS_BAR,
+            &HORSE.0.to_be_bytes(),
+        ))
+        .unwrap()
+        {
+            Inbound::CloseStatusBar { serial } => assert_eq!(serial, HORSE),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            parse(&extended_packet(EXT_CLEAR_WEAPON_ABILITY, &[])).unwrap(),
+            Inbound::WeaponAbilityCleared
+        ));
+        let mut body = CONFIDENCE.to_be_bytes().to_vec();
+        body.push(1);
+        match parse(&extended_packet(EXT_SPECIAL_ABILITY, &body)).unwrap() {
+            Inbound::SpecialAbility { spell, active } => {
+                assert_eq!(spell, CONFIDENCE);
+                assert!(active);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// ModernUO asks with the sex and the race counted from one, and closes
+    /// the window with the race 0xFF.
+    #[test]
+    fn a_race_change_request_and_its_close_are_read() {
+        const ELF: u8 = 2;
+        const CLOSED: u8 = 0xFF;
+        assert!(matches!(
+            parse(&extended_packet(EXT_RACE_CHANGE, &[1, ELF])).unwrap(),
+            Inbound::RaceChange {
+                female: true,
+                race: ELF
+            }
+        ));
+        assert!(matches!(
+            parse(&extended_packet(EXT_RACE_CHANGE, &[0, CLOSED])).unwrap(),
+            Inbound::RaceChange {
+                female: false,
+                race: CLOSED
+            }
+        ));
+    }
+
+    fn assistant_packet(body: &[u8]) -> Vec<u8> {
+        let mut packet = vec![PKT_ASSISTANT, 0, 0];
+        packet.extend_from_slice(body);
+        let len = (packet.len() as u16).to_be_bytes();
+        packet[1] = len[0];
+        packet[2] = len[1];
+        packet
+    }
+
+    /// The places of party and guild members, as ServUO writes them: the
+    /// party list has no hits, the guild list has a byte that says whether
+    /// places follow, and a zero serial ends each.
+    #[test]
+    fn member_places_are_read_for_the_party_and_the_guild() {
+        assert!(matches!(
+            parse(&assistant_packet(&[ASSIST_CMD_TRACKING_ACCEPTED])).unwrap(),
+            Inbound::TrackingAccepted
+        ));
+        let party = assistant_packet(&[
+            ASSIST_CMD_PARTY_POSITIONS,
+            0,
+            0,
+            0,
+            5,
+            0x05,
+            0xDC,
+            0x06,
+            0x40,
+            1, //
+            0,
+            0,
+            0,
+            0,
+        ]);
+        match parse(&party).unwrap() {
+            Inbound::MemberPositions { guild, members } => {
+                assert!(!guild);
+                assert_eq!(
+                    members,
+                    vec![MemberPosition {
+                        serial: Serial(5),
+                        x: 1500,
+                        y: 1600,
+                        map: 1,
+                        hits_percent: None,
+                    }]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let guild = assistant_packet(&[
+            ASSIST_CMD_GUILD_POSITIONS,
+            1,
+            0,
+            0,
+            0,
+            6,
+            0x00,
+            0x10,
+            0x00,
+            0x20,
+            0,
+            75, //
+            0,
+            0,
+            0,
+            0,
+        ]);
+        match parse(&guild).unwrap() {
+            Inbound::MemberPositions { guild, members } => {
+                assert!(guild);
+                assert_eq!(members[0].hits_percent, Some(75));
+                assert_eq!((members[0].x, members[0].y), (16, 32));
+            }
+            other => panic!("{other:?}"),
+        }
+        let names_only = assistant_packet(&[ASSIST_CMD_GUILD_POSITIONS, 0, 0, 0, 0, 6, 0, 0, 0, 0]);
+        match parse(&names_only).unwrap() {
+            Inbound::MemberPositions { guild, members } => {
+                assert!(guild);
+                assert!(members.is_empty());
+            }
+            other => panic!("{other:?}"),
         }
     }
 }

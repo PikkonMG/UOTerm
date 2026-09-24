@@ -35,12 +35,21 @@ pub struct HouseTile {
 }
 
 /// The corners of the foundation, from its multi. `min_x` and `min_y` are
-/// the lowest offsets of its pieces, and `max_y` the highest `y`.
+/// the lowest offsets of its pieces, and `max_x` and `max_y` the highest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HouseBounds {
     pub min_x: i32,
     pub min_y: i32,
+    pub max_x: i32,
     pub max_y: i32,
+}
+
+impl HouseBounds {
+    /// The width and the depth of the plot, in tiles, as the designer
+    /// counts them.
+    pub fn plot(&self) -> (i32, i32) {
+        (self.max_x - self.min_x, self.max_y - self.min_y)
+    }
 }
 
 impl HouseBounds {
@@ -51,11 +60,13 @@ impl HouseBounds {
         let mut bounds = Self {
             min_x: i32::from(x),
             min_y: i32::from(y),
+            max_x: i32::from(x),
             max_y: i32::from(y),
         };
         for (x, y) in pieces {
             bounds.min_x = bounds.min_x.min(i32::from(x));
             bounds.min_y = bounds.min_y.min(i32::from(y));
+            bounds.max_x = bounds.max_x.max(i32::from(x));
             bounds.max_y = bounds.max_y.max(i32::from(y));
         }
         Some(bounds)
@@ -168,6 +179,7 @@ mod tests {
     const BOUNDS: HouseBounds = HouseBounds {
         min_x: -3,
         min_y: -3,
+        max_x: 3,
         max_y: 3,
     };
 
@@ -227,9 +239,11 @@ mod tests {
             HouseBounds {
                 min_x: -3,
                 min_y: -4,
+                max_x: 2,
                 max_y: 5
             }
         );
+        assert_eq!(bounds.plot(), (5, 9));
         assert_eq!(HouseBounds::of([]), None);
     }
 }
