@@ -18,8 +18,8 @@ const ARG_INDEX: &str = "index";
 const ARG_ITEMS: &str = "items";
 const ARG_GOLD: &str = "gold";
 const ARG_PLATINUM: &str = "platinum";
-const NEEDS_SERIAL: &str = "needs serial";
 const NO_MENU_SHOWN: &str = "no context menu is shown for this object; ask for it first";
+const NO_CONTEXT_MENUS: &str = "this shard has no context menus; say the words instead";
 const NO_SHOP_OPEN: &str = "no shop list is open";
 const NO_TRADE_OPEN: &str = "no trade is open";
 const NO_MENU_OPEN: &str = "no menu is open";
@@ -46,7 +46,6 @@ const CHAT_LINES_KEPT: usize = 80;
 const NO_MAP_OPEN: &str = "no map item is open; use a map first";
 const NEEDS_PLACE: &str = "needs x and y, in pixels of the map picture";
 const ARG_ACTION: &str = "action";
-const ARG_SERIAL: &str = "serial";
 const ARG_X: &str = "x";
 const ARG_Y: &str = "y";
 const ACTION_CLEAR: &str = "clear";
@@ -166,11 +165,20 @@ pub(super) struct Play {
     profiles: Vec<CharacterProfile>,
     /// The houses players designed, by the item their foundation is.
     houses: std::collections::HashMap<Serial, uoterm_world::DesignedHouse>,
+    /// The revision each house design was asked for at, until it comes.
+    design_asked: std::collections::HashMap<Serial, u32>,
     /// The building the shard waits for a place for.
     placing: Option<Value>,
     /// The house the designer works on, and the level it works on.
     designing: Option<(Serial, u8)>,
     chat: Chat,
+}
+
+impl Play {
+    /// The design a player built for a house, once the shard has sent it.
+    pub(super) fn designed_house(&self, serial: Serial) -> Option<&uoterm_world::DesignedHouse> {
+        self.houses.get(&serial)
+    }
 }
 
 /// The shard sent a context menu. It is kept when the human asked for it.
@@ -608,6 +616,7 @@ pub(super) fn on_custom_house(
     let Some(bounds) = bounds else {
         return;
     };
+    inner.play.design_asked.remove(&house.serial);
     inner.play.houses.insert(
         house.serial,
         uoterm_world::DesignedHouse {
@@ -616,6 +625,20 @@ pub(super) fn on_custom_house(
             tiles: uoterm_world::house_tiles(house, bounds),
         },
     );
+}
+
+/// The shard said which design revision a house is at. The design is asked
+/// for once when the one held is older or missing, as the reference client
+/// asks, so the house shows and blocks with the walls its owner built.
+pub(super) fn on_house_revision(inner: &mut Inner, serial: Serial, revision: u32) {
+    let held = inner.play.houses.get(&serial).map(|house| house.revision);
+    if held == Some(revision) || inner.play.design_asked.get(&serial) == Some(&revision) {
+        return;
+    }
+    inner.play.design_asked.insert(serial, revision);
+    inner
+        .outbound
+        .push_back(uoterm_protocol::encode::house_design_request(serial));
 }
 
 /// The map the call names, or the one that opened last.
@@ -779,33 +802,75 @@ pub(super) fn board_close(inner: &mut Inner) -> ToolResult {
     ToolResult::ok(json!({ "board": Value::Null }))
 }
 
-/// `menu_pick`: answers the old-style menu. The entries count from one.
-pub(super) fn menu_pick(inner: &mut Inner, args: &Value) -> ToolResult {
+/// Which answer an old-style menu gets.
+pub(super) enum MenuPick {
+    /// The entry at this place, counted from one.
+    Place(usize),
+    /// The first entry whose words hold these, in any case.
+    Words(String),
+    /// No entry: the menu is closed.
+    Cancel,
+}
+
+/// True while the shard waits on an old-style menu.
+pub(super) fn old_menu_open(inner: &Inner) -> bool {
+    inner.play.old_menu.is_some()
+}
+
+/// Answers the old-style menu, and closes it. The menu stays open when the
+/// pick names no entry of it.
+pub(super) fn pick_old_menu(
+    inner: &mut Inner,
+    pick: MenuPick,
+) -> std::result::Result<(), &'static str> {
     let Some(menu) = inner.play.old_menu.take() else {
-        return ToolResult::err(NO_MENU_OPEN);
+        return Err(NO_MENU_OPEN);
     };
-    let packet = match args.get(ARG_INDEX).and_then(Value::as_u64) {
-        None => encode::menu_cancel(menu.serial, menu.menu_id),
-        Some(index) => {
-            let entry = usize::try_from(index)
-                .ok()
-                .and_then(|index| index.checked_sub(1))
-                .and_then(|at| menu.entries.get(at));
-            let Some(entry) = entry else {
-                inner.play.old_menu = Some(menu);
-                return ToolResult::err(NO_SUCH_ENTRY);
-            };
-            encode::menu_response(
+    let place = match &pick {
+        MenuPick::Cancel => None,
+        MenuPick::Place(place) => Some(*place),
+        MenuPick::Words(words) => {
+            let words = words.to_lowercase();
+            menu.entries
+                .iter()
+                .position(|entry| entry.name.to_lowercase().contains(&words))
+                .map(|at| at + 1)
+        }
+    };
+    let packet = match (pick, place) {
+        (MenuPick::Cancel, _) => encode::menu_cancel(menu.serial, menu.menu_id),
+        (_, Some(place)) => match place.checked_sub(1).and_then(|at| menu.entries.get(at)) {
+            Some(entry) => encode::menu_response(
                 menu.serial,
                 menu.menu_id,
-                index as u16,
+                place as u16,
                 entry.graphic,
                 entry.hue,
-            )
+            ),
+            None => {
+                inner.play.old_menu = Some(menu);
+                return Err(NO_SUCH_ENTRY);
+            }
+        },
+        (_, None) => {
+            inner.play.old_menu = Some(menu);
+            return Err(NO_SUCH_ENTRY);
         }
     };
     inner.outbound.push_back(packet);
-    ToolResult::action(TOOL_MENU_PICK)
+    Ok(())
+}
+
+/// `menu_pick`: answers the old-style menu. The entries count from one.
+pub(super) fn menu_pick(inner: &mut Inner, args: &Value) -> ToolResult {
+    let pick = match args.get(ARG_INDEX).and_then(Value::as_u64) {
+        None => MenuPick::Cancel,
+        Some(index) => MenuPick::Place(usize::try_from(index).unwrap_or(usize::MAX)),
+    };
+    match pick_old_menu(inner, pick) {
+        Ok(()) => ToolResult::action(TOOL_MENU_PICK),
+        Err(why) => ToolResult::err(why),
+    }
 }
 
 /// `book_write`: names the open book, or writes one of its pages.
@@ -869,6 +934,9 @@ pub(super) fn context_menu(inner: &mut Inner, args: &Value) -> ToolResult {
     let serial = arg_serial(args, "serial");
     if serial == Serial(0) {
         return ToolResult::err(format!("{TOOL_CONTEXT_MENU} {NEEDS_SERIAL}"));
+    }
+    if !inner.world.read().has_context_menus() {
+        return ToolResult::err(NO_CONTEXT_MENUS);
     }
     let Some(index) = args.get(ARG_INDEX).and_then(Value::as_u64) else {
         inner.play.menu = None;
@@ -957,9 +1025,7 @@ pub(super) fn properties(inner: &mut Inner, args: &Value) -> ToolResult {
     }
     let lines = property_lines(inner, serial);
     if lines.is_empty() {
-        inner
-            .outbound
-            .push_back(encode::batch_query_properties(&[serial]));
+        ask_what_it_is(inner, serial);
     }
     ToolResult::ok(json!({ "serial": serial, "lines": lines }))
 }
@@ -977,10 +1043,108 @@ fn contained(item: &uoterm_world::Item) -> Value {
     })
 }
 
+/// The window's sheet lists every skill, trained or not.
+const EVERY_SKILL: bool = true;
+
+/// What the shard has open for the character to answer or read, and what he
+/// knows: the goods of a shop, the lines of a context menu and of an old-style
+/// menu, his skills and the spells in his books. `observe` carries them, so an
+/// agent sees what a player sees on his screen.
+///
+/// With `every_skill` the skill list holds every skill, as a character sheet
+/// shows them; without it, only those he has trained or locked.
+pub(super) fn open_panels(
+    inner: &Inner,
+    into: &mut serde_json::Map<String, Value>,
+    every_skill: bool,
+) {
+    let world = inner.world.read();
+    into.insert(
+        "shop".into(),
+        json!(inner.play.shop.as_ref().map(|shop| json!({
+            "vendor": shop.vendor,
+            "vendor_name": world.name_of(shop.vendor),
+            "buying": shop.buying,
+            "goods": shop.goods,
+        }))),
+    );
+    into.insert(
+        "context_menu".into(),
+        json!(inner
+            .play
+            .menu
+            .as_ref()
+            .map(|menu| json!({ "serial": menu.serial, "lines": menu.lines }))),
+    );
+    into.insert(
+        "book".into(),
+        json!(inner.play.book.as_ref().map(|book| json!({
+            "serial": book.serial,
+            "title": book.title,
+            "author": book.author,
+            "page_count": book.page_count,
+            "pages": book.pages.values().collect::<Vec<_>>(),
+        }))),
+    );
+    into.insert(
+        "menu".into(),
+        json!(inner.play.old_menu.as_ref().map(|menu| json!({
+            "question": menu.question,
+            "entries": menu.entries,
+        }))),
+    );
+    // The skills he has trained or locked; the rest are nought and say
+    // nothing.
+    let mut skills: Vec<_> = world
+        .self_state
+        .skills
+        .iter()
+        .filter(|(_, value)| {
+            every_skill || value.base > 0 || value.value > 0 || value.lock != SKILL_LOCK_UP
+        })
+        .collect();
+    skills.sort_by_key(|(id, _)| **id);
+    let skills: Vec<Value> = skills
+        .into_iter()
+        .map(|(id, value)| {
+            let known = inner.scripting.skills.by_id(*id);
+            json!({
+                "id": id,
+                "name": known.map_or_else(|| format!("skill {id}"), |s| s.name.clone()),
+                "usable": known.is_some_and(|s| s.usable),
+                "value": value.value,
+                "base": value.base,
+                "cap": value.cap,
+                "lock": value.lock,
+            })
+        })
+        .collect();
+    into.insert("skills".into(), json!(skills));
+    let spells: Vec<Value> = world
+        .spellbooks
+        .iter()
+        .map(|(book, content)| {
+            let spells: Vec<Value> = content
+                .spell_numbers()
+                .into_iter()
+                .map(|number| {
+                    let name = inner.scripting.spells.by_id(number).map(|s| s.name.clone());
+                    json!({ "number": number, "name": name })
+                })
+                .collect();
+            json!({ "book": book, "spells": spells })
+        })
+        .collect();
+    into.insert("spellbooks".into(), json!(spells));
+}
+
 /// The whole screen in one picture: `observe`, with each list at its full
 /// length and the things only a screen draws.
 pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
     let mut picture = observe_value(inner, size);
+    if let Some(sheet) = picture.as_object_mut() {
+        open_panels(inner, sheet, EVERY_SKILL);
+    }
     let world = inner.world.read();
     // The newest first: the container the player just opened is the one
     // he wants to see, and a window shows only the first few.
@@ -1021,25 +1185,6 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
             })
         })
         .collect();
-    let skills: Vec<Value> = {
-        let mut skills: Vec<_> = world.self_state.skills.iter().collect();
-        skills.sort_by_key(|(id, _)| **id);
-        skills
-            .into_iter()
-            .map(|(id, value)| {
-                let known = inner.scripting.skills.by_id(*id);
-                json!({
-                    "id": id,
-                    "name": known.map_or_else(|| format!("skill {id}"), |s| s.name.clone()),
-                    "usable": known.is_some_and(|s| s.usable),
-                    "value": value.value,
-                    "base": value.base,
-                    "cap": value.cap,
-                    "lock": value.lock,
-                })
-            })
-            .collect()
-    };
     let party: Vec<Value> = world
         .party
         .iter()
@@ -1063,7 +1208,6 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
     picture["multis"] = json!(world.multis.values().collect::<Vec<_>>());
     picture["containers"] = json!(containers);
     picture["journal_lines"] = json!(journal);
-    picture["skills"] = json!(skills);
     picture["party_members"] = json!(party);
     picture["cues"] = json!(world.cues.all());
     if let Some(trade) = &world.trade {
@@ -1095,11 +1239,6 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         .weather
         .map(|(kind, count)| json!({ "kind": kind, "count": count })));
     picture["target_cursor"] = json!(world.pending_target);
-    picture["context_menu"] = json!(inner
-        .play
-        .menu
-        .as_ref()
-        .map(|menu| json!({ "serial": menu.serial, "lines": menu.lines })));
     let words = |number: u32, arguments: &str| {
         inner
             .cliloc
@@ -1111,17 +1250,6 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         .iter()
         .map(|gump| uoterm_world::gump_layout(gump, &words))
         .collect::<Vec<_>>());
-    picture["menu"] = json!(inner.play.old_menu.as_ref().map(|menu| json!({
-        "question": menu.question,
-        "entries": menu.entries,
-    })));
-    picture["book"] = json!(inner.play.book.as_ref().map(|book| json!({
-        "serial": book.serial,
-        "title": book.title,
-        "author": book.author,
-        "page_count": book.page_count,
-        "pages": book.pages.values().collect::<Vec<_>>(),
-    })));
     picture["maps"] = json!(inner
         .play
         .maps
@@ -1208,12 +1336,6 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         .text_entry
         .as_ref()
         .map(|dialog| json!({ "title": dialog.text, "description": dialog.description })));
-    picture["shop"] = json!(inner.play.shop.as_ref().map(|shop| json!({
-        "vendor": shop.vendor,
-        "vendor_name": world.name_of(shop.vendor),
-        "buying": shop.buying,
-        "goods": shop.goods,
-    })));
     picture
 }
 
@@ -1323,6 +1445,44 @@ mod tests {
         ] {
             assert!(shown.get(key).is_some(), "watch has no {key}");
         }
+    }
+
+    /// A script picks an old-style menu entry by its words as well as its
+    /// place, and words no entry holds leave the menu open.
+    #[test]
+    fn an_old_menu_is_picked_by_its_words() {
+        const ANVIL: Serial = Serial(0x4000_0C02);
+        const MENU_ID: u16 = 8;
+        const DAGGER: u16 = 0x0F52;
+        const KRYSS: u16 = 0x1401;
+        let mut inner = test_session();
+        let entry = |graphic, name: &str| MenuEntry {
+            graphic,
+            hue: 0,
+            name: name.into(),
+        };
+        on_book_or_menu(
+            &mut inner,
+            &Inbound::OpenMenu {
+                serial: ANVIL,
+                menu_id: MENU_ID,
+                question: "What do you make?".into(),
+                entries: vec![entry(DAGGER, "dagger"), entry(KRYSS, "kryss")],
+            },
+        );
+        assert_eq!(
+            pick_old_menu(&mut inner, MenuPick::Words("halberd".into())),
+            Err(NO_SUCH_ENTRY)
+        );
+        assert!(old_menu_open(&inner), "still open");
+        assert_eq!(
+            pick_old_menu(&mut inner, MenuPick::Words("KRYSS".into())),
+            Ok(())
+        );
+        assert!(inner
+            .outbound
+            .contains(&encode::menu_response(ANVIL, MENU_ID, 2, KRYSS, 0)));
+        assert!(!old_menu_open(&inner));
     }
 
     #[test]

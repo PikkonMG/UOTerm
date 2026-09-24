@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use uoterm_assist::harvest::Harvest;
 use uoterm_protocol::types::Point3;
+
+mod args;
+use args::{ArgKind, ToolArg, ONE_OF, TOOL_ARGS};
 
 pub const TOOL_OBSERVE: &str = "observe";
 pub const TOOL_LOOK_AROUND: &str = "look_around";
@@ -10,6 +14,12 @@ pub const TOOL_FIND_LANDMARKS: &str = "find_landmarks";
 pub const TOOL_JOURNAL_SEARCH: &str = "journal_search";
 pub const TOOL_MAP_TILE: &str = "map_tile";
 pub const TOOL_CAN_WALK: &str = "can_walk";
+pub const TOOL_LINE_OF_SIGHT: &str = "line_of_sight";
+pub const TOOL_PROMPT_ANSWER: &str = "prompt_answer";
+pub const TOOL_PARTY: &str = "party";
+pub const TOOL_ROUTE: &str = "route";
+pub const TOOL_MOBILE_STATUS: &str = "mobile_status";
+pub const TOOL_PROMPT_CANCEL: &str = "prompt_cancel";
 pub const TOOL_SAY: &str = "say";
 pub const TOOL_WHISPER: &str = "whisper";
 pub const TOOL_REPLY: &str = "reply";
@@ -178,7 +188,7 @@ pub enum Goal {
     Idle,
     Travel { dest: Point3 },
     Hunt,
-    Gather,
+    Gather { resource: Harvest },
     Bank,
     Shop,
     Social,
@@ -190,7 +200,9 @@ impl Goal {
     pub fn parse(name: &str) -> Self {
         match name.trim().to_ascii_lowercase().as_str() {
             "hunt" => Self::Hunt,
-            "gather" | "chop" | "mine" => Self::Gather,
+            name if Harvest::from_goal(name).is_some() => Self::Gather {
+                resource: Harvest::from_goal(name).unwrap_or(Harvest::Lumber),
+            },
             "bank" => Self::Bank,
             "shop" => Self::Shop,
             "social" => Self::Social,
@@ -203,7 +215,12 @@ impl Goal {
 
     pub fn for_class(class: &str) -> Self {
         match class {
-            "lumberjack" | "miner" | "gatherer" => Self::Gather,
+            "lumberjack" | "gatherer" => Self::Gather {
+                resource: Harvest::Lumber,
+            },
+            "miner" => Self::Gather {
+                resource: Harvest::Ore,
+            },
             "warrior" | "pk" => Self::Hunt,
             "traveler" => Self::Travel { dest: DEST_NOT_SET },
             "sitter" | "banker" | "banker_idle" => Self::Social,
@@ -216,7 +233,7 @@ impl Goal {
             Self::Idle => "idle",
             Self::Travel { .. } => "travel",
             Self::Hunt => "hunt",
-            Self::Gather => "gather",
+            Self::Gather { resource } => resource.goal_name(),
             Self::Bank => "bank",
             Self::Shop => "shop",
             Self::Social => "social",
@@ -237,10 +254,40 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Describe the surroundings in words: the surface underfoot, named furniture and walls from the map files, loose items, and people. Takes an optional radius in tiles.",
         "in world",
     ),
-    (TOOL_FIND_MOBILES, "Filter nearby mobiles. Args: name (part of the name or of the title, so \"banker\" finds a banker), graphic, distance. Each mobile has its location, dist and title.", "in world"),
+    (TOOL_FIND_MOBILES, "Filter nearby mobiles. Args: name (part of the name or of the title, so \"banker\" finds a banker), graphic, distance, notoriety (innocent, friend, gray, criminal, enemy, murderer, invulnerable or any), species (read from the body, so a named orc is an orc), in_sight (only those a shot or a spell can reach). Each mobile has its location, dist, title, species, notoriety, hits_percent when known, war, hidden, poisoned, dead, in_sight and what it wears.", "in world"),
+    (
+        TOOL_ROUTE,
+        "Plans a walk to the tile x, y and says whether the character can get there, how many steps it takes, and the tiles on the way, without taking a step.",
+        "in world",
+    ),
+    (
+        TOOL_PARTY,
+        "Party acts: action invite (serial), accept or decline the invite that waits, leave, kick (serial), or loot (on: whether the party may loot what the character kills).",
+        "in world",
+    ),
+    (
+        TOOL_MOBILE_STATUS,
+        "Asks the shard for a mobile's status, as a click on its health bar does: its hits come back into find_mobiles and observe, and every stat for the character or a pet he owns.",
+        "in world",
+    ),
+    (
+        TOOL_PROMPT_ANSWER,
+        "Answers the words the shard waits for, after a prompt_opened event: its prompt (such as the name for a rune), or else its one-field dialog. text is the answer.",
+        "a prompt or text dialog is open",
+    ),
+    (
+        TOOL_PROMPT_CANCEL,
+        "Cancels the prompt or the one-field dialog the shard waits on.",
+        "a prompt or text dialog is open",
+    ),
+    (
+        TOOL_LINE_OF_SIGHT,
+        "Says whether the character sees an object or a spot, as the shard judges a shot or a spell: serial, or x, y and z.",
+        "in world",
+    ),
     (
         TOOL_FIND_ITEMS,
-        "Filter items on the ground and inside containers. Args: graphic, name (part of the display name), container (a container serial, to search only that one), distance (tiles). Each item has its map location and dist.",
+        "Filter items on the ground and inside containers. Args: graphic, graphics (a list; any of them), hue, name (part of the display name), container (a container serial, to search only that one), distance (tiles), x and y (only the items on that tile). Each item has its map location, dist and hue.",
         "in world",
     ),
     (
@@ -281,8 +328,8 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_MOVE_TO,
-        "Pathfind and send 0x02 walk/run packets toward dest.",
-        "in world, walkable dest",
+        "Walk to the tile x, y: plans a route and steps it at a person's pace. A goal no route reaches is walked toward as far as it goes, and the answer says partial.",
+        "in world",
     ),
     (
         TOOL_WALK,
@@ -305,8 +352,16 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_DROP, "Drop the lifted item: dest for a container or a mobile, none for the ground. x, y (and z on the ground) give an exact place.", "serial"),
     (TOOL_EQUIP, "Lift and wear an item: serial, or who=last for the last weapon put away.", "item serial"),
     (TOOL_UNEQUIP, "Lift a worn item into the backpack; a weapon is remembered.", "layer occupied"),
-    (TOOL_CAST, "Cast spell by number (required).", "enough mana"),
-    (TOOL_USE_SKILL, "Use skill by number (required).", "in world"),
+    (
+        TOOL_CAST,
+        "Cast a spell, named by its number or its name (\"greater heal\"). target (a serial, or self) answers the spell's cursor as it comes.",
+        "enough mana",
+    ),
+    (
+        TOOL_USE_SKILL,
+        "Use a skill from its button, named by its number or its name (\"hiding\").",
+        "in world",
+    ),
     (
         TOOL_NEXT_EVENT,
         "Wait for the next important event: named in chat, hurt or low health, an enemy near, a target cursor, gump, prompt or trade, an item in the pack, a party invite, death. Returns the events and the state (health, enemies near, unanswered lines, pack). Call it in a loop; events wait for you. timeout_ms (default 5000, max 7000).",
@@ -357,8 +412,8 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_CONTEXT_MENU,
-        "Request an object's context menu and select its enabled entry by cliloc.",
-        "object serial and entry cliloc",
+        "Ask for an object's context menu. With cliloc, the enabled entry of that text number is picked as the menu comes; with none, the entries come back to pick by index.",
+        "in world",
     ),
     (
         TOOL_GUMP_RESPOND,
@@ -555,6 +610,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "a trade is open",
     ),
     (
+        TOOL_SET_PERSONA,
+        "Sets who the character is: name, class and tier, the hours he plays, how often and how he talks, and how he plays along with players. See docs/PERSONAS.md.",
+        "session exists",
+    ),
+    (
         TOOL_COMMAND,
         "For the watch window, not for an agent. Runs one script command at once as one act of a human: text is the command line, as in docs/SCRIPTS.md. Needs human=true. A command that waits is not waited for.",
         "session exists",
@@ -573,7 +633,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
 
 /// The tools that only look. An agent may call them while a human has the
 /// character.
-const READ_ONLY_TOOLS: [&str; 21] = [
+const READ_ONLY_TOOLS: [&str; 23] = [
     TOOL_OBSERVE,
     TOOL_WATCH,
     TOOL_PROPERTIES,
@@ -584,6 +644,8 @@ const READ_ONLY_TOOLS: [&str; 21] = [
     TOOL_JOURNAL_SEARCH,
     TOOL_MAP_TILE,
     TOOL_CAN_WALK,
+    TOOL_LINE_OF_SIGHT,
+    TOOL_ROUTE,
     TOOL_WAIT_JOURNAL,
     TOOL_NEXT_EVENT,
     TOOL_SCRIPT_STATUS,
@@ -601,68 +663,49 @@ pub fn is_read_only(tool: &str) -> bool {
     READ_ONLY_TOOLS.contains(&tool)
 }
 
+/// The tools only a human's window calls. An agent is refused each one, so
+/// the list an agent reads does not offer them.
+const HUMAN_ONLY_TOOLS: [&str; 3] = [TOOL_COMMAND, TOOL_TAKE_CONTROL, TOOL_RELEASE_CONTROL];
+
+/// The argument that names the session a call is for. The MCP server reads
+/// it; with none, it takes a session of its own choosing.
+const ARG_SESSION_ID: &str = "session_id";
+const ABOUT_SESSION_ID: &str = "session to act in; default the first session";
+
+/// The name of every tool of a session, the window's own tools among them.
+pub fn tool_names() -> Vec<&'static str> {
+    TOOLS.iter().map(|(name, _, _)| *name).collect()
+}
+
+/// The tools an agent may call, each with the arguments it reads, which of
+/// them it cannot do without, and when it needs one of several.
 pub fn mcp_tool_list() -> Value {
     let tools: Vec<Value> = TOOLS
         .iter()
+        .filter(|(name, _, _)| !HUMAN_ONLY_TOOLS.contains(name))
         .map(|(name, desc, pre)| {
+            let reads = tool_args(name);
+            let mut properties = serde_json::Map::new();
+            properties.insert(
+                ARG_SESSION_ID.into(),
+                json!({"type": "string", "description": ABOUT_SESSION_ID}),
+            );
+            for a in reads {
+                properties.insert(a.key.into(), arg_schema(a));
+            }
+            let required: Vec<&str> = reads.iter().filter(|a| a.required).map(|a| a.key).collect();
+            let one_of = ONE_OF
+                .iter()
+                .find(|(tool, _)| tool == name)
+                .map(|(_, keys)| format!(" Needs one of: {}.", keys.join(", ")))
+                .unwrap_or_default();
             json!({
                 "name": name,
-                "description": format!("{desc} Precondition: {pre}"),
+                "description": format!("{desc}{one_of} Precondition: {pre}"),
                 "inputSchema": {
                     "type": "object",
-                    "properties": {
-                        "session_id": {"type": "string"},
-                        "index": {"type": "integer"},
-                        "layer": {"type": "integer"},
-                        "gold": {"type": "integer"},
-                        "platinum": {"type": "integer"},
-                        "items": {"type": "array", "items": {"type": "object"}},
-                        "texts": {"type": "array", "items": {"type": "object"}},
-                        ARG_HUMAN: {"type": "boolean"},
-                        "text": {"type": "string"},
-                        "to": {"type": "string"},
-                        "channel": {"type": "string"},
-                        "serial": {"type": "string"},
-                        "x": {"type": "integer"},
-                        "y": {"type": "integer"},
-                        "z": {"type": "integer"},
-                        "goal": {"type": "string"},
-                        "direction": {"type": "string"},
-                        "running": {"type": "boolean"},
-                        "hold_ms": {"type": "integer"},
-                        "force": {"type": "boolean"},
-                        "radius": {"type": "integer"},
-                        "name": {"type": "string"},
-                        "graphic": {"type": "integer"},
-                        "map": {"type": "integer"},
-                        "container": {"type": "string"},
-                        "distance": {"type": "integer"},
-                        "vendor_name": {"type": "string"},
-                        "vendor": {"type": "string"},
-                        "item": {"type": "string"},
-                        "amount": {"type": "integer"},
-                        "cliloc": {"type": "integer"},
-                        "timeout_ms": {"type": "integer"},
-                        "who": {"type": "string"},
-                        "q": {"type": "string"},
-                        "since": {"type": "integer"},
-                        "switches": {"type": "array", "items": {"type": "integer"}},
-                        "gump": {"type": "integer"},
-                        "button": {"type": "integer"},
-                        "agent": {"type": "string"},
-                        "list": {"type": "string"},
-                        "on": {"type": "boolean"},
-                        "action": {"type": "string"},
-                        "settings": {"type": "object"},
-                        "group": {"type": "string"},
-                        "loop": {"type": "boolean"},
-                        "job": {"type": "string"},
-                        "include": {"type": "array", "items": {"type": "string"}},
-                        "avoid": {"type": "array", "items": {"type": "string"}},
-                        "replace": {"type": "boolean"},
-                        "watch": {"type": "boolean"},
-                        "size": {"type": "integer"}
-                    }
+                    "properties": properties,
+                    "required": required,
                 }
             })
         })
@@ -670,9 +713,76 @@ pub fn mcp_tool_list() -> Value {
     json!({ "tools": tools })
 }
 
+/// The arguments one tool reads.
+fn tool_args(name: &str) -> &'static [ToolArg] {
+    TOOL_ARGS
+        .iter()
+        .find(|(tool, _)| *tool == name)
+        .map_or(&[], |(_, reads)| reads)
+}
+
+fn arg_schema(a: &ToolArg) -> Value {
+    let about = a.about;
+    match a.kind {
+        ArgKind::Text => json!({"type": "string", "description": about}),
+        ArgKind::Integer => json!({"type": "integer", "description": about}),
+        ArgKind::Number => json!({"type": "number", "description": about}),
+        ArgKind::Boolean => json!({"type": "boolean", "description": about}),
+        ArgKind::Serial | ArgKind::TextOrInteger => {
+            json!({"type": ["integer", "string"], "description": about})
+        }
+        ArgKind::Integers => {
+            json!({"type": "array", "items": {"type": "integer"}, "description": about})
+        }
+        ArgKind::Texts => {
+            json!({"type": "array", "items": {"type": "string"}, "description": about})
+        }
+        ArgKind::Objects => {
+            json!({"type": "array", "items": {"type": "object"}, "description": about})
+        }
+        ArgKind::Object => json!({"type": "object", "description": about}),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every tool an agent may call says what it reads, and only tools that
+    /// exist are described. A tool left out of the table would reach a client
+    /// with no arguments at all, and one it could not call would be offered.
+    #[test]
+    fn each_agent_tool_lists_its_own_arguments() {
+        let names = tool_names();
+        for name in names.iter().filter(|name| !HUMAN_ONLY_TOOLS.contains(name)) {
+            assert!(
+                TOOL_ARGS.iter().any(|(tool, _)| tool == name),
+                "{name} has no argument list"
+            );
+        }
+        let described = TOOL_ARGS.iter().map(|(tool, _)| tool);
+        let one_of = ONE_OF.iter().map(|(tool, _)| tool);
+        for tool in described.chain(one_of) {
+            assert!(names.contains(tool), "{tool} is described but is no tool");
+        }
+        let listed = mcp_tool_list();
+        let tools = listed["tools"].as_array().unwrap();
+        for human in HUMAN_ONLY_TOOLS {
+            assert!(
+                !tools.iter().any(|t| t["name"] == human),
+                "{human} is offered to agents"
+            );
+        }
+        let move_to = tools.iter().find(|t| t["name"] == TOOL_MOVE_TO).unwrap();
+        assert_eq!(move_to["inputSchema"]["required"], json!(["x", "y"]));
+        let persona = tools.iter().find(|t| t["name"] == TOOL_SET_PERSONA);
+        assert!(persona.is_some(), "set_persona is offered");
+        let use_tool = tools.iter().find(|t| t["name"] == TOOL_USE).unwrap();
+        assert!(use_tool["description"]
+            .as_str()
+            .unwrap()
+            .contains("Needs one of: serial, who."));
+    }
 
     #[test]
     fn observe_describes_radar_size() {

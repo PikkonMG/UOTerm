@@ -137,7 +137,7 @@ mod tests {
     const CORPSE: Serial = Serial(0x4000_0200);
     const GOLD: Serial = Serial(0x4000_0201);
     const BONE: Serial = Serial(0x4000_0202);
-    const GRAPHIC_GOLD: u16 = 0x0EED;
+    const GRAPHIC_GOLD: u16 = uoterm_protocol::types::GRAPHIC_GOLD_COINS;
     const GRAPHIC_BONE: u16 = 0x0F7E;
     const GOLD_AMOUNT: u16 = 54;
     const ONE: u16 = 1;
@@ -180,6 +180,7 @@ mod tests {
             z: 1,
             hue: 0,
             multi: false,
+            flags: 0,
         }));
         w
     }

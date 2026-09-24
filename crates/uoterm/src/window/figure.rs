@@ -12,31 +12,12 @@ use std::rc::Rc;
 use uoterm_nav::{
     mount_of, Action, AnimData, AnimFrame, Facing, HueData, MulMap, TILE_PARTIAL_HUE,
 };
-
-const LAYER_ONE_HANDED: u8 = 0x01;
-const LAYER_TWO_HANDED: u8 = 0x02;
-const LAYER_SHOES: u8 = 0x03;
-const LAYER_PANTS: u8 = 0x04;
-const LAYER_SHIRT: u8 = 0x05;
-const LAYER_HELMET: u8 = 0x06;
-const LAYER_GLOVES: u8 = 0x07;
-const LAYER_RING: u8 = 0x08;
-const LAYER_TALISMAN: u8 = 0x09;
-const LAYER_NECKLACE: u8 = 0x0A;
-const LAYER_HAIR: u8 = 0x0B;
-const LAYER_WAIST: u8 = 0x0C;
-const LAYER_TORSO: u8 = 0x0D;
-const LAYER_BRACELET: u8 = 0x0E;
-const LAYER_FACE: u8 = 0x0F;
-const LAYER_BEARD: u8 = 0x10;
-const LAYER_TUNIC: u8 = 0x11;
-const LAYER_EARRINGS: u8 = 0x12;
-const LAYER_ARMS: u8 = 0x13;
-const LAYER_CLOAK: u8 = 0x14;
-const LAYER_ROBE: u8 = 0x16;
-const LAYER_SKIRT: u8 = 0x17;
-const LAYER_LEGS: u8 = 0x18;
-const LAYER_MOUNT: u8 = 0x19;
+use uoterm_protocol::types::{
+    LAYER_ARMS, LAYER_BEARD, LAYER_BRACELET, LAYER_CLOAK, LAYER_EARRINGS, LAYER_FACE, LAYER_GLOVES,
+    LAYER_HAIR, LAYER_HELMET, LAYER_LEGS, LAYER_MOUNT, LAYER_NECKLACE, LAYER_ONE_HANDED,
+    LAYER_PANTS, LAYER_RING, LAYER_ROBE, LAYER_SHIRT, LAYER_SHOES, LAYER_SKIRT, LAYER_TALISMAN,
+    LAYER_TORSO, LAYER_TUNIC, LAYER_TWO_HANDED, LAYER_WAIST,
+};
 
 /// The order the game paints worn items, first to last. The cloak is not
 /// here: its place depends on the way the mobile faces.

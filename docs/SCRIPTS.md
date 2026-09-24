@@ -27,8 +27,9 @@ endwhile
    again. After a line that speaks, clicks or asks the shard for something,
    the script rests a quarter of a second. A script never acts faster than
    a person can.
-3. **A wait always ends.** Every `waitfor...` command has a time. When the
-   time runs out, the script goes on to the next line.
+3. **A wait always ends.** Every `waitfor...` command has a time, in
+   milliseconds. With no time given, it waits 5 seconds. When the time runs
+   out, the script goes on to the next line.
 4. **A bad line stops the script.** An unknown command, a missing argument or
    a spell name that does not exist stops the script. `script_status` tells
    you the line number and the reason.
@@ -69,6 +70,7 @@ A command that needs an object takes a serial (`0x40001234`) or a name.
 | `mount` | Your mount, when you set it: `setalias 'mount' 0x00001234`. |
 
 Make your own: `setalias 'pet' 0x00001234`, then `useobject 'pet'`.
+`unsetalias 'pet'` forgets it.
 Names you make stay for every script of the character, until its session ends.
 
 ## Checks and loops
@@ -84,7 +86,8 @@ endif
 ```
 
 - `if`, `elseif` (or `else if`), `else`, `endif`.
-- `while (check)` ... `endwhile` repeats while the check is true.
+- `while check` ... `endwhile` repeats while the check is true:
+  `while hits < 50`. A check has no brackets.
 - `for 5` ... `endfor` repeats 5 times.
 - `for 1 to 10` ... `endfor` counts from 1 to 10, both ends included.
 - `for 0 to 'fruit'` ... `endfor` walks the list `fruit`. In the body,
@@ -142,11 +145,12 @@ endif
 | --- | --- |
 | `useobject 0x40001234` | Uses (double-clicks) an object. |
 | `usetype 0x0E21 ['any'] ['backpack'] [range]` | Uses the first item of a graphic. Places: `backpack`, `ground`, `world`, or a container. |
-| `useonce 0x0F0C` | Uses an item of that graphic that `useonce` has not used yet. `clearuseonce` forgets them. |
+| `useonce 0x0F0C` | Uses an item of that graphic that `useonce` has not used yet. `clearuseonce` (or `clearusequeue`) forgets them. |
 | `moveitem 'found' 'backpack' [amount]` | Moves an item into a container, or onto a mobile to give it. |
 | `moveitem 'found' 'ground' 1440 1695 0` | Drops an item on a tile. |
 | `moveitemoffset 'found' 'ground' 1 0 0` | Drops it on the tile east of you. |
 | `movetype 0x0F7A 'backpack' 0x40005555` | Moves the first item of a graphic from one place to another. |
+| `movetypeoffset 0x0F7A 'backpack' 'ground' 1 0 0` | The same, onto the tile at that offset from you. |
 | `equipitem 0x40001234 1` | Wears an item on a layer (1 right hand, 2 left hand). |
 | `clearhands 'both'` | Puts what you hold into the pack. Also `'left'` and `'right'`. |
 | `togglehands 'right'` | Puts the weapon away, or takes it out again. |
@@ -158,6 +162,7 @@ endif
 | `waitforcontents 'found' 2000` | Opens a container and waits for what is in it. |
 | `waitforproperties 'found' 2000` | Asks for an object's properties and waits for them. |
 | `ignoreobject 'found'` | The find commands pass over it. `clearignorelist` forgets them all. |
+| `addfriend 'enemy'`, `removefriend 'friend'` | Puts a mobile on your friends list, or takes it off. |
 
 ### Moving and fighting
 
@@ -183,13 +188,14 @@ endif
 
 | Line | What it does |
 | --- | --- |
-| `msg 'bank'` | Says the words. Town and pet commands work: `msg 'all kill'`. |
+| `msg 'bank'` | Says the words. Town and pet commands work: `msg 'all kill'`. `chatmsg` is the same. |
 | `yellmsg`, `whispermsg`, `emotemsg`, `guildmsg`, `allymsg` | Other ways to speak. |
 | `partymsg 'heal me'` | Says it to your party. For one member only, add a colour and the serial: `partymsg 'heal me' 0 0x1234`. |
 | `partyaccept`, `partydecline` | Answers a party invite. |
 | `partyinvite 'friend'` | Asks someone into your party. With no one named, the shard gives a target cursor. |
 | `partyremove 'friend'` | Removes someone from your party. |
 | `partyloot 'on'` | Lets your party loot your corpses, or not. |
+| `partyleave` | Leaves your party. |
 | `promptmsg 'my rune'` | Answers a text prompt. 128 characters at most. |
 | `textentrymsg 'Rowan'` | Answers an open one-field text dialog. |
 | `canceltextentry` | Cancels that dialog. |
@@ -204,8 +210,13 @@ endif
 | Line | What it does |
 | --- | --- |
 | `waitforgump 0x1EC8C837 5000` | Waits for a gump. `'any'` for any gump. |
-| `replygump 0x1EC8C837 1 [switches...]` | Presses a gump button. |
+| `replygump 0x1EC8C837 1 [switches...]` | Presses a gump button. A button or a switch the gump does not have stops the script, because a shard drops or disconnects on it. |
+| `gumptext 3 'Mara'` | Types words in text field 3 of the next gump the script answers. Every other field sends the words it opened with. |
+| `closegump 'gump' 'any'` | Closes a gump, as its close button does. |
 | `closegump 'container' 'found'` | Forgets an open container. |
+| `waitformenu 5000` | Waits for an old-style menu: a question with a list of answers. |
+| `replymenu 'kryss'` | Answers the menu with the first entry whose words hold these, or with the entry at a place: `replymenu 2`. |
+| `closemenu` | Closes the menu with no answer. |
 | `contextmenu 'bank' 'Open Bankbox'` | Picks a context menu entry by its words, or by its number. A number of 500000 or more is the entry's client text number, such as `3000489`; a smaller number is its place in the menu. |
 | `waitforcontext 'vendor' 'Buy' 3000` | Asks for the menu and waits until the entry is picked. |
 | `autocolorpick 35` | The next dye tub gets colour 35. |
@@ -214,8 +225,8 @@ endif
 
 | Line | What it does |
 | --- | --- |
-| `waitforjournal 'You finish applying' 10000` | Waits for words in the journal. Add a name, or `'system'`, for who says them. |
-| `clearjournal` | Old journal lines no longer count for `injournal` and `waitforjournal`. |
+| `waitforjournal 'You finish applying' 10000 ['system']` | Waits for words in the journal: the words, then the time, then a name, or `'system'`, for who says them. |
+| `clearjournal` | Old journal lines no longer count for `injournal` and `waitforjournal`. `uniquejournal` is the same. |
 
 ### Lists and timers
 
@@ -252,7 +263,7 @@ See the agents guide for the lists these use.
 | `playmacro 'heal'` | Stops this script and runs another in its place. |
 | `script 'run' 'heal'` | The same. |
 | `script 'stop'` | Stops this script. |
-| `script 'isrunning' 'heal' 'on'` | Sets the alias `on` to 1 when that script runs, else 0. |
+| `script 'isrunning' 'heal' 'on'` | Sets the alias `on` to 1 when that script runs, else 0. `script 'issuspended'` sets it to 0, since a script here is never held. |
 | `where` | Writes your tile in the script's output. `location 'friend'` writes someone else's. |
 | `resync`, `ping` | Asks the shard to send your place again; pings the shard. |
 | `paperdoll ['friend']` | Opens a paperdoll. |
@@ -273,7 +284,7 @@ yourself when you give none.
 | `dead`, `poisoned`, `paralyzed`, `hidden`, `flying`, `mounted`, `war`, `yellowhits` `[serial]` | True or false. |
 | `innocent`, `friend`, `gray`, `criminal`, `enemy`, `murderer`, `invulnerable` `[serial]` | The notoriety of a mobile. |
 | `serial`, `graphic`, `color`, `amount`, `name`, `direction`, `directionname` `[serial]` | Details of an object. |
-| `skill 'Magery'`, `skillbase 'Magery'` | A skill value and base value. |
+| `skill 'Magery'`, `skillbase 'Magery'` | A skill value and base value. `skillvalue` is the same as `skill`. |
 | `skillstate 'Magery' == 'locked'` | A skill lock: up, down or locked. |
 | `findtype 0x0F7A ['any'] ['backpack'] [amount] [range]` | True when found. Sets `found`. |
 | `findobject 'pet' ['any'] ['ground'] [amount] [range]` | True when the object is there. Sets `found`. |
@@ -291,6 +302,7 @@ yourself when you give none.
 | `durability 'righthand' < 20` | An item's durability. |
 | `injournal 'too far away' ['system']` | True when the words are in the journal. |
 | `ingump 'any' 'Home'`, `gumpexists 'any'` | Gump checks. |
+| `menuexists` | True while an old-style menu waits for an answer. |
 | `targetexists ['harmful']` | True when a target cursor is open: any, harmful, beneficial or neutral. |
 | `waitingfortarget` | True when a target waits for a cursor. |
 | `inparty 'friend'`, `infriendlist 'friend'` | Party and friends list. |

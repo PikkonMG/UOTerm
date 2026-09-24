@@ -183,6 +183,40 @@ pub const EXT_FASTWALK: u16 = 0x0001;
 /// adds a key where [`EXT_FASTWALK`] replaces them all.
 pub const EXT_FASTWALK_ADD: u16 = 0x0002;
 pub const EXT_MAP_CHANGE: u16 = 0x0008;
+/// `0xBF` sub-command that closes a gump by its type. A button other than
+/// zero is the answer the shard gives it as it closes.
+pub const EXT_CLOSE_GUMP: u16 = 0x0004;
+/// `0xBF` sub-command that says what a click shows about an item on a shard
+/// with no property lists: its name, its maker and its charges.
+pub const EXT_EQUIP_INFO: u16 = 0x0010;
+/// `0xBF` sub-command that closes a window the client holds for an object.
+pub const EXT_CLOSE_WINDOW: u16 = 0x0016;
+/// `0xBF` sub-command that switches on the first map patches of each map.
+pub const EXT_MAP_PATCHES: u16 = 0x0018;
+/// `0xBF` sub-command with the stat locks or a bonded pet's life.
+pub const EXT_EXTENDED_STATS: u16 = 0x0019;
+/// `0xBF` sub-command with the spells a spellbook holds.
+pub const EXT_SPELLBOOK_CONTENT: u16 = 0x001B;
+/// `0xBF` sub-command with the design revision of a custom house.
+pub const EXT_HOUSE_REVISION: u16 = 0x001D;
+/// `0xBF` sub-command that asks the shard for the design of a custom house.
+pub const EXT_HOUSE_DESIGN_REQUEST: u16 = 0x001E;
+/// `0xBF` sub-command with damage done to a mobile, in the older form.
+pub const EXT_DAMAGE: u16 = 0x0022;
+/// `0xBF` sub-command that sets the walking speed rules of the character.
+pub const EXT_SPEED_MODE: u16 = 0x0026;
+/// The kinds of window a `0xBF` `0x16` packet closes.
+pub const WINDOW_PAPERDOLL: u32 = 0x01;
+pub const WINDOW_STATUS: u32 = 0x02;
+pub const WINDOW_PROFILE: u32 = 0x08;
+pub const WINDOW_CONTAINER: u32 = 0x0C;
+/// The walking speed rules of `0xBF` `0x26`. On foot the character steps at
+/// the mounted pace, may not run, or both. A value past the last one reads
+/// as normal, as the reference client reads it.
+pub const SPEED_MODE_NORMAL: u8 = 0;
+pub const SPEED_MODE_FAST_ON_FOOT: u8 = 1;
+pub const SPEED_MODE_NO_RUN: u8 = 2;
+pub const SPEED_MODE_FAST_NO_RUN: u8 = 3;
 /// `0xBF` sub-command that asks for the context menu of one object.
 pub const EXT_CONTEXT_MENU_REQUEST: u16 = 0x0013;
 /// `0xBF` sub-command that carries the context menu the server built.
@@ -258,6 +292,11 @@ pub const PKT_WORLD_ITEM_SA: u8 = 0xF3;
 /// `0x3FFF` on the legacy world item packet. An ordinary item is masked down
 /// past this bit, so no ordinary item can carry it.
 pub const ITEM_GRAPHIC_MULTI: u16 = 0x4000;
+/// Item flag: a player may pick the item up. A fixed item that is a surface
+/// is a floor the shard lets a character stand on.
+pub const ITEM_FLAG_MOVABLE: u8 = 0x20;
+/// Item flag: only staff see the item.
+pub const ITEM_FLAG_HIDDEN: u8 = 0x80;
 /// What is left of the graphic once the multi bit is taken off, which is the
 /// index of the shape in the client multi files. The reference client masks the
 /// graphic of every multi the same way whichever packet carried it:
@@ -293,6 +332,14 @@ pub const CLIENT_FLAG_UO3D: u32 = 0x40;
 /// The Third Dawn client bit. A shard that sees it stops holding the session
 /// as a Classic Client, so UOTerm never sets this bit either.
 pub const CLIENT_FLAG_UOTD_CLIENT: u32 = 0x100;
+/// Account flags at the end of the character list. The shard answers
+/// context menu requests, and it answers property list requests: the
+/// tooltips and names of every object.
+pub const ACCOUNT_FLAG_CONTEXT_MENUS: u32 = 0x08;
+pub const ACCOUNT_FLAG_PROPERTY_LISTS: u32 = 0x20;
+/// The account walks the newer Felucca areas, which the `x` map files hold.
+pub const ACCOUNT_FLAG_NEW_FELUCCA_AREAS: u32 = 0x8000;
+
 /// A shard reads a client version with this major number as the Kingdom
 /// Reborn client, and a larger one as the Enhanced Client. Every Classic
 /// Client version is below it.
@@ -472,6 +519,8 @@ pub const PLAY_CHAR_PATTERN: u32 = 0xEDED_EDED;
 pub const SPEECH_REGULAR: u8 = 0;
 pub const SPEECH_SYSTEM: u8 = 1;
 pub const SPEECH_EMOTE: u8 = 2;
+/// The name a shard shows over an object that was clicked once.
+pub const SPEECH_LABEL: u8 = 6;
 pub const SPEECH_WHISPER: u8 = 8;
 pub const SPEECH_YELL: u8 = 9;
 pub const SPEECH_GUILD: u8 = 13;
@@ -491,10 +540,38 @@ pub const TARGET_GROUND: u8 = 1;
 pub const TARGET_FLAG_NONE: u8 = 0;
 pub const TARGET_FLAG_CANCEL: u8 = 3;
 
-pub const LAYER_ONE_HANDED: u8 = 1;
-pub const LAYER_TWO_HANDED: u8 = 2;
-pub const LAYER_BACKPACK: u8 = 21;
-pub const LAYER_BANK: u8 = 29;
+/// The layers a mobile wears items on, as every client and shard number them.
+pub const LAYER_ONE_HANDED: u8 = 0x01;
+pub const LAYER_TWO_HANDED: u8 = 0x02;
+pub const LAYER_SHOES: u8 = 0x03;
+pub const LAYER_PANTS: u8 = 0x04;
+pub const LAYER_SHIRT: u8 = 0x05;
+pub const LAYER_HELMET: u8 = 0x06;
+pub const LAYER_GLOVES: u8 = 0x07;
+pub const LAYER_RING: u8 = 0x08;
+pub const LAYER_TALISMAN: u8 = 0x09;
+pub const LAYER_NECKLACE: u8 = 0x0A;
+pub const LAYER_HAIR: u8 = 0x0B;
+pub const LAYER_WAIST: u8 = 0x0C;
+pub const LAYER_TORSO: u8 = 0x0D;
+pub const LAYER_BRACELET: u8 = 0x0E;
+pub const LAYER_FACE: u8 = 0x0F;
+pub const LAYER_BEARD: u8 = 0x10;
+pub const LAYER_TUNIC: u8 = 0x11;
+pub const LAYER_EARRINGS: u8 = 0x12;
+pub const LAYER_ARMS: u8 = 0x13;
+pub const LAYER_CLOAK: u8 = 0x14;
+pub const LAYER_BACKPACK: u8 = 0x15;
+pub const LAYER_ROBE: u8 = 0x16;
+pub const LAYER_SKIRT: u8 = 0x17;
+pub const LAYER_LEGS: u8 = 0x18;
+/// The item on this layer is the only word a shard gives that a mobile rides.
+pub const LAYER_MOUNT: u8 = 0x19;
+pub const LAYER_BANK: u8 = 0x1D;
+/// The weapon layers, one hand and two.
+pub const WEAPON_LAYERS: [u8; 2] = [LAYER_ONE_HANDED, LAYER_TWO_HANDED];
+/// Gold coins, the one graphic of money on the ground and in a pack.
+pub const GRAPHIC_GOLD_COINS: u16 = 0x0EED;
 
 /// `x` and `y` that take the auto-place branch of a drop into a container.
 pub const DROP_CONTAINER_XY: u16 = 0xFFFF;
@@ -577,8 +654,6 @@ pub const RANGE_CROSSBOW: u16 = 8;
 pub const RANGE_REPEATING_CROSSBOW: u16 = 7;
 /// How close a corpse must be before a lift is granted.
 pub const RANGE_LOOT: u16 = 2;
-/// How close a bandage must be.
-pub const RANGE_BANDAGE: u16 = 2;
 /// A shot is skipped unless this many milliseconds have passed since a move.
 pub const ARCHER_MOVE_LOCK_MS: u64 = 250;
 
@@ -602,9 +677,6 @@ pub fn weapon_range(graphic: u16) -> u16 {
 pub fn is_ranged_weapon(graphic: u16) -> bool {
     weapon_range(graphic) > RANGE_MELEE
 }
-
-pub const TREE_GRAPHIC_MIN: u16 = 0x0C95;
-pub const TREE_GRAPHIC_MAX: u16 = 0x0CE8;
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_USAGE: i32 = 2;
@@ -651,9 +723,7 @@ impl Point3 {
     }
 
     pub fn chebyshev(self, other: Self) -> u32 {
-        let dx = (self.x as i32 - other.x as i32).unsigned_abs();
-        let dy = (self.y as i32 - other.y as i32).unsigned_abs();
-        dx.max(dy)
+        tile_distance((self.x, self.y), (other.x, other.y))
     }
 
     /// The tile beside this one in `dir`, read at this tile's own height, or
@@ -728,6 +798,19 @@ pub enum Direction {
 }
 
 impl Direction {
+    /// The eight directions in wire order, clockwise from north. Two tiles the
+    /// same distance away break a tie toward the first of these.
+    pub const ALL: [Direction; 8] = [
+        Direction::North,
+        Direction::Northeast,
+        Direction::East,
+        Direction::Southeast,
+        Direction::South,
+        Direction::Southwest,
+        Direction::West,
+        Direction::Northwest,
+    ];
+
     pub fn from_byte(value: u8) -> Self {
         match value & DIR_MASK {
             1 => Self::Northeast,
@@ -805,10 +888,31 @@ pub struct ClientVersion {
 }
 
 impl ClientVersion {
+    pub const fn new(major: u32, minor: u32, revision: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            revision,
+            patch,
+        }
+    }
+
     /// From 7.0.16.0 a new character starts with three skills, not two,
     /// and the request goes as `0xF8`.
     pub fn has_three_starting_skills(&self) -> bool {
         (self.major, self.minor, self.revision) >= (7, 0, 16)
+    }
+
+    /// From 6.0.4.0 the login opens with the counted seed `0xEF`, which says
+    /// the client version; below it, with four bare bytes.
+    pub fn has_extended_seed(&self) -> bool {
+        self.at_least(Self::new(6, 0, 4, 0))
+    }
+
+    /// From 7.0.13.0 each start town of the character list carries its place
+    /// and a line of words about it.
+    pub fn has_placed_start_towns(&self) -> bool {
+        self.at_least(Self::new(7, 0, 13, 0))
     }
 
     /// From 7.0.9.0 a quest arrow carries the serial it points at.
@@ -1013,6 +1117,31 @@ impl fmt::Display for Era {
         }
     }
 }
+
+/// How many steps apart two tiles are: the larger of the two distances along
+/// the axes, since a diagonal step covers one of each.
+pub fn tile_distance(a: (u16, u16), b: (u16, u16)) -> u32 {
+    u32::from(a.0.abs_diff(b.0).max(a.1.abs_diff(b.1)))
+}
+
+/// A number written in hex after `0x` or `0X`, the way serials and graphics
+/// are written.
+pub fn parse_hex(text: &str) -> Option<u64> {
+    let t = text.trim();
+    let hex = t
+        .strip_prefix(HEX_PREFIX)
+        .or_else(|| t.strip_prefix(HEX_PREFIX_UPPER))?;
+    u64::from_str_radix(hex, HEX_RADIX).ok()
+}
+
+/// A number written in hex after `0x` or `0X`, or in decimal.
+pub fn parse_unsigned(text: &str) -> Option<u64> {
+    parse_hex(text).or_else(|| text.trim().parse().ok())
+}
+
+const HEX_PREFIX: &str = "0x";
+const HEX_PREFIX_UPPER: &str = "0X";
+const HEX_RADIX: u32 = 16;
 
 #[cfg(test)]
 mod tests {

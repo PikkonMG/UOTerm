@@ -171,6 +171,9 @@ pub(super) fn read(game: &mut Game, call: &Call, ctx: &mut Ctx) -> Read {
                 find_gump(game, id).is_some_and(|g| gump_text(game, &g).contains(&text)),
             ))
         }
+        "menuexists" => Ok(ScriptValue::Bool(super::super::play::old_menu_open(
+            game.inner,
+        ))),
         "gumpexists" => {
             let id = need(call, 0, "a gump id or any")?;
             Ok(ScriptValue::Bool(find_gump(game, id).is_some()))

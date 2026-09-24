@@ -504,8 +504,6 @@ async fn skip_known(
 ///
 /// `FrameDecoder::guess_unknown` frames such a packet by its own length word
 /// while that word is credible, so the mock must eat exactly as many bytes.
-/// A T2A client of this runtime still asks for object property lists with the
-/// self-describing `0xD6`, which the T2A table does not list.
 fn unknown_body_len(declared: usize) -> Option<usize> {
     if (UNKNOWN_VAR_MIN..=UNKNOWN_VAR_MAX).contains(&declared) {
         Some(declared - VAR_LEN_HEADER)
@@ -600,8 +598,13 @@ fn features(era: Era) -> Vec<u8> {
 }
 
 fn character_list() -> Vec<u8> {
+    const NO_START_TOWNS: u8 = 0;
     let mut w = PacketWriter::with_variable(PKT_CHARACTER_LIST);
-    w.u8(1).ascii_fixed(MOCK_CHAR, 30).ascii_fixed("", 30);
+    w.u8(1)
+        .ascii_fixed(MOCK_CHAR, 30)
+        .ascii_fixed("", 30)
+        .u8(NO_START_TOWNS)
+        .u32(ACCOUNT_FLAG_CONTEXT_MENUS | ACCOUNT_FLAG_PROPERTY_LISTS);
     w.finish_variable().expect("mock packet length fits in u16")
 }
 
@@ -933,7 +936,6 @@ mod tests {
     #[test]
     fn unknown_id_is_framed_by_its_own_length_word() {
         let opl_request = uoterm_protocol::encode::batch_query_properties(&[Serial(MOCK_TREE)]);
-        assert!(!PacketTable::t2a().is_known(PKT_BATCH_QUERY_PROPERTIES));
         assert_eq!(
             unknown_body_len(opl_request.len()),
             Some(opl_request.len() - VAR_LEN_HEADER)
@@ -974,6 +976,7 @@ mod tests {
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
+            reconnect: false,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1029,6 +1032,7 @@ mod tests {
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
+            reconnect: false,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1065,6 +1069,7 @@ mod tests {
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
+            reconnect: false,
         }
     }
 

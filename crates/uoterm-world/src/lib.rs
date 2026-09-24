@@ -41,8 +41,8 @@ pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
 pub use state::Waypoint;
 pub use state::{
     body_when_alive, facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem,
-    DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Trade, World,
-    BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE, BODY_GARGOYLE_MALE,
+    DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Spellbook,
+    Trade, World, BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE, BODY_GARGOYLE_MALE,
     BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_GARGOYLE_FEMALE,
     BODY_GHOST_GARGOYLE_MALE, BODY_GHOST_MALE, BODY_HUMAN_FEMALE, BODY_HUMAN_MALE,
     FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, GHOST_BODIES, MAP_RULE_FREE_MOVEMENT,
@@ -65,6 +65,257 @@ mod tests {
         let mut w = World::new();
         w.self_state.serial = Serial(0x0000_0001);
         w
+    }
+
+    /// The shard closes a gump by its type, and the world forgets it; it
+    /// closes a container window, and the container is shut.
+    #[test]
+    fn a_gump_and_a_container_the_shard_closes_are_gone() {
+        const GUMP_TYPE: u32 = 0x0000_1F4A;
+        const BAG: Serial = Serial(0x4000_0101);
+        let mut w = me();
+        w.apply(&Inbound::Gump(OpenGump {
+            serial: LEADER,
+            gump_id: GUMP_TYPE,
+            x: 0,
+            y: 0,
+            layout: String::new(),
+            text: Vec::new(),
+        }));
+        w.apply(&Inbound::CloseGump {
+            gump_id: GUMP_TYPE,
+            button: 0,
+        });
+        assert!(w.gumps.is_empty());
+        assert!(w.events.iter().any(|e| e.kind == EventKind::GumpClosed));
+        w.apply(&Inbound::OpenContainer {
+            serial: BAG,
+            gump: 0x3C,
+        });
+        w.apply(&Inbound::CloseWindow {
+            kind: uoterm_protocol::WINDOW_CONTAINER,
+            serial: BAG,
+        });
+        assert!(!w.containers.contains_key(&BAG));
+    }
+
+    /// The spells of a book, the stat locks, a dead bonded pet and the walk
+    /// the shard set all land in the world.
+    #[test]
+    fn a_spellbook_the_locks_a_dead_pet_and_the_speed_are_kept() {
+        const BOOK: Serial = Serial(0x4000_0102);
+        const PET: Serial = Serial(0x0000_0103);
+        let mut w = me();
+        w.apply(&Inbound::SpellbookContent {
+            book: BOOK,
+            graphic: 0x0EFA,
+            first_spell: 1,
+            spells: (1 << 0) | (1 << 9),
+        });
+        assert_eq!(w.spellbooks[&BOOK].spell_numbers(), vec![1, 10]);
+        let serial = w.self_state.serial;
+        w.apply(&Inbound::StatLocks {
+            serial,
+            strength: 0,
+            dexterity: 1,
+            intelligence: 2,
+        });
+        assert_eq!(w.self_state.stat_locks, [0, 1, 2]);
+        w.apply(&Inbound::BondedStatus {
+            serial: PET,
+            dead: true,
+        });
+        assert!(w.dead_pets.contains(&PET));
+        w.apply(&Inbound::BondedStatus {
+            serial: PET,
+            dead: false,
+        });
+        assert!(!w.dead_pets.contains(&PET));
+        w.apply(&Inbound::SpeedMode(uoterm_protocol::SPEED_MODE_NO_RUN));
+        assert_eq!(w.self_state.speed_mode, uoterm_protocol::SPEED_MODE_NO_RUN);
+    }
+
+    /// On a shard with no property lists the label a click shows is the
+    /// name of an item, and the name book stops asking for it.
+    #[test]
+    fn a_label_names_an_item_on_a_shard_with_no_property_lists() {
+        const SWORD: Serial = Serial(0x4000_0105);
+        let mut w = me();
+        w.account_flags = Some(uoterm_protocol::ACCOUNT_FLAG_CONTEXT_MENUS);
+        assert!(!w.has_property_lists());
+        assert!(w.has_context_menus());
+        w.apply(&Inbound::WorldItem(GroundItem {
+            serial: SWORD,
+            graphic: 0x0F61,
+            amount: 1,
+            x: 10,
+            y: 10,
+            z: 0,
+            hue: 0,
+            multi: false,
+            flags: 0,
+        }));
+        assert_eq!(
+            w.names.take_batch(1),
+            vec![SWORD],
+            "the nameless sword is asked for"
+        );
+        w.apply(&Inbound::Speech(SpeechLine {
+            serial: SWORD,
+            graphic: 0x0F61,
+            kind: uoterm_protocol::SPEECH_LABEL,
+            hue: 0,
+            name: String::new(),
+            text: "a longsword".into(),
+        }));
+        assert_eq!(w.items[&SWORD].name, "a longsword");
+        w.names.retry_unanswered();
+        assert!(
+            w.names.take_batch(1).is_empty(),
+            "and never asked for again"
+        );
+    }
+
+    /// A shard keeps a house in view farther than an ordinary item, so the
+    /// world keeps it too: a house forgotten sooner is never sent again.
+    #[test]
+    fn a_house_stays_in_view_farther_than_an_item() {
+        const HOUSE: Serial = Serial(0x4000_0106);
+        const CHAIR: Serial = Serial(0x4000_0107);
+        const HOUSE_ID: u16 = 0x0064;
+        const OFF: u16 = 30;
+        let mut w = me();
+        let ground = |serial, graphic, multi| {
+            Inbound::WorldItem(GroundItem {
+                serial,
+                graphic,
+                amount: 1,
+                x: 100 + OFF,
+                y: 100,
+                z: 0,
+                hue: 0,
+                multi,
+                flags: 0,
+            })
+        };
+        w.self_state.location = Point3::new(100 + OFF, 100, 0);
+        w.apply(&ground(HOUSE, HOUSE_ID, true));
+        w.note_multi(HOUSE, HOUSE_ID, Point3::new(100 + OFF, 100, 0));
+        w.apply(&ground(CHAIR, 0x0B4F, false));
+        w.self_state.location = Point3::new(100, 100, 0);
+        w.forget_out_of_view();
+        assert!(w.items.contains_key(&HOUSE), "the house is still in view");
+        assert!(w.multis.contains_key(&HOUSE));
+        assert!(!w.items.contains_key(&CHAIR), "the chair is not");
+    }
+
+    /// The dead block nobody and a ghost is blocked by nobody, as a shard
+    /// rules a shove.
+    #[test]
+    fn the_dead_neither_block_nor_are_blocked() {
+        const LIVING: Serial = Serial(0x0000_0301);
+        const GHOST: Serial = Serial(0x0000_0302);
+        const PET: Serial = Serial(0x0000_0303);
+        let mut w = me();
+        let view = |serial, body, x| MobileView {
+            serial,
+            body,
+            x,
+            y: 10,
+            z: 0,
+            direction: 0,
+            hue: 0,
+            flags: 0,
+            notoriety: NOTO_INNOCENT,
+            hits: None,
+            hits_max: None,
+            equipment: Vec::new(),
+        };
+        w.apply(&Inbound::MobileIncoming(view(LIVING, BODY_HUMAN_MALE, 10)));
+        w.apply(&Inbound::MobileIncoming(view(GHOST, BODY_GHOST_MALE, 11)));
+        w.apply(&Inbound::MobileIncoming(view(PET, 0x00C8, 12)));
+        w.apply(&Inbound::BondedStatus {
+            serial: PET,
+            dead: true,
+        });
+        assert_eq!(w.blocking_mobile_tiles(), vec![Point3::new(10, 10, 0)]);
+        w.self_state.dead = true;
+        assert!(
+            w.blocking_mobile_tiles().is_empty(),
+            "a ghost walks through all"
+        );
+    }
+
+    /// A shop list, a context menu, an old-style menu, a buff and a line in
+    /// the shard's own voice each reach the event log, so an agent that waits
+    /// on events hears of them.
+    #[test]
+    fn open_panels_buffs_and_system_lines_are_events() {
+        const VENDOR: Serial = Serial(0x0000_0401);
+        const BLESS_ICON: u16 = 1048;
+        let mut w = me();
+        let serial = w.self_state.serial;
+        w.apply(&Inbound::VendorSellList {
+            vendor: VENDOR,
+            entries: Vec::new(),
+        });
+        w.apply(&Inbound::ContextMenu {
+            serial: VENDOR,
+            entries: Vec::new(),
+        });
+        w.apply(&Inbound::OpenMenu {
+            serial: VENDOR,
+            menu_id: 1,
+            question: "Which ore?".into(),
+            entries: Vec::new(),
+        });
+        w.apply(&Inbound::BuffDebuff {
+            serial,
+            icon: BLESS_ICON,
+            effects: Vec::new(),
+        });
+        w.apply(&Inbound::Speech(SpeechLine {
+            serial: Serial::INVALID,
+            graphic: 0,
+            kind: uoterm_protocol::SPEECH_SYSTEM,
+            hue: 0,
+            name: "System".into(),
+            text: "That is too far away.".into(),
+        }));
+        for kind in [
+            EventKind::ShopOpened,
+            EventKind::ContextMenuOpened,
+            EventKind::MenuOpened,
+            EventKind::BuffChanged,
+            EventKind::SystemMessage,
+        ] {
+            assert!(w.events.iter().any(|e| e.kind == kind), "{kind:?}");
+        }
+    }
+
+    /// A boat carries the character and what stands on it to their new
+    /// places.
+    #[test]
+    fn a_moving_boat_carries_its_riders() {
+        const BOAT: Serial = Serial(0x4000_0104);
+        let mut w = me();
+        let serial = w.self_state.serial;
+        w.apply(&Inbound::BoatMoving {
+            boat: BOAT,
+            speed: 1,
+            moving: 0,
+            facing: 0,
+            x: 1000,
+            y: 1000,
+            z: 0,
+            riders: vec![uoterm_protocol::BoatRider {
+                serial,
+                x: 1001,
+                y: 1002,
+                z: 3,
+            }],
+        });
+        assert_eq!(w.self_state.location, Point3::new(1001, 1002, 3));
     }
 
     #[test]
@@ -269,6 +520,7 @@ mod tests {
             layer: None,
             grid: 0,
             name: String::new(),
+            flags: 0,
         }
     }
 
@@ -346,7 +598,7 @@ mod tests {
     /// One property list revision. Which number it is does not matter; that it
     /// stays the same between two replies does.
     const NAME_REVISION: u32 = 0x00C0_FFEE;
-    const GRAPHIC_GOLD: u16 = 0x0EED;
+    const GRAPHIC_GOLD: u16 = uoterm_protocol::GRAPHIC_GOLD_COINS;
     const GRAPHIC_BONE: u16 = 0x0F7E;
     const BACKPACK: Serial = Serial(0x4000_0100);
     const CORPSE: Serial = Serial(0x4000_0200);
@@ -528,16 +780,17 @@ mod tests {
         }));
         w.apply(&Inbound::WorldItem(GroundItem {
             serial: Serial(0x4000_0002),
-            graphic: 0x0EED,
+            graphic: GRAPHIC_GOLD,
             amount: 5,
             x: 12,
             y: 20,
             z: 1,
             hue: 0,
             multi: false,
+            flags: 0,
         }));
         assert_eq!(w.find_mobiles(None, None, None).len(), 1);
-        assert_eq!(w.find_items(Some(0x0EED), None, None).len(), 1);
+        assert_eq!(w.find_items(Some(GRAPHIC_GOLD), None, None).len(), 1);
         w.apply(&Inbound::Delete(Serial(0x50)));
         w.apply(&Inbound::Delete(Serial(0x4000_0002)));
         assert!(w.mobiles.is_empty());
@@ -697,6 +950,7 @@ mod tests {
             z: 1,
             hue: 0,
             multi: false,
+            flags: 0,
         }));
         w.apply(&Inbound::AddItem(in_container(
             CHEST,
@@ -788,8 +1042,7 @@ mod tests {
     }
 
     const STRANGER: Serial = Serial(0x0000_0777);
-    const LAYER_TWO_HANDED: u8 = 2;
-    const LAYER_MOUNT: u8 = 25;
+    use uoterm_protocol::{LAYER_MOUNT, LAYER_TWO_HANDED};
 
     fn stranger_view(equipment: Vec<EquipItem>) -> MobileView {
         MobileView {
@@ -982,6 +1235,7 @@ mod tests {
             z: 1,
             hue: 0,
             multi: false,
+            flags: 0,
         }));
         w.apply(&Inbound::OpenContainer {
             serial: CORPSE,
@@ -1244,7 +1498,7 @@ mod tests {
     fn what_she_already_wears_at_login_is_an_item_as_well_as_a_row() {
         const DAGGER: Serial = Serial(0x4000_0301);
         const GRAPHIC_DAGGER: u16 = 0x0F52;
-        const LAYER_ONE_HANDED: u8 = 1;
+        use uoterm_protocol::LAYER_ONE_HANDED;
 
         let mut w = World::new();
         login(&mut w);
@@ -1443,6 +1697,7 @@ mod tests {
             z: 0,
             hue: 0,
             multi: false,
+            flags: 0,
         }));
         let radar = render_radar(&w, RadarOptions { size: 5 }, default_tile);
         assert!(radar.contains('m'));

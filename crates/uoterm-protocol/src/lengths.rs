@@ -1,4 +1,4 @@
-//! Era-specific packet length tables.
+//! Packet length tables, sized by client version.
 //!
 //! Bit 0x8000 marks a self-describing packet: bytes 1..2 are a big-endian
 //! total length that includes the command byte. Length 0 is unknown.
@@ -12,11 +12,16 @@ use crate::types::{
 
 pub use crate::types::VARIABLE_LEN_FLAG as VARIABLE_LEN;
 
+const LEN_DROP: u16 = 14;
 const LEN_DROP_WITH_GRID: u16 = 15;
+const LEN_DAMAGE_OLD: u16 = 0x010A;
 const LEN_DAMAGE: u16 = 7;
+const LEN_ONE_BYTE: u16 = 1;
 const LEN_CONTAINER: u16 = 9;
+const LEN_ADD_ITEM_OLD: u16 = 20;
 const LEN_ADD_ITEM: u16 = 21;
 const LEN_MULTI_PLACEMENT: u16 = 30;
+const LEN_FEATURES_U16: u16 = 3;
 const LEN_FEATURES_U32: u16 = 5;
 const LEN_QUEST_ARROW: u16 = 10;
 const LEN_LOGOUT: u16 = 2;
@@ -24,21 +29,29 @@ const LEN_MOBILE_UPDATE_NEW: u16 = 25;
 const LEN_CLIENT_INFO: u16 = 0x010C;
 const LEN_OPL_INFO: u16 = 9;
 const LEN_NEW_ANIMATION: u16 = 10;
+const LEN_KR_E1_OLD: u16 = 9;
+const LEN_KR_E3_OLD: u16 = 0x4D;
 const LEN_KR_E6: u16 = 5;
 const LEN_KR_E7: u16 = 12;
 const LEN_KR_E8: u16 = 13;
 const LEN_KR_E9: u16 = 75;
 const LEN_KR_EA: u16 = 3;
+const LEN_EE: u16 = 10;
 const LEN_SEED: u16 = 21;
+const LEN_TIME_SYNC: u16 = 9;
 /// Classic Client 7.0.9.0+ / 7.0.116 SA world-item size.
-/// 7.0.0.0–7.0.8.x used 24. [`PacketTable::for_version`] picks between them.
-/// The framer and the decoder must read the same width, so both sizes come
-/// from the one pair of constants the decoder uses.
+/// 7.0.0.0–7.0.8.x used 24. The framer and the decoder must read the same
+/// width, so both sizes come from the one pair of constants the decoder uses.
 const LEN_WORLD_ITEM_SA: u16 = WORLD_ITEM_SA_LEN as u16;
 const LEN_TIME_SYNC_RESP: u16 = 25;
 const LEN_NEW_MAP: u16 = 21;
+const LEN_CREATE_CHAR_OLD: u16 = 0x68;
+const LEN_CREATE_CHAR_70180: u16 = 0x6A;
 const LEN_CREATE_CHAR_70160: u16 = 106;
+const LEN_STORE_OPEN: u16 = 1;
 const LEN_PUBLIC_HOUSE: u16 = 2;
+const LEN_D5: u16 = 9;
+const LEN_FD: u16 = 2;
 const LEN_ASSISTANT_HANDSHAKE: u16 = 8;
 const LEN_KR_ACCOUNT_LOGIN: u16 = 78;
 const LEN_CD_UNKNOWN: u16 = 1;
@@ -47,6 +60,17 @@ const LEN_MULTI_PLACEMENT_PRE_HIGH_SEAS: u16 = 26;
 const LEN_QUEST_ARROW_PRE_HIGH_SEAS: u16 = 6;
 /// `0xF3` without the trailing word High Seas added.
 const LEN_WORLD_ITEM_SA_PRE_HIGH_SEAS: u16 = WORLD_ITEM_SA_LEN_PRE_HIGH_SEAS as u16;
+
+const V_500A: ClientVersion = ClientVersion::new(5, 0, 0, b'a' as u32);
+const V_5090: ClientVersion = ClientVersion::new(5, 0, 9, 0);
+const V_6013: ClientVersion = ClientVersion::new(6, 0, 1, 3);
+const V_6017: ClientVersion = ClientVersion::new(6, 0, 1, 7);
+const V_60142: ClientVersion = ClientVersion::new(6, 0, 14, 2);
+const V_7000: ClientVersion = ClientVersion::new(7, 0, 0, 0);
+const V_7090: ClientVersion = ClientVersion::new(7, 0, 9, 0);
+const V_70180: ClientVersion = ClientVersion::new(7, 0, 18, 0);
+const V_70640: ClientVersion = ClientVersion::new(7, 0, 64, 0);
+const V_701040: ClientVersion = ClientVersion::new(7, 0, 104, 0);
 
 /// Interprets one slot from a 256-entry era table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,29 +105,27 @@ impl PacketTable {
         Self::for_version(era, era.default_version())
     }
 
-    /// Table for one era, refined by the client version the session speaks.
+    /// Table for the client version the session speaks.
     ///
-    /// The modern table carries the High Seas sizes, which the reference
-    /// client only uses from 7.0.9.0 up. A server writes the smaller forms to
-    /// a session it holds as Stygian Abyss but not High Seas, so framing such
-    /// a stream with the larger sizes leaves bytes behind on every one of
-    /// those packets and the stream then desynchronises.
-    ///
-    /// The modern table serves 7.0.0.0 and up, where every earlier gate
-    /// (6.0.1.7, 6.0.6.0 and 6.0.14.2) is already met. Below that the T2A
-    /// table is the right base, and this call leaves it alone.
+    /// A packet's size depends on the client version, not on the era: the
+    /// reference client starts from one table and moves each slot at the
+    /// version that changed it. A server writes the form that matches the
+    /// version the client reported, so framing a stream by any other size
+    /// leaves bytes behind and the stream then desynchronises. The era is
+    /// kept for the messages that name it.
     pub fn for_version(era: Era, version: ClientVersion) -> Self {
-        match era {
-            Era::T2a => Self::t2a(),
-            Era::Modern if version.has_high_seas() => Self::modern(),
-            Era::Modern => {
-                let mut table = Self::modern();
-                for &(id, len) in PRE_HIGH_SEAS_OVERRIDES {
-                    table.lengths[id as usize] = len;
-                }
-                table
-            }
+        let mut lengths = T2A_LENGTHS;
+        for &(id, len) in LATER_SLOTS {
+            lengths[id as usize] = len;
         }
+        for gate in VERSION_GATES {
+            lengths[gate.id as usize] = if version.at_least(gate.first) {
+                gate.from
+            } else {
+                gate.before
+            };
+        }
+        Self { lengths, era }
     }
 
     pub fn era(&self) -> Era {
@@ -111,17 +133,11 @@ impl PacketTable {
     }
 
     pub fn t2a() -> Self {
-        Self {
-            era: Era::T2a,
-            lengths: T2A_LENGTHS,
-        }
+        Self::for_era(Era::T2a)
     }
 
     pub fn modern() -> Self {
-        Self {
-            era: Era::Modern,
-            lengths: modern_lengths(),
-        }
+        Self::for_era(Era::Modern)
     }
 
     pub fn get(&self, id: u8) -> u16 {
@@ -156,14 +172,9 @@ impl PacketTable {
 }
 
 fn parse_packet_id(key: &str) -> Result<u8> {
-    let text = key.trim();
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        u8::from_str_radix(hex, 16)
-            .map_err(|_| ProtocolError::message(format!("bad packet id {key}")))
-    } else {
-        text.parse::<u8>()
-            .map_err(|_| ProtocolError::message(format!("bad packet id {key}")))
-    }
+    crate::types::parse_unsigned(key)
+        .and_then(|id| u8::try_from(id).ok())
+        .ok_or_else(|| ProtocolError::message(format!("bad packet id {key}")))
 }
 
 /// T2A 2.0.7 `g_PacketLengthTable`. 0x8000 = variable. One change: `0xF0`
@@ -194,35 +205,11 @@ pub const T2A_LENGTHS: [u16; 256] = [
     0x0000, 0x0000, 0x0000, 0x0000,
 ];
 
-/// Classic Client 7.0.102+ / 7.0.116 (private shards and OSI Classic).
-///
-/// Patches T2A 2.0.7. Sizes follow the reference client version gates at
-/// 6.0.1.7 (grid), 6.0.14.2 (32-bit 0xB9), and 7.0.9.0 (0x24/0x99/0xBA/0xF3).
-/// The 7.0.9.0 four sit here at their High Seas sizes; a session below that
-/// version wants [`PacketTable::for_version`], which puts back the smaller
-/// forms a server writes to it.
-///
-/// 0xF1: this table uses variable (self-describing). A reference client from
-/// 7.0.9.0 up uses fixed 9. Overlay `0xF1: 9` if a shard sends the 7.0.9
-/// time-sync layout.
-pub fn modern_lengths() -> [u16; 256] {
-    let mut lengths = T2A_LENGTHS;
-    for &(id, len) in MODERN_OVERRIDES {
-        lengths[id as usize] = len;
-    }
-    lengths
-}
-
-const MODERN_OVERRIDES: &[(u8, u16)] = &[
-    (0x08, LEN_DROP_WITH_GRID),
-    (0x0B, LEN_DAMAGE),
-    (0x16, VARIABLE_LEN_FLAG),
-    (0x24, LEN_CONTAINER),
-    (0x25, LEN_ADD_ITEM),
-    (0x31, VARIABLE_LEN_FLAG),
-    (0x99, LEN_MULTI_PLACEMENT),
-    (0xB9, LEN_FEATURES_U32),
-    (0xBA, LEN_QUEST_ARROW),
+/// Slots the 2.0.7 table leaves empty that later clients frame at one size
+/// in every version. `0xFE` is the assistant handshake a shard sends at eight
+/// bytes; the reference client leaves it self-describing, but the server
+/// writes a fixed packet.
+const LATER_SLOTS: &[(u8, u16)] = &[
     (0xCD, LEN_CD_UNKNOWN),
     (0xCE, VARIABLE_LEN_FLAG),
     (0xCF, LEN_KR_ACCOUNT_LOGIN),
@@ -231,7 +218,6 @@ const MODERN_OVERRIDES: &[(u8, u16)] = &[
     (0xD2, LEN_MOBILE_UPDATE_NEW),
     (0xD3, VARIABLE_LEN_FLAG),
     (0xD4, VARIABLE_LEN_FLAG),
-    (0xD5, VARIABLE_LEN_FLAG),
     (0xD6, VARIABLE_LEN_FLAG),
     (0xD7, VARIABLE_LEN_FLAG),
     (0xD8, VARIABLE_LEN_FLAG),
@@ -243,46 +229,80 @@ const MODERN_OVERRIDES: &[(u8, u16)] = &[
     (0xDE, VARIABLE_LEN_FLAG),
     (0xDF, VARIABLE_LEN_FLAG),
     (0xE0, VARIABLE_LEN_FLAG),
-    (0xE1, VARIABLE_LEN_FLAG),
     (0xE2, LEN_NEW_ANIMATION),
-    (0xE3, VARIABLE_LEN_FLAG),
     (0xE4, VARIABLE_LEN_FLAG),
     (0xE5, VARIABLE_LEN_FLAG),
-    (0xE6, LEN_KR_E6),
-    (0xE7, LEN_KR_E7),
-    (0xE8, LEN_KR_E8),
-    (0xE9, LEN_KR_E9),
-    (0xEA, LEN_KR_EA),
     (0xEB, VARIABLE_LEN_FLAG),
     (0xEC, VARIABLE_LEN_FLAG),
     (0xED, VARIABLE_LEN_FLAG),
-    (0xEE, VARIABLE_LEN_FLAG),
     (0xEF, LEN_SEED),
     (0xF0, VARIABLE_LEN_FLAG),
-    (0xF1, VARIABLE_LEN_FLAG),
-    (0xF2, LEN_TIME_SYNC_RESP),
-    (0xF3, LEN_WORLD_ITEM_SA),
     (0xF4, VARIABLE_LEN_FLAG),
     (0xF5, LEN_NEW_MAP),
     (0xF6, VARIABLE_LEN_FLAG),
     (0xF7, VARIABLE_LEN_FLAG),
     (0xF8, LEN_CREATE_CHAR_70160),
     (0xF9, VARIABLE_LEN_FLAG),
-    (0xFA, VARIABLE_LEN_FLAG),
-    (0xFB, LEN_PUBLIC_HOUSE),
     (0xFC, VARIABLE_LEN_FLAG),
-    (0xFD, VARIABLE_LEN_FLAG),
     (0xFE, LEN_ASSISTANT_HANDSHAKE),
 ];
 
-/// Sizes the reference client uses below 7.0.9.0 for the four packets High
-/// Seas grew. It moves all four at that one boundary, and the modern table
-/// above holds their larger forms.
-const PRE_HIGH_SEAS_OVERRIDES: &[(u8, u16)] = &[
-    (0x24, LEN_CONTAINER_PRE_HIGH_SEAS),
-    (0x99, LEN_MULTI_PLACEMENT_PRE_HIGH_SEAS),
-    (0xBA, LEN_QUEST_ARROW_PRE_HIGH_SEAS),
-    (0xF3, LEN_WORLD_ITEM_SA_PRE_HIGH_SEAS),
+/// One slot the reference client sizes by version: `before` below `first`,
+/// `from` at `first` and up.
+struct VersionGate {
+    first: ClientVersion,
+    id: u8,
+    before: u16,
+    from: u16,
+}
+
+const fn gate(first: ClientVersion, id: u8, before: u16, from: u16) -> VersionGate {
+    VersionGate {
+        first,
+        id,
+        before,
+        from,
+    }
+}
+
+/// Every slot the reference client moves by version, with the version that
+/// moved it.
+const VERSION_GATES: &[VersionGate] = &[
+    gate(V_500A, 0x0B, LEN_DAMAGE_OLD, LEN_DAMAGE),
+    gate(V_500A, 0x16, LEN_ONE_BYTE, VARIABLE_LEN_FLAG),
+    gate(V_500A, 0x31, LEN_ONE_BYTE, VARIABLE_LEN_FLAG),
+    gate(V_5090, 0xE1, LEN_KR_E1_OLD, VARIABLE_LEN_FLAG),
+    gate(V_6013, 0xE3, LEN_KR_E3_OLD, VARIABLE_LEN_FLAG),
+    gate(V_6013, 0xE6, VARIABLE_LEN_FLAG, LEN_KR_E6),
+    gate(V_6013, 0xE7, VARIABLE_LEN_FLAG, LEN_KR_E7),
+    gate(V_6013, 0xE8, VARIABLE_LEN_FLAG, LEN_KR_E8),
+    gate(V_6013, 0xE9, VARIABLE_LEN_FLAG, LEN_KR_E9),
+    gate(V_6013, 0xEA, VARIABLE_LEN_FLAG, LEN_KR_EA),
+    gate(V_6017, 0x08, LEN_DROP, LEN_DROP_WITH_GRID),
+    gate(V_6017, 0x25, LEN_ADD_ITEM_OLD, LEN_ADD_ITEM),
+    gate(V_60142, 0xB9, LEN_FEATURES_U16, LEN_FEATURES_U32),
+    gate(V_7000, 0xEE, VARIABLE_LEN_FLAG, LEN_EE),
+    gate(V_7090, 0x24, LEN_CONTAINER_PRE_HIGH_SEAS, LEN_CONTAINER),
+    gate(
+        V_7090,
+        0x99,
+        LEN_MULTI_PLACEMENT_PRE_HIGH_SEAS,
+        LEN_MULTI_PLACEMENT,
+    ),
+    gate(V_7090, 0xBA, LEN_QUEST_ARROW_PRE_HIGH_SEAS, LEN_QUEST_ARROW),
+    gate(
+        V_7090,
+        0xF3,
+        LEN_WORLD_ITEM_SA_PRE_HIGH_SEAS,
+        LEN_WORLD_ITEM_SA,
+    ),
+    gate(V_7090, 0xF1, VARIABLE_LEN_FLAG, LEN_TIME_SYNC),
+    gate(V_7090, 0xF2, VARIABLE_LEN_FLAG, LEN_TIME_SYNC_RESP),
+    gate(V_70180, 0x00, LEN_CREATE_CHAR_OLD, LEN_CREATE_CHAR_70180),
+    gate(V_70640, 0xFA, VARIABLE_LEN_FLAG, LEN_STORE_OPEN),
+    gate(V_70640, 0xFB, VARIABLE_LEN_FLAG, LEN_PUBLIC_HOUSE),
+    gate(V_701040, 0xD5, VARIABLE_LEN_FLAG, LEN_D5),
+    gate(V_701040, 0xFD, VARIABLE_LEN_FLAG, LEN_FD),
 ];
 
 #[cfg(test)]
@@ -320,9 +340,11 @@ mod tests {
         assert_eq!(t.fixed_len(0x24), Some(7));
         assert_eq!(t.fixed_len(0x25), Some(20));
         assert_eq!(t.fixed_len(0xB9), Some(3));
-        assert!(!t.is_known(0xD6));
-        assert!(!t.is_known(0xEF));
-        assert!(!t.is_known(0xF3));
+        assert!(t.is_variable(0xD6));
+        assert_eq!(t.fixed_len(0xDC), Some(LEN_OPL_INFO));
+        assert!(t.is_variable(0xDD));
+        assert!(t.is_variable(0xDF));
+        assert_eq!(t.fixed_len(0xF3), Some(LEN_WORLD_ITEM_SA_PRE_HIGH_SEAS));
     }
 
     #[test]
@@ -339,8 +361,8 @@ mod tests {
     #[test]
     fn modern_overrides_match_table() {
         let t = PacketTable::modern();
-        assert!(!MODERN_OVERRIDES.is_empty());
-        for &(id, len) in MODERN_OVERRIDES {
+        assert!(!LATER_SLOTS.is_empty());
+        for &(id, len) in LATER_SLOTS {
             assert_eq!(t.get(id), len, "modern 0x{id:02X}");
             match PacketLen::from_table(len) {
                 PacketLen::Fixed(fixed) => {
@@ -371,7 +393,7 @@ mod tests {
         assert!(t.is_variable(0xDD));
         assert_eq!(t.fixed_len(0xEF), Some(21));
         assert!(t.is_variable(0xF0));
-        assert!(t.is_variable(0xF1));
+        assert_eq!(t.fixed_len(0xF1), Some(LEN_TIME_SYNC));
         assert_eq!(t.fixed_len(0xF3), Some(26));
     }
 
@@ -494,7 +516,7 @@ mod tests {
     }
 
     /// Skills and secure trades are framed on both eras. The old book cover is
-    /// a fixed ninety-nine bytes; the counted one is framed and modern only.
+    /// a fixed ninety-nine bytes; the counted one is framed on both.
     #[test]
     fn skill_trade_and_book_packets_use_named_ids() {
         const LEN_BOOK_HEADER_OLD: u16 = 99;
@@ -510,7 +532,7 @@ mod tests {
             );
         }
         assert!(PacketTable::modern().is_variable(PKT_BOOK_HEADER));
-        assert!(!PacketTable::t2a().is_known(PKT_BOOK_HEADER));
+        assert!(PacketTable::t2a().is_variable(PKT_BOOK_HEADER));
     }
 
     #[test]
@@ -559,18 +581,20 @@ mod tests {
         assert_eq!(hs.fixed_len(0xBA), Some(LEN_QUEST_ARROW));
     }
 
-    /// The gate must move nothing else and must leave both era defaults as
-    /// they were.
+    /// The High Seas gate moves six slots and nothing else, and both era
+    /// defaults equal the table of their own version.
     #[test]
     fn high_seas_gate_leaves_every_other_slot_alone() {
         const VERSION_PRE_HIGH_SEAS: &str = "7.0.8.2";
+        const VERSION_HIGH_SEAS: &str = "7.0.9.0";
         let older: ClientVersion = VERSION_PRE_HIGH_SEAS.parse().unwrap();
+        let newer: ClientVersion = VERSION_HIGH_SEAS.parse().unwrap();
         let pre = PacketTable::for_version(Era::Modern, older);
-        let modern = PacketTable::modern();
+        let hs = PacketTable::for_version(Era::Modern, newer);
         let gated: Vec<u8> = (0u8..=255)
-            .filter(|&id| pre.get(id) != modern.get(id))
+            .filter(|&id| pre.get(id) != hs.get(id))
             .collect();
-        assert_eq!(gated, vec![0x24, 0x99, 0xBA, 0xF3]);
+        assert_eq!(gated, vec![0x24, 0x99, 0xBA, 0xF1, 0xF2, 0xF3]);
 
         for era in [Era::T2a, Era::Modern] {
             let by_era = PacketTable::for_era(era);
@@ -579,8 +603,57 @@ mod tests {
                 assert_eq!(by_era.get(id), by_version.get(id), "0x{id:02X} {era}");
             }
         }
-        // The T2A table has no `0xF3` at all, so no version may add one.
-        assert!(!PacketTable::for_version(Era::T2a, ClientVersion::MODERN).is_known(0xF3));
+    }
+
+    /// The version, not the era, sizes a packet: an old client on the modern
+    /// era gets the old sizes, and a newer client on the T2A era the new ones.
+    #[test]
+    fn the_version_sizes_packets_in_both_eras() {
+        let v4: ClientVersion = "4.0.11".parse().unwrap();
+        let v5: ClientVersion = "5.0.9".parse().unwrap();
+        let v6: ClientVersion = "6.0.1.3".parse().unwrap();
+        let v6_grid: ClientVersion = "6.0.1.7".parse().unwrap();
+        let v6_features: ClientVersion = "6.0.14.2".parse().unwrap();
+        for era in [Era::T2a, Era::Modern] {
+            let old = PacketTable::for_version(era, v4);
+            assert_eq!(old.fixed_len(0x0B), Some(LEN_DAMAGE_OLD), "{era}");
+            assert_eq!(old.fixed_len(0x16), Some(LEN_ONE_BYTE), "{era}");
+            assert_eq!(old.fixed_len(0x31), Some(LEN_ONE_BYTE), "{era}");
+
+            let five = PacketTable::for_version(era, v5);
+            assert_eq!(five.fixed_len(0x0B), Some(LEN_DAMAGE), "{era}");
+            assert!(five.is_variable(0x16), "{era}");
+            assert!(five.is_variable(0x31), "{era}");
+
+            let six = PacketTable::for_version(era, v6);
+            assert_eq!(six.fixed_len(0x08), Some(LEN_DROP), "{era}");
+            assert_eq!(six.fixed_len(0x25), Some(LEN_ADD_ITEM_OLD), "{era}");
+            assert_eq!(six.fixed_len(0xB9), Some(LEN_FEATURES_U16), "{era}");
+
+            let grid = PacketTable::for_version(era, v6_grid);
+            assert_eq!(grid.fixed_len(0x08), Some(LEN_DROP_WITH_GRID), "{era}");
+            assert_eq!(grid.fixed_len(0x25), Some(LEN_ADD_ITEM), "{era}");
+            assert_eq!(grid.fixed_len(0xB9), Some(LEN_FEATURES_U16), "{era}");
+
+            let features = PacketTable::for_version(era, v6_features);
+            assert_eq!(features.fixed_len(0xB9), Some(LEN_FEATURES_U32), "{era}");
+        }
+    }
+
+    /// Each gate names one slot, so no later gate can undo an earlier one.
+    #[test]
+    fn each_gate_names_its_own_slot() {
+        let mut ids: Vec<u8> = VERSION_GATES.iter().map(|g| g.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), VERSION_GATES.len());
+        for gate in VERSION_GATES {
+            assert!(
+                !LATER_SLOTS.iter().any(|&(id, _)| id == gate.id),
+                "0x{:02X} is both gated and fixed",
+                gate.id
+            );
+        }
     }
 
     #[test]

@@ -88,7 +88,7 @@ fn things(frame: &WatchFrame) -> Vec<Thing> {
             words: format!(
                 "{}, an item on the ground, {} tiles away",
                 item.name,
-                item.x.abs_diff(frame.x).max(item.y.abs_diff(frame.y))
+                uoterm_protocol::types::tile_distance((item.x, item.y), (frame.x, frame.y))
             ),
             x: item.x,
             y: item.y,

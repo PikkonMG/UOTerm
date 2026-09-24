@@ -59,11 +59,9 @@ fn passes_properties(inner: &mut Inner, item: Serial, rules: &[PropertyRule]) ->
     if rules.is_empty() {
         return true;
     }
-    if !inner.world.read().properties.contains_key(&item) {
+    if !knows_what_it_is(&inner.world.read(), item) {
         if inner.agents.asked_properties.insert(item) {
-            inner
-                .outbound
-                .push_back(encode::batch_query_properties(&[item]));
+            ask_what_it_is(inner, item);
         }
         return false;
     }
@@ -277,11 +275,18 @@ pub(super) fn job(inner: &mut Inner, now: Instant) -> bool {
         JobStep::Finished => {
             tracing::info!(job = job.name(), "agent job finished");
             inner.agents.job = None;
+            let done = format!("{} {}", job.name(), crate::jobs::REASON_DONE);
+            job_ended(inner, crate::jobs::JOB_AGENT, &done);
             false
         }
         JobStep::Failed(why) => {
             tracing::warn!(job = job.name(), why = %why, "agent job stopped");
             inner.agents.job = None;
+            job_failed(
+                inner,
+                crate::jobs::JOB_AGENT,
+                &format!("{}: {why}", job.name()),
+            );
             false
         }
     }

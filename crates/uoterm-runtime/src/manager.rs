@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use uoterm_nav::{ClilocData, MulMap, MultiData};
+use uoterm_nav::{ClilocData, MapVariant, MulMap, MultiData};
 
 /// A cache that has opened nothing yet.
 const OPENS_NONE: u64 = 0;
@@ -32,10 +32,15 @@ const MULTI_SHAPES_INDEX: u8 = 0;
 /// Two shards installed side by side hold their own map files, so the
 /// directory belongs in the key. Paths are compared as the operator wrote
 /// them, which is how every session of one shard states its `uopath`.
+///
+/// The form of the map is in the key too: two shards may switch on different
+/// map patches, or let an account walk the newer Felucca areas, and a session
+/// of each walks its own map read from the same files.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FacetKey {
     uopath: PathBuf,
     map_index: u8,
+    variant: MapVariant,
 }
 
 /// Map facets shared by every session of one [`Runtime`].
@@ -71,9 +76,21 @@ impl<T> FacetCache<T> {
         map_index: u8,
         load: impl FnOnce() -> std::result::Result<T, E>,
     ) -> std::result::Result<Arc<T>, E> {
+        self.get_or_load_variant(uopath, map_index, MapVariant::default(), load)
+    }
+
+    /// [`FacetCache::get_or_load`] for one form of a map.
+    pub fn get_or_load_variant<E>(
+        &self,
+        uopath: &Path,
+        map_index: u8,
+        variant: MapVariant,
+        load: impl FnOnce() -> std::result::Result<T, E>,
+    ) -> std::result::Result<Arc<T>, E> {
         let key = FacetKey {
             uopath: uopath.to_path_buf(),
             map_index,
+            variant,
         };
         let mut entries = self.entries.lock();
         if let Some(shared) = entries.get(&key).and_then(Weak::upgrade) {
@@ -407,7 +424,7 @@ mod tests {
             .await;
         assert!(walk.ok, "{walk:?}");
         assert_eq!(
-            walk.result.as_bool(),
+            walk.result["walkable"].as_bool(),
             Some(true),
             "the mock map must answer when no uopath is set"
         );

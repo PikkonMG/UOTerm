@@ -35,7 +35,7 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
         .map_err(|e| crate::error::RuntimeError::Usage(format!("manifest: {e}")))?;
     let man: Manifest = toml::from_str(&text)
         .map_err(|e| crate::error::RuntimeError::Usage(format!("manifest parse: {e}")))?;
-    let era: Era = era_from_str(man.era.as_deref().unwrap_or("modern"));
+    let era: Era = era_from_str(man.era.as_deref());
     let now = chrono::Local::now();
     let mut ids = Vec::new();
     for agent in man.agents {
@@ -66,6 +66,7 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
+            reconnect: crate::config::RECONNECT_DEFAULT,
         };
         let handle = runtime.connect(opts).await?;
         let _ = handle

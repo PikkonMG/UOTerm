@@ -8,6 +8,12 @@ use uoterm_protocol::types::{ClientVersion, Era, LOGIN_NEXT_KEY_DEFAULT};
 pub const APP_NAME: &str = "uoterm";
 pub const DEFAULT_API_PORT: u16 = 7733;
 pub const DEFAULT_LOGIN_PORT: u16 = 2593;
+/// The host a session and the demo shard use when none is named: this
+/// machine.
+pub const DEFAULT_HOST: &str = "127.0.0.1";
+/// Where the demo shard listens when no bind is named: [`DEFAULT_HOST`] on
+/// [`DEFAULT_LOGIN_PORT`]. A test holds the two together.
+pub const DEFAULT_MOCK_BIND: &str = "127.0.0.1:2593";
 pub const DEFAULT_MAX_SESSIONS: usize = 32;
 /// How long one step on foot takes: a walking step and a running one.
 pub const STEP_WALK_MS: u64 = 400;
@@ -34,6 +40,14 @@ pub const OBEY_SHARD_RULES_DEFAULT: bool = true;
 /// For serde: a config file without the setting obeys the shard's list.
 pub fn obey_shard_rules_default() -> bool {
     OBEY_SHARD_RULES_DEFAULT
+}
+
+/// A session whose link to the shard drops logs in again by itself, as a
+/// player whose connection broke would, unless it logged out.
+pub const RECONNECT_DEFAULT: bool = true;
+
+pub fn reconnect_default() -> bool {
+    RECONNECT_DEFAULT
 }
 /// When another character says this one's name, the agent hears of it so
 /// it can answer. A user can switch this off.
@@ -80,12 +94,15 @@ pub struct AppConfig {
     /// `connect` opens the watch window by itself, as `--view` does.
     #[serde(default)]
     pub view: bool,
+    /// Log in again when the link to the shard drops.
+    #[serde(default = "reconnect_default")]
+    pub reconnect: bool,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            host: "127.0.0.1".into(),
+            host: DEFAULT_HOST.into(),
             port: DEFAULT_LOGIN_PORT,
             uopath: None,
             markers: None,
@@ -97,6 +114,7 @@ impl Default for AppConfig {
             answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
             play_along: PLAY_ALONG_DEFAULT,
             view: false,
+            reconnect: RECONNECT_DEFAULT,
         }
     }
 }
@@ -223,12 +241,14 @@ pub struct ConnectOptions {
     /// A screen that picks the shard and the character. None for a login
     /// that picks by name.
     pub picker: Option<LoginPicker>,
+    /// Log in again when the link to the shard drops.
+    pub reconnect: bool,
 }
 
 impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
-            host: "127.0.0.1".into(),
+            host: DEFAULT_HOST.into(),
             port: DEFAULT_LOGIN_PORT,
             account: String::new(),
             password: String::new(),
@@ -245,6 +265,7 @@ impl Default for ConnectOptions {
             answer_when_named: ANSWER_WHEN_NAMED_DEFAULT,
             play_along: PLAY_ALONG_DEFAULT,
             picker: None,
+            reconnect: RECONNECT_DEFAULT,
         }
     }
 }
@@ -296,8 +317,10 @@ pub fn load_persona(path: &std::path::Path) -> crate::error::Result<Persona> {
         .map_err(|e| crate::error::RuntimeError::Usage(format!("persona {}: {e}", path.display())))
 }
 
-pub fn era_from_str(s: &str) -> Era {
-    s.parse().unwrap_or(Era::Modern)
+/// The era named, or the modern one when none is named or the name is not an
+/// era.
+pub fn era_from_str(s: Option<&str>) -> Era {
+    s.and_then(|name| name.parse().ok()).unwrap_or(Era::Modern)
 }
 
 pub fn version_from_str(s: Option<&str>, era: Era) -> ClientVersion {
@@ -321,6 +344,14 @@ pub fn password_from_env(var: &str) -> crate::error::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_demo_shard_listens_on_the_default_host_and_port() {
+        assert_eq!(
+            DEFAULT_MOCK_BIND,
+            format!("{DEFAULT_HOST}:{DEFAULT_LOGIN_PORT}")
+        );
+    }
 
     #[test]
     fn encryption_default_is_none() {

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use uoterm_protocol::{Direction, Point3};
 
@@ -177,6 +179,13 @@ pub trait TileQuery {
         String::new()
     }
 
+    /// The tiledata flags and height of an item graphic, which is what an
+    /// item on the ground is to the movement rules. Maps without tiledata
+    /// know none.
+    fn item_stat(&self, _graphic: u16) -> Option<(u32, u8)> {
+        None
+    }
+
     fn in_bounds(&self, x: u16, y: u16) -> bool {
         x < self.width() && y < self.height()
     }
@@ -243,6 +252,68 @@ pub trait TileQuery {
     }
 }
 
+/// A map with the things on it that its files do not hold: the pieces of the
+/// houses and boats in view, and the items on the ground a person stands on or
+/// cannot pass. Each tile reads the column of the map with these pieces added,
+/// so the movement rules weigh them exactly as they weigh a static.
+pub struct Overlay<'a> {
+    base: &'a dyn TileQuery,
+    pieces: HashMap<(u16, u16), Vec<TilePiece>>,
+}
+
+impl<'a> Overlay<'a> {
+    pub fn new(base: &'a dyn TileQuery) -> Self {
+        Self {
+            base,
+            pieces: HashMap::new(),
+        }
+    }
+
+    /// Puts one more piece on a tile.
+    pub fn add(&mut self, x: u16, y: u16, piece: TilePiece) {
+        self.pieces.entry((x, y)).or_default().push(piece);
+    }
+
+    /// True when anything was put on that tile.
+    pub fn has_pieces(&self, x: u16, y: u16) -> bool {
+        self.pieces.contains_key(&(x, y))
+    }
+}
+
+impl TileQuery for Overlay<'_> {
+    fn column(&self, x: u16, y: u16) -> TileColumn {
+        let mut column = self.base.column(x, y);
+        if let Some(extra) = self.pieces.get(&(x, y)) {
+            column.pieces.extend_from_slice(extra);
+        }
+        column
+    }
+
+    fn width(&self) -> u16 {
+        self.base.width()
+    }
+
+    fn height(&self) -> u16 {
+        self.base.height()
+    }
+
+    fn statics_at(&self, x: u16, y: u16) -> Vec<StaticView> {
+        self.base.statics_at(x, y)
+    }
+
+    fn land_name(&self, x: u16, y: u16) -> String {
+        self.base.land_name(x, y)
+    }
+
+    fn item_name(&self, graphic: u16) -> String {
+        self.base.item_name(graphic)
+    }
+
+    fn item_stat(&self, graphic: u16) -> Option<(u32, u8)> {
+        self.base.item_stat(graphic)
+    }
+}
+
 /// How tall the leaf of a mock door stands.
 const MOCK_DOOR_HEIGHT: u8 = 20;
 
@@ -254,6 +325,7 @@ pub struct MockMap {
     doors: Vec<bool>,
     wet: Vec<bool>,
     z: Vec<i8>,
+    item_stats: HashMap<u16, (u32, u8)>,
 }
 
 impl MockMap {
@@ -266,7 +338,13 @@ impl MockMap {
             doors: vec![false; n],
             wet: vec![false; n],
             z: vec![0; n],
+            item_stats: HashMap::new(),
         }
+    }
+
+    /// Gives an item graphic the tiledata flags and height a test needs.
+    pub fn set_item_stat(&mut self, graphic: u16, flags: u32, height: u8) {
+        self.item_stats.insert(graphic, (flags, height));
     }
 
     fn idx(&self, x: u16, y: u16) -> usize {
@@ -335,5 +413,9 @@ impl TileQuery for MockMap {
 
     fn height(&self) -> u16 {
         self.height
+    }
+
+    fn item_stat(&self, graphic: u16) -> Option<(u32, u8)> {
+        self.item_stats.get(&graphic).copied()
     }
 }

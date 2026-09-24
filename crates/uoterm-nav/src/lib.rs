@@ -15,6 +15,7 @@ mod multi;
 mod path;
 mod radarcol;
 mod seasons;
+mod sight;
 mod skills;
 mod sound;
 mod speech;
@@ -32,7 +33,7 @@ pub use hues::{HueData, HueRamp};
 pub use mounts::{mount_of, Mount};
 pub use mul::{
     client_data_dir_from_env, infer_mul_blocks, map_block_dims, DoorTile, MapError, MapFiles,
-    MulMap, ENV_TEST_UOPATH, TILEDATA_NAME,
+    MapPatchFiles, MapVariant, MulMap, ENV_TEST_UOPATH, TILEDATA_NAME,
 };
 pub use multi::{MultiData, MultiFiles, MultiPiece};
 pub use path::{
@@ -41,6 +42,7 @@ pub use path::{
 };
 pub use radarcol::RadarColors;
 pub use seasons::{SeasonArt, SEASONS_NAME};
+pub use sight::{eyes_at, line_of_sight, middle_of, EYE_HEIGHT, TILE_NO_SHOOT, TILE_WINDOW};
 pub use skills::{read_skills, SkillEntry};
 pub use sound::{MusicList, MusicTrack, SoundData, SOUND_SAMPLE_RATE};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};
@@ -49,8 +51,8 @@ pub use step::{
     STEP_HEIGHT,
 };
 pub use tiles::{
-    z_reachable, MockMap, StaticView, TileInfo, TileQuery, TILE_BRIDGE, TILE_DOOR, TILE_IMPASSABLE,
-    TILE_PARTIAL_HUE, TILE_SURFACE, TILE_WET,
+    z_reachable, MockMap, Overlay, StaticView, TileInfo, TileQuery, TILE_BRIDGE, TILE_DOOR,
+    TILE_IMPASSABLE, TILE_PARTIAL_HUE, TILE_SURFACE, TILE_WET,
 };
 pub use uop::{hash_filename, map_uop_name};
 
@@ -67,18 +69,18 @@ mod tests {
         CLILOC_RECORD_HEADER,
     };
     use crate::mul::{
-        block_index, tiledata_is_hs, BLOCK_BYTES, BLOCK_HEADER, CELL_BYTES, COLUMN_CACHE_CAP,
-        GROUP_HEADER, IDX_EMPTY, LAND_COUNT, LAND_GROUP, LAND_NAME_AFTER_FLAGS, LAND_RECORD_HS,
-        LAND_RECORD_OLD, MAP_MALAS_BLOCKS_H, MAP_MALAS_BLOCKS_W, STAIDX_RECORD,
-        STATIC_HEIGHT_BYTES_AFTER_FLAGS, STATIC_RECORD, STATIC_RECORD_OLD, TILEDATA_FLAGS_OLD,
-        TILEDATA_HS_LEN, TILE_NAME_LEN,
+        block_index, tiledata_is_hs, BLOCK_BYTES, BLOCK_CELLS, BLOCK_HEADER, CELL_BYTES,
+        COLUMN_CACHE_CAP, GROUP_HEADER, IDX_EMPTY, LAND_COUNT, LAND_GROUP, LAND_NAME_AFTER_FLAGS,
+        LAND_RECORD_HS, LAND_RECORD_OLD, MAP_MALAS_BLOCKS_H, MAP_MALAS_BLOCKS_W, STAIDX_RECORD,
+        STATIC_GROUP, STATIC_HEIGHT_BYTES_AFTER_FLAGS, STATIC_RECORD, STATIC_RECORD_HS,
+        STATIC_RECORD_OLD, TILEDATA_FLAGS_OLD, TILE_NAME_LEN,
     };
     use crate::multi::{
         multi_is_hs, MULTI_IDX_NAME, MULTI_IDX_RECORD, MULTI_MUL_LOOSE, MULTI_MUL_NAME,
         MULTI_RECORD_HS, MULTI_RECORD_OLD, MULTI_UOP_CLILOC, MULTI_UOP_HEADER, MULTI_UOP_LOOSE,
         MULTI_UOP_NAMES, MULTI_UOP_RECORD,
     };
-    use crate::path::{expand_budget, DIRS};
+    use crate::path::expand_budget;
     use crate::speech::{SPEECH_MUL_NAMES, SPEECH_RECORD_HEADER};
     use crate::step::{footing, land_is_ignored, Footing};
     use crate::uop::multi_uop_name;
@@ -883,6 +885,9 @@ mod tests {
         assert_eq!(map_block_dims(3), (MAP_MALAS_BLOCKS_W, MAP_MALAS_BLOCKS_H));
     }
 
+    /// The length of the High Seas tiledata a 7.x client ships.
+    const TILEDATA_HS_LEN: usize = 3_188_736;
+
     #[test]
     fn old_tiledata_larger_than_hs_land_block_is_not_hs() {
         let mut old = mini_tiledata();
@@ -918,6 +923,9 @@ mod tests {
             blocks_w: 2,
             blocks_h: 2,
             map_index: 0,
+            patches: MapPatchFiles::default(),
+            land_patches: 0,
+            static_patches: 0,
         };
         let map = MulMap::from_files(&files).unwrap();
         assert_eq!(map.tile(8, 0).land_id, LAND_ID_BLOCK_1_0);
@@ -937,6 +945,9 @@ mod tests {
             blocks_w: 2,
             blocks_h: 2,
             map_index: 0,
+            patches: MapPatchFiles::default(),
+            land_patches: 0,
+            static_patches: 0,
         };
         let map = MulMap::from_files(&files).unwrap();
         assert!(map.can_walk(0, 0));
@@ -965,6 +976,9 @@ mod tests {
             blocks_w: 2,
             blocks_h: 2,
             map_index: 0,
+            patches: MapPatchFiles::default(),
+            land_patches: 0,
+            static_patches: 0,
         };
         let map = MulMap::from_files(&files).unwrap();
         assert_eq!(map.land_name(0, 0), FIXTURE_LAND_NAMES[0]);
@@ -1002,11 +1016,130 @@ mod tests {
             blocks_w: 2,
             blocks_h: 2,
             map_index: 0,
+            patches: MapPatchFiles::default(),
+            land_patches: 0,
+            static_patches: 0,
         };
         let map = MulMap::from_files(&files).unwrap();
         assert!(map.can_walk(0, 0));
         assert!(!map.can_walk(4, 0));
         assert_eq!(map.tile(0, 0).z, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The layout of a tiledata file is read from its shape, so a High Seas
+    /// file with fewer statics than the client this was measured on is still
+    /// High Seas, and an old file of any count is still old.
+    #[test]
+    fn the_tiledata_layout_comes_from_the_shape_of_the_file() {
+        let land = |record: usize| LAND_COUNT / LAND_GROUP * (GROUP_HEADER + LAND_GROUP * record);
+        let statics =
+            |groups: usize, record: usize| groups * (GROUP_HEADER + STATIC_GROUP * record);
+        const HALF_THE_STATICS: usize = 1024;
+        assert!(tiledata_is_hs(
+            land(LAND_RECORD_HS) + statics(HALF_THE_STATICS, STATIC_RECORD_HS)
+        ));
+        assert!(!tiledata_is_hs(
+            land(LAND_RECORD_OLD) + statics(HALF_THE_STATICS, STATIC_RECORD_OLD)
+        ));
+        assert!(tiledata_is_hs(TILEDATA_HS_LEN));
+    }
+
+    /// A client that has both reads the UOP package of a map, as the
+    /// reference client does, and one with no files for map 1 walks it on the
+    /// files of map 0.
+    #[test]
+    fn the_uop_map_comes_first_and_map_one_stands_in_for_nothing() {
+        let dir = scratch("map-order");
+        write_mini_client(&dir, true);
+        write_mini_client(&dir, false);
+        let files = MapFiles::from_uopath(&dir, 0).unwrap();
+        assert_eq!(files.map, dir.join("map0LegacyMUL.uop"));
+        let trammel = MapFiles::from_uopath(&dir, 1).unwrap();
+        assert_eq!(
+            trammel.map_index, 0,
+            "map 1 is read from the files of map 0"
+        );
+        assert!(
+            MapFiles::from_uopath(&dir, 2).is_err(),
+            "and no other map is"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An account the shard lets walk the newer Felucca areas reads the `x`
+    /// files, and any other account the plain ones.
+    #[test]
+    fn the_newer_felucca_areas_read_the_x_files() {
+        let dir = scratch("map-x");
+        write_mini_client(&dir, false);
+        for name in ["map0", "statics0", "staidx0"] {
+            fs::copy(
+                dir.join(format!("{name}.mul")),
+                dir.join(format!("{name}x.mul")),
+            )
+            .unwrap();
+        }
+        let plain = MapFiles::for_variant(&dir, 0, MapVariant::default()).unwrap();
+        assert_eq!(plain.map, dir.join("map0.mul"));
+        let newer = MapFiles::for_variant(
+            &dir,
+            0,
+            MapVariant {
+                new_felucca_areas: true,
+                ..MapVariant::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(newer.map, dir.join("map0x.mul"));
+        assert_eq!(newer.statics, dir.join("statics0x.mul"));
+        assert_eq!(newer.staidx, dir.join("staidx0x.mul"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The patches the shard switches on replace whole blocks: the land of a
+    /// block from `mapdif`, and its statics from `stadif`. With none switched
+    /// on the files are left alone.
+    #[test]
+    fn switched_on_patches_replace_the_land_and_the_statics_of_a_block() {
+        const PATCHED_LAND: u8 = 9;
+        let dir = scratch("map-patch");
+        write_mini_client(&dir, false);
+        // One land patch for block 3 (the block at 8,8), all of it one land id.
+        let patched_block: u32 = 3;
+        let mut land = vec![0u8; BLOCK_BYTES];
+        for cell in 0..BLOCK_CELLS {
+            land[BLOCK_HEADER + cell * CELL_BYTES] = PATCHED_LAND;
+        }
+        fs::write(dir.join("mapdifl0.mul"), patched_block.to_le_bytes()).unwrap();
+        fs::write(dir.join("mapdif0.mul"), &land).unwrap();
+        // One statics patch that empties block 0, which holds the wall.
+        let mut place = vec![0u8; STAIDX_RECORD];
+        place[0..4].copy_from_slice(&IDX_EMPTY.to_le_bytes());
+        place[4..8].copy_from_slice(&IDX_EMPTY.to_le_bytes());
+        fs::write(dir.join("stadifl0.mul"), 0u32.to_le_bytes()).unwrap();
+        fs::write(dir.join("stadifi0.mul"), &place).unwrap();
+        fs::write(dir.join("stadif0.mul"), []).unwrap();
+        let open = |land_patches, static_patches| {
+            let mut files = MapFiles::from_uopath(&dir, 0).unwrap();
+            files.blocks_w = 2;
+            files.blocks_h = 2;
+            files.land_patches = land_patches;
+            files.static_patches = static_patches;
+            MulMap::from_files(&files).unwrap()
+        };
+        let plain = open(0, 0);
+        assert_ne!(plain.tile(8, 8).land_id, u16::from(PATCHED_LAND));
+        assert!(
+            !plain.can_walk(FIXTURE_WALL_CX, FIXTURE_WALL_CY),
+            "the wall stands"
+        );
+        let patched = open(1, 1);
+        assert_eq!(patched.tile(8, 8).land_id, u16::from(PATCHED_LAND));
+        assert!(
+            patched.can_walk(FIXTURE_WALL_CX, FIXTURE_WALL_CY),
+            "the wall is patched away"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2182,7 +2315,7 @@ mod tests {
             "the south edge, 8 and 20"
         );
         assert_eq!(SLOPE.toward(Direction::West), 4, "the west edge, 0 and 8");
-        for direction in DIRS {
+        for direction in Direction::ALL {
             assert_eq!(
                 LandCorners::flat(7).toward(direction),
                 7,

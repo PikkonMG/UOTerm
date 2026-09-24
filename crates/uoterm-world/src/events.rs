@@ -17,6 +17,21 @@ pub enum EventKind {
     ContainerOpened,
     TargetRequested,
     GumpOpened,
+    /// The shard closed a gump, named by its type number.
+    GumpClosed,
+    /// A shopkeeper's list of goods came: what he sells, or what he buys.
+    /// `observe` holds the goods and their prices.
+    ShopOpened,
+    /// The lines of a context menu came. `observe` holds them.
+    ContextMenuOpened,
+    /// An old-style menu opened: a question with a list of answers.
+    MenuOpened,
+    /// A buff or a debuff came on the character or went off him, named by
+    /// its icon.
+    BuffChanged,
+    /// The shard told the character something in its own voice, such as
+    /// "that is too far away".
+    SystemMessage,
     Arrived,
     PathFailed,
     PkFlag,

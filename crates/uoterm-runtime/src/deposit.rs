@@ -103,7 +103,7 @@ mod tests {
     const GOLD: Serial = Serial(0x4000_0301);
     const BONE: Serial = Serial(0x4000_0302);
     const GRAPHIC_BANK: u16 = 0x2436;
-    const GRAPHIC_GOLD: u16 = 0x0EED;
+    const GRAPHIC_GOLD: u16 = uoterm_protocol::types::GRAPHIC_GOLD_COINS;
     const GRAPHIC_BONE: u16 = 0x0F7E;
     const GOLD_AMOUNT: u16 = 54;
     const ONE: u16 = 1;

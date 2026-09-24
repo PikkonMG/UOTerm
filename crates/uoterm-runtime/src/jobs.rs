@@ -14,12 +14,17 @@ use uoterm_world::{Mobile, World};
 
 pub const JOB_HUNT: &str = "hunt";
 pub const JOB_WALK: &str = "walk";
+pub const JOB_LOOT: &str = "loot";
+pub const JOB_DEPOSIT: &str = "deposit";
+pub const JOB_SCRIPT: &str = "script";
+pub const JOB_AGENT: &str = "agent";
 
 pub const REASON_EMPTY: &str = "empty";
 pub const REASON_UNREACHABLE: &str = "unreachable";
 pub const REASON_AVOIDED: &str = "avoided";
 pub const REASON_DEAD: &str = "dead";
 pub const REASON_STOPPED: &str = "stopped";
+pub const REASON_DONE: &str = "done";
 pub const REASON_ARRIVED: &str = "arrived";
 pub const REASON_HOSTILE: &str = "hostile";
 
@@ -157,26 +162,26 @@ impl MatchTerm {
 pub fn parse_term(raw: &str) -> Result<MatchTerm, &'static str> {
     let raw = raw.trim();
     let lower = raw.to_ascii_lowercase();
-    if let Some(rest) = strip_prefix_ci(&lower, PREFIX_SPECIES) {
+    if let Some(rest) = lower.strip_prefix(PREFIX_SPECIES) {
         return Ok(MatchTerm {
             axis: Axis::Species,
             value: rest.to_string(),
         });
     }
-    if let Some(rest) = strip_prefix_ci(&lower, PREFIX_NAME) {
+    if let Some(rest) = lower.strip_prefix(PREFIX_NAME) {
         return Ok(MatchTerm {
             axis: Axis::Name,
             value: rest.to_string(),
         });
     }
-    if let Some(rest) = strip_prefix_ci(&lower, PREFIX_GRAPHIC) {
+    if let Some(rest) = lower.strip_prefix(PREFIX_GRAPHIC) {
         let graphic = parse_graphic(rest).ok_or(JOB_TERM_NEEDS_AXIS)?;
         return Ok(MatchTerm {
             axis: Axis::Graphic(graphic),
             value: rest.to_string(),
         });
     }
-    if let Some(rest) = strip_prefix_ci(&lower, PREFIX_ANY) {
+    if let Some(rest) = lower.strip_prefix(PREFIX_ANY) {
         return Ok(MatchTerm {
             axis: Axis::Any,
             value: rest.to_string(),
@@ -189,16 +194,15 @@ fn parse_terms(raw: &[String]) -> Result<Vec<MatchTerm>, &'static str> {
     raw.iter().map(|s| parse_term(s)).collect()
 }
 
-fn strip_prefix_ci<'a>(lower: &'a str, prefix: &str) -> Option<&'a str> {
-    lower.strip_prefix(prefix)
+fn parse_graphic(s: &str) -> Option<u16> {
+    uoterm_protocol::types::parse_unsigned(s).and_then(|n| u16::try_from(n).ok())
 }
 
-fn parse_graphic(s: &str) -> Option<u16> {
-    if let Some(hex) = s.strip_prefix("0x") {
-        u16::from_str_radix(hex, 16).ok()
-    } else {
-        s.parse().ok()
-    }
+/// The species of a mobile: the one its body shows, which a name cannot
+/// hide, or else its name without a leading article.
+pub fn mobile_species(mobile: &Mobile) -> String {
+    uoterm_assist::mobiles::species_of_body(mobile.body)
+        .map_or_else(|| species_of(&mobile.name), str::to_string)
 }
 
 /// The species word for a mobile: the name without a leading article.
@@ -225,7 +229,7 @@ fn term_matches(term: &MatchTerm, name: &str, species: &str, body: u16) -> bool 
 
 fn listed(terms: &[MatchTerm], mobile: &Mobile) -> bool {
     let name = mobile.name.to_ascii_lowercase();
-    let species = species_of(&mobile.name);
+    let species = mobile_species(mobile);
     terms
         .iter()
         .any(|t| term_matches(t, &name, &species, mobile.body))
@@ -272,7 +276,8 @@ fn corpse_near(world: &World, at: Point3) -> Option<Serial> {
     })
 }
 
-fn away_from(me: Point3, threat: Point3, dist: u16) -> Point3 {
+/// The tile `dist` tiles from `me`, straight away from `threat`.
+pub(crate) fn away_from(me: Point3, threat: Point3, dist: u16) -> Point3 {
     let mut dx = i32::from(me.x) - i32::from(threat.x);
     let dy = i32::from(me.y) - i32::from(threat.y);
     if dx == 0 && dy == 0 {
@@ -746,7 +751,7 @@ mod tests {
     const BACKPACK: Serial = Serial(0x4000_0100);
     const CORPSE: Serial = Serial(0x4000_0200);
     const GOLD: Serial = Serial(0x4000_0201);
-    const GRAPHIC_GOLD: u16 = 0x0EED;
+    const GRAPHIC_GOLD: u16 = uoterm_protocol::types::GRAPHIC_GOLD_COINS;
     const BODY_ZOMBIE: u16 = 3;
     const BODY_LICH: u16 = 24;
     const HERE_X: u16 = 100;
@@ -1012,6 +1017,7 @@ mod tests {
             z: 0,
             hue: 0,
             multi: false,
+            flags: 0,
         }));
         let now = Instant::now();
         let _ = job.tick(&w, READY, now);
@@ -1031,6 +1037,7 @@ mod tests {
             z: 0,
             hue: 0,
             multi: false,
+            flags: 0,
         }));
         w.apply(&Inbound::OpenContainer {
             serial: CORPSE,

@@ -1,20 +1,23 @@
-//! Player houses and boats, and the tiles their walls close to a route.
+//! Player houses and boats, and the items on the ground: what a walk must
+//! weigh that stands in no client map file.
 //!
 //! A building is built on the server and stands in no client map file, so the
 //! map calls the ground under a house open and a route runs straight into its
 //! wall. What the client does get is an ordinary item packet whose graphic
-//! names a multi, and the shape of that multi is in its own files. This module
-//! reads that packet, and turns the shape into the tiles a walk must go
-//! around.
+//! names a multi, and the shape of that multi is in its own files, or the
+//! design its owner built arrives on the wire. The same is true of a crate or a
+//! table dropped on the ground. This module puts every piece of them on an
+//! [`Overlay`] of the map, where the movement rules weigh each one as they
+//! weigh a static: floors and stairs to stand on, walls and furniture to go
+//! around, each at the height it stands at.
 
-use std::collections::HashMap;
-
-use uoterm_nav::{z_reachable, MultiData, MultiPiece, PERSON_HEIGHT, TILE_BRIDGE, TILE_DOOR};
-use uoterm_protocol::types::{Point3, MULTI_ID_MASK};
+use uoterm_nav::{
+    MultiPiece, Overlay, TilePiece, TileQuery, PERSON_HEIGHT, TILE_DOOR, TILE_IMPASSABLE,
+    TILE_NO_SHOOT, TILE_SURFACE, TILE_WINDOW,
+};
+use uoterm_protocol::types::{Point3, ITEM_FLAG_MOVABLE, MULTI_ID_MASK};
 use uoterm_protocol::GroundItem;
-use uoterm_world::{DoorItem, MultiItem};
-
-use crate::movement::door_on_tile;
+use uoterm_world::{DoorItem, HouseTile, Item};
 
 /// The multi shape the item names, or `None` when it is an ordinary object.
 ///
@@ -26,135 +29,141 @@ pub fn multi_id(item: &GroundItem) -> Option<u16> {
     item.multi.then_some(item.graphic & MULTI_ID_MASK)
 }
 
-/// One piece of a building on one tile, at the height it really stands at.
-///
-/// The heights are counted in `i32` because a piece stands at the height of
-/// the multi item plus its own offset, and that sum leaves the range a single
-/// tile height is written in.
-#[derive(Clone, Copy, Debug)]
-struct PieceAt {
-    z: i32,
-    height: i32,
+/// The shape of one building in view: the pieces of its multi, or the tiles
+/// its owner designed, which take the place of the multi's own.
+pub enum Shape<'a> {
+    Multi(&'a [MultiPiece]),
+    Designed(&'a [HouseTile]),
+}
+
+/// One piece of a building, as an offset from the building and the tiledata
+/// flags and height of its graphic.
+struct Placed {
+    dx: i32,
+    dy: i32,
+    dz: i32,
     flags: u32,
-    blocks: bool,
-    surface: bool,
+    height: u8,
 }
 
-impl PieceAt {
-    fn new(multi_z: i8, piece: &MultiPiece) -> Self {
-        Self {
-            z: i32::from(multi_z) + i32::from(piece.dz),
-            height: i32::from(piece.height),
-            flags: piece.flags,
-            blocks: piece.blocks(),
-            surface: piece.surface(),
-        }
-    }
-
-    /// The height a person ends up at once he has climbed onto this piece. A
-    /// bridge is a stair or a gangplank, and a person meets it half way up.
-    fn stands_at(&self) -> i32 {
-        if self.flags & TILE_BRIDGE != 0 {
-            self.z + self.height / 2
-        } else {
-            self.z + self.height
-        }
-    }
-
-    /// True while this piece closes the space a person standing at `stand`
-    /// fills.
-    ///
-    /// A door is left out: the leaf of a door is opened, not walked around,
-    /// and the door logic owns the tile it stands on. This is the test the map
-    /// reader makes of a static, which is private to it and cannot be shared.
-    fn shuts_out(&self, stand: i32) -> bool {
-        if !self.blocks || self.flags & TILE_DOOR != 0 {
-            return false;
-        }
-        self.z + self.height > stand && self.z < stand + i32::from(PERSON_HEIGHT)
-    }
-}
-
-/// Every height a person whose feet are at `feet_z` could stand at on one tile
-/// of a building: his own floor, and every floor of the building he could step
-/// up or down onto from it.
-fn standing_heights(pieces: &[PieceAt], feet_z: i8) -> Vec<i32> {
-    let mut heights = vec![i32::from(feet_z)];
-    for piece in pieces.iter().filter(|p| p.surface) {
-        let Ok(stand) = i8::try_from(piece.stands_at()) else {
-            continue;
+/// Puts every piece of the buildings in view on the overlay, at the height it
+/// stands at.
+///
+/// A door item owns its doorway: a solid piece that fills the room a person
+/// takes in that doorway is left out, because the door logic opens the door
+/// and a building that closed its own doorway would be sealed for good.
+pub fn add_buildings(
+    overlay: &mut Overlay<'_>,
+    buildings: &[(Point3, Shape<'_>)],
+    doors: &[DoorItem],
+) {
+    for (at, shape) in buildings {
+        let placed: Vec<Placed> = match shape {
+            Shape::Multi(pieces) => pieces
+                .iter()
+                .map(|piece| Placed {
+                    dx: i32::from(piece.dx),
+                    dy: i32::from(piece.dy),
+                    dz: i32::from(piece.dz),
+                    flags: piece.flags,
+                    height: piece.height,
+                })
+                .collect(),
+            Shape::Designed(tiles) => tiles
+                .iter()
+                .filter_map(|tile| {
+                    let (flags, height) = overlay.item_stat(tile.graphic)?;
+                    Some(Placed {
+                        dx: tile.dx,
+                        dy: tile.dy,
+                        dz: tile.dz,
+                        flags,
+                        height,
+                    })
+                })
+                .collect(),
         };
-        if z_reachable(feet_z, stand) {
-            heights.push(i32::from(stand));
-        }
-    }
-    heights
-}
-
-/// The tiles the buildings the character can see close to him on his own
-/// floor.
-///
-/// Height is what keeps the storeys apart. A person is only shut out of a tile
-/// when every floor of the building he could reach from where he stands is
-/// closed to him, so the wall of an upper storey leaves the ground floor open
-/// and the wall of the ground floor leaves the storey above open. It is also
-/// what keeps a doorway passable: the footing that runs unbroken round a
-/// house is below the floor boards a person steps up onto in the doorway, and
-/// it shuts him out of no tile he can stand on.
-///
-/// A tile a door item stands on is never given back, whatever the shape says.
-/// Those tiles belong to the door logic, which opens them; a building that
-/// closed its own doorway would be sealed for good.
-pub fn building_tiles(
-    shapes: &MultiData,
-    buildings: &[MultiItem],
-    feet_z: i8,
-    doors: &[DoorItem],
-) -> Vec<Point3> {
-    let shaped: Vec<(Point3, &[MultiPiece])> = buildings
-        .iter()
-        .map(|building| (building.location, shapes.pieces(building.multi_id)))
-        .collect();
-    shut_out_tiles(&shaped, feet_z, doors)
-}
-
-/// The same, from the shape of each building rather than its multi id, so the
-/// rule can be read and tested without the client files.
-fn shut_out_tiles(
-    buildings: &[(Point3, &[MultiPiece])],
-    feet_z: i8,
-    doors: &[DoorItem],
-) -> Vec<Point3> {
-    let mut by_tile: HashMap<(u16, u16), Vec<PieceAt>> = HashMap::new();
-    for (at, pieces) in buildings {
-        for piece in *pieces {
-            let x = i32::from(at.x) + i32::from(piece.dx);
-            let y = i32::from(at.y) + i32::from(piece.dy);
+        for piece in placed {
+            let x = i32::from(at.x) + piece.dx;
+            let y = i32::from(at.y) + piece.dy;
             let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
                 continue;
             };
-            by_tile
-                .entry((x, y))
-                .or_default()
-                .push(PieceAt::new(at.z, piece));
+            let z = clamp_z(i32::from(at.z) + piece.dz);
+            let tile = TilePiece {
+                z,
+                height: piece.height,
+                flags: piece.flags,
+            };
+            if !weighs(tile.flags) || closes_a_doorway(doors, x, y, tile) {
+                continue;
+            }
+            overlay.add(x, y, tile);
         }
     }
-    by_tile
-        .into_iter()
-        .filter(|((x, y), pieces)| {
-            standing_heights(pieces, feet_z)
-                .into_iter()
-                .all(|stand| pieces.iter().any(|piece| piece.shuts_out(stand)))
-                && door_on_tile(doors, *x, *y, feet_z).is_none()
-        })
-        .map(|((x, y), _)| Point3::new(x, y, feet_z))
-        .collect()
+}
+
+/// Puts the items on the ground that a walk must weigh on the overlay.
+///
+/// A shard weighs them so: an item that cannot be picked up and is a surface
+/// is a floor to stand on, and an impassable item blocks whether it can be
+/// picked up or not. A surface a player could carry off holds nobody up.
+pub fn add_ground_items<'i>(overlay: &mut Overlay<'_>, items: impl Iterator<Item = &'i Item>) {
+    for item in items {
+        let Some((mut flags, height)) = overlay.item_stat(item.graphic) else {
+            continue;
+        };
+        if item.flags & ITEM_FLAG_MOVABLE != 0 {
+            flags &= !TILE_SURFACE;
+        }
+        if !weighs(flags) {
+            continue;
+        }
+        overlay.add(
+            item.location.x,
+            item.location.y,
+            TilePiece {
+                z: item.location.z,
+                height,
+                flags,
+            },
+        );
+    }
+}
+
+/// True when a piece matters to a walk: something to stand on or something
+/// in the way. Any other piece is only drawn.
+fn weighs(flags: u32) -> bool {
+    flags & (TILE_IMPASSABLE | TILE_SURFACE | TILE_DOOR | TILE_WINDOW | TILE_NO_SHOOT) != 0
+}
+
+/// True when a solid piece fills the room a person takes in a doorway a door
+/// item stands in.
+fn closes_a_doorway(doors: &[DoorItem], x: u16, y: u16, piece: TilePiece) -> bool {
+    if piece.flags & TILE_IMPASSABLE == 0 || piece.flags & TILE_DOOR != 0 {
+        return false;
+    }
+    let bottom = i16::from(piece.z);
+    let top = bottom + i16::from(piece.height);
+    doors.iter().any(|door| {
+        let feet = i16::from(door.location.z);
+        door.location.x == x
+            && door.location.y == y
+            && top > feet
+            && bottom < feet + i16::from(PERSON_HEIGHT)
+    })
+}
+
+/// Heights on the wire are one signed byte, and a building's own height plus
+/// the offset of one of its pieces can leave that range.
+fn clamp_z(z: i32) -> i8 {
+    z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uoterm_nav::{pathfind, MockMap, Obstacles, TILE_IMPASSABLE, TILE_SURFACE};
+    use uoterm_nav::{pathfind, MockMap, Obstacles, TILE_BRIDGE};
     use uoterm_protocol::types::Serial;
 
     /// The small stone house, multi id 0x0064, as the client files on a live
@@ -297,15 +306,6 @@ mod tests {
         )
     }
 
-    fn walls(pieces: &[MultiPiece], feet_z: i8, doors: &[DoorItem]) -> Vec<Point3> {
-        shut_out_tiles(&[(HOUSE_AT, pieces)], feet_z, doors)
-    }
-
-    fn shuts_out(tiles: &[Point3], dx: i16, dy: i16) -> bool {
-        let (x, y) = tile(dx, dy);
-        tiles.iter().any(|t| t.x == x && t.y == y)
-    }
-
     /// The graphic of a house on the wire, and the graphic of an ordinary
     /// item. A server sets the multi bit on the graphic of a house on the legacy
     /// world item packet and masks every other item below that bit.
@@ -324,6 +324,7 @@ mod tests {
             z: 0,
             hue: 0,
             multi,
+            flags: 0,
         }
     }
 
@@ -355,36 +356,95 @@ mod tests {
         );
     }
 
+    /// The step up to the doorway: a stair half as high as the footing, so a
+    /// person on the ground climbs onto it and from it onto the floor.
+    const DOORSTEP_HEIGHT: u8 = 5;
+    const GRAPHIC_STEP: u16 = 0x0751;
+    /// A table nobody can pick up, a crate a player could, and a platform
+    /// fixed to the ground. Each has the tiledata it has in the client files.
+    const GRAPHIC_TABLE: u16 = 0x0B90;
+    const GRAPHIC_CRATE: u16 = 0x0E3D;
+    const GRAPHIC_PLATFORM: u16 = 0x0708;
+    const TABLE_HEIGHT: u8 = 6;
+    const PLATFORM_HEIGHT: u8 = 1;
+
+    /// The stone house with its doorstep, as a person meets it.
+    fn house_with_a_step() -> Vec<MultiPiece> {
+        let mut pieces = stone_house();
+        pieces.push(piece(
+            GRAPHIC_STEP,
+            DOORWAY_DX,
+            DOORWAY_DY + 1,
+            FOOTING_DZ,
+            DOORSTEP_HEIGHT,
+            TILE_SURFACE | TILE_BRIDGE,
+        ));
+        pieces
+    }
+
+    fn overlay_of<'m>(map: &'m MockMap, pieces: &[MultiPiece], doors: &[DoorItem]) -> Overlay<'m> {
+        let mut overlay = Overlay::new(map);
+        add_buildings(&mut overlay, &[(HOUSE_AT, Shape::Multi(pieces))], doors);
+        overlay
+    }
+
+    fn at(dx: i16, dy: i16, z: i8) -> Point3 {
+        let (x, y) = tile(dx, dy);
+        Point3::new(x, y, z)
+    }
+
+    fn inside_a_wall(step: &uoterm_nav::Step) -> bool {
+        let dx = i32::from(step.x) - i32::from(HOUSE_AT.x);
+        let dy = i32::from(step.y) - i32::from(HOUSE_AT.y);
+        let half = i32::from(HOUSE_HALF);
+        (dx.abs() == half || dy.abs() == half)
+            && dx.abs() <= half
+            && dy.abs() <= half
+            && (dx, dy) != (i32::from(DOORWAY_DX), i32::from(DOORWAY_DY))
+    }
+
+    /// The whole point of reading the shapes: a route planned past a house
+    /// the character can see goes round it, and the map alone sends him
+    /// straight through the wall.
     #[test]
-    fn the_solid_pieces_of_a_house_shut_a_route_out_of_its_walls() {
-        let house = stone_house();
-        let shut = walls(&house, GROUND_Z, NO_DOORS);
-        for dy in -HOUSE_HALF..=HOUSE_HALF {
-            for dx in -HOUSE_HALF..=HOUSE_HALF {
-                let is_wall = (dx.abs() == HOUSE_HALF || dy.abs() == HOUSE_HALF)
-                    && (dx, dy) != (DOORWAY_DX, DOORWAY_DY);
-                assert_eq!(
-                    shuts_out(&shut, dx, dy),
-                    is_wall,
-                    "the piece at {dx},{dy} of the house"
-                );
-            }
-        }
+    fn a_route_goes_round_a_house_and_not_through_it() {
+        let map = MockMap::new(MOCK_GRID, MOCK_GRID);
+        let straight = pathfind(&map, WEST_OF_THE_HOUSE, EAST_OF_THE_HOUSE, &Obstacles::NONE)
+            .expect("the map alone calls the way open");
+        assert!(
+            straight.steps.iter().any(inside_a_wall),
+            "the map knows no house, so it walks through one: {:?}",
+            straight.steps
+        );
+        let overlay = overlay_of(&map, &stone_house(), NO_DOORS);
+        let around = pathfind(
+            &overlay,
+            WEST_OF_THE_HOUSE,
+            EAST_OF_THE_HOUSE,
+            &Obstacles::NONE,
+        )
+        .expect("a way round the house");
+        assert!(
+            !around.steps.iter().any(inside_a_wall),
+            "no step of the walk stands in a wall: {:?}",
+            around.steps
+        );
         assert_eq!(
-            shut.len(),
-            walls(&house, INSIDE_Z, NO_DOORS).len(),
-            "the wall is the same wall to a person on the floor of the house"
+            around.steps.last().map(|s| (s.x, s.y)),
+            Some((EAST_OF_THE_HOUSE.x, EAST_OF_THE_HOUSE.y)),
+            "and it comes out the far side: {:?}",
+            around.steps
         );
     }
 
-    /// The failure this guards against: the footing of a house runs unbroken
-    /// round all four sides, doorway included, so a rule that only asked
-    /// whether a solid piece stands on the tile would seal every house on the
-    /// shard. What keeps the doorway open is the height: the footing is under
-    /// the floor boards a person steps up onto there.
+    /// The footing of a house runs unbroken round all four sides, doorway
+    /// included, so a rule that only asked whether a solid piece stands on a
+    /// tile would seal every house on the shard. The height keeps the doorway
+    /// open: the footing is under the floor a person steps up onto from the
+    /// doorstep, and a route walks in over it.
     #[test]
-    fn the_doorway_of_a_house_stays_passable() {
-        let house = stone_house();
+    fn a_route_climbs_the_doorstep_and_walks_into_the_house() {
+        let house = house_with_a_step();
         assert!(
             house.iter().any(|p| p.dx == DOORWAY_DX
                 && p.dy == DOORWAY_DY
@@ -392,25 +452,35 @@ mod tests {
                 && p.blocks()),
             "the doorway must stand on the solid footing, or the test proves nothing"
         );
-        for feet_z in [GROUND_Z, INSIDE_Z] {
-            assert!(
-                !shuts_out(&walls(&house, feet_z, NO_DOORS), DOORWAY_DX, DOORWAY_DY),
-                "the doorway is open to a person whose feet are at {feet_z}"
-            );
-        }
+        let map = MockMap::new(MOCK_GRID, MOCK_GRID);
+        let overlay = overlay_of(&map, &house, NO_DOORS);
+        let outside = at(DOORWAY_DX, DOORWAY_DY + 2, GROUND_Z);
+        let middle = at(0, 0, INSIDE_Z);
+        let walk =
+            pathfind(&overlay, outside, middle, &Obstacles::NONE).expect("the doorway lets him in");
+        let (door_x, door_y) = tile(DOORWAY_DX, DOORWAY_DY);
+        assert!(
+            walk.steps
+                .iter()
+                .any(|s| (s.x, s.y, s.z) == (door_x, door_y, INSIDE_Z)),
+            "he crosses the doorway on the floor of the house: {:?}",
+            walk.steps
+        );
+        assert_eq!(walk.steps.last().map(|s| s.z), Some(INSIDE_Z));
     }
 
     /// A door item stands in its own doorway, and the door logic opens it. A
-    /// building must never claim that tile, whatever its shape says, or the
+    /// building must never close that tile, whatever its shape says, or the
     /// character walks around the door he has just opened.
     #[test]
     fn a_tile_a_door_item_stands_on_is_never_a_building_wall() {
-        let house = stone_house();
-        let wall_dx = HOUSE_HALF;
-        let wall_dy = 0;
+        let map = MockMap::new(MOCK_GRID, MOCK_GRID);
+        let (wall_dx, wall_dy) = (HOUSE_HALF, 0);
         let (x, y) = tile(wall_dx, wall_dy);
         assert!(
-            shuts_out(&walls(&house, GROUND_Z, NO_DOORS), wall_dx, wall_dy),
+            !overlay_of(&map, &stone_house(), NO_DOORS)
+                .tile_from(INSIDE_Z, x, y)
+                .walkable(),
             "that tile is a wall while no door stands on it"
         );
         let door = DoorItem {
@@ -419,86 +489,88 @@ mod tests {
             location: Point3::new(x, y, INSIDE_Z),
         };
         assert!(
-            !shuts_out(&walls(&house, GROUND_Z, &[door]), wall_dx, wall_dy),
+            overlay_of(&map, &stone_house(), &[door])
+                .tile_from(INSIDE_Z, x, y)
+                .walkable(),
             "and the door logic owns it once the server sends the door"
         );
     }
 
-    /// A house with two storeys must not put the wall of the bedroom in front
-    /// of a person walking past the house on the ground.
+    /// A house with two storeys puts the wall of the room above over the
+    /// heads of people on the ground: they walk round it by the same way as
+    /// round a house of one storey, and the floor inside stays open.
     #[test]
     fn the_wall_of_the_storey_above_leaves_the_ground_floor_open() {
-        let house = two_storey_house();
-        let corner = (HOUSE_HALF, HOUSE_HALF);
+        let map = MockMap::new(MOCK_GRID, MOCK_GRID);
+        let one = overlay_of(&map, &stone_house(), NO_DOORS);
+        let two = overlay_of(&map, &two_storey_house(), NO_DOORS);
+        let around_one = pathfind(&one, WEST_OF_THE_HOUSE, EAST_OF_THE_HOUSE, &Obstacles::NONE)
+            .expect("round the small house");
+        let around_two = pathfind(&two, WEST_OF_THE_HOUSE, EAST_OF_THE_HOUSE, &Obstacles::NONE)
+            .expect("round the tall house");
+        assert_eq!(around_one.steps.len(), around_two.steps.len());
+        let (x, y) = tile(1, 1);
         assert!(
-            shuts_out(&walls(&house, UPSTAIRS_Z, NO_DOORS), corner.0, corner.1),
-            "the wall of the storey above shuts a person upstairs out of it"
+            two.tile_from(INSIDE_Z, x, y).walkable(),
+            "the floor below is open"
         );
         assert!(
-            shuts_out(&walls(&house, UPSTAIRS_Z, NO_DOORS), DOORWAY_DX, DOORWAY_DY),
-            "the wall up there runs over the doorway below, and shuts him out of it"
-        );
-        let ground = walls(&house, GROUND_Z, NO_DOORS);
-        let one_storey = walls(&stone_house(), GROUND_Z, NO_DOORS);
-        assert_eq!(
-            ground.len(),
-            one_storey.len(),
-            "the storey above shuts a person on the ground out of nothing at all"
-        );
-        assert!(
-            !shuts_out(&ground, DOORWAY_DX, DOORWAY_DY),
-            "so the doorway underneath it is still open to him"
+            two.tile_from(UPSTAIRS_Z, x, y).walkable(),
+            "and so is the floor above"
         );
     }
 
-    /// The whole point of reading the shapes: a route planned around a house
-    /// the character can see goes round it, and the map alone sends him
-    /// straight through the wall.
-    #[test]
-    fn a_route_goes_round_a_house_and_not_through_it() {
-        let map = MockMap::new(MOCK_GRID, MOCK_GRID);
-        let straight = pathfind(&map, WEST_OF_THE_HOUSE, EAST_OF_THE_HOUSE, &Obstacles::NONE)
-            .expect("the map alone calls the way open");
-        let (through_x, through_y) = tile(0, 0);
-        assert!(
-            straight
-                .steps
-                .iter()
-                .any(|s| s.x == through_x && s.y == through_y),
-            "the map knows no house, so it walks through the middle of one: {:?}",
-            straight.steps
-        );
-
-        let shut = walls(&stone_house(), GROUND_Z, NO_DOORS);
-        // A wall is proven shut, which is what makes it hard.
-        let around = pathfind(
-            &map,
-            WEST_OF_THE_HOUSE,
-            EAST_OF_THE_HOUSE,
-            &Obstacles {
-                soft: &[],
-                hard: &shut,
-                moves: &[],
-            },
-        )
-        .expect("a way round the house");
-        for step in &around.steps {
-            assert!(
-                !shut.iter().any(|w| w.x == step.x && w.y == step.y),
-                "no step of the walk stands in a wall: {:?}",
-                around.steps
-            );
+    fn ground_item(graphic: u16, x: u16, y: u16, flags: u8) -> Item {
+        Item {
+            serial: Serial(0x4000_0200),
+            graphic,
+            amount: 1,
+            hue: 0,
+            location: Point3::new(x, y, GROUND_Z),
+            parent: None,
+            layer: None,
+            grid: 0,
+            name: String::new(),
+            flags,
         }
-        assert_eq!(
-            around.steps.last().map(|s| (s.x, s.y)),
-            Some((EAST_OF_THE_HOUSE.x, EAST_OF_THE_HOUSE.y)),
-            "and it comes out the far side: {:?}",
-            around.steps
+    }
+
+    /// An item on the ground weighs as a shard weighs it: an impassable one
+    /// blocks whether a player could carry it off or not, a fixed surface is
+    /// a floor, and a surface a player could carry off holds nobody up.
+    #[test]
+    fn items_on_the_ground_block_or_hold_as_the_shard_rules() {
+        let mut map = MockMap::new(MOCK_GRID, MOCK_GRID);
+        map.set_item_stat(GRAPHIC_TABLE, TILE_IMPASSABLE, TABLE_HEIGHT);
+        map.set_item_stat(GRAPHIC_CRATE, TILE_IMPASSABLE, TABLE_HEIGHT);
+        map.set_item_stat(GRAPHIC_PLATFORM, TILE_SURFACE, PLATFORM_HEIGHT);
+        const FIXED: u8 = 0;
+        let items = [
+            ground_item(GRAPHIC_TABLE, 10, 10, FIXED),
+            ground_item(GRAPHIC_CRATE, 11, 10, ITEM_FLAG_MOVABLE),
+            ground_item(GRAPHIC_PLATFORM, 12, 10, FIXED),
+            ground_item(GRAPHIC_PLATFORM, 13, 10, ITEM_FLAG_MOVABLE),
+        ];
+        let mut overlay = Overlay::new(&map);
+        add_ground_items(&mut overlay, items.iter());
+        assert!(
+            !overlay.can_walk_from(GROUND_Z, 10, 10),
+            "a fixed table blocks"
         );
         assert!(
-            around.steps.len() > straight.steps.len(),
-            "going round costs more than going through: {:?}",
-            around.steps
+            !overlay.can_walk_from(GROUND_Z, 11, 10),
+            "and so does a crate"
+        );
+        let raised = GROUND_Z + PLATFORM_HEIGHT as i8;
+        assert_eq!(
+            overlay.surface_near(raised, 12, 10),
+            Some(raised),
+            "a fixed platform is a floor to stand on"
+        );
+        assert_eq!(
+            overlay.surface_near(raised, 13, 10),
+            Some(GROUND_Z),
+            "but one a player could carry off holds nobody up"
         );
     }
 }

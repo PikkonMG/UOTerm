@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn a_rule_left_open_matches_anything_and_a_disabled_one_nothing() {
-        const GOLD: u16 = 0x0EED;
+        const GOLD: u16 = uoterm_protocol::types::GRAPHIC_GOLD_COINS;
         let any = ItemRule::default();
         assert!(any.matches(GOLD, 0));
         let gold = ItemRule {

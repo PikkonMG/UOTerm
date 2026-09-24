@@ -419,6 +419,7 @@ mod tests {
                 layer: None,
                 grid: 0,
                 name: String::new(),
+                flags: 0,
             },
         );
         ready_to_act(&mut inner);

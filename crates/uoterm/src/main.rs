@@ -159,7 +159,7 @@ enum Commands {
     /// Local unencrypted demo shard
     #[command(name = "mock-shard")]
     MockShard {
-        #[arg(long, default_value = "127.0.0.1:2593")]
+        #[arg(long, default_value = uoterm_runtime::config::DEFAULT_MOCK_BIND)]
         bind: String,
     },
     /// MCP stdio server (proxies to --api)
@@ -501,6 +501,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         answer_when_named: cfg.answer_when_named,
         play_along: cfg.play_along,
         picker: None,
+        reconnect: cfg.reconnect,
     };
     let rt = Runtime::new(cfg.max_sessions);
     let handle = rt.connect(opts).await?;
@@ -708,6 +709,7 @@ fn play_options(
         answer_when_named: cfg.answer_when_named,
         play_along: cfg.play_along,
         picker: Some(picker),
+        reconnect: cfg.reconnect,
         ..ConnectOptions::default()
     })
 }

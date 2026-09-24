@@ -14,11 +14,10 @@ use uoterm_nav::{
     MulMap, MultiData, MultiPiece, RadarColors, SeasonArt, Stance, TileQuery, TILE_ANIMATED,
     TILE_PARTIAL_HUE,
 };
+use uoterm_protocol::types::WEAPON_LAYERS;
 
 /// How many tiles the window remembers. A full window shows about four
 /// thousand, so this is a few windows of walking.
-/// The layers of the two hands. A weapon or a shield is on one of them.
-const WEAPON_LAYERS: [u8; 2] = [1, 2];
 const CELL_CACHE_CAP: usize = 24_000;
 /// Item graphics that the client never draws.
 const NO_DRAW_GRAPHICS: [u16; 3] = [0x0001, 0x21BC, 0x63D3];

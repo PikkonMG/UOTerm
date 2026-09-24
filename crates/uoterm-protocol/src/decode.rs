@@ -111,6 +111,51 @@ pub struct GroundItem {
     /// this from the packet bytes could not answer it at all for an item that
     /// arrived inside a bundle, because a bundle keeps no per-entry bytes.
     pub multi: bool,
+    /// The item flags the shard sends: [`ITEM_FLAG_MOVABLE`] and
+    /// [`ITEM_FLAG_HIDDEN`].
+    #[serde(default)]
+    pub flags: u8,
+}
+
+/// One mobile or item a moving boat carries, at its new place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoatRider {
+    pub serial: Serial,
+    pub x: u16,
+    pub y: u16,
+    pub z: i8,
+}
+
+/// What a click tells about an item on a shard with no property lists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EquipInfo {
+    pub serial: Serial,
+    /// The name of the item, as a cliloc number. Zero when the shard sends
+    /// none.
+    pub cliloc: u32,
+    /// Who made the item. Empty when no one did.
+    pub crafter: String,
+    /// The item's magic is not known yet.
+    pub unidentified: bool,
+    pub attributes: Vec<EquipAttribute>,
+}
+
+/// One line of [`EquipInfo`]: a cliloc number, and the charges left, or
+/// [`EQUIP_NO_CHARGES`] when the line has none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EquipAttribute {
+    pub cliloc: u32,
+    pub charges: i16,
+}
+
+/// The charges of an [`EquipAttribute`] that has none.
+pub const EQUIP_NO_CHARGES: i16 = -1;
+
+/// The patches one map uses, as [`Inbound::MapPatches`] gives them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapPatchCount {
+    pub statics: u32,
+    pub land: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -504,6 +549,9 @@ pub enum Inbound {
     },
     CharacterList {
         characters: Vec<CharacterSlot>,
+        /// The account flags after the start towns, when the shard sent
+        /// them. See the `ACCOUNT_FLAG_*` bits.
+        account_flags: Option<u32>,
     },
     LoginConfirm {
         serial: Serial,
@@ -766,7 +814,8 @@ pub enum Inbound {
     },
     /// `0x29`. The shard took the item that was dropped.
     DropAccepted,
-    /// `0xF6`. A boat and everything on it moved.
+    /// `0xF6`. A boat and everything on it moved. `riders` are the mobiles
+    /// and items it carries, each at its new place.
     BoatMoving {
         boat: Serial,
         speed: u8,
@@ -775,6 +824,7 @@ pub enum Inbound {
         x: u16,
         y: u16,
         z: i8,
+        riders: Vec<BoatRider>,
     },
     /// `0xBA`. An arrow that points at a place, or the end of one.
     QuestArrow {
@@ -890,6 +940,55 @@ pub enum Inbound {
         icon: u16,
         effects: Vec<BuffEntry>,
     },
+    /// `0xBF` `0x04`. The shard closed every gump of this type. A button
+    /// other than zero is the answer it gave the gump as it closed.
+    CloseGump {
+        gump_id: u32,
+        button: u32,
+    },
+    /// `0xBF` `0x10`. What a click tells about an item on a shard with no
+    /// property lists.
+    EquipInfo(EquipInfo),
+    /// `0xBF` `0x16`. Close the window of this kind that the client holds
+    /// for this object. See the `WINDOW_*` kinds.
+    CloseWindow {
+        kind: u32,
+        serial: Serial,
+    },
+    /// `0xBF` `0x18`. How many patches of the client patch files each map
+    /// uses, in map order.
+    MapPatches {
+        maps: Vec<MapPatchCount>,
+    },
+    /// `0xBF` `0x19` kind 0. A bonded pet died, or came back to life.
+    BondedStatus {
+        serial: Serial,
+        dead: bool,
+    },
+    /// `0xBF` `0x19` kind 2 or 5. The locks of the three stats: 0 up,
+    /// 1 down, 2 locked.
+    StatLocks {
+        serial: Serial,
+        strength: u8,
+        dexterity: u8,
+        intelligence: u8,
+    },
+    /// `0xBF` `0x1B`. The spells a spellbook holds, one bit each, the lowest
+    /// bit for `first_spell`.
+    SpellbookContent {
+        book: Serial,
+        graphic: u16,
+        first_spell: u16,
+        spells: u64,
+    },
+    /// `0xBF` `0x1D`. The design revision of a custom house. The client asks
+    /// for the design when it holds an older one.
+    HouseRevision {
+        serial: Serial,
+        revision: u32,
+    },
+    /// `0xBF` `0x26`. The walking speed rules. See the `SPEED_MODE_*` values.
+    SpeedMode(u8),
     Extended {
         sub: u16,
         payload: Vec<u8>,
@@ -936,7 +1035,7 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_POPUP_MESSAGE => parse_popup_message(packet),
         PKT_RELAY => parse_relay(packet),
         PKT_FEATURES => parse_features(packet),
-        PKT_CHARACTER_LIST => parse_character_list(packet),
+        PKT_CHARACTER_LIST => parse_character_list(packet, version),
         PKT_LOGIN_CONFIRM => parse_login_confirm(packet),
         PKT_LOGIN_COMPLETE => Ok(Inbound::LoginComplete),
         PKT_DRAW_PLAYER => parse_draw_player(packet),
@@ -1201,20 +1300,49 @@ fn parse_features(packet: &[u8]) -> Result<Inbound> {
 /// characters.
 const CHARACTER_NAME_LEN: usize = 30;
 
-fn parse_character_list(packet: &[u8]) -> Result<Inbound> {
+/// The width of one start town in the character list: the older name and
+/// building fields, and from 7.0.13.0 wider ones with the place and a line of
+/// words.
+const START_TOWN_LEN_OLD: usize = 1 + 31 + 31;
+const START_TOWN_LEN_PLACED: usize = 1 + 32 + 32 + 4 * 5 + 4;
+
+fn parse_character_list(packet: &[u8], version: ClientVersion) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     r.u16()?;
-    let count = r.u8()? as usize;
-    let mut characters = Vec::new();
+    let characters = read_character_slots(&mut r)?;
+    // The start towns and the flags after them. A list that ends with the
+    // characters has no flags to give.
+    let account_flags = match r.u8() {
+        Ok(towns) => {
+            let town_len = if version.has_placed_start_towns() {
+                START_TOWN_LEN_PLACED
+            } else {
+                START_TOWN_LEN_OLD
+            };
+            r.skip(usize::from(towns) * town_len)?;
+            Some(r.u32()?)
+        }
+        Err(_) => None,
+    };
+    Ok(Inbound::CharacterList {
+        characters,
+        account_flags,
+    })
+}
+
+/// Every slot of the list, the empty ones too. A slot's place in the list is
+/// the number the shard reads in a play or a delete request, so dropping an
+/// empty slot would move each later character onto the wrong number.
+fn read_character_slots(r: &mut PacketReader<'_>) -> Result<Vec<CharacterSlot>> {
+    let count = usize::from(r.u8()?);
+    let mut characters = Vec::with_capacity(count);
     for _ in 0..count {
         let name = r.ascii_fixed(CHARACTER_NAME_LEN)?;
         r.ascii_fixed(CHARACTER_NAME_LEN)?;
-        if !name.is_empty() {
-            characters.push(CharacterSlot { name });
-        }
+        characters.push(CharacterSlot { name });
     }
-    Ok(Inbound::CharacterList { characters })
+    Ok(characters)
 }
 
 fn parse_login_confirm(packet: &[u8]) -> Result<Inbound> {
@@ -1430,41 +1558,50 @@ fn parse_world_item(packet: &[u8]) -> Result<Inbound> {
     r.u8()?;
     r.u16()?;
     let mut serial = r.u32()?;
+    let has_amount = serial & WORLD_ITEM_HAS_AMOUNT != 0;
+    serial &= !WORLD_ITEM_HAS_AMOUNT;
     let mut graphic = r.u16()?;
-    let mut amount = 1u16;
-    if serial & 0x8000_0000 != 0 {
-        serial &= 0x7FFF_FFFF;
-        amount = r.u16().unwrap_or(1);
+    if graphic & WORLD_ITEM_HAS_GRAPHIC_STEP != 0 {
+        // A step the shard adds to the graphic. The reference client reads it
+        // and leaves the graphic as it is, and so does this one.
+        r.u8()?;
+        graphic &= !WORLD_ITEM_HAS_GRAPHIC_STEP;
     }
-    graphic &= 0x7FFF;
+    let amount = if has_amount { r.u16()? } else { 1 };
     let multi = graphic & ITEM_GRAPHIC_MULTI != 0;
     let mut x = r.u16()?;
     let mut y = r.u16()?;
-    if x & 0x8000 != 0 {
-        let _dir = r.u8();
-        x &= 0x7FFF;
+    let has_direction = x & WORLD_ITEM_HAS_DIRECTION != 0;
+    x &= !WORLD_ITEM_HAS_DIRECTION;
+    let has_hue = y & WORLD_ITEM_HAS_HUE != 0;
+    let has_flags = y & WORLD_ITEM_HAS_FLAGS != 0;
+    y &= WORLD_ITEM_Y_MASK;
+    if has_direction {
+        r.u8()?;
     }
     let z = r.i8()?;
-    let mut hue = 0u16;
-    if y & 0x8000 != 0 {
-        hue = r.u16().unwrap_or(0);
-        y &= 0x7FFF;
-    }
-    if y & 0x4000 != 0 {
-        let _flags = r.u8();
-        y &= !0x4000;
-    }
+    let hue = if has_hue { r.u16()? } else { 0 };
+    let flags = if has_flags { r.u8()? } else { 0 };
     Ok(Inbound::WorldItem(GroundItem {
         serial: Serial(serial),
         graphic,
         amount,
         x,
-        y: y & 0x3FFF,
+        y,
         z,
         hue,
         multi,
+        flags,
     }))
 }
+
+/// `0x1A`: bits that say an optional field follows.
+const WORLD_ITEM_HAS_AMOUNT: u32 = 0x8000_0000;
+const WORLD_ITEM_HAS_GRAPHIC_STEP: u16 = 0x8000;
+const WORLD_ITEM_HAS_DIRECTION: u16 = 0x8000;
+const WORLD_ITEM_HAS_HUE: u16 = 0x8000;
+const WORLD_ITEM_HAS_FLAGS: u16 = 0x4000;
+const WORLD_ITEM_Y_MASK: u16 = 0x3FFF;
 
 fn parse_world_item_sa(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
@@ -1481,7 +1618,7 @@ fn parse_world_item_sa(packet: &[u8]) -> Result<Inbound> {
     let z = r.i8()?;
     r.u8()?;
     let hue = r.u16()?;
-    r.u8()?;
+    let flags = r.u8()?;
     Ok(Inbound::WorldItem(GroundItem {
         serial,
         graphic,
@@ -1491,6 +1628,7 @@ fn parse_world_item_sa(packet: &[u8]) -> Result<Inbound> {
         z,
         hue,
         multi: kind == WORLD_ITEM_SA_TYPE_MULTI,
+        flags,
     }))
 }
 
@@ -1894,10 +2032,10 @@ fn parse_compressed_gump(r: &mut PacketReader<'_>) -> Result<Inbound> {
     let layout_bytes = inflate_zlib(layout_src, layout_plain)?;
     let layout = String::from_utf8_lossy(&layout_bytes).into_owned();
     let lines = r.u32()? as usize;
-    let text_packed = r.u32()? as usize;
-    // Some shards write a single zero length word when a compressed gump has
-    // no text strings. There is no following uncompressed-length word in that
-    // representation.
+    // A gump with no text may end right after its line count, or carry one
+    // zero length word more. Neither has an uncompressed-length word, and
+    // with no lines nothing that follows is read.
+    let text_packed = if lines == 0 { 0 } else { r.u32()? as usize };
     if text_packed == 0 {
         return Ok(Inbound::Gump(OpenGump {
             serial,
@@ -2037,9 +2175,139 @@ fn parse_extended(packet: &[u8]) -> Result<Inbound> {
         EXT_CONTEXT_MENU_DISPLAY => parse_context_menu(&mut r),
         EXT_PARTY => parse_party(&mut r, packet),
         EXT_HOUSE_DESIGNER => parse_house_designer(&mut r),
+        EXT_CLOSE_GUMP => Ok(Inbound::CloseGump {
+            gump_id: r.u32()?,
+            button: r.u32()?,
+        }),
+        EXT_EQUIP_INFO => parse_equip_info(&mut r),
+        EXT_CLOSE_WINDOW => Ok(Inbound::CloseWindow {
+            kind: r.u32()?,
+            serial: r.serial()?,
+        }),
+        EXT_MAP_PATCHES => parse_map_patches(&mut r),
+        EXT_EXTENDED_STATS => parse_extended_stats(&mut r, packet),
+        EXT_SPELLBOOK_CONTENT => {
+            r.u16()?;
+            let book = r.serial()?;
+            let graphic = r.u16()?;
+            let first_spell = r.u16()?;
+            let mut bytes = [0u8; SPELLBOOK_CONTENT_BYTES];
+            bytes.copy_from_slice(r.take(SPELLBOOK_CONTENT_BYTES)?);
+            Ok(Inbound::SpellbookContent {
+                book,
+                graphic,
+                first_spell,
+                spells: u64::from_le_bytes(bytes),
+            })
+        }
+        EXT_HOUSE_REVISION => Ok(Inbound::HouseRevision {
+            serial: r.serial()?,
+            revision: r.u32()?,
+        }),
+        EXT_DAMAGE => {
+            r.u8()?;
+            Ok(Inbound::Damage {
+                serial: r.serial()?,
+                amount: u16::from(r.u8()?),
+            })
+        }
+        EXT_SPEED_MODE => Ok(Inbound::SpeedMode(r.u8()?)),
         _ => Ok(Inbound::Extended {
             sub,
             payload: r.rest().to_vec(),
+        }),
+    }
+}
+
+/// The spell bits of a `0xBF` `0x1B` spellbook, lowest byte first.
+const SPELLBOOK_CONTENT_BYTES: usize = 8;
+/// The markers of a `0xBF` `0x10` item: a maker's name follows, the magic is
+/// not known, and the list ends.
+const EQUIP_INFO_CRAFTER: u32 = 0xFFFF_FFFD;
+const EQUIP_INFO_UNIDENTIFIED: u32 = 0xFFFF_FFFC;
+const EQUIP_INFO_END: u32 = 0xFFFF_FFFF;
+/// The kinds of a `0xBF` `0x19` packet.
+const EXTENDED_STATS_BONDED: u8 = 0;
+const EXTENDED_STATS_LOCKS: u8 = 2;
+const EXTENDED_STATS_LOCKS_AND_ANIMATION: u8 = 5;
+/// The bits of one stat lock, and where each stat sits in the lock byte.
+const STAT_LOCK_MASK: u8 = 0x03;
+const STAT_LOCK_STRENGTH_SHIFT: u8 = 4;
+const STAT_LOCK_DEXTERITY_SHIFT: u8 = 2;
+/// The most maps a `0xBF` `0x18` packet can speak of.
+const MAP_PATCH_MAPS_MAX: usize = 6;
+
+fn parse_equip_info(r: &mut PacketReader<'_>) -> Result<Inbound> {
+    let serial = r.serial()?;
+    let cliloc = r.u32()?;
+    let mut info = EquipInfo {
+        serial,
+        cliloc,
+        crafter: String::new(),
+        unidentified: false,
+        attributes: Vec::new(),
+    };
+    while r.remaining() > 0 {
+        match r.u32()? {
+            EQUIP_INFO_END => break,
+            EQUIP_INFO_CRAFTER => {
+                let len = usize::from(r.u16()?);
+                info.crafter = r.ascii_fixed(len)?;
+            }
+            EQUIP_INFO_UNIDENTIFIED => info.unidentified = true,
+            cliloc => info.attributes.push(EquipAttribute {
+                cliloc,
+                charges: r.i16()?,
+            }),
+        }
+    }
+    Ok(Inbound::EquipInfo(info))
+}
+
+fn parse_map_patches(r: &mut PacketReader<'_>) -> Result<Inbound> {
+    let count = (r.u32()? as usize).min(MAP_PATCH_MAPS_MAX);
+    let mut maps = Vec::with_capacity(count);
+    for _ in 0..count {
+        // Every server family writes the statics first, then the land.
+        maps.push(MapPatchCount {
+            statics: r.u32()?,
+            land: r.u32()?,
+        });
+    }
+    Ok(Inbound::MapPatches { maps })
+}
+
+/// Kind 5 carries the locks the same way kind 2 does, unless its lock byte
+/// says an animation follows, which UOTerm does not play from this packet.
+fn parse_extended_stats(r: &mut PacketReader<'_>, packet: &[u8]) -> Result<Inbound> {
+    const ANIMATION_FOLLOWS: u8 = 0xFF;
+    let kind = r.u8()?;
+    let serial = r.serial()?;
+    match kind {
+        EXTENDED_STATS_BONDED => Ok(Inbound::BondedStatus {
+            serial,
+            dead: r.u8()? != 0,
+        }),
+        EXTENDED_STATS_LOCKS | EXTENDED_STATS_LOCKS_AND_ANIMATION => {
+            // The first byte only says whether to redraw the status window.
+            r.u8()?;
+            let locks = r.u8()?;
+            if kind == EXTENDED_STATS_LOCKS_AND_ANIMATION && locks == ANIMATION_FOLLOWS {
+                return Ok(Inbound::Extended {
+                    sub: EXT_EXTENDED_STATS,
+                    payload: packet[EXTENDED_HEADER_LEN..].to_vec(),
+                });
+            }
+            Ok(Inbound::StatLocks {
+                serial,
+                strength: (locks >> STAT_LOCK_STRENGTH_SHIFT) & STAT_LOCK_MASK,
+                dexterity: (locks >> STAT_LOCK_DEXTERITY_SHIFT) & STAT_LOCK_MASK,
+                intelligence: locks & STAT_LOCK_MASK,
+            })
+        }
+        _ => Ok(Inbound::Extended {
+            sub: EXT_EXTENDED_STATS,
+            payload: packet[EXTENDED_HEADER_LEN..].to_vec(),
         }),
     }
 }
@@ -2828,15 +3096,7 @@ fn parse_character_list_update(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     r.u16()?;
-    let count = usize::from(r.u8()?);
-    let mut characters = Vec::new();
-    for _ in 0..count {
-        let name = r.ascii_fixed(CHARACTER_NAME_LEN)?;
-        r.ascii_fixed(CHARACTER_NAME_LEN)?;
-        if !name.is_empty() {
-            characters.push(CharacterSlot { name });
-        }
-    }
+    let characters = read_character_slots(&mut r)?;
     Ok(Inbound::CharacterListUpdate { characters })
 }
 
@@ -2861,14 +3121,32 @@ fn parse_boat_moving(packet: &[u8]) -> Result<Inbound> {
     let mut r = PacketReader::new(packet);
     r.u8()?;
     r.u16()?;
+    let boat = r.serial()?;
+    let speed = r.u8()?;
+    let moving = r.u8()? & DIRECTION_BITS;
+    let facing = r.u8()? & DIRECTION_BITS;
+    let x = r.u16()?;
+    let y = r.u16()?;
+    let z = r.u16()? as i8;
+    let count = usize::from(r.u16()?);
+    let mut riders = Vec::with_capacity(count);
+    for _ in 0..count {
+        riders.push(BoatRider {
+            serial: r.serial()?,
+            x: r.u16()?,
+            y: r.u16()?,
+            z: r.u16()? as i8,
+        });
+    }
     Ok(Inbound::BoatMoving {
-        boat: r.serial()?,
-        speed: r.u8()?,
-        moving: r.u8()? & DIRECTION_BITS,
-        facing: r.u8()? & DIRECTION_BITS,
-        x: r.u16()?,
-        y: r.u16()?,
-        z: r.u16()? as i8,
+        boat,
+        speed,
+        moving,
+        facing,
+        x,
+        y,
+        z,
+        riders,
     })
 }
 
@@ -3110,21 +3388,57 @@ mod tests {
         assert_eq!(character_refusal(200), character_refusal(5));
     }
 
+    /// The account flags sit after the start towns, whose width depends on
+    /// the version, and a list that ends with the characters has none.
+    #[test]
+    fn the_character_list_gives_the_account_flags_past_the_towns() {
+        const FLAGS: u32 = ACCOUNT_FLAG_CONTEXT_MENUS | ACCOUNT_FLAG_PROPERTY_LISTS;
+        const TOWNS: u8 = 2;
+        let old: ClientVersion = "7.0.12.0".parse().unwrap();
+        let new: ClientVersion = "7.0.13.0".parse().unwrap();
+        for (version, town_len) in [(old, START_TOWN_LEN_OLD), (new, START_TOWN_LEN_PLACED)] {
+            let mut w = crate::buf::PacketWriter::with_variable(PKT_CHARACTER_LIST);
+            w.u8(1)
+                .ascii_fixed("Mara", CHARACTER_NAME_LEN)
+                .ascii_fixed("", CHARACTER_NAME_LEN)
+                .u8(TOWNS)
+                .pad(usize::from(TOWNS) * town_len)
+                .u32(FLAGS);
+            let Inbound::CharacterList { account_flags, .. } =
+                parse_with_version(&w.finish_variable().unwrap(), version).unwrap()
+            else {
+                panic!("not a character list");
+            };
+            assert_eq!(account_flags, Some(FLAGS), "{version}");
+        }
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_CHARACTER_LIST);
+        w.u8(1)
+            .ascii_fixed("Mara", CHARACTER_NAME_LEN)
+            .ascii_fixed("", CHARACTER_NAME_LEN);
+        let Inbound::CharacterList { account_flags, .. } =
+            parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not a character list");
+        };
+        assert_eq!(account_flags, None);
+    }
+
     #[test]
     fn the_list_comes_again_after_a_character_is_made_or_deleted() {
         let mut w = crate::buf::PacketWriter::with_variable(PKT_CHARACTER_LIST_UPDATE);
         w.u8(2)
+            .ascii_fixed("", CHARACTER_NAME_LEN)
+            .ascii_fixed("", CHARACTER_NAME_LEN)
             .ascii_fixed("Mara", CHARACTER_NAME_LEN)
-            .ascii_fixed("", CHARACTER_NAME_LEN)
-            .ascii_fixed("", CHARACTER_NAME_LEN)
             .ascii_fixed("", CHARACTER_NAME_LEN);
         let Inbound::CharacterListUpdate { characters } =
             parse(&w.finish_variable().unwrap()).unwrap()
         else {
             panic!("not a character list");
         };
-        assert_eq!(characters.len(), 1, "an empty slot is no character");
-        assert_eq!(characters[0].name, "Mara");
+        assert_eq!(characters.len(), 2, "an empty slot keeps its place");
+        assert!(characters[0].name.is_empty());
+        assert_eq!(characters[1].name, "Mara", "Mara is slot 1, not slot 0");
     }
 
     #[test]
@@ -3146,6 +3460,7 @@ mod tests {
     #[test]
     fn a_boat_moves_with_its_way_and_its_facing() {
         const BOAT: Serial = Serial(0x4000_0B03);
+        const RIDER: Serial = Serial(0x0000_0B04);
         let mut w = crate::buf::PacketWriter::with_variable(PKT_BOAT_MOVING);
         w.serial(BOAT)
             .u8(2)
@@ -3153,19 +3468,38 @@ mod tests {
             .u8(0x04)
             .u16(1000)
             .u16(1200)
-            .u16(5);
-        assert!(matches!(
-            parse(&w.finish_variable().unwrap()).unwrap(),
-            Inbound::BoatMoving {
-                boat: BOAT,
-                speed: 2,
-                moving: 2,
-                facing: 4,
-                x: 1000,
-                z: 5,
-                ..
-            }
-        ));
+            .u16(5)
+            .u16(1)
+            .serial(RIDER)
+            .u16(1001)
+            .u16(1201)
+            .u16(8);
+        let Inbound::BoatMoving {
+            boat,
+            speed,
+            moving,
+            facing,
+            x,
+            z,
+            riders,
+            ..
+        } = parse(&w.finish_variable().unwrap()).unwrap()
+        else {
+            panic!("not a boat");
+        };
+        assert_eq!(
+            (boat, speed, moving, facing, x, z),
+            (BOAT, 2, 2, 4, 1000, 5)
+        );
+        assert_eq!(
+            riders,
+            vec![BoatRider {
+                serial: RIDER,
+                x: 1001,
+                y: 1201,
+                z: 8
+            }]
+        );
     }
 
     #[test]
@@ -3954,6 +4288,201 @@ mod tests {
         let mut w = crate::buf::PacketWriter::with_variable(PKT_WORLD_ITEM);
         w.u32(serial).u16(graphic).u16(AT_X).u16(AT_Y).i8(0);
         w.finish_variable().unwrap()
+    }
+
+    /// Every optional field of `0x1A` at once: the amount, the graphic step
+    /// byte, the direction, the hue and the flags. Each one the reader skips
+    /// would move every later field by its width.
+    #[test]
+    fn a_world_item_with_every_optional_field_reads_each_in_its_place() {
+        const SERIAL: u32 = 0x4000_0C01;
+        const GRAPHIC: u16 = 0x0E75;
+        const AMOUNT: u16 = 12;
+        const AT_X: u16 = 1425;
+        const AT_Y: u16 = 1680;
+        const AT_Z: i8 = 5;
+        const HUE: u16 = 0x0481;
+        const GRAPHIC_STEP: u8 = 2;
+        const DIRECTION: u8 = 4;
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_WORLD_ITEM);
+        w.u32(SERIAL | WORLD_ITEM_HAS_AMOUNT)
+            .u16(GRAPHIC | WORLD_ITEM_HAS_GRAPHIC_STEP)
+            .u8(GRAPHIC_STEP)
+            .u16(AMOUNT)
+            .u16(AT_X | WORLD_ITEM_HAS_DIRECTION)
+            .u16(AT_Y | WORLD_ITEM_HAS_HUE | WORLD_ITEM_HAS_FLAGS)
+            .u8(DIRECTION)
+            .i8(AT_Z)
+            .u16(HUE)
+            .u8(ITEM_FLAG_MOVABLE);
+        let Inbound::WorldItem(item) = parse(&w.finish_variable().unwrap()).unwrap() else {
+            panic!("not a world item");
+        };
+        assert_eq!(item.serial, Serial(SERIAL));
+        assert_eq!(item.graphic, GRAPHIC);
+        assert_eq!(item.amount, AMOUNT);
+        assert_eq!((item.x, item.y, item.z), (AT_X, AT_Y, AT_Z));
+        assert_eq!(item.hue, HUE);
+        assert_eq!(item.flags, ITEM_FLAG_MOVABLE);
+        assert!(!item.multi);
+    }
+
+    fn extended(sub: u16, body: impl FnOnce(&mut crate::buf::PacketWriter)) -> Inbound {
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_EXTENDED);
+        w.u16(sub);
+        body(&mut w);
+        parse(&w.finish_variable().unwrap()).unwrap()
+    }
+
+    /// Each `0xBF` sub-command a shard sends to close, patch, lock, fill or
+    /// slow something reaches the world as its own event, not as raw bytes.
+    #[test]
+    fn the_extended_sub_commands_a_shard_sends_are_read() {
+        const GUMP_TYPE: u32 = 0x0000_1F4A;
+        const BUTTON: u32 = 3;
+        const BAG: Serial = Serial(0x4000_0D01);
+        const PET: Serial = Serial(0x0000_0D02);
+        const ME: Serial = Serial(0x0000_0D03);
+        const BOOK: Serial = Serial(0x4000_0D04);
+        const HOUSE: Serial = Serial(0x4000_0D05);
+        const BOOK_GRAPHIC: u16 = 0x0EFA;
+        const FIRST_SPELL: u16 = 1;
+        const REVISION: u32 = 7;
+        const HIT: u8 = 12;
+        const LOCK_DOWN: u8 = 1;
+        const LOCK_LOCKED: u8 = 2;
+        // Down for strength, locked for dexterity, down for intelligence.
+        const LOCKS: u8 = (LOCK_DOWN << STAT_LOCK_STRENGTH_SHIFT)
+            | (LOCK_LOCKED << STAT_LOCK_DEXTERITY_SHIFT)
+            | LOCK_DOWN;
+
+        assert!(matches!(
+            extended(EXT_CLOSE_GUMP, |w| {
+                w.u32(GUMP_TYPE).u32(BUTTON);
+            }),
+            Inbound::CloseGump {
+                gump_id: GUMP_TYPE,
+                button: BUTTON
+            }
+        ));
+        assert!(matches!(
+            extended(EXT_CLOSE_WINDOW, |w| {
+                w.u32(WINDOW_CONTAINER).serial(BAG);
+            }),
+            Inbound::CloseWindow {
+                kind: WINDOW_CONTAINER,
+                serial: BAG
+            }
+        ));
+        let Inbound::MapPatches { maps } = extended(EXT_MAP_PATCHES, |w| {
+            w.u32(2).u32(5).u32(9).u32(0).u32(1);
+        }) else {
+            panic!("no patches");
+        };
+        assert_eq!(
+            maps,
+            vec![
+                MapPatchCount {
+                    statics: 5,
+                    land: 9
+                },
+                MapPatchCount {
+                    statics: 0,
+                    land: 1
+                }
+            ]
+        );
+        assert!(matches!(
+            extended(EXT_EXTENDED_STATS, |w| {
+                w.u8(EXTENDED_STATS_BONDED).serial(PET).u8(1);
+            }),
+            Inbound::BondedStatus {
+                serial: PET,
+                dead: true
+            }
+        ));
+        for kind in [EXTENDED_STATS_LOCKS, EXTENDED_STATS_LOCKS_AND_ANIMATION] {
+            assert!(matches!(
+                extended(EXT_EXTENDED_STATS, |w| {
+                    w.u8(kind).serial(ME).u8(0).u8(LOCKS);
+                }),
+                Inbound::StatLocks {
+                    serial: ME,
+                    strength: LOCK_DOWN,
+                    dexterity: LOCK_LOCKED,
+                    intelligence: LOCK_DOWN
+                }
+            ));
+        }
+        let Inbound::SpellbookContent {
+            book,
+            graphic,
+            first_spell,
+            spells,
+        } = extended(EXT_SPELLBOOK_CONTENT, |w| {
+            w.u16(1).serial(BOOK).u16(BOOK_GRAPHIC).u16(FIRST_SPELL);
+            // Spells 1 and 10 only: bits 0 and 9, lowest byte first.
+            w.bytes(&[0x01, 0x02, 0, 0, 0, 0, 0, 0]);
+        })
+        else {
+            panic!("no spellbook");
+        };
+        assert_eq!(
+            (book, graphic, first_spell),
+            (BOOK, BOOK_GRAPHIC, FIRST_SPELL)
+        );
+        assert_eq!(spells, (1 << 0) | (1 << 9));
+        assert!(matches!(
+            extended(EXT_HOUSE_REVISION, |w| {
+                w.serial(HOUSE).u32(REVISION);
+            }),
+            Inbound::HouseRevision {
+                serial: HOUSE,
+                revision: REVISION
+            }
+        ));
+        assert!(matches!(
+            extended(EXT_DAMAGE, |w| {
+                w.u8(1).serial(PET).u8(HIT);
+            }),
+            Inbound::Damage { serial: PET, amount } if amount == u16::from(HIT)
+        ));
+        assert!(matches!(
+            extended(EXT_SPEED_MODE, |w| {
+                w.u8(SPEED_MODE_NO_RUN);
+            }),
+            Inbound::SpeedMode(SPEED_MODE_NO_RUN)
+        ));
+    }
+
+    /// A click on an older shard names the item, its maker, whether its magic
+    /// is known, and its charges, each after its own marker.
+    #[test]
+    fn equip_info_reads_each_marked_part() {
+        const SWORD: Serial = Serial(0x4000_0E01);
+        const NAME: u32 = 1_017_386;
+        const CHARGES_LINE: u32 = 1_017_355;
+        const CHARGES: i16 = 14;
+        let Inbound::EquipInfo(info) = extended(EXT_EQUIP_INFO, |w| {
+            w.serial(SWORD).u32(NAME);
+            w.u32(EQUIP_INFO_CRAFTER).u16(4).bytes(b"Mara");
+            w.u32(EQUIP_INFO_UNIDENTIFIED);
+            w.u32(CHARGES_LINE).i16(CHARGES);
+            w.u32(EQUIP_INFO_END);
+        }) else {
+            panic!("no equip info");
+        };
+        assert_eq!(info.serial, SWORD);
+        assert_eq!(info.cliloc, NAME);
+        assert_eq!(info.crafter, "Mara");
+        assert!(info.unidentified);
+        assert_eq!(
+            info.attributes,
+            vec![EquipAttribute {
+                cliloc: CHARGES_LINE,
+                charges: CHARGES
+            }]
+        );
     }
 
     /// The type byte of a mobile and of a damageable item. One server family
@@ -4784,6 +5313,21 @@ mod tests {
                 assert_eq!(g.layout, "{page 0}");
                 assert!(g.text.is_empty());
             }
+            other => panic!("{other:?}"),
+        }
+
+        // A shard may also end the packet right after a line count of zero.
+        let mut w = crate::buf::PacketWriter::with_variable(PKT_COMPRESSED_GUMP);
+        w.u32(1)
+            .u32(9)
+            .u32(0)
+            .u32(0)
+            .u32((layout_z.len() + COMPRESSED_LEN_HEADER) as u32)
+            .u32(8)
+            .bytes(&layout_z)
+            .u32(0);
+        match parse(&w.finish_variable().unwrap()).unwrap() {
+            Inbound::Gump(g) => assert!(g.text.is_empty()),
             other => panic!("{other:?}"),
         }
     }

@@ -63,17 +63,6 @@ const MOVE_KEY_FROM_SHIFT: u32 = 32;
 /// Where the first of the two ground coordinates sits in the key of a cell.
 const CELL_KEY_X_SHIFT: u32 = 16;
 
-pub(crate) const DIRS: [Direction; 8] = [
-    Direction::North,
-    Direction::Northeast,
-    Direction::East,
-    Direction::Southeast,
-    Direction::South,
-    Direction::Southwest,
-    Direction::West,
-    Direction::Northwest,
-];
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PathError {
     #[error("start is not walkable")]
@@ -455,7 +444,7 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
         }
         let incoming = came.get(&current_k).map(|step| step.direction);
         let from = Point3::new(x, y, z);
-        for dir in DIRS {
+        for dir in Direction::ALL {
             let (dx, dy) = dir.delta();
             let nx = x as i32 + dx;
             let ny = y as i32 + dy;

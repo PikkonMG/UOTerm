@@ -1,6 +1,6 @@
 # Agent API
 
-Tools return immediately with `action_id`. Completion is an event (`arrived`, `target_requested`, `speech`, and others).
+Tools return immediately with `action_id`. Completion is an event: `arrived` or `path_failed` for a walk, `job_ended` for a hunt, a walk, a loot, a bank deposit, a script or an agent job (with `<job>: done`, `stopped` or the reason), `job_failed` when one gives up, and `target_requested`, `gump_opened` and the others for what the shard sends.
 
 ## Banks
 
@@ -38,11 +38,12 @@ An agent that drives a character must not miss what happens between its calls. R
 2. Read `events` and `state`. Act on them in this order:
    0. `control_taken`: a human took the character through the watch window. Your goal, job and script are stopped. Each acting tool is refused with `a human has control of the character`. Look only (`observe`, `look_around`, `find_*`, `next_event`), and wait. `control_released` gives the character back: read `observe` again, because the human may have moved her. `state.human_control` and `observe.human_control` say which it is now.
    1. Danger: `died`, `low_health`, `damaged`, `enemy_near`, `combatant_changed`, `pk_flag`.
-   2. Something waits for an answer: `target_requested`, `gump_opened`, `prompt_opened`, `trade_opened`, `party_invite`.
+   2. Something waits for an answer: `target_requested`, `gump_opened`, `prompt_opened` (answer with `prompt_answer`), `trade_opened`, `party_invite` (answer with `party`), `shop_opened`, `context_menu_opened` and `menu_opened` (`observe` holds the goods, the lines or the entries).
    3. Chat: `spoken_to`, and `state.unanswered`. Answer with `reply`.
    4. A running job: read `doing.job`. Do not `move_to` or `attack` over a hunt or walk job.
    5. `job_ended`: a hunt or walk job handed back (`hunt: <reason>` or `walk: <reason>`). See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md). Then hunt, walk, bank, or rest.
-   6. Your own task: `item_added`, `arrived`, `path_failed`, `lift_rejected`, `play_along_ended`, `map_changed` (a moongate or recall took her to another map; the old map's mobiles and items are gone, and a walk or follow there is dropped).
+   6. Your own task: `item_added`, `arrived`, `path_failed`, `lift_rejected`, `play_along_ended`, `map_changed` (a moongate or recall took her to another map; the old map's mobiles and items are gone, and a walk or follow there is dropped), `gump_closed`, `buff_changed` (a buff came on or went off, by icon), and `system_message` (the shard's own words, such as "that is too far away").
+   7. `disconnected`: the link to the shard dropped. The session logs in again by itself after 5 s, then after longer waits up to 60 s, and each call meanwhile is refused with the words that say so. `logged_in` comes when the character is back. The `reconnect` setting (`uoterm.toml`, and the session create body) turns this off. A `logout` ends the session for good.
 3. Go back to 1.
 
 Events wait in the session for you. When you are slow, the next call gives you all of them, in order, 50 at most per call. `missed` counts events that were dropped before you asked; the session keeps the last 256.
@@ -74,38 +75,50 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | Tool | Precondition | Result |
 | --- | --- | --- |
 | `observe` | session exists | self, radar, journal, mobiles, items, target, gumps, doors, buffs, party, prompt, forbidden (assistant features the shard forbids). Optional `size` (5-41, default 21) sets the radar width. `GET /state` stays at 21. |
-| `find_mobiles` | in world | filter name / graphic / distance; `name` also matches the title, so `banker` finds "Kate the banker"; each has its title |
-| `find_items` | in world | filter graphic / container / name |
+| `find_mobiles` | in world | filter `name` / `graphic` / `distance`, `notoriety` (`innocent`, `friend`, `gray`, `criminal`, `enemy`, `murderer`, `invulnerable` or `any`), `species` (read from the body, so a named orc is an orc) and `in_sight`; `name` also matches the title, so `banker` finds "Kate the banker". Each has its title, `species`, `notoriety`, `hits_percent` when known, `war`, `hidden`, `poisoned`, `dead`, `in_sight` and what it wears (`worn`) |
+| `find_items` | in world | filter `graphic`, `graphics` (any of a list), `hue`, `container`, `name`, `distance`, and `x` with `y` (the items on one tile); each has its location, dist and hue |
+| `look_around` | in world | the surroundings in words: the surface underfoot, named furniture and walls, loose items and people. Optional `radius` |
+| `line_of_sight` | in world | `serial`, or `x`, `y` and `z`: whether a shot or a spell reaches it, as the shard judges it. `{in_sight, aim}` |
+| `route` | in world | `x`, `y` and optional `z`: plans the walk and says `reachable`, the `steps` and the `route` tiles, or `why` not. No step is taken |
 | `find_landmarks` | in world | named places from the marker file (gates, banks, towns); filter name / map / distance; each has its map, location, dist (on the current map) and kind |
 | `journal_search` | session exists | matching lines |
-| `map_tile` / `can_walk` | map or mock grid | walkable, z, door |
+| `map_tile` | map or mock grid | walkable, z, door |
+| `can_walk` | map or mock grid | `{walkable}`, and `why` when it is not: off the map, a mobile stands there, the shard refused it lately, a door, a named static, a building or an item, the ground, or nothing to stand on at that height |
 
 ## Action
 
 | Tool | Precondition |
 | --- | --- |
-| `say` / `whisper` | in world; persona rejects `*emotes*` and empty text; `say` is rate-limited |
+| `say` / `whisper` | in world; persona rejects `*emotes*` and empty text; `say` is rate-limited. `say` takes `channel`: `say` (default), `yell`, `party`, `guild` or `alliance` |
 | `emote` | `persona.allow_emote` |
 | `move_to` | in world; args `x` and `y` are required. When the goal cannot be reached in one route (a wall or up-high spot, a gate/teleporter gap, or too far), it walks to the nearest reachable spot on the way and returns `{partial:true, goal, heading_to, reason}` instead of a bare failure; call `move_to` again from there |
 | `walk` | in world. `direction` (`n`/`ne`/`e`/`se`/`s`/`sw`/`w`/`nw`), `running`, `hold_ms` (0 = one step) |
 | `open_door` | in world; stand next to the door and face it (`0x12`/`0x58`) |
 | `follow` / `stop` | `follow` needs a mobile serial |
 | `logout` | in world. Sends the logout request; a shard may hold it until she is somewhere it allows, such as an inn or a house |
-| `use` / `single_click` / `attack` / `war_mode` | serial / in world |
+| `use` / `single_click` / `attack` / `war_mode` | `serial` (a call with none is refused); `use` also takes `who` `last`. `war_mode` takes `on` |
 | `lift` / `drop` / `equip` / `unequip` | item serial. `drop` takes `dest`: a container, or a mobile to give to; none drops at your feet. `x` and `y` give an exact place in the container, or a ground tile with `z` when there is no `dest`. `unequip` needs a valid `layer`. Empty layer returns `layer empty`. It does not unequip the backpack |
-| `cast` / `use_skill` | in world; `spell` or `skill` number is required |
+| `cast` / `use_skill` | in world; `spell` or `skill` is required, by number or by name (`greater heal`, `hiding`). `cast` takes `target`, a serial or `self`, and answers the spell's cursor with it when it comes. A skill no button uses is refused |
 | `wait_target` | none |
 | `target` | a target cursor must be pending |
-| `open_container` / `loot` / `trade_offer` | serial |
+| `open_container` / `loot` / `trade_offer` | `serial` (a call with none is refused). `loot` sends `job_ended` `loot: done` at the end |
+| `deposit` | a bank box is open (say `bank` beside a banker). Moves the pack into it, one item a tick; optional `graphic` banks only those. Sends `job_ended` `deposit: done` |
+| `vendor_sell` | a vendor near: `vendor_name` and `graphic`. Says `sell` to the vendor and sells every pack item of that graphic from the list that comes |
+| `vendor_buy` | a buy list is open (`observe` `shop`): `vendor`, `item` (the shop item serial) and `amount` (default 1) |
+| `wait_journal` | session exists; `q` and `timeout_ms` (default 5000, max 7000): waits for a new journal line that holds the words |
+| `prompt_answer` / `prompt_cancel` | a prompt or a one-field dialog waits (`prompt_opened`): `text` is the answer. A prompt takes at most 128 characters |
+| `party` | in world; `action` `invite` (with `serial`), `accept` or `decline` the invite that waits, `leave`, `kick` (with `serial`), or `loot` (with `on`) |
+| `mobile_status` | in world; `serial`. Asks for the mobile's status, as a click on its health bar: its hits come back into `find_mobiles` |
 | `gump_respond` / `gump_close` | open gump. `gump` names the gump id to answer (the oldest open one when omitted). `button` is a button id, `switches` the choices to tick, `texts` the typed fields as `[{id, text}]` (`observe` lists them under `entries`); button `0` closes. A button or switch that is not on the gump is refused, because a shard drops or disconnects on it |
-| `set_goal` | in world; `idle` `travel` `hunt` `gather` `bank` `shop` `social` `flee` `ress`. `hunt` starts the hunt job with empty lists |
+| `set_goal` | in world; `idle` `travel` `hunt` `gather` (or `chop`) `mine` `bank` `shop` `social` `flee` `ress`. `hunt` starts the hunt job with empty lists. `gather` and `mine` walk to the nearest tree or rock of the map, use the axe or the pickaxe carried, and aim at the spot; a spot the shard says is empty is left for 20 minutes, and the goal ends with `job_failed` when there is no tool or nothing near. `flee` runs away from what threatens the character. `ress` walks a ghost to a healer in view, or to the nearest healer of the marker file, or else to the nearest bank, and takes the healer's offer; it ends with `job_ended` `ress: alive` |
 | `set_persona` | session exists; JSON persona body. `typo_rate` is clamped to `0.0..=1.0` |
 | `cancel_goal` | session exists; also stops a hunt or walk job (`job_ended` reason `stopped`) |
-| `watch` | For a window, not for an agent. `observe` with each list at full length, and what only a screen draws: each container with all its items, `journal_lines` with hue and kind, `skills`, `party_members`, `multis`, `gump_layouts` (each gump piece with its place, page and pictures), `maps`, `profiles`, `designed_houses` (the walls and floors a player designed, with their offsets), `placing` (a building that waits for its place; answer with `target` and a tile), `chat`, `designing`, `house_parts`, `cues` (damage, animations and effects, each with a `seq` that counts up), `season`, `light`, `weather`, `prompt`, `text_entry`, `target_cursor`, `context_menu`, `shop`, `menu`, `book`, `board`, and the items of an open `trade` |
+| `watch` | For a window, not for an agent. `observe` with each list at full length, and what only a screen draws: each container with all its items, `journal_lines` with hue and kind, every skill, `party_members`, `multis`, `gump_layouts` (each gump piece with its place, page and pictures), `maps`, `profiles`, `designed_houses` (the walls and floors a player designed, with their offsets), `placing` (a building that waits for its place; answer with `target` and a tile), `chat`, `designing`, `house_parts`, `cues` (damage, animations and effects, each with a `seq` that counts up), `season`, `light`, `weather`, `prompt`, `text_entry`, `target_cursor`, `board`, and the items of an open `trade` |
+| (`observe` panels) | `observe` also holds what the shard has open for the character: `shop` (the goods and prices of a buy or sell list), `context_menu` (its lines), `menu` (an old-style menu), `book` (its pages), and what he knows: `skills` (those trained or locked, with value, base, cap and lock), `spellbooks` (the spells of each book the shard has sent), and `doing.last_walk` (how the last walk ended) |
 | `properties` | in world; `serial`. The tooltip lines of one object. It asks the shard when the session has none, so the next call has them |
-| `context_menu` with `serial` only | Asks for the context menu and shows its lines in `watch`. With `index`, picks that line. `close_menu` closes it with no pick. With `cliloc`, it works as before: one call that asks and picks |
-| `shop_checkout` / `shop_close` | a shop list is open (`watch` `shop`). `items` is `[{serial, amount}]`. It buys or sells by the kind of list |
-| `menu_pick` / `book_close` | an old-style menu or a book is open (`watch` `menu`, `book`). `index` counts from 1; none walks away |
+| `context_menu` with `serial` only | Asks for the context menu; its lines come in `observe` `context_menu` with a `context_menu_opened` event. With `index`, picks that line. `close_menu` closes it with no pick. With `cliloc`, one call asks and picks. A shard with no context menus says so |
+| `shop_checkout` / `shop_close` | a shop list is open (`observe` `shop`). `items` is `[{serial, amount}]`. It buys or sells by the kind of list |
+| `menu_pick` / `book_close` | an old-style menu or a book is open (`observe` `menu`, `book`). `index` counts from 1; none walks away |
 | (protocol) | The shard may send the newer mobile packets `0xD2`, `0xD3`, `0x2D` and `0xDE`. They fill the same fields as `0x77`, `0x78` and the stat bars, so nothing changes for a driver. `watch` also carries `time`, `personal_light`, `quest_arrow`, `waypoints`, `shard_url` and `shard_notice`; the gear of a corpse is in its container, and a boat carries what stands on it |
 | `book_write` | a book is open. `title` and `author` name it; `page` (from 1) and `text` write one page, its lines parted by a line break |
 | `board_read` / `board_post` / `board_remove` / `board_close` | a bulletin board is open: `use` the board first, and `watch` shows it under `board` with its `posts`. `board_read` takes `message` and the lines come in `posts[].lines`. `board_post` takes `subject`, `text` and, for an answer, `reply_to`. `board_remove` takes `message` |
@@ -149,6 +162,12 @@ Default bind: `http://127.0.0.1:7733`.
 
 When `UOTERM_API_TOKEN` is set, every route except `/health` requires `Authorization: Bearer <token>`. A non-loopback `--api-bind` is refused unless that variable is set. CLI and MCP send the same header when the variable is set.
 
+An API bound to this machine answers only a caller that names this machine in its `Host` header (`127.0.0.1`, `localhost` or `::1`, with any port). A web page that points a name it owns at this machine names itself, and is refused with 403.
+
+## Names on a shard with no property lists
+
+A shard says at login whether it sends property lists, the tooltips that name every object. When it does not, the session reads names the way a player does: it clicks each nameless object once, one every half second, and takes the name the shard shows over it. What a click tells of an item (its maker, whether its magic is known, its charges) comes back in `properties`.
+
 ## MCP
 
 ```
@@ -158,6 +177,8 @@ uoterm mcp
 JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`). Newline JSON and `Content-Length` framing. A blank line is skipped. Bad JSON returns `-32700`. Bodies larger than 1 MiB are rejected.
 
 Methods: `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`.
+
+`tools/list` gives every tool an agent may call, each with its own arguments, their types, and the ones it cannot do without (`required`); a tool that needs one of several says so in its description. `session_id` names the session a call is for; with none, the first session answers. The window's own tools (`command`, `take_control`, `release_control`) are not listed.
 
 Resource URIs:
 

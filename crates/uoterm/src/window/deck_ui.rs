@@ -9,11 +9,12 @@ use super::desk::Zone;
 use super::kept;
 use super::ring_ui::Subject;
 use super::theme::{self, number_font, text_font, title_font};
-use crate::view::{WatchFrame, WatchPackItem, WatchSkill, LAYER_BACKPACK};
+use crate::view::{WatchFrame, WatchPackItem, WatchSkill};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uoterm_assist::spells::SpellBook;
+use uoterm_protocol::types::{LAYER_BACKPACK, LAYER_BEARD, LAYER_HAIR, LAYER_LEGS};
 
 const SHEET_LEFT: f32 = 356.0;
 const SHEET_TOP: f32 = 150.0;
@@ -30,11 +31,9 @@ const PIN_WIDTH: f32 = 36.0;
 const SKILL_TENTHS: u16 = 10;
 const PERCENT: f32 = 100.0;
 
-const LAYER_HAIR: u8 = 0x0B;
-const LAYER_BEARD: u8 = 0x10;
 /// The last layer that is clothes or arms. Above it are the mount and the
 /// boxes of a shopkeeper and the bank.
-const LAYER_LAST_WORN: u8 = 0x18;
+const LAYER_LAST_WORN: u8 = LAYER_LEGS;
 
 const SKILL_LOCK_UP: u8 = 0;
 const SKILL_LOCK_DOWN: u8 = 1;

@@ -891,13 +891,7 @@ mod tests {
 
     #[test]
     fn each_tool_name_is_a_tool_of_the_session() {
-        let listed = uoterm_runtime::tools::mcp_tool_list();
-        let known: Vec<&str> = listed["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let known = uoterm_runtime::tools::tool_names();
         let acts = [
             Act::Take,
             Act::GiveBack,

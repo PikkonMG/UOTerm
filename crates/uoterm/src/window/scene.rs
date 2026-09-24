@@ -345,17 +345,8 @@ fn ellipse(center: Pos2, radius: Vec2) -> Vec<Pos2> {
 
 /// The way the character faces, as one step on the tile grid.
 fn facing_step(facing: &str) -> Option<(f32, f32)> {
-    Some(match facing {
-        "north" => (0.0, -1.0),
-        "northeast" => (1.0, -1.0),
-        "east" => (1.0, 0.0),
-        "southeast" => (1.0, 1.0),
-        "south" => (0.0, 1.0),
-        "southwest" => (-1.0, 1.0),
-        "west" => (-1.0, 0.0),
-        "northwest" => (-1.0, -1.0),
-        _ => return None,
-    })
+    let (dx, dy) = uoterm_protocol::types::Direction::from_name(facing)?.delta();
+    Some((dx as f32, dy as f32))
 }
 
 /// A steady move from one place to the next. The session tells where a

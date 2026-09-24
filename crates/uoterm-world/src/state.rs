@@ -3,12 +3,14 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use uoterm_protocol::{
-    weapon_range, BuffEntry, ContainerItem, EquipItem, GroundItem, HealthBarStatus, Inbound,
-    MobileView, ObjectProperty, OpenGump, PartyEvent, Point3, PromptRequest, SecureTrade, Serial,
-    StatusExtra, TargetCursor, TextEntryDialog, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN,
-    FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK,
-    LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD,
-    SPEECH_REGULAR, SPEECH_WHISPER, SPEECH_YELL, TRADE_CLOSE, TRADE_DISPLAY, TRADE_UPDATE,
+    weapon_range, BuffEntry, ContainerItem, EquipInfo, EquipItem, GroundItem, HealthBarStatus,
+    Inbound, MapPatchCount, MobileView, ObjectProperty, OpenGump, PartyEvent, Point3,
+    PromptRequest, SecureTrade, Serial, StatusExtra, TargetCursor, TextEntryDialog,
+    ACCOUNT_FLAG_CONTEXT_MENUS, ACCOUNT_FLAG_PROPERTY_LISTS, DIR_RUNNING, FLAG_BLESSED,
+    FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW,
+    LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED,
+    SPEECH_GUILD, SPEECH_LABEL, SPEECH_REGULAR, SPEECH_SYSTEM, SPEECH_WHISPER, SPEECH_YELL,
+    SPEED_MODE_NORMAL, TRADE_CLOSE, TRADE_DISPLAY, TRADE_UPDATE, WINDOW_CONTAINER,
 };
 
 use crate::addressed::{
@@ -129,6 +131,13 @@ pub struct SelfState {
     pub equipment: Vec<EquipItem>,
     /// Resists, luck, followers, tithing and the rest of the status.
     pub status: StatusExtra,
+    /// The locks of strength, dexterity and intelligence: 0 up, 1 down,
+    /// 2 locked.
+    #[serde(default)]
+    pub stat_locks: [u8; 3],
+    /// The walking speed rules the shard set. See the `SPEED_MODE_*` values.
+    #[serde(default)]
+    pub speed_mode: u8,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -174,6 +183,8 @@ impl Default for SelfState {
             skills: HashMap::new(),
             equipment: Vec::new(),
             status: StatusExtra::default(),
+            stat_locks: [0; 3],
+            speed_mode: SPEED_MODE_NORMAL,
         }
     }
 }
@@ -239,6 +250,10 @@ pub struct Item {
     pub grid: u8,
     #[serde(default)]
     pub name: String,
+    /// The item flags the shard sent with a ground item. A worn or packed
+    /// item has none.
+    #[serde(default)]
+    pub flags: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -250,6 +265,26 @@ pub struct Container {
     /// because that is the one the player just opened.
     #[serde(default)]
     pub opened: u64,
+}
+
+/// The spells a spellbook holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spellbook {
+    pub graphic: u16,
+    /// The number of the spell the lowest bit of `spells` stands for.
+    pub first_spell: u16,
+    /// One bit per spell, the lowest for `first_spell`.
+    pub spells: u64,
+}
+
+impl Spellbook {
+    /// The numbers of the spells in the book, lowest first.
+    pub fn spell_numbers(&self) -> Vec<u16> {
+        (0..u64::BITS as u16)
+            .filter(|bit| self.spells & (1 << bit) != 0)
+            .map(|bit| self.first_spell + bit)
+            .collect()
+    }
 }
 
 /// A secure trade window: the other player, and the two containers the
@@ -355,6 +390,13 @@ const GONE_NAMES_KEEP: usize = 1024;
 /// must forget it. 24 is the largest view range a client can ask for, so no
 /// shard keeps an object up to date past it.
 pub const VIEW_RANGE_MAX: u32 = 24;
+/// How far off a house or a boat is kept. A shard keeps a multi in view
+/// farther than an ordinary object, by half its size: ServUO up to one tile
+/// inside its radar range of 40, ModernUO at 22. Forgetting one sooner leaves
+/// a house the shard never sends again, since in its view it never left.
+pub const MULTI_VIEW_RANGE_MAX: u32 = 39;
+/// The revision a name from a label is held at. A label carries none.
+const LABEL_NAME_REVISION: u32 = 0;
 pub const SPEECH_KIND_PARTY: u8 = 0xF0;
 pub const SPEECH_KIND_PARTY_PRIVATE: u8 = 0xF1;
 /// The hue party lines are filed with. The shard sends none.
@@ -524,6 +566,16 @@ pub struct World {
     /// The names of mobiles that went out of sight. A party or guild line
     /// can come from far away, and it names its speaker by serial only.
     pub gone_names: HashMap<Serial, String>,
+    /// What a click told about each item, on a shard with no property lists.
+    pub equip_info: HashMap<Serial, EquipInfo>,
+    /// The spells each spellbook holds, by the serial of the book.
+    pub spellbooks: HashMap<Serial, Spellbook>,
+    /// The bonded pets that died and wait to be brought back.
+    pub dead_pets: HashSet<Serial>,
+    /// The client patches each map uses, as the shard last said.
+    pub map_patches: Vec<MapPatchCount>,
+    /// The account flags the character list ended with, when it had them.
+    pub account_flags: Option<u32>,
 }
 
 /// The channel of a speech line that can name the character. System lines,
@@ -545,6 +597,19 @@ impl World {
             goal: "idle".into(),
             ..Self::default()
         }
+    }
+
+    /// True when the shard answers property lists: the tooltips, and the
+    /// names of objects. A shard that sent no flags is taken to.
+    pub fn has_property_lists(&self) -> bool {
+        self.account_flags
+            .is_none_or(|flags| flags & ACCOUNT_FLAG_PROPERTY_LISTS != 0)
+    }
+
+    /// True when the shard answers context menu requests.
+    pub fn has_context_menus(&self) -> bool {
+        self.account_flags
+            .is_none_or(|flags| flags & ACCOUNT_FLAG_CONTEXT_MENUS != 0)
     }
 
     pub fn push_event(&mut self, mut event: Event) {
@@ -595,7 +660,14 @@ impl World {
         gone.extend(
             self.items
                 .values()
-                .filter(|i| i.parent.is_none() && here.chebyshev(i.location) > VIEW_RANGE_MAX)
+                .filter(|i| {
+                    let range = if self.multis.contains_key(&i.serial) {
+                        MULTI_VIEW_RANGE_MAX
+                    } else {
+                        VIEW_RANGE_MAX
+                    };
+                    i.parent.is_none() && here.chebyshev(i.location) > range
+                })
                 .map(|i| i.serial),
         );
         if gone.is_empty() {
@@ -644,6 +716,9 @@ impl World {
         self.self_state.equipment.retain(|e| e.serial != serial);
         self.bars.remove(&serial);
         self.properties.remove(&serial);
+        self.equip_info.remove(&serial);
+        self.spellbooks.remove(&serial);
+        self.dead_pets.remove(&serial);
     }
 
     fn apply_packet(&mut self, msg: &Inbound) {
@@ -755,12 +830,22 @@ impl World {
                         mob.name.clone_from(&line.name);
                     }
                 }
+                if line.kind == SPEECH_LABEL {
+                    self.take_label(line.serial, &line.text);
+                }
                 self.journal.push(JournalEntry::from(line));
                 self.push_event(Event::new(
                     EventKind::Speech,
                     Some(line.serial),
                     format!("{}: {}", line.name, line.text),
                 ));
+                if line.kind == SPEECH_SYSTEM || !line.serial.is_valid() {
+                    self.push_event(Event::new(
+                        EventKind::SystemMessage,
+                        None,
+                        line.text.clone(),
+                    ));
+                }
                 if let Some(channel) = speech_channel(line.kind) {
                     self.note_spoken_to(line.serial, &line.name, &line.text, channel);
                 }
@@ -958,6 +1043,59 @@ impl World {
                     format!("gump {}", gump.gump_id),
                 ));
             }
+            Inbound::CloseGump { gump_id, .. } => {
+                let before = self.gumps.len();
+                self.gumps.retain(|g| g.gump_id != *gump_id);
+                if self.gumps.len() != before {
+                    self.push_event(Event::new(
+                        EventKind::GumpClosed,
+                        None,
+                        format!("gump {gump_id}"),
+                    ));
+                }
+            }
+            Inbound::CloseWindow { kind, serial } if *kind == WINDOW_CONTAINER => {
+                self.containers.remove(serial);
+            }
+            Inbound::EquipInfo(info) => {
+                self.equip_info.insert(info.serial, info.clone());
+            }
+            Inbound::BondedStatus { serial, dead } => {
+                if *dead {
+                    self.dead_pets.insert(*serial);
+                } else {
+                    self.dead_pets.remove(serial);
+                }
+            }
+            Inbound::StatLocks {
+                serial,
+                strength,
+                dexterity,
+                intelligence,
+            } if *serial == self.self_state.serial => {
+                self.self_state.stat_locks = [*strength, *dexterity, *intelligence];
+            }
+            Inbound::SpellbookContent {
+                book,
+                graphic,
+                first_spell,
+                spells,
+            } => {
+                self.spellbooks.insert(
+                    *book,
+                    Spellbook {
+                        graphic: *graphic,
+                        first_spell: *first_spell,
+                        spells: *spells,
+                    },
+                );
+            }
+            Inbound::SpeedMode(mode) => {
+                self.self_state.speed_mode = *mode;
+            }
+            Inbound::MapPatches { maps } => {
+                self.map_patches.clone_from(maps);
+            }
             Inbound::Death { serial, corpse } => {
                 if *serial == self.self_state.serial {
                     self.self_state.dead = true;
@@ -1047,8 +1185,18 @@ impl World {
             }
             Inbound::NameChanged { .. } => {}
             // A boat carries everything on it, so its pieces move with it.
-            Inbound::BoatMoving { boat, x, y, z, .. } => {
+            Inbound::BoatMoving {
+                boat,
+                x,
+                y,
+                z,
+                riders,
+                ..
+            } => {
                 self.move_multi(*boat, Point3::new(*x, *y, *z));
+                for rider in riders {
+                    self.move_rider(rider);
+                }
             }
             Inbound::Weather { kind, count } => {
                 self.weather = (*kind != WEATHER_NONE && *count > 0).then_some((*kind, *count));
@@ -1141,14 +1289,41 @@ impl World {
                 serial,
                 icon,
                 effects,
-            } if *serial == self.self_state.serial => match effects.first() {
-                Some(effect) => {
-                    self.buffs.insert(*icon, Buff::new(effect));
-                }
-                None => {
-                    self.buffs.remove(icon);
-                }
-            },
+            } if *serial == self.self_state.serial => {
+                let words = match effects.first() {
+                    Some(effect) => {
+                        self.buffs.insert(*icon, Buff::new(effect));
+                        format!("{icon} on")
+                    }
+                    None => {
+                        self.buffs.remove(icon);
+                        format!("{icon} off")
+                    }
+                };
+                self.push_event(Event::new(EventKind::BuffChanged, None, words));
+            }
+            Inbound::VendorBuyList { container, .. } => {
+                self.push_event(Event::new(EventKind::ShopOpened, Some(*container), "buy"));
+            }
+            Inbound::VendorSellList { vendor, .. } => {
+                self.push_event(Event::new(EventKind::ShopOpened, Some(*vendor), "sell"));
+            }
+            Inbound::ContextMenu { serial, entries } => {
+                self.push_event(Event::new(
+                    EventKind::ContextMenuOpened,
+                    Some(*serial),
+                    format!("{} lines", entries.len()),
+                ));
+            }
+            Inbound::OpenMenu {
+                serial, question, ..
+            } => {
+                self.push_event(Event::new(
+                    EventKind::MenuOpened,
+                    Some(*serial),
+                    question.clone(),
+                ));
+            }
             Inbound::HealthBarUpdate { serial, bars } => self.apply_bars(*serial, bars),
             Inbound::Prompt(prompt) => {
                 self.prompt = Some(*prompt);
@@ -1359,6 +1534,7 @@ impl World {
                 layer: Some(eq.layer),
                 grid: 0,
                 name,
+                flags: 0,
             },
         );
     }
@@ -1468,6 +1644,19 @@ impl World {
         }
     }
 
+    /// Puts a mobile or an item a boat carries at its new place. The boat
+    /// moves them, so no step of their own is involved.
+    fn move_rider(&mut self, rider: &uoterm_protocol::BoatRider) {
+        let to = Point3::new(rider.x, rider.y, rider.z);
+        if rider.serial == self.self_state.serial {
+            self.self_state.location = to;
+        } else if let Some(mobile) = self.mobiles.get_mut(&rider.serial) {
+            mobile.location = to;
+        } else if let Some(item) = self.items.get_mut(&rider.serial) {
+            item.location = to;
+        }
+    }
+
     fn wear(&mut self, eq: &EquipItem) {
         self.self_state.equipment.retain(|e| e.layer != eq.layer);
         self.self_state.equipment.push(eq.clone());
@@ -1484,6 +1673,7 @@ impl World {
                 layer: Some(eq.layer),
                 grid: 0,
                 name,
+                flags: 0,
             },
         );
     }
@@ -1511,6 +1701,7 @@ impl World {
                 layer: None,
                 grid: 0,
                 name,
+                flags: item.flags,
             },
         );
     }
@@ -1532,6 +1723,18 @@ impl World {
             self.names.want(serial);
         }
         name
+    }
+
+    /// A label is the name a shard shows over an object that was clicked. On
+    /// a shard with no property lists it is the only name an item has.
+    fn take_label(&mut self, serial: Serial, text: &str) {
+        let Some(item) = self.items.get_mut(&serial) else {
+            return;
+        };
+        if item.name.is_empty() && !text.is_empty() {
+            item.name = text.to_string();
+        }
+        self.names.accept(serial, LABEL_NAME_REVISION);
     }
 
     /// Put a name learned from a property list on whichever object owns it.
@@ -1564,6 +1767,7 @@ impl World {
                 layer: None,
                 grid: item.grid,
                 name,
+                flags: 0,
             },
         );
         self.container_count += 1;
@@ -1688,11 +1892,19 @@ impl World {
     /// character walk straight through anybody, so nobody is in his way and
     /// this is empty. Planning around them there only makes his routes longer
     /// and has him dodge people he could have walked through.
+    ///
+    /// A shard lets the dead pass the living and the living pass the dead: a
+    /// ghost, a dead bonded pet, or a character who is a ghost himself shoves
+    /// nobody and is shoved by nobody.
     pub fn blocking_mobile_tiles(&self) -> Vec<Point3> {
-        if self.free_movement() {
+        if self.free_movement() || self.self_state.dead {
             return Vec::new();
         }
-        self.mobiles.values().map(|m| m.location).collect()
+        self.mobiles
+            .values()
+            .filter(|m| !is_ghost_body(m.body) && !self.dead_pets.contains(&m.serial))
+            .map(|m| m.location)
+            .collect()
     }
 
     pub fn mobile_at(&self, x: u16, y: u16) -> Option<&Mobile> {

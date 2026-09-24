@@ -66,6 +66,7 @@ mod tests {
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
+            reconnect: false,
         };
         let handle = rt.connect(opts).await.unwrap();
         for _ in 0..25 {

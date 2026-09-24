@@ -285,8 +285,6 @@ const NOT_DRESSED: [u8; 5] = [
     LAYER_BEARD,
     LAYER_MOUNT,
 ];
-const LAYER_HAIR: u8 = 11;
-const LAYER_BEARD: u8 = 16;
 
 /// Runs the agents for one tick.
 pub(super) fn pump_agents(inner: &mut Inner, now: Instant) {
@@ -466,11 +464,7 @@ fn from<T: serde::de::DeserializeOwned>(value: Value) -> std::result::Result<T, 
 /// or a graphic copied from `observe` reads as one.
 fn serials_as_numbers(value: Value) -> Value {
     match value {
-        Value::String(text) => match text
-            .strip_prefix("0x")
-            .or_else(|| text.strip_prefix("0X"))
-            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        {
+        Value::String(text) => match parse_hex(&text) {
             Some(n) => json!(n),
             None => Value::String(text),
         },
@@ -664,7 +658,7 @@ mod tests {
     const LOOT: Serial = Serial(0x4000_0D02);
     const OTHER: Serial = Serial(0x4000_0D03);
     const BAG: Serial = Serial(0x4000_0D04);
-    const GOLD: u16 = 0x0EED;
+    const GOLD: u16 = GRAPHIC_GOLD_COINS;
     const RING: u16 = 0x108A;
     const CORPSE_GRAPHIC: u16 = 0x2006;
     const FRIEND: Serial = Serial(0x0000_0200);
@@ -699,6 +693,7 @@ mod tests {
                 layer: None,
                 grid: 0,
                 name: String::new(),
+                flags: 0,
             },
         );
     }
@@ -1019,6 +1014,7 @@ mod tests {
                 layer: None,
                 grid: 0,
                 name: String::new(),
+                flags: 0,
             },
         );
         let stock = |serial, graphic| uoterm_protocol::ContainerItem {

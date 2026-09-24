@@ -75,6 +75,9 @@ pub(super) struct Scripting {
     last_ground: Option<Point3>,
     /// The colour the next dye tub request is answered with.
     pub(super) dye_hue: Option<u16>,
+    /// The words a script typed for text fields of the next gump it answers,
+    /// by field.
+    pub(super) gump_texts: Vec<(u16, String)>,
     /// Lines to show later, each with the time it is due.
     later: Vec<(Instant, String)>,
     /// What the running script asked for after this tick: another script in
@@ -137,6 +140,7 @@ impl Scripting {
             last_skill: None,
             last_ground: None,
             dye_hue: None,
+            gump_texts: Vec::new(),
             later: Vec::new(),
             next: None,
             current: None,
@@ -397,6 +401,17 @@ fn finish(inner: &mut Inner, mut running: Running) {
     inner.scripting.keep_output(lines);
     let status = running.script.status().clone();
     tracing::info!(script = %running.name, status = ?status, "script ends");
+    let how = match &status {
+        Status::Done => crate::jobs::REASON_DONE.to_string(),
+        Status::Stopped => crate::jobs::REASON_STOPPED.to_string(),
+        Status::Running => String::new(),
+        Status::Failed { message, .. } => format!("failed: {message}"),
+    };
+    job_ended(
+        inner,
+        crate::jobs::JOB_SCRIPT,
+        &format!("{} {how}", running.name),
+    );
     inner.scripting.last = Some(Report {
         name: running.name,
         status,
@@ -728,6 +743,7 @@ mod tests {
                 layer: None,
                 grid: 0,
                 name: String::new(),
+                flags: 0,
             },
         );
     }
@@ -897,6 +913,59 @@ mod tests {
         }
     }
 
+    /// A script's gump answer is checked as the tool's is: a button the
+    /// gump does not have stops the script and sends nothing. Words typed with
+    /// `gumptext` go in their field, and `closegump 'gump'` answers with the
+    /// button that closes it.
+    #[test]
+    fn a_script_answers_a_gump_only_with_what_it_has() {
+        const NAME_GUMP: u32 = 0x0000_4242;
+        const OKAY: u32 = 1;
+        const NAME_FIELD: u16 = 3;
+        const LAYOUT: &str = "{ page 0 }{ button 10 210 4005 4007 1 0 1 }\
+            { textentry 20 40 200 20 0 3 0 }";
+        let open = |inner: &mut Inner| {
+            inner
+                .world
+                .write()
+                .apply(&uoterm_protocol::Inbound::Gump(uoterm_protocol::OpenGump {
+                    serial: ME,
+                    gump_id: NAME_GUMP,
+                    x: 0,
+                    y: 0,
+                    layout: LAYOUT.into(),
+                    text: vec!["nobody".into()],
+                }));
+        };
+        let mut inner = player();
+        open(&mut inner);
+        start(&mut inner, "replygump 'any' 9");
+        tick(&mut inner, 1);
+        assert_eq!(status(&inner)["status"], "failed", "no button 9");
+        assert!(!inner
+            .outbound
+            .iter()
+            .any(|p| p.first() == Some(&PKT_GUMP_RESPONSE)));
+
+        let mut inner = player();
+        open(&mut inner);
+        start(&mut inner, "gumptext 3 'Mara'\nreplygump 'any' 1");
+        tick(&mut inner, 2);
+        assert!(sent(
+            &inner,
+            &encode::gump_response(ME, NAME_GUMP, OKAY, &[], &[(NAME_FIELD, "Mara".into())])
+        ));
+
+        let mut inner = player();
+        open(&mut inner);
+        start(&mut inner, "closegump 'gump' 'any'");
+        tick(&mut inner, 1);
+        assert!(sent(
+            &inner,
+            &encode::gump_response(ME, NAME_GUMP, 0, &[], &[(NAME_FIELD, "nobody".into())])
+        ));
+    }
+
     #[test]
     fn a_party_line_goes_to_the_member_named_after_its_colour() {
         const MEMBER: Serial = Serial(0x0000_0042);
@@ -1023,6 +1092,7 @@ mod tests {
                         layer: None,
                         grid: 0,
                         name: String::new(),
+                        flags: 0,
                     },
                 );
             }
@@ -1257,6 +1327,41 @@ mod tests {
             if let Status::Failed { message, .. } = script.status() {
                 assert!(!message.starts_with("unknown command"), "{name}: {message}");
             }
+        }
+    }
+
+    /// The command code the guide is checked against.
+    const COMMANDS: &str = include_str!("scripting/commands.rs");
+
+    /// Every command the code knows is in the guide, so a script writer can
+    /// find each one.
+    #[test]
+    fn every_command_the_code_knows_is_in_the_guide() {
+        let start = COMMANDS
+            .find("pub(super) fn run(")
+            .expect("the command match");
+        let end = COMMANDS[start..]
+            .find("unknown command")
+            .map_or(COMMANDS.len(), |e| start + e);
+        let known: Vec<&str> = COMMANDS[start..end]
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| line.starts_with('"') && line.contains(" =>"))
+            .filter_map(|line| line.split(" =>").next())
+            .flat_map(|arm| arm.split('|'))
+            .map(|name| name.trim().trim_matches('"'))
+            .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphabetic()))
+            .collect();
+        assert!(
+            known.len() > 100,
+            "the code lists the commands: {}",
+            known.len()
+        );
+        for name in known {
+            assert!(
+                GUIDE.contains(&format!("`{name}")) || GUIDE.contains(&format!(" {name}`")),
+                "{name} is not in docs/SCRIPTS.md"
+            );
         }
     }
 

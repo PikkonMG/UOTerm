@@ -5,6 +5,7 @@
 //! the line). A command that has to act waits while the character is still
 //! paying for the last action, so a script goes at a player's pace.
 
+use super::super::play::{self, MenuPick};
 use uoterm_assist::abilities::{move_for, MoveSlot};
 use uoterm_assist::items::{food_graphics, WAND_GRAPHICS};
 use uoterm_assist::mobiles::{is_humanoid, is_transformed, notorieties};
@@ -137,6 +138,7 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
         // Gumps.
         "waitforgump" => wait_for_gump(game, call, ctx),
         "replygump" => reply_gump(game, call, ctx),
+        "gumptext" => gump_text(game, call),
         "closegump" => close_gump(game, call, ctx),
         // Journal.
         "clearjournal" | "uniquejournal" => {
@@ -308,6 +310,38 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
         "waitfortextentry" => {
             let open = game.world().text_entry.is_some();
             wait_until(call, ctx, 0, "no text dialog came", open)
+        }
+        "waitformenu" => {
+            let open = play::old_menu_open(game.inner);
+            wait_until(call, ctx, 0, "no menu came", open)
+        }
+        "replymenu" => {
+            let arg = need(call, 0, "an entry")?;
+            let pick = match arg.number().filter(|_| !arg.quoted) {
+                Some(place) => MenuPick::Place(
+                    usize::try_from(place).map_err(|_| format!("{place} is no entry"))?,
+                ),
+                None => MenuPick::Words(arg.text.clone()),
+            };
+            match play::pick_old_menu(game.inner, pick) {
+                Ok(()) => Ok(Step::Acted),
+                Err(why) => {
+                    Game::note(call, ctx, why);
+                    Ok(Step::Done)
+                }
+            }
+        }
+        "closemenu" => {
+            if play::old_menu_open(game.inner) {
+                let _ = play::pick_old_menu(game.inner, MenuPick::Cancel);
+                return Ok(Step::Acted);
+            }
+            Ok(Step::Done)
+        }
+        "partyleave" => {
+            let me = game.world().self_state.serial;
+            game.inner.outbound.push_back(encode::party_remove(me));
+            Ok(Step::Acted)
         }
         "partyinvite" => {
             let member = call.args.first().map(|a| game.serial(a, ctx)).transpose()?;
@@ -592,8 +626,6 @@ const HAND_STAYS_FULL: &str = "the shard kept the item in the hand";
 
 /// The most characters a line of speech or party chat may have.
 const TEXT_MAX: usize = 512;
-/// The most characters a shard takes in a prompt answer.
-const PROMPT_TEXT_MAX: usize = 128;
 /// The most characters of an emote animation's name.
 const EMOTE_ACTION_MAX: usize = 32;
 /// The stats a lock is set on, by the number the shard reads.
@@ -618,22 +650,16 @@ fn text_entry(
     ctx: &mut Ctx,
     accept: bool,
 ) -> std::result::Result<Step, String> {
-    let Some(dialog) = game.world().text_entry.clone() else {
+    if game.world().text_entry.is_none() {
         Game::note(call, ctx, "no text dialog is open");
         return Ok(Step::Done);
-    };
+    }
     let text = if accept {
-        let max = usize::try_from(dialog.max_len)
-            .unwrap_or(usize::MAX)
-            .min(TEXT_MAX);
-        text_arg(call, 0, max)?.to_string()
+        text_arg(call, 0, TEXT_MAX)?.to_string()
     } else {
         String::new()
     };
-    game.inner
-        .outbound
-        .push_back(encode::text_entry_response(&dialog, &text, accept));
-    game.inner.world.write().text_entry = None;
+    answer_prompt(game.inner, Asking::Dialog, &text, accept)?;
     Ok(Step::Acted)
 }
 
@@ -931,7 +957,7 @@ fn walk(
     let mut points = Vec::new();
     let mut at = from;
     for dir in dirs {
-        let step = hold_path(game.inner.tiles(), at, dir, 1);
+        let step = hold_path(&game.inner.tiles(), at, dir, 1);
         let Some(&next) = step.first() else {
             break;
         };
@@ -978,11 +1004,13 @@ fn turn(game: &mut Game, call: &Call) -> std::result::Result<Step, String> {
     if !game.inner.movement.in_flight.is_empty() {
         return Ok(Step::Wait);
     }
-    match game
-        .inner
-        .movement
-        .build_turn(facing, dir, at, Instant::now())
-    {
+    match game.inner.movement.build_turn(
+        facing,
+        dir,
+        at,
+        crate::movement::STANDING_TURN,
+        Instant::now(),
+    ) {
         Some(packet) => {
             game.inner.outbound.push_back(packet);
             Ok(Step::Acted)
@@ -1419,20 +1447,46 @@ fn reply_gump(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Resul
         Game::note(call, ctx, "no such gump is open");
         return Ok(Step::Done);
     };
-    // A script names no text fields, so each one sends the words it opened
-    // with, as `gump_respond` does for a field its caller leaves out.
-    let texts = gump_texts(&gump_view(game.inner, &gump), &Value::Null)?;
+    // The same check `gump_respond` makes: a shard drops a reply that presses
+    // what the gump does not have, and one server family disconnects on it.
+    let view = gump_view(game.inner, &gump);
+    gump_answer_fits(&view, button, &switches)?;
+    // A field the script typed words for with `gumptext` sends them; every
+    // other field sends the words it opened with.
+    let typed = std::mem::take(&mut game.inner.scripting.gump_texts);
+    let texts = fill_gump_texts(&view, &typed)?;
     answer_gump(game.inner, &gump, button, &switches, &texts);
     Ok(Step::Acted)
 }
 
-/// Closes a container on the client side. A client with no window shows no
-/// other kind of gump, so only containers are closed.
-fn close_gump(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Step, String> {
+/// Types words for one text field of the next gump the script answers.
+fn gump_text(game: &mut Game, call: &Call) -> std::result::Result<Step, String> {
+    let field = need_number(call, 0, "a text field")?;
+    let field = u16::try_from(field).map_err(|_| format!("{field} is not a text field"))?;
+    let words = need(call, 1, "the words")?.text.clone();
+    let typed = &mut game.inner.scripting.gump_texts;
+    typed.retain(|(id, _)| *id != field);
+    typed.push((field, words));
+    Ok(Step::Done)
+}
+
+/// Closes a container on the client side, or answers a gump with the button
+/// that closes it, as the close button of a client window does.
+fn close_gump(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<Step, String> {
     let kind = need(call, 0, "a gump kind")?;
+    if kind.is("gump") {
+        let id = need(call, 1, "a gump id or any")?;
+        let Some(gump) = find_gump(game, id) else {
+            Game::note(call, ctx, "no such gump is open");
+            return Ok(Step::Done);
+        };
+        let texts = fill_gump_texts(&gump_view(game.inner, &gump), &[])?;
+        answer_gump(game.inner, &gump, GUMP_BUTTON_CLOSE, &[], &texts);
+        return Ok(Step::Acted);
+    }
     if !kind.is("container") {
         return Err(format!(
-            "only container gumps close here, not '{}'",
+            "a gump kind is 'container' or 'gump', not '{}'",
             kind.text
         ));
     }
@@ -1609,26 +1663,20 @@ fn prompt_message(
     call: &Call,
     ctx: &mut Ctx,
 ) -> std::result::Result<Step, String> {
-    // A shard drops a longer answer and keeps its prompt open, so it is
-    // refused here, before the prompt is marked answered.
-    let text = text_arg(call, 0, PROMPT_TEXT_MAX)?.to_string();
-    let Some(prompt) = game.inner.world.write().prompt.take() else {
+    if game.world().prompt.is_none() {
         Game::note(call, ctx, "no prompt is open");
         return Ok(Step::Done);
-    };
-    game.inner
-        .outbound
-        .push_back(encode::prompt_response(prompt, &text, true));
+    }
+    let text = need(call, 0, "text")?.text.clone();
+    answer_prompt(game.inner, Asking::Prompt, &text, true)?;
     Ok(Step::Acted)
 }
 
 fn cancel_prompt(game: &mut Game) -> std::result::Result<Step, String> {
-    let Some(prompt) = game.inner.world.write().prompt.take() else {
+    if game.world().prompt.is_none() {
         return Ok(Step::Done);
-    };
-    game.inner
-        .outbound
-        .push_back(encode::prompt_response(prompt, "", false));
+    }
+    answer_prompt(game.inner, Asking::Prompt, "", false)?;
     Ok(Step::Acted)
 }
 
@@ -1702,12 +1750,10 @@ fn wait_for_properties(
 ) -> std::result::Result<Step, String> {
     let serial = game.serial(need(call, 0, "an object")?, ctx)?;
     if first_run(ctx) {
-        game.inner
-            .outbound
-            .push_back(encode::batch_query_properties(&[serial]));
+        ask_what_it_is(game.inner, serial);
         return Ok(Step::Wait);
     }
-    let came = game.world().properties.contains_key(&serial);
+    let came = knows_what_it_is(&game.world(), serial);
     wait_until(call, ctx, 1, "no properties came", came)
 }
 

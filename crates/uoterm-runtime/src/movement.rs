@@ -4,8 +4,11 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use uoterm_nav::{pathfind, same_spot, BlockedMove, Obstacles, TileQuery, SAME_MOVE_HEIGHT};
 use uoterm_protocol::encode;
-use uoterm_protocol::types::{Direction, Point3, Serial};
-use uoterm_protocol::EquipItem;
+use uoterm_protocol::types::{Direction, Point3, Serial, LAYER_MOUNT};
+use uoterm_protocol::{
+    EquipItem, SPEED_MODE_FAST_NO_RUN, SPEED_MODE_FAST_ON_FOOT, SPEED_MODE_NORMAL,
+    SPEED_MODE_NO_RUN,
+};
 use uoterm_world::DoorItem;
 
 pub const SEQ_MOD: u16 = 256;
@@ -100,15 +103,19 @@ pub const EDGE_Z_TOLERANCE: i16 = SAME_MOVE_HEIGHT as i16;
 pub const REFUSED_EDGES_MAX: usize = REFUSED_TILES_MAX;
 /// How long a turn on the spot costs before the next request may go out.
 ///
-/// Eighty milliseconds. A turn moves the character nowhere: the server sets
-/// the new location to the old one, charges the walk nothing and starts its
-/// own pace again from the turn. Charging a turn a whole walking step loses
-/// the character a tile of ground on every change of direction, which is
-/// ground a person he follows never gives back.
-pub const TURN_PACE: Duration = Duration::from_millis(TURN_PACE_MS);
-const TURN_PACE_MS: u64 = 80;
-/// The pace flag a turn carries on the wire: nobody runs where he stands.
-const TURN_RUN_FLAG: bool = false;
+/// A turn moves the character nowhere: the server sets the new location to the
+/// old one and answers all the same. ServUO charges a turn the pace of a
+/// mounted running step and ModernUO charges nothing by default, so a turn
+/// costs that step here. The larger charge never runs ahead of either, and it
+/// is still far less than the walking step that would lose a tile of ground on
+/// every change of direction.
+pub const TURN_PACE: Duration = Duration::from_millis(STEP_MOUNT_RUN_MS);
+/// How long the character waits for the server to answer a resync before he
+/// walks on without it. A shard that ignores the question must not hold him
+/// still for good.
+pub const RESYNC_WAIT: Duration = STEP_ACK_TIMEOUT;
+/// The running flag of a turn made standing still, with no step after it.
+pub const STANDING_TURN: bool = false;
 /// How many times one trip may be planned again before it is given up.
 ///
 /// A trip that has been planned again this often is one nothing is going to
@@ -116,28 +123,9 @@ const TURN_RUN_FLAG: bool = false;
 /// Ending it hands the caller a failure it can act on, where looping hands it
 /// a character who never arrives and never says why.
 pub const REPLANS_MAX: u32 = 128;
-/// The layer a mount is worn on. It sits between [`LAYER_BACKPACK`] and
-/// [`LAYER_BANK`] in the same table, and an item on it is the only word the
-/// server gives that the character is riding.
-///
-/// [`LAYER_BACKPACK`]: uoterm_protocol::types::LAYER_BACKPACK
-/// [`LAYER_BANK`]: uoterm_protocol::types::LAYER_BANK
-pub const MOUNT_LAYER: u8 = 25;
 #[cfg(test)]
 const MOVE_REQ_SEQ_INDEX: usize = 2;
 
-/// The eight tiles that touch one tile, in wire direction order. Two tiles the
-/// same distance away break the tie toward the first of these.
-pub const ADJACENT_DIRS: [Direction; 8] = [
-    Direction::North,
-    Direction::Northeast,
-    Direction::East,
-    Direction::Southeast,
-    Direction::South,
-    Direction::Southwest,
-    Direction::West,
-    Direction::Northwest,
-];
 /// Where a follower settles: one tile from its target, which is the tile
 /// beside it. Nearer than that is the target's own tile, which a follower
 /// never stands on. Once it is this near it stops closing and holds.
@@ -405,8 +393,20 @@ pub struct Movement {
     /// even move. The uneven pace is for the agent, to look like a person.
     pub steady_pace: bool,
     /// True while the character rides. A mount has a pace of its own, and the
-    /// session sets this from the item the server puts on [`MOUNT_LAYER`].
+    /// session sets this from the item the server puts on [`LAYER_MOUNT`].
     pub mounted: bool,
+    /// The walk the shard set: whether a step on foot takes the mounted pace,
+    /// and whether he may run. See the `SPEED_MODE_*` values.
+    pub speed_mode: u8,
+    /// When the character asked the server where he is, until the server
+    /// redraws him. No step goes out in between: a step sent while the answer
+    /// is on its way is one the redraw then throws away, though the server
+    /// took it.
+    resync_asked: Option<Instant>,
+    /// How far behind the game pace the steps of this walk are, in all. A
+    /// person's steps vary, but the sum of them never runs ahead of the pace
+    /// the game allows.
+    pace_lag: Duration,
     /// The tiles the server refused him, which every route goes around.
     pub blocked: BlockedTiles,
     /// The crossings the server refused him, which say whether a refusal is
@@ -441,6 +441,9 @@ impl Default for Movement {
             last_step_ran: false,
             steady_pace: false,
             mounted: false,
+            speed_mode: SPEED_MODE_NORMAL,
+            resync_asked: None,
+            pace_lag: Duration::ZERO,
             blocked: BlockedTiles::default(),
             refused_edges: RefusedEdges::default(),
             trip_dest: None,
@@ -459,13 +462,10 @@ impl Movement {
     ///
     /// A mount has a pace of its own, twice the pace of the person on it at
     /// both a walk and a run.
+    ///
+    /// The shard may also set the walk: a step on foot at the mounted pace.
     pub fn next_interval(&self, running: bool) -> Duration {
-        let base = match (self.mounted, running) {
-            (true, true) => STEP_MOUNT_RUN_MS,
-            (true, false) => STEP_MOUNT_WALK_MS,
-            (false, true) => STEP_RUN_MS,
-            (false, false) => STEP_WALK_MS,
-        };
+        let base = self.game_pace(running).as_millis() as u64;
         if self.steady_pace {
             return Duration::from_millis(base);
         }
@@ -475,12 +475,57 @@ impl Movement {
         Duration::from_millis(rand::thread_rng().gen_range(lo..=hi))
     }
 
+    /// The pace the game gives one step, with no person's variation in it.
+    pub fn game_pace(&self, running: bool) -> Duration {
+        let fast = self.mounted
+            || matches!(
+                self.speed_mode,
+                SPEED_MODE_FAST_ON_FOOT | SPEED_MODE_FAST_NO_RUN
+            );
+        Duration::from_millis(match (fast, running) {
+            (true, true) => STEP_MOUNT_RUN_MS,
+            (true, false) => STEP_MOUNT_WALK_MS,
+            (false, true) => STEP_RUN_MS,
+            (false, false) => STEP_WALK_MS,
+        })
+    }
+
+    /// True when the shard lets the character run.
+    pub fn may_run(&self) -> bool {
+        !matches!(self.speed_mode, SPEED_MODE_NO_RUN | SPEED_MODE_FAST_NO_RUN)
+    }
+
+    /// The time one step takes: a person's varied step, held so that the steps
+    /// of the walk in all never run ahead of the game pace. A short step that
+    /// would take the walk ahead of it is lengthened to the pace, less what the
+    /// walk is already behind. A shard counts every step against that pace and
+    /// holds back a client that gets ahead of it.
+    fn step_interval(&mut self, running: bool) -> Duration {
+        let pace = self.game_pace(running);
+        let drawn = self.next_interval(running);
+        let lag = self.pace_lag;
+        let behind = lag + drawn;
+        if behind < pace {
+            self.pace_lag = Duration::ZERO;
+            pace - lag
+        } else {
+            self.pace_lag = behind - pace;
+            drawn
+        }
+    }
+
     /// True when the character may send a step now: the server owes him fewer
     /// than [`IN_FLIGHT_MAX`] answers, and his next step has fallen due. The
     /// pace is what spaces his steps; the answers only stop him running away
     /// from a server that has stopped listening.
     pub fn ready(&self, now: Instant) -> bool {
         if self.in_flight.len() >= IN_FLIGHT_MAX {
+            return false;
+        }
+        if self
+            .resync_asked
+            .is_some_and(|asked| now.saturating_duration_since(asked) < RESYNC_WAIT)
+        {
             return false;
         }
         match self.next_step_due {
@@ -511,7 +556,11 @@ impl Movement {
     fn schedule_next(&mut self, now: Instant, pace: Duration) {
         let from = match self.next_step_due {
             Some(due) if now.saturating_duration_since(due) < pace => due,
-            _ => now,
+            _ => {
+                // A new cadence owes nothing to the walk before it.
+                self.pace_lag = Duration::ZERO;
+                now
+            }
         };
         self.next_step_due = Some(from + pace);
     }
@@ -609,7 +658,8 @@ impl Movement {
             sent_at: now,
             turn: false,
         });
-        self.schedule_next(now, self.next_interval(running));
+        let interval = self.step_interval(running);
+        self.schedule_next(now, interval);
         self.last_step_ran = running;
         self.last_dir = step.direction;
         encode::move_request(step.direction, running, sequence, key)
@@ -630,11 +680,15 @@ impl Movement {
     /// server charges a turn nothing at all and starts its own pace again from
     /// it, so charging a whole walking step here loses a tile of ground on
     /// every change of direction.
+    ///
+    /// The turn carries the running flag of the step it comes before, as the
+    /// reference client sends it.
     pub fn build_turn(
         &mut self,
         facing: Direction,
         direction: Direction,
         standing_on: Point3,
+        running: bool,
         now: Instant,
     ) -> Option<Vec<u8>> {
         if facing == direction {
@@ -650,12 +704,7 @@ impl Movement {
         });
         self.last_dir = direction;
         self.schedule_next(now, TURN_PACE);
-        Some(encode::move_request(
-            direction,
-            TURN_RUN_FLAG,
-            sequence,
-            key,
-        ))
+        Some(encode::move_request(direction, running, sequence, key))
     }
 
     /// The way the character faces once every request already sent has been
@@ -734,6 +783,32 @@ impl Movement {
             }
         }
         self.reset_sequence();
+    }
+
+    /// Asks the server where the character is, once: the answer to a request
+    /// that matches no request in flight, or a request the server never
+    /// answered. True when the caller must send the question. Every request on
+    /// the wire goes back on the route, since the server's redraw says which of
+    /// them happened, and nothing more goes out until that redraw comes.
+    pub fn ask_resync(&mut self, now: Instant) -> bool {
+        if self
+            .resync_asked
+            .is_some_and(|asked| now.saturating_duration_since(asked) < RESYNC_WAIT)
+        {
+            return false;
+        }
+        self.refused();
+        self.resync_asked = Some(now);
+        true
+    }
+
+    /// The server redrew the character: it answers a resync this way, and a
+    /// teleport, a death or a recall as well. It starts its walk count again
+    /// at each, so every request still on the wire was refused for its number
+    /// and goes back on the route.
+    pub fn redrawn(&mut self) {
+        self.resync_asked = None;
+        self.refused();
     }
 
     /// Throws away everything one refusal ends: the requests on the wire, the
@@ -852,12 +927,11 @@ impl Movement {
         // The session answers a stale step with a resync, and the server
         // starts its walk count again on a resync. So does the client, or
         // the next step it sends is refused for its number alone.
-        if stale {
-            self.in_flight.clear();
-            self.path.clear();
-            self.reset_sequence();
+        if !stale || !self.ask_resync(now) {
+            return false;
         }
-        stale
+        self.path.clear();
+        true
     }
 
     pub fn set_goal(&mut self, goal: Point3) {
@@ -949,12 +1023,12 @@ pub fn can_run(stam: u16, stam_max: u16) -> bool {
 
 /// True while the character rides.
 ///
-/// The item the server puts on [`MOUNT_LAYER`] is the only word this client
+/// The item the server puts on [`LAYER_MOUNT`] is the only word this client
 /// gets that he is on a mount: no packet says so in words, and the body he
 /// wears does not change. A mount steps twice as fast as the person on it, so
 /// this is what [`Movement::next_interval`] is set from.
 pub fn is_mounted(equipment: &[EquipItem]) -> bool {
-    equipment.iter().any(|worn| worn.layer == MOUNT_LAYER)
+    equipment.iter().any(|worn| worn.layer == LAYER_MOUNT)
 }
 
 pub fn should_run(in_town: bool, danger: bool, late: bool, stam: u16, stam_max: u16) -> bool {
@@ -1430,7 +1504,7 @@ fn follow_plan_with<M: TileQuery + ?Sized>(
     target_running: bool,
     obstacles: &Obstacles,
 ) -> Option<FollowPlan> {
-    let mut slots: Vec<Point3> = ADJACENT_DIRS
+    let mut slots: Vec<Point3> = Direction::ALL
         .iter()
         .filter_map(|&dir| target_at.neighbour(dir))
         // Every one of these tiles touches the target, so each is read from
@@ -1982,7 +2056,7 @@ pub(crate) mod tests {
         assert!(!is_mounted(&[worn(uoterm_protocol::types::LAYER_BACKPACK)]));
         assert!(is_mounted(&[
             worn(uoterm_protocol::types::LAYER_ONE_HANDED),
-            worn(MOUNT_LAYER)
+            worn(LAYER_MOUNT)
         ]));
     }
 
@@ -2605,6 +2679,7 @@ pub(crate) mod tests {
                 Direction::South,
                 Direction::South,
                 IN_FRONT_OF_THE_INN_DOOR,
+                STANDING_TURN,
                 now
             ),
             None,
@@ -2615,6 +2690,7 @@ pub(crate) mod tests {
                 Direction::North,
                 Direction::South,
                 IN_FRONT_OF_THE_INN_DOOR,
+                STANDING_TURN,
                 now,
             )
             .expect("a character that faces away turns first");
@@ -2630,15 +2706,66 @@ pub(crate) mod tests {
         );
     }
 
+    /// A person's steps vary, but the steps of a walk in all never run ahead
+    /// of the game pace: a shard counts each one against that pace and holds
+    /// back a client that gets ahead of it.
+    #[test]
+    fn a_varied_walk_never_runs_ahead_of_the_game_pace() {
+        const STEPS: u32 = 2000;
+        /// How far behind the pace a walk of that many steps may fall, in
+        /// steps: the variation adds up, but only on the slow side.
+        const LAG_STEPS_MAX: u32 = 60;
+        for running in [WALKING, RUNNING] {
+            let mut m = Movement::default();
+            let pace = m.game_pace(running);
+            let mut walked = Duration::ZERO;
+            for step in 1..=STEPS {
+                walked += m.step_interval(running);
+                assert!(walked >= pace * step, "ahead of the pace at step {step}");
+            }
+            assert!(
+                walked <= pace * (STEPS + LAG_STEPS_MAX),
+                "{walked:?} is too slow"
+            );
+        }
+    }
+
+    /// The shard may set the walk: a step on foot at the mounted pace, no
+    /// running, or both.
+    #[test]
+    fn the_speed_mode_sets_the_pace_and_the_run() {
+        let mut m = Movement::default();
+        assert_eq!(m.game_pace(WALKING), Duration::from_millis(STEP_WALK_MS));
+        assert!(m.may_run());
+        m.speed_mode = SPEED_MODE_FAST_ON_FOOT;
+        assert_eq!(
+            m.game_pace(WALKING),
+            Duration::from_millis(STEP_MOUNT_WALK_MS)
+        );
+        assert_eq!(
+            m.game_pace(RUNNING),
+            Duration::from_millis(STEP_MOUNT_RUN_MS)
+        );
+        assert!(m.may_run());
+        m.speed_mode = SPEED_MODE_NO_RUN;
+        assert_eq!(m.game_pace(WALKING), Duration::from_millis(STEP_WALK_MS));
+        assert!(!m.may_run());
+        m.speed_mode = SPEED_MODE_FAST_NO_RUN;
+        assert_eq!(
+            m.game_pace(WALKING),
+            Duration::from_millis(STEP_MOUNT_WALK_MS)
+        );
+        assert!(!m.may_run());
+    }
+
     /// A turn on the spot costs [`TURN_PACE`] and not a step of the pace he
-    /// walks at. The server charges a turn nothing and starts its own pace
-    /// again from it, so a turn charged as a walking step gives away a whole
-    /// tile of ground on every change of direction.
+    /// walks at. A turn charged as a walking step gives away a whole tile of
+    /// ground on every change of direction.
     #[test]
     fn a_turn_costs_far_less_than_a_step() {
         assert!(
-            TURN_PACE < Duration::from_millis(STEP_MOUNT_RUN_MS),
-            "a turn must cost less than the fastest step there is, and it costs {TURN_PACE:?}"
+            TURN_PACE <= Duration::from_millis(STEP_MOUNT_RUN_MS),
+            "a turn must cost no more than the fastest step there is, and it costs {TURN_PACE:?}"
         );
         let mut m = Movement::default();
         let now = Instant::now();
@@ -2646,6 +2773,7 @@ pub(crate) mod tests {
             Direction::North,
             Direction::South,
             AT_THE_INN_DOOR_CORNER,
+            STANDING_TURN,
             now,
         )
         .expect("he faces away, so he turns");
@@ -3047,7 +3175,7 @@ pub(crate) mod tests {
             Some((plan.dest.x, plan.dest.y)),
             "{plan:?}"
         );
-        for dir in ADJACENT_DIRS {
+        for dir in Direction::ALL {
             let Some(slot) = target_at.neighbour(dir) else {
                 continue;
             };
@@ -3138,7 +3266,7 @@ pub(crate) mod tests {
     #[test]
     fn follow_finds_nothing_when_the_target_is_walled_in() {
         let mut map = MockMap::new(GRID, GRID);
-        for dir in ADJACENT_DIRS {
+        for dir in Direction::ALL {
             let slot = target().neighbour(dir).expect("neighbour is on the grid");
             map.set_block(slot.x, slot.y, true);
         }
@@ -3155,7 +3283,7 @@ pub(crate) mod tests {
     fn follow_pushes_through_a_crowd_beside_the_target() {
         let map = MockMap::new(GRID, GRID);
         let mut crowd = vec![target()];
-        for dir in ADJACENT_DIRS {
+        for dir in Direction::ALL {
             crowd.push(target().neighbour(dir).expect("neighbour on the grid"));
         }
         let plan = follow_plan(&map, me(), target(), false, &standing_on(&crowd))
@@ -3346,7 +3474,7 @@ pub(crate) mod tests {
             return;
         };
         let map = uoterm_nav::MulMap::open(&dir, FELUCCA_MAP_INDEX).expect("open felucca map 0");
-        for dir in ADJACENT_DIRS {
+        for dir in Direction::ALL {
             let slot = RAMP_TARGET
                 .neighbour(dir)
                 .expect("the tile beside him is on the map");

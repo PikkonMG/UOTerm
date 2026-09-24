@@ -6,6 +6,7 @@
 
 pub mod abilities;
 pub mod buffs;
+pub mod harvest;
 pub mod items;
 pub mod mobiles;
 mod name;

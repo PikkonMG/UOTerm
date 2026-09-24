@@ -36,7 +36,7 @@ The `[play_along]` part is used only when `answer_when_named` and `play_along` a
 
 | Field | Effect |
 | --- | --- |
-| `class` | `agent run` and `populate` map it to a goal: lumberjack/miner/gatherer → `gather`; warrior/pk → `hunt`; traveler → `travel`; sitter/banker/banker_idle → `social`; other → `idle` |
+| `class` | `agent run` and `populate` map it to a goal: lumberjack/gatherer → `gather`; miner → `mine`; warrior/pk → `hunt`; traveler → `travel`; sitter/banker/banker_idle → `social`; other → `idle` |
 | `tier` | Flee HP ratio (novice 0.55 … grandmaster 0.18) |
 | `risk_tolerance` | Scales that flee ratio |
 | `active_hours` | `populate` skips the agent when local time is outside the windows |
@@ -52,14 +52,15 @@ Every field above changes behaviour. A persona file carries no other field.
 | Goal | Reflex |
 | --- | --- |
 | `idle` | No action |
-| `gather` | Use hatchet, then target a tree |
+| `gather` | Find the nearest tree of the map within 12 tiles, walk beside it, use an axe and aim at the tree, one swing at a time. A tree the shard says is empty is left for 20 minutes. With no axe, or no tree near, the goal ends with `job_failed` |
+| `mine` | As `gather`, with a pickaxe or a shovel, on rock and cave floors. A character on a mount cannot dig |
 | `hunt` | Starts the hunt job: melee, loot own kills, flee, then `job_ended`. Bandage stays with the bandage agent |
 | `travel` | Pathfind to dest. With no dest, the nearest bank. For ground that may have hostiles, use the walk job instead (`docs/playbooks/walk.md`) |
-| `flee` | Step away |
+| `flee` | Walk away from the threats near |
 | `bank` | Walk to the nearest bank within 400 tiles, from the banks of the standard towns on every map; the goal ends there. With none that near, or on a shard with its own towns, `set_goal` refuses and the agent must find a banker |
 | `shop` | Use a nearby innocent mobile, else walk to the bank when it is near |
 | `social` | Say `yo` |
-| `ress` | If dead, walk toward the bank when it is near |
+| `ress` | A ghost walks beside a healer in view and takes the offer to live again. With no healer in view, it walks to the nearest healer of the marker file, else to the nearest bank, where towns keep one. The goal ends with `job_ended` when the character is alive |
 
 Speech rules in code: reject empty text; reject `*…*` unless `allow_emote`; shorten lines over 18 words; apply `typo_rate`.
 

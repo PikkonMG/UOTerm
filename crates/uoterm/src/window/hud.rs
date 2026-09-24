@@ -485,7 +485,7 @@ fn activity(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &Watch
         detail.push(("Job", job, theme::TEXT));
     }
     if let (Some(x), Some(y)) = (frame.dest_x, frame.dest_y) {
-        let tiles = x.abs_diff(frame.x).max(y.abs_diff(frame.y));
+        let tiles = uoterm_protocol::types::tile_distance((x, y), (frame.x, frame.y));
         detail.push((
             "Walks to",
             format!("{x}, {y}  ({tiles} tiles)"),

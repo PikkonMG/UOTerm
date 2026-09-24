@@ -33,6 +33,13 @@ play_along = false
 # true  = open the window.
 view = false
 
+# When the link to the shard drops, log in again by itself. The first try
+# comes after 5 s; each failed try doubles the wait, up to 60 s. A logout
+# you or the agent ask for does not log in again.
+# true  = log in again (default).
+# false = end the session.
+reconnect = true
+
 # Client data directory (map, statics, tiledata). Needed for walkability
 # on a live shard. For the mock demo you may delete these two lines.
 uopath = "/path/to/uo"

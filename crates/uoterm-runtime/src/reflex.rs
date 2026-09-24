@@ -42,23 +42,28 @@ fn stat_pct(cur: u16, max: u16) -> u32 {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReflexAction {
     None,
-    MoveTo { x: u16, y: u16, z: i8 },
+    MoveTo {
+        x: u16,
+        y: u16,
+        z: i8,
+    },
     Attack(Serial),
     WarMode(bool),
     Use(Serial),
-    Target(Serial),
-    UseSkill(u16),
+    /// One swing of the gather goal, which the session works out from the map.
+    Harvest(uoterm_assist::harvest::Harvest),
+    /// One step of the resurrection goal, which the session works out from
+    /// the healers it can see and the places it knows.
+    Resurrect,
     BandageSelf,
     Say(&'static str),
 }
 
 pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
+    if matches!(goal, Goal::Ress) {
+        return ReflexAction::Resurrect;
+    }
     if world.self_state.dead {
-        if matches!(goal, Goal::Ress) {
-            if let Some(bank) = bank_near(world) {
-                return bank;
-            }
-        }
         return ReflexAction::Say(SAY_DEAD);
     }
     let hp_ratio = if world.self_state.hits_max == 0 {
@@ -67,12 +72,9 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
         stat_pct(world.self_state.hits, world.self_state.hits_max) as f32 / 100.0
     };
     if hp_ratio < persona.hp_flee_ratio() && !matches!(goal, Goal::Flee | Goal::Ress) {
-        let loc = world.self_state.location;
-        return ReflexAction::MoveTo {
-            x: loc.x.saturating_sub(FLEE_HP_STEPS),
-            y: loc.y,
-            z: loc.z,
-        };
+        if let Some(away) = run_from_danger(world, FLEE_HP_STEPS) {
+            return away;
+        }
     }
     // Bandages, potions and an answer to whoever is hitting her come before
     // the goal, because none of them is a goal. A wound goes on working while
@@ -87,19 +89,16 @@ pub fn tick(world: &World, persona: &Persona, goal: &Goal) -> ReflexAction {
         Goal::Idle => ReflexAction::None,
         Goal::Social => ReflexAction::Say(SAY_SOCIAL),
         Goal::Shop => shop_action(world),
-        Goal::Ress | Goal::Bank => bank_near(world).unwrap_or(ReflexAction::None),
+        Goal::Bank => bank_near(world).unwrap_or(ReflexAction::None),
+        Goal::Ress => ReflexAction::Resurrect,
         Goal::Travel { dest } => ReflexAction::MoveTo {
             x: dest.x,
             y: dest.y,
             z: dest.z,
         },
-        Goal::Flee => ReflexAction::MoveTo {
-            x: world.self_state.location.x.saturating_sub(FLEE_XY_STEPS),
-            y: world.self_state.location.y.saturating_sub(FLEE_XY_STEPS),
-            z: world.self_state.location.z,
-        },
+        Goal::Flee => run_from_danger(world, FLEE_XY_STEPS).unwrap_or(ReflexAction::None),
         Goal::Hunt => hunt_action(world),
-        Goal::Gather => gather_action(world),
+        Goal::Gather { resource } => ReflexAction::Harvest(*resource),
     }
 }
 
@@ -171,6 +170,31 @@ fn fight_back(world: &World) -> Option<ReflexAction> {
         });
     }
     Some(ReflexAction::Attack(serial))
+}
+
+/// A walk `steps` tiles straight away from whatever threatens the character:
+/// the one who last hurt him, the one he fights, or else the nearest mobile
+/// that could be fought. With nothing in sight to run from, none.
+fn run_from_danger(world: &World, steps: u16) -> Option<ReflexAction> {
+    let here = world.self_state.location;
+    let threat = world
+        .recent_attacker(Instant::now(), FIGHT_BACK_MEMORY)
+        .or(world.combatant)
+        .and_then(|serial| world.mobiles.get(&serial))
+        .or_else(|| {
+            world
+                .nearby_mobiles(HUNT_RANGE)
+                .into_iter()
+                .filter(|m| m.serial != world.self_state.serial)
+                .filter(|m| can_be_harmed(m.notoriety, m.flags))
+                .min_by_key(|m| here.chebyshev(m.location))
+        })?;
+    let to = crate::jobs::away_from(here, threat.location, steps);
+    Some(ReflexAction::MoveTo {
+        x: to.x,
+        y: to.y,
+        z: to.z,
+    })
 }
 
 fn hunt_action(world: &World) -> ReflexAction {
@@ -279,20 +303,6 @@ pub(crate) fn can_be_harmed(notoriety: u8, flags: u8) -> bool {
     NOTO_ATTACKABLE.contains(&notoriety) && flags & FLAG_BLESSED == 0
 }
 
-fn gather_action(world: &World) -> ReflexAction {
-    if world.pending_target.is_some() {
-        if let Some(tree) = world.find_items(None, None, None).into_iter().find(|i| {
-            i.parent.is_none() && (TREE_GRAPHIC_MIN..=TREE_GRAPHIC_MAX).contains(&i.graphic)
-        }) {
-            return ReflexAction::Target(tree.serial);
-        }
-    }
-    if let Some(tool) = world.find_item_graphic(GRAPHIC_HATCHET) {
-        return ReflexAction::Use(tool.serial);
-    }
-    ReflexAction::UseSkill(SKILL_LUMBERJACKING)
-}
-
 fn shop_action(world: &World) -> ReflexAction {
     let self_serial = world.self_state.serial;
     if let Some(vendor) = world
@@ -319,6 +329,7 @@ fn bank_near(world: &World) -> Option<ReflexAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uoterm_assist::harvest::Harvest;
     use uoterm_protocol::Point3;
 
     /// Serial of the only mobile standing next to us in the hunt tests.
@@ -409,7 +420,13 @@ mod tests {
     /// goal. An operator had to make her invulnerable to stop it.
     #[test]
     fn she_answers_whoever_hits_her_whatever_the_goal_is() {
-        for goal in [Goal::Idle, Goal::Gather, Goal::Bank] {
+        for goal in [
+            Goal::Idle,
+            Goal::Gather {
+                resource: Harvest::Lumber,
+            },
+            Goal::Bank,
+        ] {
             let mut w = world_with_one_mobile(NOTO_GREY, 0);
             w.self_state.serial = SELF;
             w.harmed_by = Some(uoterm_world::Harm {
@@ -500,6 +517,7 @@ mod tests {
                 layer: None,
                 grid: 0,
                 name: "bandages".into(),
+                flags: 0,
             },
         );
         w
@@ -529,61 +547,53 @@ mod tests {
         );
     }
 
+    /// The gather goal needs the map, which the session holds, so the reflex
+    /// hands it the swing and the resource to swing for.
     #[test]
-    fn gather_uses_hatchet_then_targets_tree() {
-        use uoterm_protocol::{GroundItem, Inbound, TargetCursor};
-        let mut w = World::new();
-        w.logged_in = true;
-        w.apply(&Inbound::WorldItem(GroundItem {
-            serial: Serial(0x4000_0010),
-            graphic: TREE_GRAPHIC_MIN,
-            amount: 1,
-            x: 10,
-            y: 10,
-            z: 0,
-            hue: 0,
-            multi: false,
-        }));
-        w.items.insert(
-            Serial(0x4000_0001),
-            uoterm_world::Item {
-                serial: Serial(0x4000_0001),
-                graphic: GRAPHIC_HATCHET,
-                amount: 1,
-                hue: 0,
-                location: Point3::new(0, 0, 0),
-                parent: Some(Serial(0x4000_0002)),
-                layer: None,
-                grid: 0,
-                name: String::new(),
-            },
-        );
+    fn the_gather_goal_hands_the_swing_to_the_session() {
+        let w = World::new();
         let p = Persona::lumberjack_yew();
-        match tick(&w, &p, &Goal::Gather) {
-            ReflexAction::Use(s) => assert_eq!(s.0, 0x4000_0001),
-            other => panic!("expected use hatchet, got {other:?}"),
-        }
-        w.apply(&Inbound::Target(TargetCursor {
-            kind: 0,
-            id: 1,
-            flags: 0,
-        }));
-        match tick(&w, &p, &Goal::Gather) {
-            ReflexAction::Target(s) => assert_eq!(s.0, 0x4000_0010),
-            other => panic!("expected target tree, got {other:?}"),
+        for resource in [Harvest::Lumber, Harvest::Ore] {
+            assert_eq!(
+                tick(&w, &p, &Goal::Gather { resource }),
+                ReflexAction::Harvest(resource)
+            );
         }
     }
 
+    /// A badly hurt character runs, and runs away from the thing that could
+    /// hurt him: it stands east of him, so he goes west.
     #[test]
-    fn low_hp_flees() {
-        let mut w = World::new();
+    fn low_hp_flees_away_from_the_threat() {
+        let mut w = world_with_one_mobile(NOTO_GREY, 0);
         w.self_state.hits = 5;
         w.self_state.hits_max = 100;
         let p = Persona::lumberjack_yew();
-        assert!(matches!(
-            tick(&w, &p, &Goal::Hunt),
-            ReflexAction::MoveTo { .. }
-        ));
+        let here = w.self_state.location;
+        let ReflexAction::MoveTo { x, y, .. } = tick(&w, &p, &Goal::Hunt) else {
+            panic!("a badly hurt character runs");
+        };
+        assert_eq!(
+            (x, y),
+            (here.x - FLEE_HP_STEPS, here.y),
+            "straight away from it"
+        );
+        let ReflexAction::MoveTo { x, .. } = tick(&w, &p, &Goal::Flee) else {
+            panic!("the flee goal runs as well");
+        };
+        assert!(x < here.x);
+    }
+
+    /// With nothing in sight to run from, the flee goal stands still.
+    #[test]
+    fn with_nothing_to_run_from_flee_stays() {
+        let mut w = World::new();
+        w.self_state.hits = 100;
+        w.self_state.hits_max = 100;
+        assert_eq!(
+            tick(&w, &Persona::lumberjack_yew(), &Goal::Flee),
+            ReflexAction::None
+        );
     }
 
     /// A spot in Britain, a short walk from its bank.
@@ -605,10 +615,7 @@ mod tests {
         assert!(matches!(tick(&w, &p, &Goal::Social), ReflexAction::Say(_)));
         let mut dead = w.clone();
         dead.self_state.dead = true;
-        assert!(matches!(
-            tick(&dead, &p, &Goal::Ress),
-            ReflexAction::MoveTo { .. }
-        ));
+        assert_eq!(tick(&dead, &p, &Goal::Ress), ReflexAction::Resurrect);
     }
 
     /// Far from every bank, no walk to one is started: a search for a way
@@ -753,6 +760,7 @@ mod tests {
                 layer: None,
                 grid: 0,
                 name: "a lesser cure potion".into(),
+                flags: 0,
             },
         );
         w

@@ -31,11 +31,7 @@ pub struct SeasonArt {
 }
 
 fn number(word: &str) -> Option<u16> {
-    let word = word.trim();
-    match word.strip_prefix("0x").or_else(|| word.strip_prefix("0X")) {
-        Some(hex) => u16::from_str_radix(hex, 16).ok(),
-        None => word.parse().ok(),
-    }
+    uoterm_protocol::types::parse_unsigned(word).and_then(|n| u16::try_from(n).ok())
 }
 
 impl Default for SeasonArt {

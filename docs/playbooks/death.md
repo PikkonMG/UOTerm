@@ -6,12 +6,15 @@ Do not start hunt or walk on a ghost.
 ## Recover
 
 1. Read `observe`: `dead` is true.
-2. `set_goal` `ress` walks toward the nearest known bank. If none is known,
-   find a healer with `find_mobiles`.
-3. Use the healer or the shrine. Answer the gump if one opens.
-4. Wait until `dead` is false and a `resurrected` event arrives.
-5. Restock bandages and reagents at the bank if the pack is empty.
-6. Only then start hunt or walk again.
+2. `set_goal` `ress`. The ghost walks to a healer in view, or to the nearest
+   healer the marker file names, or else to the nearest bank, where towns
+   keep one. A healer offers when the ghost steps within 2 tiles of him; the
+   goal takes the offer, and steps back and in again when none comes.
+3. Wait for `job_ended` `ress: alive` and a `resurrected` event. A
+   `job_failed` `ress` says no healer is known: find one with `find_mobiles`
+   (`name` `healer`) or walk to a shrine.
+4. Restock bandages and reagents at the bank if the pack is empty.
+5. Only then start hunt or walk again.
 
 ## Do not
 

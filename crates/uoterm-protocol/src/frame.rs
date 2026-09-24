@@ -201,7 +201,8 @@ mod tests {
     #[test]
     fn unknown_opcode_skips_one_byte() {
         let mut d = FrameDecoder::new(PacketTable::t2a());
-        let pkts = d.push(&[0xEE, 0x73, 0x02]).unwrap();
+        // 0xFF is the one id no client version frames.
+        let pkts = d.push(&[0xFF, 0x73, 0x02]).unwrap();
         assert!(pkts.iter().any(|p| p.id == 0x73));
     }
 

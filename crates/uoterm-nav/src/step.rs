@@ -160,6 +160,13 @@ impl LandCorners {
         nw.min(ne).min(sw).min(se)
     }
 
+    /// The highest of the four corners: the top of the ground, which a shot
+    /// must pass over.
+    pub fn high(self) -> i16 {
+        let (nw, ne, sw, se) = self.heights();
+        nw.max(ne).max(sw).max(se)
+    }
+
     /// Where a person standing in the middle of the cell has his feet.
     ///
     /// The square is drawn as two triangles, and which pair of opposite

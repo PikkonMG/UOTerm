@@ -4,6 +4,7 @@
 //! not the OS window.
 
 use serde_json::Value;
+use uoterm_protocol::types::{tile_distance, DIR_MASK, DIR_RUNNING, LAYER_BACKPACK};
 
 pub const WATCH_POLL_MS: u64 = 250;
 pub const WATCH_RADAR_SIZE: u16 = 31;
@@ -18,8 +19,6 @@ pub const WINDOW_WIDTH: f32 = 1280.0;
 pub const WINDOW_HEIGHT: f32 = 800.0;
 pub const JOURNAL_LINES: usize = 12;
 pub const MOBILE_LINES: usize = 12;
-/// The layer on which a character wears his backpack.
-pub const LAYER_BACKPACK: u8 = 0x15;
 const PERCENT: u32 = 100;
 /// Below this share of his hits the character is in serious danger.
 const CRITICAL_HITS_PERCENT: u32 = 35;
@@ -942,7 +941,7 @@ fn watch_mobiles(
                 z: signed_field(loc, "z"),
                 notoriety: num_field(Some(m), "notoriety") as u8,
                 hits_percent: hits_percent(m),
-                dist: x.abs_diff(origin_x).max(y.abs_diff(origin_y)),
+                dist: tile_distance((x, y), (origin_x, origin_y)) as u16,
                 look: watch_look(Some(m)),
             }
         })
@@ -952,8 +951,6 @@ fn watch_mobiles(
 }
 
 /// The running bit of a facing byte. The other bits are the direction.
-const DIRECTION_MASK: u16 = 0x07;
-const DIRECTION_RUN_BIT: u16 = 0x80;
 /// The bit of the flags of a mobile that says he is in war mode.
 const MOBILE_FLAG_WAR: u16 = 0x40;
 
@@ -975,10 +972,10 @@ fn watch_look(mobile: Option<&Value>) -> WatchLook {
     WatchLook {
         body: num_field(mobile, "body"),
         hue: num_field(mobile, "hue"),
-        direction: (num_field(mobile, "direction") & DIRECTION_MASK) as u8,
+        direction: (num_field(mobile, "direction") & u16::from(DIR_MASK)) as u8,
         war: num_field(mobile, "flags") & MOBILE_FLAG_WAR != 0 || bool_field(mobile, "war"),
         running: bool_field(mobile, "running")
-            || num_field(mobile, "direction") & DIRECTION_RUN_BIT != 0,
+            || num_field(mobile, "direction") & u16::from(DIR_RUNNING) != 0,
         equipment,
     }
 }
@@ -1019,11 +1016,7 @@ fn serial_field(obj: &Value, key: &str) -> u32 {
         return 0;
     };
     let from_text = || {
-        let text = value.as_str()?.trim();
-        match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-            Some(hex) => u32::from_str_radix(hex, 16).ok(),
-            None => text.parse().ok(),
-        }
+        uoterm_protocol::types::parse_unsigned(value.as_str()?).and_then(|n| u32::try_from(n).ok())
     };
     value
         .as_u64()

@@ -34,7 +34,6 @@ pub const MAP_TOKUNO_BLOCKS: u16 = 181;
 pub const MAP_TERMUR_BLOCKS_W: u16 = 160;
 pub const MAP_BLOCKS_W_640: u16 = 640;
 pub const CELL_PER_BLOCK_EDGE: u16 = 8;
-pub const TILEDATA_HS_LEN: usize = 3_188_736;
 /// Every UO index file marks a slot it does not fill with this lookup.
 pub const IDX_EMPTY: u32 = 0xFFFF_FFFF;
 pub const GROUP_HEADER: usize = 4;
@@ -97,6 +96,31 @@ pub enum MapError {
     UnsupportedUop,
 }
 
+/// Which form of a map a session walks: the one its account reads.
+///
+/// A shard says in the account flags whether the account may walk the newer
+/// Felucca areas, which the `x` files of a client hold, and it says with a
+/// `0xBF` `0x18` packet how many of the client's patch files each map uses.
+/// Two sessions whose forms differ walk different maps, from the same files.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct MapVariant {
+    pub new_felucca_areas: bool,
+    pub land_patches: u32,
+    pub static_patches: u32,
+}
+
+/// The patch files of one map: the land blocks of `mapdif` under the block
+/// numbers of `mapdifl`, and the statics of `stadif` under the numbers of
+/// `stadifl` with their places in `stadifi`.
+#[derive(Clone, Debug, Default)]
+pub struct MapPatchFiles {
+    pub land_list: Option<PathBuf>,
+    pub land: Option<PathBuf>,
+    pub statics_list: Option<PathBuf>,
+    pub statics_index: Option<PathBuf>,
+    pub statics: Option<PathBuf>,
+}
+
 #[derive(Clone, Debug)]
 pub struct MapFiles {
     pub map: PathBuf,
@@ -105,21 +129,61 @@ pub struct MapFiles {
     pub tiledata: PathBuf,
     pub blocks_w: u16,
     pub blocks_h: u16,
+    /// The number of the map whose files these are. A client with no files
+    /// for map 1 walks it on the files of map 0, as the reference client does.
     pub map_index: u8,
+    pub patches: MapPatchFiles,
+    pub land_patches: u32,
+    pub static_patches: u32,
 }
+
+/// The letter the files of the newer Felucca areas carry after the map number.
+const NEWER_FILE_SUFFIX: &str = "x";
+/// The map a client with no files for map 1 reads in its place.
+const MAP1_STAND_IN: u8 = 0;
+const MAP1: u8 = 1;
 
 impl MapFiles {
     pub fn from_uopath(uopath: &Path, map_index: u8) -> Result<Self, MapError> {
+        Self::for_variant(uopath, map_index, MapVariant::default())
+    }
+
+    /// The files of one map in the form a session walks it. The UOP package
+    /// is read before a `.mul` of the same map, since a client that has it
+    /// reads nothing else.
+    pub fn for_variant(
+        uopath: &Path,
+        map_index: u8,
+        variant: MapVariant,
+    ) -> Result<Self, MapError> {
+        match Self::resolve(uopath, map_index, variant) {
+            Err(MapError::Missing(_)) if map_index == MAP1 => {
+                Self::resolve(uopath, MAP1_STAND_IN, variant)
+            }
+            other => other,
+        }
+    }
+
+    fn resolve(uopath: &Path, map_index: u8, variant: MapVariant) -> Result<Self, MapError> {
         let (mut blocks_w, mut blocks_h) = map_block_dims(map_index);
-        let map = first_existing(
-            uopath,
-            &[
-                &format!("map{map_index}.mul"),
-                &format!("map{map_index}LegacyMUL.uop"),
-                &format!("map{map_index}xLegacyMUL.uop"),
-            ],
-        )
-        .ok_or(MapError::Missing("map*.mul"))?;
+        let plain = [
+            format!("map{map_index}LegacyMUL.uop"),
+            format!("map{map_index}.mul"),
+        ];
+        let newer = [
+            format!("map{map_index}xLegacyMUL.uop"),
+            format!("map{map_index}x.mul"),
+        ];
+        let find = |names: &[String; 2]| first_existing(uopath, &[&names[0], &names[1]]);
+        let newer_map = variant.new_felucca_areas.then(|| find(&newer)).flatten();
+        let suffix = if newer_map.is_some() {
+            NEWER_FILE_SUFFIX
+        } else {
+            ""
+        };
+        let map = newer_map
+            .or_else(|| find(&plain))
+            .ok_or(MapError::Missing("map*.mul"))?;
         if !is_uop_path(&map) {
             if let Ok(meta) = std::fs::metadata(&map) {
                 let inferred = infer_mul_blocks(meta.len(), blocks_w, blocks_h);
@@ -127,11 +191,11 @@ impl MapFiles {
                 blocks_h = inferred.1;
             }
         }
-        let statics = uopath.join(format!("statics{map_index}.mul"));
+        let statics = uopath.join(format!("statics{map_index}{suffix}.mul"));
         if !statics.exists() {
             return Err(MapError::Missing("statics*.mul"));
         }
-        let staidx = uopath.join(format!("staidx{map_index}.mul"));
+        let staidx = uopath.join(format!("staidx{map_index}{suffix}.mul"));
         let tiledata = uopath.join(TILEDATA_NAME);
         if !staidx.exists() {
             return Err(MapError::Missing("staidx*.mul"));
@@ -139,6 +203,7 @@ impl MapFiles {
         if !tiledata.exists() {
             return Err(MapError::Missing(TILEDATA_NAME));
         }
+        let existing = |name: String| Some(uopath.join(name)).filter(|p| p.exists());
         Ok(Self {
             map,
             statics,
@@ -147,6 +212,15 @@ impl MapFiles {
             blocks_w,
             blocks_h,
             map_index,
+            patches: MapPatchFiles {
+                land_list: existing(format!("mapdifl{map_index}.mul")),
+                land: existing(format!("mapdif{map_index}.mul")),
+                statics_list: existing(format!("stadifl{map_index}.mul")),
+                statics_index: existing(format!("stadifi{map_index}.mul")),
+                statics: existing(format!("stadif{map_index}.mul")),
+            },
+            land_patches: variant.land_patches,
+            static_patches: variant.static_patches,
         })
     }
 }
@@ -188,8 +262,20 @@ pub fn infer_mul_blocks(file_len: u64, default_w: u16, default_h: u16) -> (u16, 
     (default_w, default_h)
 }
 
+/// True when a tiledata file of this length is in the High Seas layout.
+///
+/// The two layouts differ in the width of every record, so a file reads as
+/// whole land groups followed by whole static groups in one layout only. The
+/// count of statics differs from one client to the next, so the length alone
+/// is no test; the shape of the file is.
 pub fn tiledata_is_hs(len: usize) -> bool {
-    len == TILEDATA_HS_LEN
+    tiledata_fits(len, LAND_RECORD_HS, STATIC_RECORD_HS)
+}
+
+fn tiledata_fits(len: usize, land_record: usize, static_record: usize) -> bool {
+    let land = LAND_COUNT / LAND_GROUP * (GROUP_HEADER + LAND_GROUP * land_record);
+    let group = GROUP_HEADER + STATIC_GROUP * static_record;
+    len > land && (len - land).is_multiple_of(group)
 }
 
 /// Map, staidx, and UOP block order is column-major: all blocks of column 0
@@ -380,6 +466,9 @@ struct MulHandles {
     map: File,
     statics: File,
     staidx: File,
+    /// The patch files the shard switched on, when it switched any on.
+    land_dif: Option<File>,
+    static_dif: Option<File>,
     uop_cache: Vec<(u32, Vec<u8>)>,
     /// The last tiles read, oldest first, each under its packed x,y.
     columns: Vec<(u32, TileColumn)>,
@@ -397,6 +486,12 @@ struct MapBlock {
 pub struct MulMap {
     inner: std::sync::Mutex<MulHandles>,
     flags: TileFlags,
+    /// The land blocks a patch replaces: each block number, and where its
+    /// block starts in the land patch file.
+    land_patch: HashMap<u64, u64>,
+    /// The statics blocks a patch replaces: each block number, and its
+    /// place and length in the statics patch file.
+    static_patch: StaticPatchPlaces,
     blocks_w: u16,
     blocks_h: u16,
     uop: Option<Vec<Option<UopIndex>>>,
@@ -404,7 +499,16 @@ pub struct MulMap {
 
 impl MulMap {
     pub fn open(uopath: impl AsRef<Path>, map_index: u8) -> Result<Self, MapError> {
-        let files = MapFiles::from_uopath(uopath.as_ref(), map_index)?;
+        Self::open_variant(uopath, map_index, MapVariant::default())
+    }
+
+    /// The map in the form a session walks it. See [`MapVariant`].
+    pub fn open_variant(
+        uopath: impl AsRef<Path>,
+        map_index: u8,
+        variant: MapVariant,
+    ) -> Result<Self, MapError> {
+        let files = MapFiles::for_variant(uopath.as_ref(), map_index, variant)?;
         Self::from_files(&files)
     }
 
@@ -414,31 +518,38 @@ impl MulMap {
         } else {
             None
         };
+        let blocks = u64::from(files.blocks_w) * u64::from(files.blocks_h);
+        let (land_patch, land_dif) = land_patches(files, blocks)?;
+        let (static_patch, static_dif) = static_patches(files, blocks)?;
         Ok(Self {
             inner: std::sync::Mutex::new(MulHandles {
                 map: File::open(&files.map)?,
                 statics: File::open(&files.statics)?,
                 staidx: File::open(&files.staidx)?,
+                land_dif,
+                static_dif,
                 uop_cache: Vec::new(),
                 columns: Vec::new(),
                 blocks: HashMap::new(),
             }),
             flags: TileFlags::load(&files.tiledata)?,
+            land_patch,
+            static_patch,
             blocks_w: files.blocks_w,
             blocks_h: files.blocks_h,
             uop,
         })
     }
 
-    fn read_cell(
-        handles: &mut MulHandles,
-        uop: Option<&[Option<UopIndex>]>,
-        blocks_h: u16,
-        x: u16,
-        y: u16,
-    ) -> Result<(u16, i8), MapError> {
+    fn read_cell(&self, handles: &mut MulHandles, x: u16, y: u16) -> Result<(u16, i8), MapError> {
+        let (uop, blocks_h) = (self.uop.as_deref(), self.blocks_h);
         let mut buf = [0u8; CELL_BYTES];
-        if let Some(entries) = uop {
+        let block = block_index(blocks_h, x / CELL_PER_BLOCK_EDGE, y / CELL_PER_BLOCK_EDGE);
+        if let (Some(start), Some(dif)) = (self.land_patch.get(&block), handles.land_dif.as_mut()) {
+            let offset = start + mul_cell_offset(blocks_h, x, y) - block * BLOCK_BYTES as u64;
+            dif.seek(SeekFrom::Start(offset))?;
+            dif.read_exact(&mut buf)?;
+        } else if let Some(entries) = uop {
             read_uop_cell(handles, entries, blocks_h, x, y, &mut buf)?;
         } else {
             let offset = mul_cell_offset(blocks_h, x, y);
@@ -451,30 +562,47 @@ impl MulMap {
 
     /// The statics of one whole block, each under the tile it stands on.
     fn read_block_statics(
+        &self,
         handles: &mut MulHandles,
-        flags: &TileFlags,
         block: u64,
     ) -> Result<Vec<Vec<StaticPiece>>, MapError> {
+        let flags = &self.flags;
         let mut out = vec![Vec::new(); CELLS_PER_BLOCK];
-        handles
-            .staidx
-            .seek(SeekFrom::Start(block * STAIDX_RECORD as u64))?;
-        let mut idx = [0u8; STAIDX_RECORD];
-        handles.staidx.read_exact(&mut idx)?;
-        let lookup = u32::from_le_bytes([idx[0], idx[1], idx[2], idx[3]]);
-        let length = u32::from_le_bytes([idx[4], idx[5], idx[6], idx[7]]);
+        let patched = self
+            .static_patch
+            .get(&block)
+            .copied()
+            .filter(|_| handles.static_dif.is_some());
+        let (lookup, length) = match patched {
+            Some(place) => place,
+            None => {
+                handles
+                    .staidx
+                    .seek(SeekFrom::Start(block * STAIDX_RECORD as u64))?;
+                let mut idx = [0u8; STAIDX_RECORD];
+                handles.staidx.read_exact(&mut idx)?;
+                (
+                    u32::from_le_bytes([idx[0], idx[1], idx[2], idx[3]]),
+                    u32::from_le_bytes([idx[4], idx[5], idx[6], idx[7]]),
+                )
+            }
+        };
         if lookup == IDX_EMPTY || length == 0 || length == IDX_EMPTY {
             return Ok(out);
         }
+        let file = match (patched, handles.static_dif.as_mut()) {
+            (Some(_), Some(dif)) => dif,
+            _ => &mut handles.statics,
+        };
         let offset = u64::from(lookup);
-        let file_len = handles.statics.metadata()?.len();
+        let file_len = file.metadata()?.len();
         let n = capped_len(file_len, offset, length);
         if n == 0 {
             return Ok(out);
         }
-        handles.statics.seek(SeekFrom::Start(offset))?;
+        file.seek(SeekFrom::Start(offset))?;
         let mut data = vec![0u8; n];
-        handles.statics.read_exact(&mut data)?;
+        file.read_exact(&mut data)?;
         let edge = usize::from(CELL_PER_BLOCK_EDGE);
         for chunk in data.chunks(STATIC_RECORD) {
             if chunk.len() < STATIC_RECORD {
@@ -511,15 +639,14 @@ impl MulMap {
         let (bx, by) = (x / edge, y / edge);
         let key = block_index(self.blocks_h, bx, by);
         if !handles.blocks.contains_key(&key) {
-            let uop = self.uop.as_deref();
             let mut cells = Vec::with_capacity(CELLS_PER_BLOCK);
             for cy in 0..edge {
                 for cx in 0..edge {
                     let at = (bx * edge + cx, by * edge + cy);
-                    cells.push(Self::read_cell(handles, uop, self.blocks_h, at.0, at.1)?);
+                    cells.push(self.read_cell(handles, at.0, at.1)?);
                 }
             }
-            let statics = Self::read_block_statics(handles, &self.flags, key)?;
+            let statics = self.read_block_statics(handles, key)?;
             if handles.blocks.len() >= BLOCK_CACHE_CAP {
                 handles.blocks.clear();
             }
@@ -600,6 +727,72 @@ impl MulMap {
             pieces: statics.into_iter().map(|s| s.piece).collect(),
         })
     }
+}
+
+/// The width of one number in a patch list file.
+const PATCH_LIST_ENTRY: usize = 4;
+
+/// The block numbers of a patch list file, the first `count` of them.
+fn patch_list(path: &Path, count: u32) -> Result<Vec<u64>, MapError> {
+    let data = read_file(path)?;
+    Ok(data
+        .chunks_exact(PATCH_LIST_ENTRY)
+        .take(count as usize)
+        .map(|n| u64::from(u32::from_le_bytes([n[0], n[1], n[2], n[3]])))
+        .collect())
+}
+
+/// The land blocks the first `land_patches` patches replace, and the file
+/// they are read from. A block number past the map is left out.
+fn land_patches(
+    files: &MapFiles,
+    blocks: u64,
+) -> Result<(HashMap<u64, u64>, Option<File>), MapError> {
+    let (Some(list), Some(land)) = (&files.patches.land_list, &files.patches.land) else {
+        return Ok((HashMap::new(), None));
+    };
+    if files.land_patches == 0 {
+        return Ok((HashMap::new(), None));
+    }
+    let patch = patch_list(list, files.land_patches)?
+        .into_iter()
+        .enumerate()
+        .filter(|(_, block)| *block < blocks)
+        .map(|(n, block)| (block, (n * BLOCK_BYTES) as u64))
+        .collect();
+    Ok((patch, Some(File::open(land)?)))
+}
+
+/// Each statics block a patch replaces, with the lookup and the length of its
+/// entries in the statics patch file.
+type StaticPatchPlaces = HashMap<u64, (u32, u32)>;
+
+/// The statics blocks the first `static_patches` patches replace, each with
+/// its place in the statics patch file, and that file.
+fn static_patches(
+    files: &MapFiles,
+    blocks: u64,
+) -> Result<(StaticPatchPlaces, Option<File>), MapError> {
+    let p = &files.patches;
+    let (Some(list), Some(index), Some(statics)) = (&p.statics_list, &p.statics_index, &p.statics)
+    else {
+        return Ok((HashMap::new(), None));
+    };
+    if files.static_patches == 0 {
+        return Ok((HashMap::new(), None));
+    }
+    let places = read_file(index)?;
+    let patch = patch_list(list, files.static_patches)?
+        .into_iter()
+        .zip(places.chunks_exact(STAIDX_RECORD))
+        .filter(|(block, _)| *block < blocks)
+        .map(|(block, rec)| {
+            let lookup = u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
+            let length = u32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+            (block, (lookup, length))
+        })
+        .collect();
+    Ok((patch, Some(File::open(statics)?)))
 }
 
 fn mul_cell_offset(blocks_h: u16, x: u16, y: u16) -> u64 {
@@ -780,6 +973,10 @@ impl TileQuery for MulMap {
 
     fn item_name(&self, graphic: u16) -> String {
         self.flags.static_name(graphic).to_string()
+    }
+
+    fn item_stat(&self, graphic: u16) -> Option<(u32, u8)> {
+        Some(self.flags.stat(graphic))
     }
 
     fn width(&self) -> u16 {

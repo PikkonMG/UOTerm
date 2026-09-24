@@ -2,9 +2,15 @@ use crate::buf::PacketWriter;
 use crate::decode::{PromptRequest, TextEntryDialog};
 use crate::types::*;
 
+/// A framed packet, or nothing when it would not fit its length word. Only
+/// text far past what any shard reads can make a packet that long, and such
+/// a packet cannot go on the wire, so it is dropped here rather than stop the
+/// session.
 fn var_bytes(w: PacketWriter) -> Vec<u8> {
-    w.finish_variable()
-        .expect("encoded packet length fits in u16")
+    w.finish_variable().unwrap_or_else(|error| {
+        tracing::warn!(%error, "a packet too long to send was dropped");
+        Vec::new()
+    })
 }
 
 pub fn seed(seed: u32) -> Vec<u8> {
@@ -186,11 +192,25 @@ const QUERY_SKILLS: u8 = 5;
 /// The fixed word the query carries before its kind.
 const QUERY_PATTERN: u32 = 0xEDED_EDED;
 
+/// The mobile query (`0x34`) asks for the status of a mobile.
+const QUERY_STATUS: u8 = 4;
+
 /// The Classic Client mobile query (`0x34`) for the character's skills. The
 /// shard answers with the full skill list (`0x3A`).
 pub fn query_skills(me: Serial) -> Vec<u8> {
+    query(QUERY_SKILLS, me)
+}
+
+/// The Classic Client mobile query (`0x34`) for the status of a mobile, as a
+/// click on its health bar asks. The shard answers with its hits (`0x11`),
+/// and with every stat when it is the character or a pet he owns.
+pub fn query_status(mobile: Serial) -> Vec<u8> {
+    query(QUERY_STATUS, mobile)
+}
+
+fn query(kind: u8, serial: Serial) -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_QUERY);
-    w.u32(QUERY_PATTERN).u8(QUERY_SKILLS).serial(me);
+    w.u32(QUERY_PATTERN).u8(kind).serial(serial);
     w.finish()
 }
 
@@ -486,6 +506,14 @@ pub fn menu_cancel(serial: Serial, menu_id: u16) -> Vec<u8> {
 pub fn context_menu_request(serial: Serial) -> Vec<u8> {
     let mut w = PacketWriter::with_variable(PKT_EXTENDED);
     w.u16(EXT_CONTEXT_MENU_REQUEST).serial(serial);
+    var_bytes(w)
+}
+
+/// `0xBF` `0x1E`: ask for the design of a custom house, which the shard
+/// sends as `0xD8`.
+pub fn house_design_request(house: Serial) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_HOUSE_DESIGN_REQUEST).serial(house);
     var_bytes(w)
 }
 
@@ -1066,9 +1094,13 @@ const CREATE_SPARE: usize = 15;
 /// From 7.0.16.0 a new character starts with three skills; before it, two.
 const CREATE_SKILLS_NEW: usize = 4;
 const CREATE_SKILLS_OLD: usize = 3;
-/// The flags of the client, as the reference client writes them.
-const CREATE_CLIENT_FLAG: u32 = 0x1F;
 const CREATE_MARK: u32 = 0x01;
+/// From 4.0.11d the race and the sex share one byte; before it the byte is
+/// the sex alone.
+const CREATE_RACE_BYTE: ClientVersion = ClientVersion::new(4, 0, 11, b'd' as u32);
+/// From 7.0.0.0 the race in that byte counts from one, so a human is two or
+/// three; before it a human is zero or one.
+const CREATE_RACE_FROM_ONE: ClientVersion = ClientVersion::new(7, 0, 0, 0);
 
 /// `0x83`: delete the character in this slot of the account.
 pub fn delete_character(slot: u32) -> Vec<u8> {
@@ -1118,14 +1150,13 @@ pub fn create_character(new: &NewCharacter<'_>, version: ClientVersion) -> Vec<u
         .u8(0)
         .ascii_fixed(new.name, CHARACTER_NAME_LEN)
         .u16(0)
-        .u32(CREATE_CLIENT_FLAG)
+        .u32(version.expansion_flags())
         .u32(CREATE_MARK)
         .u32(0)
         // No profession: the numbers below say what he is.
         .u8(0)
         .bytes(&[0; CREATE_SPARE])
-        // The race and the sex share one byte on a newer client.
-        .u8(new.race * 2 + u8::from(new.female))
+        .u8(race_and_sex(new, version))
         .u8(new.strength)
         .u8(new.dexterity)
         .u8(new.intelligence);
@@ -1147,6 +1178,21 @@ pub fn create_character(new: &NewCharacter<'_>, version: ClientVersion) -> Vec<u
         .u16(0)
         .u16(0);
     w.finish()
+}
+
+/// The byte that says the race and the sex of a new character, in the form
+/// the version writes it.
+fn race_and_sex(new: &NewCharacter<'_>, version: ClientVersion) -> u8 {
+    let female = u8::from(new.female);
+    if !version.at_least(CREATE_RACE_BYTE) {
+        return female;
+    }
+    let race = if version.at_least(CREATE_RACE_FROM_ONE) {
+        new.race + 1
+    } else {
+        new.race
+    };
+    race * 2 + female
 }
 
 #[cfg(test)]
@@ -1210,6 +1256,34 @@ mod tests {
     }
 
     #[test]
+    fn a_status_query_and_a_design_request_are_byte_exact() {
+        const PET: Serial = Serial(0x0000_0F01);
+        const HOUSE: Serial = Serial(0x4000_0F02);
+        let status = query_status(PET);
+        assert_eq!(status[0], PKT_QUERY);
+        assert_eq!(&status[1..5], &QUERY_PATTERN.to_be_bytes());
+        assert_eq!(status[5], QUERY_STATUS);
+        assert_eq!(&status[6..10], &PET.0.to_be_bytes());
+        let design = house_design_request(HOUSE);
+        assert_eq!(design[0], PKT_EXTENDED);
+        assert_eq!(
+            usize::from(u16::from_be_bytes([design[1], design[2]])),
+            design.len()
+        );
+        assert_eq!(&design[3..5], &EXT_HOUSE_DESIGN_REQUEST.to_be_bytes());
+        assert_eq!(&design[5..9], &HOUSE.0.to_be_bytes());
+    }
+
+    /// Words far past any shard's limit make no packet, and do not stop the
+    /// session.
+    #[test]
+    fn a_packet_too_long_for_its_length_word_is_dropped() {
+        let words = "a".repeat(usize::from(u16::MAX));
+        assert!(chat_say(&words).is_empty());
+        assert!(!chat_say("hail").is_empty());
+    }
+
+    #[test]
     fn making_and_deleting_a_character_is_byte_exact() {
         let gone = delete_character(2);
         assert_eq!(gone[0], PKT_DELETE_CHARACTER);
@@ -1252,6 +1326,48 @@ mod tests {
         let newer = create_character(&new, new_client);
         assert_eq!(newer[0], PKT_CREATE_CHARACTER_NEW);
         assert_eq!(newer.len(), made.len() + 2);
+    }
+
+    /// The offset of the race and sex byte: id, two patterns, a zero byte,
+    /// the name, two spare bytes, three words, the profession and fifteen
+    /// spare bytes.
+    const RACE_BYTE_AT: usize = 1 + 4 + 4 + 1 + CHARACTER_NAME_LEN + 2 + 12 + 1 + CREATE_SPARE;
+    const CLIENT_FLAG_AT: usize = 1 + 4 + 4 + 1 + CHARACTER_NAME_LEN + 2;
+
+    /// A shard reads the race from that byte by the version, so an elf must
+    /// arrive as an elf on every version, and the flags must be the ones the
+    /// version reports everywhere else.
+    #[test]
+    fn a_new_character_says_its_race_and_flags_as_its_version_does() {
+        const ELF: u8 = 1;
+        let elf = NewCharacter {
+            name: "Lyra",
+            female: true,
+            race: ELF,
+            strength: 45,
+            dexterity: 35,
+            intelligence: 10,
+            skills: vec![(45, 25), (30, 25)],
+            skin_hue: 0,
+            hair: 0,
+            hair_hue: 0,
+            start_city: 0,
+            slot: 0,
+        };
+        let cases = [
+            (ClientVersion::new(4, 0, 0, 0), 1),
+            (ClientVersion::new(6, 0, 1, 7), ELF * 2 + 1),
+            (ClientVersion::new(7, 0, 16, 0), (ELF + 1) * 2 + 1),
+        ];
+        for (version, byte) in cases {
+            let made = create_character(&elf, version);
+            assert_eq!(made[RACE_BYTE_AT], byte, "{version}");
+            assert_eq!(
+                &made[CLIENT_FLAG_AT..CLIENT_FLAG_AT + 4],
+                &version.expansion_flags().to_be_bytes(),
+                "{version}"
+            );
+        }
     }
 
     #[test]

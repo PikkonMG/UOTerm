@@ -200,9 +200,17 @@ fn take_events(inner: &mut Inner) -> Option<ToolResult> {
 /// its goal, where it walks, whom it follows or plays along with, and a
 /// loot or bank job under way.
 pub(super) fn doing(inner: &Inner, world: &World) -> Value {
+    // How the last walk ended: there, or with the reason no way was found.
+    let last_walk = world
+        .events
+        .iter()
+        .rev()
+        .find(|e| matches!(e.kind, EventKind::Arrived | EventKind::PathFailed))
+        .map(|e| json!({ "arrived": e.kind == EventKind::Arrived, "words": e.text, "unix_ms": e.unix_ms }));
     json!({
         "goal": inner.goal.name(),
         "walking_to": inner.movement.goal,
+        "last_walk": last_walk,
         "following": inner.follow.map(|s| world.name_of(s)),
         "playing_along_with": inner.play_along.map(|run| world.name_of(run.with)),
         "looting": inner.loot.as_ref().map(|job| job.corpse),
@@ -388,7 +396,7 @@ mod tests {
         let add = |serial: Serial, container: Serial| {
             Inbound::AddItem(uoterm_protocol::ContainerItem {
                 serial,
-                graphic: 0x0EED,
+                graphic: GRAPHIC_GOLD_COINS,
                 amount: 1,
                 x: 0,
                 y: 0,

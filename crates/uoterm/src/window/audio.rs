@@ -169,7 +169,8 @@ impl Audio {
         }
         self.follow_music(frame.music);
         for cue in new_cues(&frame.sounds, &mut self.last_cue) {
-            let tiles_away = f32::from(cue.x.abs_diff(frame.x).max(cue.y.abs_diff(frame.y)));
+            let tiles_away =
+                uoterm_protocol::types::tile_distance((cue.x, cue.y), (frame.x, frame.y)) as f32;
             self.play_sound(cue.sound, Kind::Effects, tiles_away);
         }
         for step in steps {

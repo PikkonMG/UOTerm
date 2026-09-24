@@ -1,7 +1,7 @@
 //! One TCP session: login, dispatch, tools, reflex tick.
 #![allow(clippy::items_after_test_module)]
 
-use crate::building::{building_tiles, multi_id};
+use crate::building::{add_buildings, add_ground_items, multi_id, Shape};
 use crate::config::{
     ConnectOptions, EncryptionMode, PING_INTERVAL_MS, REFLEX_TICK_MS, STEP_RUN_MS, STEP_WALK_MS,
 };
@@ -10,8 +10,8 @@ use crate::error::{Result, RuntimeError};
 use crate::harvest;
 use crate::jobs::{
     lists_from_args, HuntAction, HuntJob, HuntLists, WalkAction, WalkJob, JOB_ALREADY_RUNNING,
-    JOB_HUNT, JOB_NEEDS_NAME, JOB_NONE_RUNNING, JOB_UNKNOWN, JOB_WALK, JOB_WALK_NEEDS_SPOT,
-    REASON_HOSTILE, REASON_STOPPED, REASON_UNREACHABLE,
+    JOB_DEPOSIT, JOB_HUNT, JOB_LOOT, JOB_NEEDS_NAME, JOB_NONE_RUNNING, JOB_UNKNOWN, JOB_WALK,
+    JOB_WALK_NEEDS_SPOT, REASON_DONE, REASON_HOSTILE, REASON_STOPPED, REASON_UNREACHABLE,
 };
 use crate::landmarks::Landmarks;
 use crate::loot::{LootJob, LootStep};
@@ -38,8 +38,8 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, interval_at, MissedTickBehavior};
 use uoterm_nav::{
-    pathfind, pathfind_flat, BlockedMove, ClilocData, MapError, MockMap, MulMap, MultiData,
-    Obstacles, SpeechData, TileQuery,
+    pathfind, pathfind_flat, BlockedMove, ClilocData, MapError, MapVariant, MockMap, MulMap,
+    MultiData, Obstacles, Overlay, SpeechData, TileQuery,
 };
 use uoterm_protocol::crypto::{for_mode, IdentityCipher, StreamCipher};
 use uoterm_protocol::encode;
@@ -52,9 +52,11 @@ use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World, RADAR_DEFAULT}
 mod agents;
 mod awareness;
 mod control;
+mod gather;
 mod hotkeys;
 mod play;
 mod recorder;
+mod ress;
 mod scripting;
 use agents::Agents;
 use scripting::Scripting;
@@ -121,6 +123,10 @@ const CLILOC_CACHE_INDEX: u8 = 0;
 const OUTBOUND_CAP: usize = 256;
 /// Ask again for names the server never answered, so nothing stays nameless.
 const NAME_RETRY: Duration = Duration::from_secs(20);
+/// How long apart the clicks go that read names on a shard with no property
+/// lists, and how many objects each one names.
+const NAME_CLICK_GAP: Duration = Duration::from_millis(500);
+const NAME_CLICKS_AT_ONCE: usize = 1;
 /// What the log says when no tile beside the followed mobile can be reached.
 const FOLLOW_NO_WAY: &str = "no way to a tile beside the followed mobile";
 /// What the log says when a door will not open however often it is clicked.
@@ -136,8 +142,12 @@ const DOOR_NOT_OPENED_BY_ITSELF: &str =
 /// a space, so the shard keeps it as it is.
 const ARG_SPELL: &str = "spell";
 const ARG_SKILL: &str = "skill";
-const NEEDS_SPELL: &str = "cast needs spell, a spell number";
-const NEEDS_SKILL: &str = "use_skill needs skill, a skill number";
+const NEEDS_SPELL: &str = "cast needs spell: a spell number or name";
+const NEEDS_SKILL: &str = "use_skill needs skill: a skill number or name";
+/// A skill no button uses; it trains by itself or by other deeds.
+const SKILL_NOT_USED_ALONE: &str = "that skill is not used by itself";
+/// The argument that names what a cast aims at as the spell's cursor comes.
+const ARG_TARGET: &str = "target";
 const ASSISTANT_NAME: &str = concat!("UOTerm ", env!("CARGO_PKG_VERSION"));
 /// Why a refused tile is forgotten: it has been remembered its full
 /// [`movement::REFUSED_TILE_MEMORY`].
@@ -148,14 +158,9 @@ const FORGOT_MEMORY_FULL: &str = "it was the oldest and the memory is full";
 /// Why a refused tile is forgotten: the server has just put the character on
 /// it, which is proof it takes him.
 const FORGOT_HE_STANDS_ON_IT: &str = "he stands on it";
-/// Why a refused tile is forgotten: the character has been told to walk
-/// somewhere else, and the mark was made on the way to somewhere he is no
-/// longer going.
+/// The side of the empty grid a session walks on before the client map files
+/// are open.
 const MOCK_GRID: u16 = 2048;
-#[cfg(test)]
-const GREEDY_STEP_CAP: usize = 64;
-#[cfg(test)]
-const PLAYER_STEP_CAP: usize = 256;
 /// How long a failed route stands. The failure is logged at most this often,
 /// and the same goal is not searched again sooner: a search for a goal that
 /// cannot be reached covers a wide area, and one on every tick froze the
@@ -315,13 +320,8 @@ pub async fn start(
             opts.version.as_string()
         )));
     }
-    let world = Arc::new(RwLock::new(World {
-        flags_mean_flying: opts.version.reads_flying_flag(),
-        answer_when_named: opts.answer_when_named,
-        play_along: opts.play_along,
-        ..World::new()
-    }));
-    let (tx, rx) = mpsc::channel(CMD_QUEUE_CAP);
+    let world = Arc::new(RwLock::new(fresh_world(&opts)));
+    let (tx, mut rx) = mpsc::channel(CMD_QUEUE_CAP);
     let (login_tx, login_rx) = oneshot::channel::<Result<()>>();
     let handle = SessionHandle {
         id: id.clone(),
@@ -329,16 +329,117 @@ pub async fn start(
         inner: Arc::new(HandleInner { tx }),
     };
     tokio::spawn(async move {
-        if let Err(e) =
-            run_session(id, opts, facets, multi_shapes, clilocs, world, rx, login_tx).await
-        {
-            tracing::error!(error = %e, "session ended");
+        let mut login_tx = Some(login_tx);
+        let mut opts = opts;
+        let mut wait = RECONNECT_FIRST_WAIT;
+        loop {
+            let ended = run_session(
+                id.clone(),
+                opts.clone(),
+                facets.clone(),
+                multi_shapes.clone(),
+                clilocs.clone(),
+                world.clone(),
+                &mut rx,
+                &mut login_tx,
+            )
+            .await;
+            // The first login answers its caller, who decides; only a session
+            // that was in the world once logs in again by itself.
+            let again = opts.reconnect
+                && login_tx.is_none()
+                && match &ended {
+                    Ok(SessionEnd::LostLink) => true,
+                    Err(RuntimeError::Network(_)) => true,
+                    Ok(SessionEnd::Shutdown | SessionEnd::LoggedOut) | Err(_) => false,
+                };
+            match &ended {
+                Ok(end) => tracing::info!(?end, "session ended"),
+                Err(e) => tracing::error!(error = %e, "session ended"),
+            }
+            if !again {
+                break;
+            }
+            // A person whose link broke logs in to the character he played,
+            // with no screen to ask.
+            let played = world.read().self_state.name.clone();
+            if !played.is_empty() {
+                opts.character = played;
+            }
+            opts.picker = None;
+            begin_again(&world, &opts, wait);
+            if !wait_to_reconnect(&mut rx, wait).await {
+                break;
+            }
+            wait = (wait * RECONNECT_WAIT_GROWTH).min(RECONNECT_LONGEST_WAIT);
         }
     });
     match login_rx.await {
         Ok(Ok(())) => Ok(handle),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(RuntimeError::Network("session ended before login".into())),
+    }
+}
+
+/// How a session's connection to the shard came to an end.
+#[derive(Debug)]
+enum SessionEnd {
+    /// The session was closed from this side.
+    Shutdown,
+    /// The character logged out, and the shard closed the link.
+    LoggedOut,
+    /// The link dropped with the character still in the world.
+    LostLink,
+}
+
+/// How long a session waits before it logs in again after its link dropped,
+/// how much longer each next wait is, and the longest wait.
+const RECONNECT_FIRST_WAIT: Duration = Duration::from_secs(5);
+const RECONNECT_WAIT_GROWTH: u32 = 2;
+const RECONNECT_LONGEST_WAIT: Duration = Duration::from_secs(60);
+/// What a call gets while the session waits to log in again.
+const RECONNECTING: &str = "the link to the shard dropped; the session logs in again soon";
+
+/// The world of a session before its login, with the rules of its options.
+fn fresh_world(opts: &ConnectOptions) -> World {
+    World {
+        flags_mean_flying: opts.version.reads_flying_flag(),
+        answer_when_named: opts.answer_when_named,
+        play_along: opts.play_along,
+        ..World::new()
+    }
+}
+
+/// Clears the world for a new login and tells the agent the link dropped.
+/// The event count goes on from where it was, so an agent that waits on
+/// events hears of this and of each event after it once.
+fn begin_again(world: &RwLock<World>, opts: &ConnectOptions, wait: Duration) {
+    let mut w = world.write();
+    let seq = w.event_seq;
+    *w = fresh_world(opts);
+    w.event_seq = seq;
+    w.push_event(uoterm_world::Event::new(
+        uoterm_world::EventKind::Disconnected,
+        None,
+        format!("the link dropped; logging in again in {} s", wait.as_secs()),
+    ));
+}
+
+/// Waits before a new login, and answers each call that comes meanwhile that
+/// the session is logging in again. False when the session was closed.
+async fn wait_to_reconnect(rx: &mut mpsc::Receiver<SessionCmd>, wait: Duration) -> bool {
+    let until = tokio::time::sleep(wait);
+    tokio::pin!(until);
+    loop {
+        tokio::select! {
+            _ = &mut until => return true,
+            cmd = rx.recv() => match cmd {
+                None | Some(SessionCmd::Shutdown) => return false,
+                Some(SessionCmd::Tool(_, reply)) => {
+                    let _ = reply.send(ToolResult::err(RECONNECTING));
+                }
+            },
+        }
     }
 }
 
@@ -358,6 +459,9 @@ struct Inner {
     /// Facets this session reads, shared with every other session on the same
     /// client directory. The session holds them only while it runs.
     maps: HashMap<u8, Arc<MulMap>>,
+    /// The form each open map was opened in, so a map the shard changes the
+    /// form of is opened again.
+    map_variants: HashMap<u8, MapVariant>,
     facets: Arc<FacetCache<MulMap>>,
     /// The shapes of every house and boat the client files describe, shared
     /// with every other session on the same client directory. `None` when the
@@ -441,6 +545,15 @@ struct Inner {
     pending_context_menu: Option<(Serial, MenuChoice)>,
     last_event_seq: u64,
     last_name_retry: Instant,
+    /// When the last click to read a name went out.
+    last_name_click: Instant,
+    /// What the gather goal remembers between swings.
+    gathering: gather::Gathering,
+    /// What the resurrection goal remembers between ticks.
+    reviving: ress::Reviving,
+    /// The character asked to log out, so a link the shard closes after it
+    /// is no link lost.
+    logged_out: bool,
     last_path_fail: Option<(Point3, Instant)>,
     /// Why the last route could not be planned, kept so the move_to tool can
     /// tell the agent the reason instead of a bare "path failed".
@@ -591,13 +704,46 @@ impl Inner {
         self.world.read().self_state.map
     }
 
-    /// The tiles this session walks on: the client facet once it is open, and
-    /// the empty grid before that.
-    fn tiles(&self) -> &dyn TileQuery {
+    /// The map files this session walks on: the client facet once it is
+    /// open, and the empty grid before that.
+    fn map_files(&self) -> &dyn TileQuery {
         self.maps
             .get(&self.map_index())
             .map(|m| m.as_ref() as &dyn TileQuery)
             .unwrap_or(&self.map)
+    }
+
+    /// The tiles this session walks on: the map files, with every piece of
+    /// the houses and boats in view and every item on the ground that holds a
+    /// person up or stands in his way. The shard weighs all of them, and the
+    /// map files hold none of them.
+    fn tiles(&self) -> Overlay<'_> {
+        let mut overlay = Overlay::new(self.map_files());
+        let world = self.world.read();
+        let doors: Vec<uoterm_world::DoorItem> = world.doors.values().copied().collect();
+        if let Some(shapes) = self.multi_shapes.as_deref() {
+            let buildings: Vec<(Point3, Shape<'_>)> = world
+                .multis
+                .values()
+                .map(|building| {
+                    let shape = match self.play.designed_house(building.serial) {
+                        Some(design) => Shape::Designed(&design.tiles),
+                        None => Shape::Multi(shapes.pieces(building.multi_id)),
+                    };
+                    (building.location, shape)
+                })
+                .collect();
+            add_buildings(&mut overlay, &buildings, &doors);
+        }
+        add_ground_items(
+            &mut overlay,
+            world.items.values().filter(|item| {
+                item.parent.is_none()
+                    && !world.multis.contains_key(&item.serial)
+                    && !world.doors.contains_key(&item.serial)
+            }),
+        );
+        overlay
     }
 
     /// Where every other mobile stands that a walk has to go around.
@@ -613,47 +759,20 @@ impl Inner {
         self.world.read().doors.values().copied().collect()
     }
 
-    /// Every tile the walls of a building the character can see close to him
-    /// on the floor he is standing on.
-    ///
-    /// The character's own floor is the tile the steps already on the wire
-    /// leave him on, which is the floor every route is planned from.
-    fn building_walls(&self) -> Vec<Point3> {
-        let Some(shapes) = self.multi_shapes.as_deref() else {
-            return Vec::new();
-        };
-        let (buildings, feet_z) = {
-            let world = self.world.read();
-            (
-                world.multis_seen(),
-                self.movement.stepping_from(world.self_state.location).z,
-            )
-        };
-        if buildings.is_empty() {
-            return Vec::new();
-        }
-        building_tiles(shapes, &buildings, feet_z, &self.doors_seen())
-    }
-
     /// Every tile a walk goes around whatever else stands in the way: the
-    /// mobiles, the walls of the buildings the character can see, and the
-    /// tiles the server has refused him.
+    /// mobiles, and the tiles the server has refused him.
     ///
-    /// The mobiles are soft and the rest is hard. A player house is built on
-    /// the server and stands in no client map file, so the map calls its tiles
-    /// open ground. Two things say otherwise. The item packet that names the
-    /// multi is the first, and the shape in the client files then gives every
-    /// wall of it before he ever walks into one. The refusal is the second,
-    /// and it is all he has for a building the client files do not describe.
-    /// Neither is going to move, so a walk to one of those tiles is refused
-    /// rather than walked; a person standing where the walk ends will have
-    /// stepped off it by the time the character arrives.
+    /// The mobiles are soft and the refused tiles hard. The walls of the
+    /// buildings in view are no list at all: they stand on the tiles
+    /// themselves, see [`Inner::tiles`]. A refusal is what is left for a
+    /// building the client knows no shape of, and it is not going to move, so
+    /// a walk to one of those tiles is refused rather than walked; a person
+    /// standing where the walk ends will have stepped off it by the time the
+    /// character arrives.
     fn avoided(&self) -> InTheWay {
-        let mut hard = self.building_walls();
-        hard.extend(self.movement.blocked.tiles());
         InTheWay {
             soft: self.mobiles(),
-            hard,
+            hard: self.movement.blocked.tiles(),
             moves: self.movement.refused_edges.moves(),
         }
     }
@@ -678,23 +797,45 @@ impl Inner {
 
     fn ensure_facet(&mut self) {
         let idx = self.map_index();
-        if self.maps.contains_key(&idx) {
+        let variant = self.map_variant(idx);
+        let opened = self.map_variants.get(&idx).copied().unwrap_or_default();
+        if self.maps.contains_key(&idx) && opened == variant {
             return;
         }
         let Some(path) = self.uopath.clone() else {
             return;
         };
-        match shared_facet(&self.facets, &path, idx) {
+        match shared_facet(&self.facets, &path, idx, variant) {
             Ok(m) => {
                 tracing::info!(
                     map = idx,
+                    ?variant,
                     opens = self.facets.opens(),
                     live = self.facets.live(),
                     "map facet ready"
                 );
                 self.maps.insert(idx, m);
+                self.map_variants.insert(idx, variant);
             }
             Err(e) => tracing::warn!(map = idx, error = %e, "failed to open map facet"),
+        }
+    }
+
+    /// The form of a map this account walks: the newer Felucca areas when
+    /// its flags allow them, and the patches the shard switched on for it.
+    fn map_variant(&self, idx: u8) -> MapVariant {
+        let world = self.world.read();
+        let patches = world
+            .map_patches
+            .get(usize::from(idx))
+            .copied()
+            .unwrap_or_default();
+        MapVariant {
+            new_felucca_areas: world
+                .account_flags
+                .is_some_and(|flags| flags & uoterm_protocol::ACCOUNT_FLAG_NEW_FELUCCA_AREAS != 0),
+            land_patches: patches.land,
+            static_patches: patches.statics,
         }
     }
 
@@ -719,10 +860,11 @@ fn shared_facet(
     facets: &FacetCache<MulMap>,
     uopath: &Path,
     map_index: u8,
+    variant: MapVariant,
 ) -> std::result::Result<Arc<MulMap>, MapError> {
-    facets.get_or_load(uopath, map_index, || {
-        tracing::info!(map = map_index, path = %uopath.display(), "opening map facet");
-        MulMap::open(uopath, map_index)
+    facets.get_or_load_variant(uopath, map_index, variant, || {
+        tracing::info!(map = map_index, ?variant, path = %uopath.display(), "opening map facet");
+        MulMap::open_variant(uopath, map_index, variant)
     })
 }
 
@@ -744,23 +886,25 @@ async fn run_session(
     multi_shapes: Arc<FacetCache<MultiData>>,
     clilocs: Arc<FacetCache<ClilocData>>,
     world: Arc<RwLock<World>>,
-    mut rx: mpsc::Receiver<SessionCmd>,
-    login_tx: oneshot::Sender<Result<()>>,
-) -> Result<()> {
+    rx: &mut mpsc::Receiver<SessionCmd>,
+    login_tx: &mut Option<oneshot::Sender<Result<()>>>,
+) -> Result<SessionEnd> {
     // The world-item packet is two bytes shorter below client 7.0.9.0, and
     // three other packets move with it. Reading the wrong width there loses
     // two bytes per item and the whole stream then runs out of step.
     let table = PacketTable::for_version(opts.era, opts.version);
     let mut maps = HashMap::new();
     if let Some(path) = &opts.uopath {
-        match shared_facet(&facets, path, START_MAP_INDEX) {
+        match shared_facet(&facets, path, START_MAP_INDEX, MapVariant::default()) {
             Ok(m) => {
                 maps.insert(START_MAP_INDEX, m);
             }
             Err(e) => {
                 let msg = format!("uopath: {e}");
                 let err = RuntimeError::Config(msg.clone());
-                let _ = login_tx.send(Err(RuntimeError::Config(msg)));
+                if let Some(tx) = login_tx.take() {
+                    let _ = tx.send(Err(RuntimeError::Config(msg)));
+                }
                 return Err(err);
             }
         }
@@ -844,6 +988,10 @@ async fn run_session(
         decoder: GameDecoder::new(table),
         map: MockMap::new(MOCK_GRID, MOCK_GRID),
         uopath: opts.uopath.clone(),
+        map_variants: maps
+            .keys()
+            .map(|idx| (*idx, MapVariant::default()))
+            .collect(),
         maps,
         facets,
         multi_shapes: shapes,
@@ -897,15 +1045,22 @@ async fn run_session(
         last_fatigued: None,
         last_event_seq: 0,
         last_name_retry: Instant::now(),
+        last_name_click: Instant::now(),
+        gathering: gather::Gathering::default(),
+        reviving: ress::Reviving::default(),
+        logged_out: false,
     };
     let (mut reader, mut writer) = match login(&opts, &mut inner).await {
         Ok(pair) => {
-            let _ = login_tx.send(Ok(()));
+            if let Some(tx) = login_tx.take() {
+                let _ = tx.send(Ok(()));
+            }
             pair
         }
         Err(e) => {
-            let msg = e.to_string();
-            let _ = login_tx.send(Err(RuntimeError::Network(msg.clone())));
+            if let Some(tx) = login_tx.take() {
+                let _ = tx.send(Err(RuntimeError::Network(e.to_string())));
+            }
             return Err(e);
         }
     };
@@ -930,7 +1085,7 @@ async fn run_session(
         tokio::select! {
             cmd = rx.recv() => {
                 match cmd {
-                    None | Some(SessionCmd::Shutdown) => break,
+                    None | Some(SessionCmd::Shutdown) => return Ok(SessionEnd::Shutdown),
                     Some(SessionCmd::Tool(call, reply)) => {
                         if call.name == TOOL_WAIT_TARGET {
                             wait_for_target(&mut inner, &call.args, reply, Instant::now());
@@ -945,8 +1100,20 @@ async fn run_session(
                 }
             }
             n = reader.read(&mut buf) => {
-                let n = n.map_err(|e| RuntimeError::Network(e.to_string()))?;
-                if n == 0 { break; }
+                let n = match n {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "the link to the shard failed");
+                        0
+                    }
+                };
+                if n == 0 {
+                    return Ok(if inner.logged_out {
+                        SessionEnd::LoggedOut
+                    } else {
+                        SessionEnd::LostLink
+                    });
+                }
                 read_from_the_wire(&mut inner, &mut buf[..n]);
             }
             _ = ping.tick() => { inner.outbound.push_back(encode::ping(1)); }
@@ -969,7 +1136,6 @@ async fn run_session(
         }
         flush_out(&mut inner, &out_tx);
     }
-    Ok(())
 }
 
 fn flush_out(inner: &mut Inner, out_tx: &mpsc::Sender<Vec<u8>>) {
@@ -1174,8 +1340,16 @@ async fn login(
                     tracing::warn!(reason, words = refused.as_deref(), "character refused");
                 }
                 Inbound::CharacterListUpdate { characters }
-                | Inbound::CharacterList { characters } => {
+                | Inbound::CharacterList { characters, .. } => {
                     seen_chars = true;
+                    if let Inbound::CharacterList {
+                        account_flags: Some(flags),
+                        ..
+                    } = &msg
+                    {
+                        inner.world.write().account_flags = Some(*flags);
+                        inner.ensure_facet();
+                    }
                     // A screen may make or delete a character before it
                     // plays one. Each of those brings a new list.
                     if character_request(inner, &mut writer, opts, characters, refused.take())
@@ -1274,14 +1448,15 @@ fn opening_seed(opts: &ConnectOptions) -> (u32, Vec<u8>) {
     if seed == 0 {
         seed = 1;
     }
-    let bytes = match opts.era {
-        Era::Modern => encode::seed_ext(seed, opts.version),
-        Era::T2a => {
-            while seed.to_be_bytes()[0] == PKT_SEED {
-                seed = rng.gen();
-            }
-            encode::seed(seed)
+    // The version, not the era, picks the seed: the reference client sends
+    // the counted `0xEF` from 6.0.4.0 up and the four bare bytes below it.
+    let bytes = if opts.version.has_extended_seed() {
+        encode::seed_ext(seed, opts.version)
+    } else {
+        while seed.to_be_bytes()[0] == PKT_SEED {
+            seed = rng.gen();
         }
+        encode::seed(seed)
     };
     (seed, bytes)
 }
@@ -1804,6 +1979,7 @@ mod relay_tests {
             map: MockMap::new(MOCK_GRID, MOCK_GRID),
             uopath: None,
             maps: HashMap::new(),
+            map_variants: HashMap::new(),
             facets: Arc::new(FacetCache::default()),
             multi_shapes: None,
             house_parts: None,
@@ -1856,6 +2032,10 @@ mod relay_tests {
             last_fatigued: None,
             last_event_seq: 0,
             last_name_retry: now,
+            last_name_click: now,
+            gathering: gather::Gathering::default(),
+            reviving: ress::Reviving::default(),
+            logged_out: false,
         }
     }
 
@@ -2725,8 +2905,8 @@ mod relay_tests {
     }
 
     /// The server refuses a step and says where the character really stands.
-    /// He snaps to that tile, throws the route away and asks the server to say
-    /// it all again.
+    /// He snaps to that tile and puts the refused step back on the route. He
+    /// asks the server nothing: the refusal already said where he is.
     #[test]
     fn a_refusal_snaps_the_character_to_the_tile_it_carries() {
         let mut inner = test_session();
@@ -2759,8 +2939,8 @@ mod relay_tests {
             "and the refused step goes back at the head of the route, for one more try"
         );
         assert!(
-            inner.outbound.iter().any(|pkt| *pkt == encode::resync()),
-            "and he asks the server to say where everything is"
+            !inner.outbound.iter().any(|pkt| *pkt == encode::resync()),
+            "and he asks the server nothing more"
         );
     }
 
@@ -2984,6 +3164,7 @@ mod relay_tests {
                 layer: None,
                 grid: 0,
                 name: String::new(),
+                flags: 0,
             },
         );
         let obs = observe_value(&inner, RADAR_DEFAULT);
@@ -3483,24 +3664,16 @@ mod relay_tests {
         );
     }
 
-    /// How far a tile beside him stands: one step.
-    const ONE_STEP_AWAY: u32 = 1;
-
     /// A house is a dynamic item the server sent, and the client files give
-    /// every wall of it. So a refusal at one of those walls is already
-    /// explained: he plans around the building he can see rather than marking
-    /// its tiles one at a time, which is how one building drew 68 refusals.
+    /// every wall of it. So a route planned past it goes round those walls
+    /// before the server has refused a single step into one.
     #[test]
-    fn a_refusal_at_a_building_he_can_see_plans_around_it_and_marks_nothing() {
+    fn a_route_past_a_house_he_can_see_never_steps_into_its_wall() {
         let Some(dir) = client_data_dir_from_env() else {
             return;
         };
         let shapes = Arc::new(MultiData::open(&dir).expect("the client multi files"));
         let wall = stone_house_wall(&shapes);
-        let into_the_wall = *wall
-            .iter()
-            .find(|tile| tile.chebyshev(REFUSED_FROM) == ONE_STEP_AWAY)
-            .expect("a wall of the house stands beside her");
         let mut inner = test_session();
         inner.multi_shapes = Some(shapes);
         inner.world.write().self_state.location = REFUSED_FROM;
@@ -3508,17 +3681,60 @@ mod relay_tests {
             &mut inner,
             &world_item(STONE_HOUSE_SERIAL, STONE_HOUSE_GRAPHIC, STONE_HOUSE_AT),
         );
-        let mut now = Instant::now();
-        walks_from(&mut inner, REFUSED_FROM, vec![into_the_wall]);
-        let step = step_onto_the_wire(&mut inner, &mut now);
-        assert_eq!(
-            refuse_step(&mut inner, step.sequence, REFUSED_FROM, step.direction, now,),
-            Refusal::Building,
-            "the house is on the wire already, so the refusal needs no mark to explain it"
+        let route = pathfind(
+            &inner.tiles(),
+            REFUSED_FROM,
+            PAST_THE_HOUSE,
+            &Obstacles::NONE,
+        )
+        .expect("a way past the house");
+        for step in &route.steps {
+            assert!(
+                !wall.iter().any(|w| (w.x, w.y) == (step.x, step.y)),
+                "no step stands in the wall: {:?}",
+                route.steps
+            );
+        }
+    }
+
+    /// The real stone house of the client files: a route from the street in
+    /// front of it climbs its doorstep, crosses the doorway and ends on the
+    /// floor inside, which is up on the footing of the house.
+    #[test]
+    fn a_route_walks_into_the_real_stone_house_through_its_doorway() {
+        let Some(dir) = client_data_dir_from_env() else {
+            return;
+        };
+        const IN_FRONT: u16 = STONE_HOUSE_HALF + 2;
+        let shapes = Arc::new(MultiData::open(&dir).expect("the client multi files"));
+        let mut inner = test_session();
+        inner.multi_shapes = Some(shapes);
+        ingest(
+            &mut inner,
+            &world_item(STONE_HOUSE_SERIAL, STONE_HOUSE_GRAPHIC, STONE_HOUSE_AT),
         );
-        assert!(
-            inner.movement.blocked.tiles().is_empty(),
-            "and nothing is marked"
+        let street = Point3::new(
+            STONE_HOUSE_AT.x,
+            STONE_HOUSE_AT.y + IN_FRONT,
+            STONE_HOUSE_AT.z,
+        );
+        let tiles = inner.tiles();
+        let floor = tiles
+            .surface_near(
+                STONE_HOUSE_AT.z + STONE_HOUSE_WALL_DZ as i8,
+                STONE_HOUSE_AT.x,
+                STONE_HOUSE_AT.y,
+            )
+            .expect("the house has a floor");
+        assert!(floor > STONE_HOUSE_AT.z, "the floor stands on the footing");
+        let inside = Point3::new(STONE_HOUSE_AT.x, STONE_HOUSE_AT.y, floor);
+        let route =
+            pathfind(&tiles, street, inside, &Obstacles::NONE).expect("the doorway lets him in");
+        assert_eq!(
+            route.steps.last().map(|s| s.z),
+            Some(floor),
+            "{:?}",
+            route.steps
         );
     }
 
@@ -4062,6 +4278,65 @@ mod relay_tests {
         inner.sent_drop = Some(HELD_COINS);
         ingest(&mut inner, &delete_item(HELD_COINS));
         assert_eq!(inner.world.read().holding, None);
+    }
+
+    /// Stop ends a loot too, and whatever the loot held on the cursor goes
+    /// back into the backpack, so the next thing the character does is not
+    /// lost to a lifted item.
+    #[test]
+    fn stop_ends_a_loot_and_puts_back_what_it_held() {
+        const CORPSE: Serial = Serial(0x4003_3E28);
+        const PACK: Serial = Serial(0x4003_3E29);
+        let mut inner = test_session();
+        {
+            let mut world = inner.world.write();
+            world.self_state.equipment.push(uoterm_protocol::EquipItem {
+                serial: PACK,
+                graphic: uoterm_protocol::types::GRAPHIC_BACKPACK,
+                layer: LAYER_BACKPACK,
+                hue: 0,
+            });
+            world.holding = Some(HELD_COINS);
+        }
+        inner.loot = Some(LootJob::new(CORPSE, PACK, Instant::now()));
+        let stopped = handle_tool(&mut inner, call(TOOL_STOP, json!({})));
+        assert!(stopped.ok);
+        assert!(inner.loot.is_none(), "the loot is over");
+        assert!(
+            inner
+                .outbound
+                .iter()
+                .any(|pkt| *pkt == encode::drop_into_container(HELD_COINS, PACK, drop_grid(&inner))),
+            "and the coins go back into the pack"
+        );
+        assert!(inner
+            .world
+            .read()
+            .events
+            .iter()
+            .any(|e| e.kind == uoterm_world::EventKind::JobEnded && e.text.starts_with(JOB_LOOT)));
+    }
+
+    /// A line the reflex says on its own answers nobody: a player's line to
+    /// the character stays waiting for the agent.
+    #[test]
+    fn a_reflex_line_leaves_the_lines_said_to_him_unanswered() {
+        let mut inner = test_session();
+        inner.world.write().spoken_to.push(uoterm_world::SpokenTo {
+            serial: Serial(0x0000_0C11),
+            name: "Cedric".into(),
+            text: "hail Mara".into(),
+            channel: uoterm_world::Channel::Say,
+            asks_if_bot: false,
+            unix_ms: uoterm_world::unix_now_ms(),
+        });
+        apply_reflex_action(&mut inner, ReflexAction::Say("yo"));
+        assert!(!inner
+            .world
+            .read()
+            .spoken_to
+            .unanswered(uoterm_world::unix_now_ms())
+            .is_empty());
     }
 
     /// The shard's list with one feature forbidden, as it comes on the wire.
@@ -4818,6 +5093,7 @@ mod relay_tests {
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
+            reconnect: false,
         }
     }
 
@@ -4951,6 +5227,32 @@ mod relay_tests {
     }
 
     #[test]
+    fn the_version_picks_the_opening_seed_in_either_era() {
+        const SEED_LEN: usize = 4;
+        let old: uoterm_protocol::types::ClientVersion = "5.0.9.1".parse().unwrap();
+        let new: uoterm_protocol::types::ClientVersion = "7.0.102.3".parse().unwrap();
+        for era in [Era::T2a, Era::Modern] {
+            let (_, bytes) = opening_seed(&ConnectOptions {
+                era,
+                version: old,
+                ..opts()
+            });
+            assert_eq!(
+                bytes.len(),
+                SEED_LEN,
+                "{era}: four bare bytes below 6.0.4.0"
+            );
+            assert_ne!(bytes[0], PKT_SEED);
+            let (_, bytes) = opening_seed(&ConnectOptions {
+                era,
+                version: new,
+                ..opts()
+            });
+            assert_eq!(bytes[0], PKT_SEED, "{era}: the counted seed from 6.0.4.0");
+        }
+    }
+
+    #[test]
     fn an_unspecified_relay_means_the_login_host() {
         assert_eq!(
             relay_addr(&opts(), UNSPECIFIED, TEST_PORT),
@@ -4964,26 +5266,6 @@ mod relay_tests {
             relay_addr(&opts(), LAN_IP, TEST_PORT),
             "192.168.150.103:2593"
         );
-    }
-
-    #[test]
-    fn greedy_line_steps_toward_dest() {
-        let from = Point3::new(3507, 2513, 27);
-        let dest = Point3::new(3510, 2513, 27);
-        let p = greedy_line(from, dest);
-        assert_eq!(p.last().copied(), Some(dest));
-        assert_eq!(p.len(), 3);
-    }
-
-    #[test]
-    fn player_path_goes_around_block() {
-        let mut map = MockMap::new(8, 8);
-        map.set_block(1, 0, true);
-        let from = Point3::new(0, 0, 0);
-        let dest = Point3::new(2, 0, 0);
-        let p = player_path(&map, from, dest);
-        assert!(p.iter().any(|s| s.x == 1 && s.y == 1), "{p:?}");
-        assert_eq!(p.last().map(|s| (s.x, s.y)), Some((2, 0)));
     }
 
     /// A walk held in one direction is planned by no route, so every tile it
@@ -5375,6 +5657,248 @@ mod relay_tests {
         assert!(mobiles[0]["dist"].is_u64());
     }
 
+    /// While a session waits to log in again, each call is told so, and a
+    /// close ends the wait. The world it starts again with keeps counting
+    /// events from where it was, with the dropped link the first of them.
+    #[tokio::test]
+    async fn a_dropped_link_waits_answers_calls_and_starts_the_world_again() {
+        const SHORT_WAIT: Duration = Duration::from_millis(50);
+        let (tx, mut rx) = mpsc::channel(CMD_QUEUE_CAP);
+        let (reply, answer) = oneshot::channel();
+        tx.send(SessionCmd::Tool(call(TOOL_OBSERVE, json!({})), reply))
+            .await
+            .unwrap();
+        assert!(
+            wait_to_reconnect(&mut rx, SHORT_WAIT).await,
+            "the wait runs out"
+        );
+        assert_eq!(answer.await.unwrap().error.as_deref(), Some(RECONNECTING));
+        tx.send(SessionCmd::Shutdown).await.unwrap();
+        assert!(
+            !wait_to_reconnect(&mut rx, SHORT_WAIT).await,
+            "a close ends it"
+        );
+
+        let opts = ConnectOptions::default();
+        let world = RwLock::new(fresh_world(&opts));
+        world.write().self_state.name = "Mara".into();
+        let before = world.read().event_seq;
+        begin_again(&world, &opts, RECONNECT_FIRST_WAIT);
+        let w = world.read();
+        assert!(w.self_state.name.is_empty(), "the world starts again");
+        assert_eq!(w.event_seq, before + 1);
+        assert_eq!(
+            w.events.last().map(|e| e.kind),
+            Some(uoterm_world::EventKind::Disconnected)
+        );
+    }
+
+    /// A spell is cast by its name as well as its number, and a target named
+    /// with it answers the spell's cursor when it comes.
+    #[test]
+    fn a_spell_is_cast_by_name_and_aimed_in_the_same_call() {
+        const GREATER_HEAL: u16 = 29;
+        const PATIENT: Serial = Serial(0x0000_0F21);
+        let mut inner = named_by_ann(false, "hi");
+        let cast = answer_agent(
+            &mut inner,
+            call(
+                TOOL_CAST,
+                json!({ "spell": "Greater Heal", "target": PATIENT.0 }),
+            ),
+        );
+        assert!(cast.ok, "{:?}", cast.error);
+        assert!(inner.outbound.contains(&encode::cast_spell(GREATER_HEAL)));
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        assert!(
+            inner
+                .outbound
+                .iter()
+                .any(|pkt| *pkt == encode::target_object(A_CURSOR, PATIENT, 0, 0, 0, 0)),
+            "the cursor is answered with the patient"
+        );
+        let unknown = answer_agent(
+            &mut inner,
+            call(TOOL_CAST, json!({ "spell": "fireworks of doom" })),
+        );
+        assert_eq!(unknown.error.as_deref(), Some(NEEDS_SPELL));
+    }
+
+    /// A tile nobody can walk says why, and a route is planned without a
+    /// step being taken.
+    #[test]
+    fn can_walk_says_why_and_route_plans_without_walking() {
+        const BLOCKER: Serial = Serial(0x0000_0F41);
+        let mut inner = named_by_ann(false, "hi");
+        let here = inner.world.read().self_state.location;
+        let east = Point3::new(here.x + 1, here.y, here.z);
+        inner
+            .world
+            .write()
+            .apply(&Inbound::MobileIncoming(uoterm_protocol::MobileView {
+                serial: BLOCKER,
+                body: 0x0190,
+                x: east.x,
+                y: east.y,
+                z: east.z,
+                direction: 0,
+                hue: 0,
+                flags: 0,
+                notoriety: NOTO_INNOCENT,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            }));
+        inner.map.set_block(east.x, east.y, true);
+        let refused = answer_agent(
+            &mut inner,
+            call(
+                TOOL_CAN_WALK,
+                json!({ "x": east.x, "y": east.y, "z": east.z }),
+            ),
+        );
+        assert_eq!(refused.result["walkable"], false);
+        assert!(refused.result["why"]
+            .as_str()
+            .unwrap()
+            .contains("stands there"));
+        let far = Point3::new(here.x + 5, here.y + 5, here.z);
+        let planned = answer_agent(
+            &mut inner,
+            call(TOOL_ROUTE, json!({ "x": far.x, "y": far.y })),
+        );
+        assert_eq!(planned.result["reachable"], true, "{planned:?}");
+        assert!(planned.result["steps"].as_u64().unwrap() >= 5);
+        assert!(inner.movement.path.is_empty(), "and no step is queued");
+    }
+
+    /// The party acts an agent has: an invite aimed at the member, an answer
+    /// to the invite that waits, leaving; a mobile's status asked for; and a
+    /// yell.
+    #[test]
+    fn party_acts_status_and_a_yell_go_out_as_a_player_sends_them() {
+        const MEMBER: Serial = Serial(0x0000_0F31);
+        const LEADER: Serial = Serial(0x0000_0F32);
+        let mut inner = named_by_ann(false, "hi");
+        let me = inner.world.read().self_state.serial;
+        let invited = answer_agent(
+            &mut inner,
+            call(
+                TOOL_PARTY,
+                json!({ "action": "invite", "serial": MEMBER.0 }),
+            ),
+        );
+        assert!(invited.ok, "{:?}", invited.error);
+        assert!(inner.outbound.contains(&encode::party_invite(None)));
+        ingest(&mut inner, &target_cursor(A_CURSOR));
+        assert!(inner
+            .outbound
+            .iter()
+            .any(|pkt| *pkt == encode::target_object(A_CURSOR, MEMBER, 0, 0, 0, 0)));
+        let nothing = answer_agent(&mut inner, call(TOOL_PARTY, json!({ "action": "accept" })));
+        assert_eq!(nothing.error.as_deref(), Some(NO_PARTY_INVITE));
+        inner.world.write().party_invite = Some(LEADER);
+        assert!(answer_agent(&mut inner, call(TOOL_PARTY, json!({ "action": "accept" }))).ok);
+        assert!(inner.outbound.contains(&encode::party_accept(LEADER)));
+        assert!(answer_agent(&mut inner, call(TOOL_PARTY, json!({ "action": "leave" }))).ok);
+        assert!(inner.outbound.contains(&encode::party_remove(me)));
+        assert!(
+            answer_agent(
+                &mut inner,
+                call(TOOL_MOBILE_STATUS, json!({ "serial": MEMBER.0 }))
+            )
+            .ok
+        );
+        assert!(inner.outbound.contains(&encode::query_status(MEMBER)));
+        let yelled = answer_agent(
+            &mut inner,
+            call(TOOL_SAY, json!({ "text": "guards!", "channel": "yell" })),
+        );
+        assert!(yelled.ok, "{:?}", yelled.error);
+    }
+
+    /// An agent answers the words a shard asks for, and is told when nothing
+    /// asks.
+    #[test]
+    fn an_agent_answers_a_prompt_and_nothing_else() {
+        let mut inner = named_by_ann(false, "hi");
+        let none = answer_agent(
+            &mut inner,
+            call(TOOL_PROMPT_ANSWER, json!({ "text": "home" })),
+        );
+        assert_eq!(none.error.as_deref(), Some(NO_PROMPT_OPEN));
+        let prompt = uoterm_protocol::PromptRequest {
+            serial: Serial(0x4000_0F11),
+            id: 7,
+            unicode: true,
+        };
+        inner.world.write().prompt = Some(prompt);
+        let answered = answer_agent(
+            &mut inner,
+            call(TOOL_PROMPT_ANSWER, json!({ "text": "home" })),
+        );
+        assert!(answered.ok, "{:?}", answered.error);
+        assert!(inner
+            .outbound
+            .contains(&encode::prompt_response(prompt, "home", true)));
+        assert!(inner.world.read().prompt.is_none());
+    }
+
+    /// A find narrows by notoriety and by the species the body shows, and
+    /// each mobile says how it stands and whether it can be seen.
+    #[test]
+    fn find_mobiles_narrows_by_rank_and_species_and_says_how_each_stands() {
+        const ORC: Serial = Serial(0x0000_0D21);
+        const ORC_BODY: u16 = 0x0011;
+        let mut inner = named_by_ann(false, "hi");
+        let here = inner.world.read().self_state.location;
+        inner
+            .world
+            .write()
+            .apply(&Inbound::MobileIncoming(uoterm_protocol::MobileView {
+                serial: ORC,
+                body: ORC_BODY,
+                x: here.x + 2,
+                y: here.y,
+                z: here.z,
+                direction: 0,
+                hue: 0,
+                flags: FLAG_WAR,
+                notoriety: NOTO_ENEMY,
+                hits: None,
+                hits_max: None,
+                equipment: Vec::new(),
+            }));
+        inner.world.write().mobiles.get_mut(&ORC).unwrap().name = "Gruuk".into();
+        let found = answer_agent(
+            &mut inner,
+            call(
+                TOOL_FIND_MOBILES,
+                json!({ "species": "orc", "notoriety": "enemy" }),
+            ),
+        );
+        let mobiles = found.result.as_array().expect("a list");
+        assert_eq!(mobiles.len(), 1, "{mobiles:?}");
+        let gruuk = &mobiles[0];
+        assert_eq!(gruuk["species"], "orc", "the body names the species");
+        assert_eq!(gruuk["notoriety"], "enemy");
+        assert_eq!(gruuk["war"], true);
+        assert_eq!(gruuk["in_sight"], true, "open ground");
+        let none = answer_agent(
+            &mut inner,
+            call(
+                TOOL_FIND_MOBILES,
+                json!({ "species": "orc", "notoriety": "innocent" }),
+            ),
+        );
+        assert!(none.result.as_array().unwrap().is_empty());
+        let seen = answer_agent(
+            &mut inner,
+            call(TOOL_LINE_OF_SIGHT, json!({ "serial": ORC })),
+        );
+        assert_eq!(seen.result["in_sight"], true, "{seen:?}");
+    }
+
     /// A found corpse says where it lies, so an agent can walk to it, and
     /// `distance` leaves out what is farther.
     #[test]
@@ -5397,6 +5921,7 @@ mod relay_tests {
                     layer: None,
                     grid: 0,
                     name: String::new(),
+                    flags: 0,
                 },
             );
         }
@@ -5992,7 +6517,12 @@ mod relay_tests {
     #[test]
     fn a_failed_open_leaves_nothing_in_the_cache() {
         let facets = FacetCache::<MulMap>::default();
-        let err = shared_facet(&facets, Path::new(MISSING_UOPATH), START_MAP_INDEX);
+        let err = shared_facet(
+            &facets,
+            Path::new(MISSING_UOPATH),
+            START_MAP_INDEX,
+            MapVariant::default(),
+        );
         assert!(err.is_err(), "an empty directory must not open a facet");
         assert_eq!(facets.opens(), NO_OPENS);
         assert_eq!(facets.live(), NO_LIVE_FACETS);
@@ -6161,6 +6691,173 @@ mod relay_tests {
         assert!(said.ok, "{:?}", said.error);
     }
 
+    /// The packet a server redraws the player with, standing on `at`.
+    fn redraw_of(serial: Serial, at: Point3) -> Vec<u8> {
+        const BODY_HUMAN: u16 = 0x0190;
+        let mut redraw =
+            uoterm_protocol::buf::PacketWriter::new(uoterm_protocol::types::PKT_DRAW_PLAYER);
+        redraw
+            .serial(serial)
+            .u16(BODY_HUMAN)
+            .u8(0)
+            .u16(0)
+            .u8(0)
+            .u16(at.x)
+            .u16(at.y)
+            .u16(0)
+            .u8(Direction::North as u8)
+            .i8(at.z);
+        redraw.finish()
+    }
+
+    /// The form of the map comes from the account flags and the patches the
+    /// shard switched on for that map.
+    #[test]
+    fn the_map_form_follows_the_account_and_the_patches() {
+        let inner = test_session();
+        assert_eq!(inner.map_variant(0), MapVariant::default());
+        {
+            let mut world = inner.world.write();
+            world.account_flags = Some(uoterm_protocol::ACCOUNT_FLAG_NEW_FELUCCA_AREAS);
+            world.map_patches = vec![uoterm_protocol::MapPatchCount {
+                statics: 5,
+                land: 9,
+            }];
+        }
+        assert_eq!(
+            inner.map_variant(0),
+            MapVariant {
+                new_felucca_areas: true,
+                land_patches: 9,
+                static_patches: 5,
+            }
+        );
+        assert_eq!(
+            inner.map_variant(1).land_patches,
+            0,
+            "no patches named for map 1"
+        );
+    }
+
+    /// A shard with no property lists names an object only when it is
+    /// clicked, so the names go out as single clicks, one at a time, and
+    /// never as a property list request.
+    #[test]
+    fn names_are_read_by_click_on_a_shard_with_no_property_lists() {
+        const COW: Serial = Serial(0x0000_0C01);
+        const HORSE: Serial = Serial(0x0000_0C02);
+        let mut inner = test_session();
+        {
+            let mut world = inner.world.write();
+            world.account_flags = Some(uoterm_protocol::ACCOUNT_FLAG_CONTEXT_MENUS);
+            world.names.want(COW);
+            world.names.want(HORSE);
+        }
+        inner.last_name_click = Instant::now() - NAME_CLICK_GAP;
+        pump_names(&mut inner);
+        pump_names(&mut inner);
+        let sent: Vec<Vec<u8>> = inner.outbound.drain(..).collect();
+        assert_eq!(sent, vec![encode::single_click(COW)], "one click per gap");
+        inner.last_name_click = Instant::now() - NAME_CLICK_GAP;
+        pump_names(&mut inner);
+        assert_eq!(
+            inner.outbound.pop_front(),
+            Some(encode::single_click(HORSE))
+        );
+    }
+
+    /// An answer that matches no request says the client and the server no
+    /// longer agree where the character stands. He asks once, sends no step
+    /// until the server redraws him, and walks on from the redraw with a count
+    /// that starts at zero again, as the server's does.
+    #[test]
+    fn an_answer_no_request_carries_asks_once_and_waits_for_the_redraw() {
+        const HIM: Serial = Serial(0x0000_0AB2);
+        const NO_SUCH_STEP: u8 = 7;
+        let mut inner = test_session();
+        inner.world.write().self_state.serial = HIM;
+        walks_from(
+            &mut inner,
+            MEASURED_START,
+            vec![MEASURED_EAST, MEASURED_SOUTH, MEASURED_END],
+        );
+        let now = Instant::now();
+        pump_movement(&mut inner, now);
+        inner.outbound.clear();
+        ingest(&mut inner, &move_ack(NO_SUCH_STEP));
+        ingest(&mut inner, &move_ack(NO_SUCH_STEP));
+        let resyncs = |inner: &Inner| {
+            inner
+                .outbound
+                .iter()
+                .filter(|pkt| **pkt == encode::resync())
+                .count()
+        };
+        assert_eq!(
+            resyncs(&inner),
+            1,
+            "he asks once, however many answers are strange"
+        );
+        pump_movement(&mut inner, now + STEP_PACE * 2);
+        assert!(
+            steps_sent(&inner).is_empty(),
+            "and he steps nowhere until the server says where he is"
+        );
+        ingest(&mut inner, &redraw_of(HIM, MEASURED_START));
+        pump_movement(&mut inner, now + STEP_PACE * 3);
+        assert_eq!(
+            steps_sent(&inner),
+            vec![step_request(Direction::East, movement::SEQ_FIRST)],
+            "the redraw frees the walk, and the count starts at zero"
+        );
+    }
+
+    /// A refusal ends the steps on the wire and starts the count again on
+    /// both sides, and nothing more: the next step goes out numbered zero, and
+    /// its answer moves him. A resync here would bring a redraw that throws
+    /// that step away after the server took it, which is the drift a gate
+    /// used to leave behind.
+    #[test]
+    fn after_a_refusal_the_next_step_counts_from_zero_and_its_answer_moves_him() {
+        let mut inner = test_session();
+        walks_from(
+            &mut inner,
+            MEASURED_START,
+            vec![MEASURED_EAST, MEASURED_SOUTH, MEASURED_END],
+        );
+        let now = Instant::now();
+        pump_movement(&mut inner, now);
+        let refused = about_to_be_refused(&inner);
+        ingest(
+            &mut inner,
+            &refusal_at(movement::SEQ_FIRST, MEASURED_START, refused),
+        );
+        inner.outbound.clear();
+        let mut later = now;
+        let step = loop {
+            later += ONE_TICK;
+            pump_movement(&mut inner, later);
+            if let Some(step) = inner.movement.in_flight.back().cloned() {
+                break step;
+            }
+            assert!(
+                later - now < movement::REFUSED_TILE_MEMORY,
+                "a step goes out again"
+            );
+        };
+        assert_eq!(
+            step.sequence,
+            movement::SEQ_FIRST,
+            "numbered zero, as the server expects"
+        );
+        ingest(&mut inner, &move_ack(step.sequence));
+        assert_eq!(
+            reported_at(&inner),
+            step.arrives_at,
+            "and its answer moves him"
+        );
+    }
+
     /// The server starts its walk count again whenever it redraws the
     /// player, which it does on every harvest strike. A step sent with the
     /// old count is refused for the count alone, so the client starts again
@@ -6183,20 +6880,7 @@ mod relay_tests {
         inner.movement.build_step(step, false, now);
         assert_ne!(inner.movement.sequence, 0);
 
-        let mut redraw =
-            uoterm_protocol::buf::PacketWriter::new(uoterm_protocol::types::PKT_DRAW_PLAYER);
-        redraw
-            .serial(HIM)
-            .u16(0x0190)
-            .u8(0)
-            .u16(0)
-            .u8(0)
-            .u16(here.x)
-            .u16(here.y)
-            .u16(0)
-            .u8(Direction::North as u8)
-            .i8(here.z);
-        ingest(&mut inner, &redraw.finish());
+        ingest(&mut inner, &redraw_of(HIM, here));
         assert_eq!(inner.movement.sequence, 0, "the count starts at zero again");
         assert!(inner.movement.in_flight.is_empty());
         assert_eq!(
@@ -7503,7 +8187,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         // its number, so those steps did not happen and go
                         // back on the route, and the count starts at zero.
                         Inbound::DrawPlayer { serial, .. } if *serial == self_serial => {
-                            inner.movement.refused();
+                            inner.movement.redrawn();
                         }
                         Inbound::CombatantChanged { serial } if !serial.is_valid() => {
                             inner.attack_sent = None;
@@ -7627,6 +8311,9 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         let bounds = multi_bounds(inner, house.serial);
                         play::on_custom_house(inner, house, bounds);
                     }
+                    if let Inbound::HouseRevision { serial, revision } = &msg {
+                        play::on_house_revision(inner, *serial, *revision);
+                    }
                     if let Inbound::ContextMenu { serial, entries } = &msg {
                         play::on_context_menu(inner, *serial, entries);
                         // The request waits for the menu of the object it
@@ -7651,6 +8338,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         }
                     }
                     if let Inbound::Speech(line) = &msg {
+                        gather::heard(inner, &line.text);
                         if says_bandage_started(&line.text) {
                             let dex = inner.world.read().self_state.dex;
                             inner.next_bandage_at =
@@ -7690,6 +8378,11 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         }
                         inner.ensure_facet();
                     }
+                    // The shard switched map patches on or off, so the map
+                    // may be another form of itself now.
+                    if matches!(msg, Inbound::MapPatches { .. }) {
+                        inner.ensure_facet();
+                    }
                     out.push(msg);
                 }
             }
@@ -7701,7 +8394,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
 
 /// The goals that are a place to reach, and end there.
 fn goal_is_a_place(goal: &Goal) -> bool {
-    matches!(goal, Goal::Travel { .. } | Goal::Bank | Goal::Ress)
+    matches!(goal, Goal::Travel { .. } | Goal::Bank)
 }
 
 /// She reached the place she walked to: the agent hears of it, and a goal
@@ -7813,6 +8506,15 @@ fn gump_texts(
                 .collect()
         })
         .unwrap_or_default();
+    fill_gump_texts(view, &typed)
+}
+
+/// Every text field of the gump, with the words typed in the ones named and
+/// the words each other one opened with.
+fn fill_gump_texts(
+    view: &uoterm_world::GumpView,
+    typed: &[(u16, String)],
+) -> std::result::Result<Vec<(u16, String)>, String> {
     if let Some((unknown, _)) = typed
         .iter()
         .find(|(id, _)| !view.entries.iter().any(|entry| entry.id == *id))
@@ -7894,7 +8596,16 @@ fn leave_map(inner: &mut Inner) {
 /// ahead of the truth, and one further ahead on every change of direction.
 fn accept_move_ack(inner: &mut Inner, sequence: u8) {
     let Some(step) = inner.movement.ack(sequence) else {
-        tracing::debug!(sequence, "an answer matched no request in flight");
+        // The server took a step this client no longer holds, so the two no
+        // longer agree on where the character stands. The reference client
+        // asks once, and walks again when the server redraws him.
+        tracing::debug!(
+            sequence,
+            "an answer matched no request in flight; asking where he is"
+        );
+        if inner.movement.ask_resync(Instant::now()) {
+            inner.outbound.push_back(encode::resync());
+        }
         return;
     };
     tracing::debug!(
@@ -7992,8 +8703,6 @@ enum Refusal {
     WaitedOut,
     /// He has waited over the whole trip long enough to give it up.
     GaveUp,
-    /// A building the server sent stands on the cell.
-    Building,
     /// The first refusal of that crossing: worth a door and one more try.
     TryTheDoor,
     /// The second refusal of that crossing: the way is shut.
@@ -8061,8 +8770,11 @@ fn refuse_step(
             .collect();
         tracing::debug!(believed = %at, in_flight = ?in_flight, "the wire at the refusal");
     }
+    // The server starts its walk count again at a refusal and redraws
+    // nobody, so the client starts its count again too and asks nothing: a
+    // resync here brings a redraw that would throw away the next steps after
+    // the server took them, and leave the character behind where he stands.
     inner.movement.refused();
-    inner.outbound.push_back(encode::resync());
     tracing::debug!(at = %at, cell = %cell, direction = ?refused.direction, "the server refused a step");
 
     let what = judge_refusal(inner, at, cell, now);
@@ -8085,10 +8797,6 @@ fn refuse_step(
             replan_the_route(inner);
         }
         Refusal::GaveUp => stop_the_trip(inner, cell, WAITED_TOO_LONG.into()),
-        Refusal::Building => {
-            inner.movement.wait(now, REPLAN_RESUME);
-            replan_the_route(inner);
-        }
         Refusal::TryTheDoor => {
             // The tile that refused him is the door itself, and the macro
             // opens whatever door stands in the tile he faces. It goes out
@@ -8139,13 +8847,6 @@ fn judge_refusal(inner: &mut Inner, at: Point3, cell: Point3, now: Instant) -> R
             return Refusal::WaitedOut;
         }
         return Refusal::Waiting;
-    }
-    if inner
-        .building_walls()
-        .iter()
-        .any(|wall| wall.x == cell.x && wall.y == cell.y)
-    {
-        return Refusal::Building;
     }
     let refusals = inner.movement.refused_edges.refuse(at, cell, now);
     if refusals <= EDGE_REFUSALS_FIRST {
@@ -8246,7 +8947,24 @@ fn log_forgotten(at: Point3, why: &str) {
 ///
 /// A UO server never volunteers display names. Without this the world model
 /// shows every person and item as a blank string.
+///
+/// A shard with property lists answers a batch of questions at once. A shard
+/// without them names an object only when it is clicked, as a label over it,
+/// so there the character clicks each nameless object once, one at a time,
+/// as a player does to read a name.
 fn pump_names(inner: &mut Inner) {
+    let property_lists = inner.world.read().has_property_lists();
+    if !property_lists {
+        if inner.last_name_click.elapsed() < NAME_CLICK_GAP {
+            return;
+        }
+        let click = inner.world.write().names.take_batch(NAME_CLICKS_AT_ONCE);
+        for serial in click {
+            inner.last_name_click = Instant::now();
+            inner.outbound.push_back(encode::single_click(serial));
+        }
+        return;
+    }
     if inner.last_name_retry.elapsed() >= NAME_RETRY {
         inner.last_name_retry = Instant::now();
         inner.world.write().names.retry_unanswered();
@@ -8338,7 +9056,7 @@ fn follow_tick(inner: &mut Inner, target_at: Point3, target_running: bool) {
             inner.ensure_facet();
             let in_the_way = inner.blockers();
             let plan = follow_plan(
-                inner.tiles(),
+                &inner.tiles(),
                 self_at,
                 target_at,
                 target_running,
@@ -8420,8 +9138,7 @@ fn note_door_item(inner: &mut Inner, item: &GroundItem) {
 /// A house or a boat reaches the client as an ordinary item whose graphic
 /// names a multi, and the packet the server wrote is what says so. Nothing
 /// here reads the shape: the record holds which multi it is and where it
-/// stands, and [`Inner::building_walls`] turns that into the tiles its walls
-/// close.
+/// stands, and [`Inner::tiles`] puts its pieces on the tiles it stands on.
 ///
 /// A building that comes into view or sails to another tile invalidates every
 /// queued route, exactly as a door that swings does, because a route planned
@@ -8481,7 +9198,7 @@ fn door_route(inner: &mut Inner, from: Point3, dest: Point3) -> DoorRoute {
     inner.ensure_facet();
     let avoid = inner.avoided();
     let doors = inner.doors_seen();
-    let Some(way) = door_in_the_way(inner.tiles(), from, dest, &avoid.obstacles(), &doors) else {
+    let Some(way) = door_in_the_way(&inner.tiles(), from, dest, &avoid.obstacles(), &doors) else {
         return DoorRoute::None;
     };
     if !doors_open_by_themselves(inner) {
@@ -8639,7 +9356,11 @@ fn pump_door_macro(inner: &mut Inner) {
         return;
     }
     if let Some(toward) = facing_toward(at, want.tile) {
-        if let Some(turn) = inner.movement.build_turn(facing, toward, at, now) {
+        if let Some(turn) =
+            inner
+                .movement
+                .build_turn(facing, toward, at, movement::STANDING_TURN, now)
+        {
             inner.outbound.push_back(turn);
             return;
         }
@@ -8709,27 +9430,70 @@ fn drop_place(args: &Value) -> Option<(u16, u16, Option<i8>)> {
     Some((x, y, z))
 }
 
-/// The layer a mount rides on.
-const LAYER_MOUNT: u8 = 25;
-
 /// The words of an object's property list, one line each. Without the
 /// client text files a line is its text number and arguments.
+///
+/// A shard with no property lists says what a click shows instead: the name,
+/// the maker, whether the magic is known, and each charge.
 fn property_lines(inner: &Inner, serial: Serial) -> Vec<String> {
     let w = inner.world.read();
-    let Some(props) = w.properties.get(&serial) else {
+    let words = |cliloc: u32, arguments: &str| {
+        inner
+            .cliloc
+            .as_ref()
+            .and_then(|table| table.render(cliloc, arguments))
+            .unwrap_or_else(|| format!("#{cliloc} {arguments}").trim_end().to_string())
+    };
+    if let Some(props) = w.properties.get(&serial) {
+        return props
+            .iter()
+            .map(|p| words(p.cliloc, &p.arguments))
+            .collect();
+    }
+    let Some(info) = w.equip_info.get(&serial) else {
         return Vec::new();
     };
-    props
-        .iter()
-        .map(|p| {
-            inner
-                .cliloc
-                .as_ref()
-                .and_then(|table| table.render(p.cliloc, &p.arguments))
-                .unwrap_or_else(|| format!("#{} {}", p.cliloc, p.arguments))
-        })
-        .collect()
+    let mut lines = Vec::new();
+    if info.cliloc != 0 {
+        lines.push(words(info.cliloc, ""));
+    }
+    if !info.crafter.is_empty() {
+        lines.push(format!("{CRAFTED_BY}{}", info.crafter));
+    }
+    if info.unidentified {
+        lines.push(UNIDENTIFIED.to_string());
+    }
+    for attribute in &info.attributes {
+        let line = words(attribute.cliloc, "");
+        if attribute.charges == uoterm_protocol::EQUIP_NO_CHARGES {
+            lines.push(line);
+        } else {
+            lines.push(format!("{line}: {}", attribute.charges));
+        }
+    }
+    lines
 }
+
+/// Asks the shard what an object is: for its property list, or with a click
+/// on a shard that has none, which answers with a label and the click info.
+fn ask_what_it_is(inner: &mut Inner, serial: Serial) {
+    let packet = if inner.world.read().has_property_lists() {
+        encode::batch_query_properties(&[serial])
+    } else {
+        encode::single_click(serial)
+    };
+    inner.outbound.push_back(packet);
+}
+
+/// True when the shard has said what an object is, in either form.
+fn knows_what_it_is(world: &World, serial: Serial) -> bool {
+    world.properties.contains_key(&serial) || world.equip_info.contains_key(&serial)
+}
+
+/// The words a click on an older shard puts before a maker's name, and the
+/// words for magic not known yet, as the reference client shows them.
+const CRAFTED_BY: &str = "crafted by ";
+const UNIDENTIFIED: &str = "unidentified";
 
 /// The first number in a line of text, such as the 3 of "Faster Casting 3".
 fn first_number(line: &str) -> Option<f64> {
@@ -8769,6 +9533,23 @@ fn lift_and_wear(inner: &mut Inner, item: Serial, layer: u8) {
     let me = inner.world.read().self_state.serial;
     send_lift(inner, item, ONE_WORN_ITEM);
     inner.outbound.push_back(encode::equip(item, layer, me));
+}
+
+/// Drops the item a stopped job still holds back into the backpack. A shard
+/// leaves a lifted item on the cursor until it is dropped, and a character
+/// who walks off holding one loses the next thing he tries to do.
+fn put_back_what_is_held(inner: &mut Inner) {
+    let (held, pack) = {
+        let world = inner.world.read();
+        (world.holding, backpack_serial(&world))
+    };
+    if let (Some(item), Some(pack)) = (held, pack) {
+        let grid = drop_grid(inner);
+        inner
+            .outbound
+            .push_back(encode::drop_into_container(item, pack, grid));
+        inner.sent_drop = Some(item);
+    }
 }
 
 fn backpack_serial(world: &uoterm_world::World) -> Option<Serial> {
@@ -9102,7 +9883,10 @@ fn pump_loot(inner: &mut Inner) {
             }
         }
         LootStep::Wait => {}
-        LootStep::Done => inner.loot = None,
+        LootStep::Done => {
+            inner.loot = None;
+            job_ended(inner, JOB_LOOT, REASON_DONE);
+        }
         LootStep::Fail(why) => {
             inner.loot = None;
             job_failed(inner, "loot", why);
@@ -9143,7 +9927,10 @@ fn pump_deposit(inner: &mut Inner) {
             }
         }
         DepositStep::Wait => {}
-        DepositStep::Done => inner.deposit = None,
+        DepositStep::Done => {
+            inner.deposit = None;
+            job_ended(inner, JOB_DEPOSIT, REASON_DONE);
+        }
         DepositStep::Fail(why) => {
             inner.deposit = None;
             job_failed(inner, "deposit", why);
@@ -9183,6 +9970,29 @@ fn reflex_tick(inner: &mut Inner) {
         return;
     }
     check_play_along(inner);
+    // A job leaves the goal alone, but not the care a character takes of
+    // himself: a wound and poison go on working through a loot, a trip to the
+    // bank or a follow as much as through a hunt. Nothing is used while an
+    // item is lifted, since the shard would drop it for the use.
+    let busy = inner.loot.is_some()
+        || inner.deposit.is_some()
+        || inner.follow.is_some()
+        || inner.hunt.is_some()
+        || inner.walk.is_some();
+    if busy {
+        let care = {
+            let world = inner.world.read();
+            world
+                .holding
+                .is_none()
+                .then(|| reflex::self_care(&world))
+                .flatten()
+        };
+        if let Some(care) = care {
+            apply_reflex_action(inner, care);
+            return;
+        }
+    }
     if inner.loot.is_some() {
         pump_loot(inner);
         return;
@@ -9200,21 +10010,11 @@ fn reflex_tick(inner: &mut Inner) {
         return;
     }
     if inner.hunt.is_some() {
-        let care = reflex::self_care(&inner.world.read());
-        if let Some(care) = care {
-            apply_reflex_action(inner, care);
-        } else {
-            pump_hunt(inner);
-        }
+        pump_hunt(inner);
         return;
     }
     if inner.walk.is_some() {
-        let care = reflex::self_care(&inner.world.read());
-        if let Some(care) = care {
-            apply_reflex_action(inner, care);
-        } else {
-            pump_walk(inner);
-        }
+        pump_walk(inner);
         return;
     }
     // Each world read below is a short guard, never a copy of the world:
@@ -9230,8 +10030,10 @@ fn apply_reflex_action(inner: &mut Inner, action: ReflexAction) {
                 inner.movement.hold();
             }
         }
+        // A line the reflex says on its own answers nobody: the lines said to
+        // the character stay waiting for the agent to answer.
         ReflexAction::Say(text) => {
-            let _ = queue_speech(inner, text, SPEECH_REGULAR);
+            let _ = send_speech(inner, text, SPEECH_REGULAR);
         }
         ReflexAction::MoveTo { x, y, z } => {
             let _ = queue_move(inner, Point3::new(x, y, z));
@@ -9258,33 +10060,13 @@ fn apply_reflex_action(inner: &mut Inner, action: ReflexAction) {
             if !send_double_click(inner, serial) {
                 return;
             }
-            match used {
-                Some((GRAPHIC_POTION_HEAL, name)) => {
-                    inner.next_heal_potion_at =
-                        Instant::now() + Duration::from_millis(heal_potion_lock_ms(&name));
-                }
-                Some((GRAPHIC_HATCHET, _)) => {
-                    let tree = inner
-                        .world
-                        .read()
-                        .find_items(None, None, None)
-                        .into_iter()
-                        .find(|i| {
-                            i.parent.is_none()
-                                && (TREE_GRAPHIC_MIN..=TREE_GRAPHIC_MAX).contains(&i.graphic)
-                        })
-                        .map(|i| i.serial);
-                    if let Some(tree) = tree {
-                        queue_target(inner, tree, Instant::now());
-                    }
-                }
-                _ => {}
+            if let Some((GRAPHIC_POTION_HEAL, name)) = used {
+                inner.next_heal_potion_at =
+                    Instant::now() + Duration::from_millis(heal_potion_lock_ms(&name));
             }
         }
-        ReflexAction::UseSkill(id) => {
-            inner.outbound.push_back(encode::use_skill(id));
-        }
-        ReflexAction::Target(serial) => store_or_answer_target(inner, serial),
+        ReflexAction::Harvest(resource) => gather::gather_tick(inner, resource),
+        ReflexAction::Resurrect => ress::ress_tick(inner),
         ReflexAction::BandageSelf => send_bandage_self(inner),
     }
 }
@@ -9609,10 +10391,10 @@ fn leg_route_through_pad(inner: &mut Inner, here: Point3, dest: Point3) -> Optio
         if uoterm_nav::same_spot(edge.from, here) {
             continue;
         }
-        if pathfind(inner.tiles(), edge.to, dest, &obstacles).is_err() {
+        if pathfind(&inner.tiles(), edge.to, dest, &obstacles).is_err() {
             continue;
         }
-        if pathfind(inner.tiles(), here, edge.from, &obstacles).is_err() {
+        if pathfind(&inner.tiles(), here, edge.from, &obstacles).is_err() {
             continue;
         }
         let to_goal = edge.to.chebyshev(dest);
@@ -9701,12 +10483,12 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     let in_the_way = inner.blockers();
     let obstacles = in_the_way.obstacles();
     inner.ensure_facet();
-    match pathfind(inner.tiles(), from, dest, &obstacles) {
+    match pathfind(&inner.tiles(), from, dest, &obstacles) {
         Ok(p) => {
             let points: Vec<Point3> = p.steps.iter().map(|s| Point3::new(s.x, s.y, s.z)).collect();
             apply_path(inner, points, dest)
         }
-        Err(e) => match pathfind_flat(inner.tiles(), from, dest, &obstacles) {
+        Err(e) => match pathfind_flat(&inner.tiles(), from, dest, &obstacles) {
             Ok(p) => {
                 let points: Vec<Point3> =
                     p.steps.iter().map(|s| Point3::new(s.x, s.y, s.z)).collect();
@@ -9729,90 +10511,6 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
             },
         },
     }
-}
-
-#[cfg(test)]
-fn greedy_line(from: Point3, dest: Point3) -> Vec<Point3> {
-    let mut x = from.x;
-    let mut y = from.y;
-    let mut out = Vec::new();
-    while (x != dest.x || y != dest.y) && out.len() < GREEDY_STEP_CAP {
-        if x < dest.x {
-            x += 1;
-        } else if x > dest.x {
-            x -= 1;
-        }
-        if y < dest.y {
-            y += 1;
-        } else if y > dest.y {
-            y -= 1;
-        }
-        out.push(Point3::new(x, y, dest.z));
-    }
-    out
-}
-
-#[cfg(test)]
-fn player_step_toward(map: &dyn TileQuery, from: Point3, dest: Point3) -> Option<Point3> {
-    let mut best: Option<(u32, bool, u16, u16)> = None;
-    const DIRS: [Direction; 8] = [
-        Direction::North,
-        Direction::Northeast,
-        Direction::East,
-        Direction::Southeast,
-        Direction::South,
-        Direction::Southwest,
-        Direction::West,
-        Direction::Northwest,
-    ];
-    for dir in DIRS {
-        let Some(next) = from.neighbour(dir) else {
-            continue;
-        };
-        if !map.can_walk(next.x, next.y) {
-            continue;
-        }
-        let (dx, dy) = dir.delta();
-        if dx != 0 && dy != 0 {
-            let sx = (from.x as i32 + dx) as u16;
-            let sy = (from.y as i32 + dy) as u16;
-            if !map.can_walk(sx, from.y) || !map.can_walk(from.x, sy) {
-                continue;
-            }
-        }
-        let d = Point3::new(next.x, next.y, from.z).chebyshev(dest);
-        let cardinal = dx == 0 || dy == 0;
-        let cand = (d, !cardinal, next.x, next.y);
-        if match best {
-            None => true,
-            Some(b) => cand < b,
-        } {
-            best = Some(cand);
-        }
-    }
-    best.map(|(_, _, x, y)| Point3::new(x, y, from.z))
-}
-
-#[cfg(test)]
-fn player_path(map: &dyn TileQuery, from: Point3, dest: Point3) -> Vec<Point3> {
-    let mut at = from;
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    seen.insert((at.x, at.y));
-    while (at.x != dest.x || at.y != dest.y) && out.len() < PLAYER_STEP_CAP {
-        let Some(next) = player_step_toward(map, at, dest) else {
-            break;
-        };
-        if !seen.insert((next.x, next.y)) {
-            break;
-        }
-        if next.chebyshev(dest) > at.chebyshev(dest) && out.len() > 4 {
-            break;
-        }
-        out.push(next);
-        at = next;
-    }
-    out
 }
 
 fn hold_step_count(hold_ms: u64, running: bool) -> usize {
@@ -9929,11 +10627,11 @@ fn walk_hold(inner: &mut Inner, args: &Value) -> ToolResult {
     // A held walk that meets a wall goes on beside it, as a player does
     // when he pushes through a doorway a little off the line.
     let slide = args.get("slide").and_then(|v| v.as_bool()).unwrap_or(false);
-    let dir = match slide.then(|| slide_direction(inner.tiles(), from, dir)) {
+    let dir = match slide.then(|| slide_direction(&inner.tiles(), from, dir)) {
         Some(Some(way)) => way,
         _ => dir,
     };
-    let mut points = hold_path(inner.tiles(), from, dir, asked_for);
+    let mut points = hold_path(&inner.tiles(), from, dir, asked_for);
     // A shard may place the character on a boat, teleporter landing, or other
     // server-supported surface absent from the static client map. Permit an
     // explicitly forced single step so the server can authoritatively accept
@@ -9995,9 +10693,11 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
         )
     };
     inner.movement.mounted = mounted;
+    inner.movement.speed_mode = inner.world.read().self_state.speed_mode;
     let travel = matches!(inner.goal, Goal::Travel { .. });
     let danger = matches!(inner.goal, Goal::Flee | Goal::Hunt);
     let running = !walks_only(inner)
+        && inner.movement.may_run()
         && inner.movement.run_override.unwrap_or_else(|| {
             movement::should_run(false, danger || travel, false, stam, stam_max)
         });
@@ -10043,9 +10743,10 @@ fn pump_movement(inner: &mut Inner, now: Instant) {
         inner.world.read().self_state.direction,
     ));
     if facing != step.direction {
-        if let Some(turn) = inner
-            .movement
-            .build_turn(facing, step.direction, stepping_from, now)
+        if let Some(turn) =
+            inner
+                .movement
+                .build_turn(facing, step.direction, stepping_from, running, now)
         {
             tracing::debug!(from = ?facing, to = ?step.direction, "turning before the step");
             inner.outbound.push_back(turn);
@@ -10086,26 +10787,87 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .get("distance")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u16);
+            let ranks = args
+                .get(ARG_NOTORIETY)
+                .and_then(Value::as_str)
+                .map(uoterm_assist::mobiles::notorieties);
+            let species = args
+                .get(ARG_SPECIES)
+                .and_then(Value::as_str)
+                .map(str::to_lowercase);
+            let sight_only = args.get(ARG_IN_SIGHT).and_then(Value::as_bool) == Some(true);
+            let tiles = inner.tiles();
             let world = inner.world.read();
             let here = world.self_state.location;
             let found: Vec<_> = world
                 .find_mobiles(name, graphic, dist)
                 .iter()
-                .map(|m| {
-                    let mut found = json!({
-                        "serial": m.serial,
-                        "name": m.name,
-                        "body": m.body,
-                        "location": m.location,
-                        "dist": here.chebyshev(m.location),
-                    });
-                    if !m.title.is_empty() {
-                        found["title"] = json!(m.title);
+                .filter(|m| ranks.is_none_or(|ranks| ranks.contains(&m.notoriety)))
+                .filter_map(|m| {
+                    let kind = crate::jobs::mobile_species(m);
+                    if species
+                        .as_ref()
+                        .is_some_and(|wanted| !kind.contains(wanted.as_str()))
+                    {
+                        return None;
                     }
-                    found
+                    let in_sight = uoterm_nav::line_of_sight(
+                        &tiles,
+                        uoterm_nav::eyes_at(here),
+                        uoterm_nav::eyes_at(m.location),
+                    );
+                    if sight_only && !in_sight {
+                        return None;
+                    }
+                    Some(mobile_found(&world, m, here, kind, in_sight))
                 })
                 .collect();
             ToolResult::ok(json!(found))
+        }
+        TOOL_PARTY => party_tool(inner, args),
+        TOOL_MOBILE_STATUS => match named_serial(args, TOOL_MOBILE_STATUS) {
+            Ok(mobile) => {
+                inner.outbound.push_back(encode::query_status(mobile));
+                ToolResult::action(TOOL_MOBILE_STATUS)
+            }
+            Err(refused) => *refused,
+        },
+        TOOL_PROMPT_ANSWER | TOOL_PROMPT_CANCEL => {
+            let accept = call.name == TOOL_PROMPT_ANSWER;
+            let text = args.get("text").and_then(Value::as_str).unwrap_or_default();
+            if accept && text.is_empty() {
+                return ToolResult::err(format!("{TOOL_PROMPT_ANSWER} needs text"));
+            }
+            match answer_prompt(inner, Asking::Either, text, accept) {
+                Ok(true) => ToolResult::action(call.name.clone()),
+                Ok(false) => ToolResult::err(NO_PROMPT_OPEN),
+                Err(too_long) => ToolResult::err(too_long),
+            }
+        }
+        TOOL_LINE_OF_SIGHT => {
+            let here = inner.world.read().self_state.location;
+            let aim = match arg_serial_opt(args, ARG_SERIAL).filter(|s| s.is_valid()) {
+                Some(serial) => match sight_point(inner, serial) {
+                    Some(at) => at,
+                    None => {
+                        return ToolResult::err(format!(
+                            "{TOOL_LINE_OF_SIGHT}: {serial} is not in view"
+                        ))
+                    }
+                },
+                None => {
+                    let (Some(x), Some(y)) = (arg_number(args, "x"), arg_number(args, "y")) else {
+                        return ToolResult::err(format!(
+                            "{TOOL_LINE_OF_SIGHT} needs serial, or x and y"
+                        ));
+                    };
+                    let z = asked_z(args, here.z);
+                    Point3::new(x as u16, y as u16, z)
+                }
+            };
+            let in_sight =
+                uoterm_nav::line_of_sight(&inner.tiles(), uoterm_nav::eyes_at(here), aim);
+            ToolResult::ok(json!({ "in_sight": in_sight, "aim": aim }))
         }
         TOOL_FIND_ITEMS => {
             let graphic = args
@@ -10118,6 +10880,21 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let container = arg_serial_opt(args, "container");
             let name = args.get("name").and_then(|v| v.as_str());
             let within = arg_number(args, "distance");
+            let hue = arg_number(args, ARG_HUE).and_then(|h| u16::try_from(h).ok());
+            let graphics: Vec<u16> = args
+                .get(ARG_GRAPHICS)
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|g| g.as_u64().and_then(|g| u16::try_from(g).ok()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let tile = match (arg_number(args, "x"), arg_number(args, "y")) {
+                (Some(x), Some(y)) => Some((x as u16, y as u16)),
+                _ => None,
+            };
+            let files = inner.map_files();
             let world = inner.world.read();
             let here = world.self_state.location;
             // Each item with the map tile it is on (its own, or its holder's)
@@ -10125,20 +10902,26 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let found: Vec<_> = world
                 .find_items(graphic, container, name)
                 .iter()
+                .filter(|i| hue.is_none_or(|hue| i.hue == hue))
+                .filter(|i| graphics.is_empty() || graphics.contains(&i.graphic))
                 .filter_map(|i| {
                     let at = world.map_location(i.serial);
+                    if tile.is_some_and(|(x, y)| at.is_none_or(|at| (at.x, at.y) != (x, y))) {
+                        return None;
+                    }
                     let dist = at.map(|at| here.chebyshev(at));
                     if within.is_some_and(|w| dist.is_none_or(|d| d > w)) {
                         return None;
                     }
                     let name = if i.name.is_empty() {
-                        inner.tiles().item_name(i.graphic)
+                        files.item_name(i.graphic)
                     } else {
                         i.name.clone()
                     };
                     Some(json!({
                         "serial": i.serial,
                         "graphic": i.graphic,
+                        "hue": i.hue,
                         "amount": i.amount,
                         "name": name,
                         "container": i.parent,
@@ -10233,11 +11016,48 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             inner.ensure_facet();
             // With a height, that height; with none, any surface there, as a
             // person pointing at the spot means.
-            let walkable = match args.get("z").and_then(|v| v.as_i64()) {
-                Some(_) => inner.tiles().can_walk_from(asked_z(args, standing), x, y),
+            let asked = args
+                .get("z")
+                .and_then(|v| v.as_i64())
+                .map(|_| asked_z(args, standing));
+            let walkable = match asked {
+                Some(z) => inner.tiles().can_walk_from(z, x, y),
                 None => inner.tiles().surface_near(standing, x, y).is_some(),
             };
-            ToolResult::ok(json!(walkable))
+            if walkable {
+                return ToolResult::ok(json!({ "walkable": true }));
+            }
+            let why = why_not_walkable(inner, x, y, asked.unwrap_or(standing));
+            ToolResult::ok(json!({ "walkable": false, "why": why }))
+        }
+        TOOL_ROUTE => {
+            let (Some(x), Some(y)) = (arg_number(args, "x"), arg_number(args, "y")) else {
+                return ToolResult::err(format!("{TOOL_ROUTE} needs x and y"));
+            };
+            let (x, y) = (x as u16, y as u16);
+            let from = inner
+                .movement
+                .stepping_from(inner.world.read().self_state.location);
+            let z = match args.get("z").and_then(Value::as_i64) {
+                Some(_) => asked_z(args, from.z),
+                None => surface_z(inner, from.z, x, y),
+            };
+            let dest = Point3::new(x, y, z);
+            let in_the_way = inner.blockers();
+            let planned = pathfind(&inner.tiles(), from, dest, &in_the_way.obstacles());
+            match planned {
+                Ok(path) => {
+                    let steps: Vec<Point3> = path
+                        .steps
+                        .iter()
+                        .map(|s| Point3::new(s.x, s.y, s.z))
+                        .collect();
+                    ToolResult::ok(
+                        json!({ "reachable": true, "steps": steps.len(), "route": steps }),
+                    )
+                }
+                Err(why) => ToolResult::ok(json!({ "reachable": false, "why": why.to_string() })),
+            }
         }
         TOOL_SAY => say_in_channel(inner, args),
         TOOL_REPLY => reply(inner, args),
@@ -10320,6 +11140,14 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             if inner.walk.is_some() {
                 end_walk(inner, REASON_STOPPED);
             }
+            if inner.loot.take().is_some() {
+                put_back_what_is_held(inner);
+                job_ended(inner, JOB_LOOT, REASON_STOPPED);
+            }
+            if inner.deposit.take().is_some() {
+                put_back_what_is_held(inner);
+                job_ended(inner, JOB_DEPOSIT, REASON_STOPPED);
+            }
             inner.goal = Goal::Idle;
             inner.follow = None;
             inner.doors.give_up();
@@ -10329,6 +11157,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::ok(json!(Goal::Idle.name()))
         }
         TOOL_LOGOUT => {
+            inner.logged_out = true;
             inner.outbound.push_back(encode::logout());
             ToolResult::action(TOOL_LOGOUT)
         }
@@ -10339,7 +11168,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     None => return ToolResult::err("no last object yet"),
                 }
             } else {
-                arg_serial(args, "serial")
+                match named_serial(args, &call.name) {
+                    Ok(serial) => serial,
+                    Err(refused) => return *refused,
+                }
             };
             if dismount_blocked(inner, serial) {
                 return ToolResult::err(DISMOUNT_BLOCKED);
@@ -10351,7 +11183,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_USE)
         }
         TOOL_LOOT => {
-            let serial = arg_serial(args, "serial");
+            let serial = match named_serial(args, TOOL_LOOT) {
+                Ok(serial) => serial,
+                Err(refused) => return *refused,
+            };
             let Some(pack) = backpack_serial(&inner.world.read()) else {
                 return ToolResult::err("no backpack");
             };
@@ -10377,13 +11212,19 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_DEPOSIT)
         }
         TOOL_SINGLE_CLICK => {
-            inner
-                .outbound
-                .push_back(encode::single_click(arg_serial(args, "serial")));
+            let serial = match named_serial(args, TOOL_SINGLE_CLICK) {
+                Ok(serial) => serial,
+                Err(refused) => return *refused,
+            };
+            inner.outbound.push_back(encode::single_click(serial));
             ToolResult::action(TOOL_SINGLE_CLICK)
         }
         TOOL_ATTACK => {
-            send_attack(inner, arg_serial(args, "serial"));
+            let serial = match named_serial(args, TOOL_ATTACK) {
+                Ok(serial) => serial,
+                Err(refused) => return *refused,
+            };
+            send_attack(inner, serial);
             ToolResult::action(TOOL_ATTACK)
         }
         TOOL_WAR_MODE => {
@@ -10398,7 +11239,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             if !action_ready(inner) {
                 return ToolResult::err("must wait to perform another action");
             }
-            let serial = arg_serial(args, "serial");
+            let serial = match named_serial(args, TOOL_LIFT) {
+                Ok(serial) => serial,
+                Err(refused) => return *refused,
+            };
             let amount = args
                 .get("amount")
                 .and_then(|v| v.as_u64())
@@ -10416,7 +11260,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             // works. A mobile takes the item as a gift; none means the ground.
             let dest = drop_destination(args);
             let grid = drop_grid(inner);
-            let serial = arg_serial(args, "serial");
+            let serial = match named_serial(args, TOOL_DROP) {
+                Ok(serial) => serial,
+                Err(refused) => return *refused,
+            };
             let place = drop_place(args);
             let packet = match (dest, place) {
                 (Some(into), Some((x, y, _))) => encode::drop(serial, x, y, 0, into, grid),
@@ -10439,7 +11286,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     None => return ToolResult::err("no weapon put away yet"),
                 }
             } else {
-                arg_serial(args, "serial")
+                match named_serial(args, TOOL_EQUIP) {
+                    Ok(serial) => serial,
+                    Err(refused) => return *refused,
+                }
             };
             if !action_ready(inner) {
                 return ToolResult::err(MUST_WAIT);
@@ -10454,24 +11304,41 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_CAST => {
             // A missing number used to cast spell 1. A spell nobody asked for
             // spends mana and reagents, so a missing number is refused.
-            let Some(spell) = arg_number(args, ARG_SPELL) else {
+            let Some(spell) = named_spell(inner, args) else {
                 return ToolResult::err(NEEDS_SPELL);
+            };
+            let aim = match args.get(ARG_TARGET).and_then(Value::as_str) {
+                Some(WHO_SELF) => Some(inner.world.read().self_state.serial),
+                _ => arg_serial_opt(args, ARG_TARGET).filter(|s| s.is_valid()),
             };
             if !action_ready(inner) {
                 return ToolResult::err(MUST_WAIT);
             }
-            if !clear_hands_for_cast(inner, spell as u16) {
+            if !clear_hands_for_cast(inner, spell) {
                 return ToolResult::err(HAND_PUT_AWAY);
             }
-            inner.outbound.push_back(encode::cast_spell(spell as u16));
-            note_cast(inner, spell as u16);
+            inner.outbound.push_back(encode::cast_spell(spell));
+            note_cast(inner, spell);
+            // The spell's cursor comes once the words are said, and it is
+            // answered then with what the call named.
+            if let Some(aim) = aim {
+                queue_target(inner, aim, Instant::now());
+            }
             ToolResult::action(TOOL_CAST)
         }
         TOOL_USE_SKILL => {
-            let Some(skill) = arg_number(args, ARG_SKILL) else {
+            let Some(skill) = named_skill(inner, args) else {
                 return ToolResult::err(NEEDS_SKILL);
             };
-            inner.outbound.push_back(encode::use_skill(skill as u16));
+            if inner
+                .scripting
+                .skills
+                .by_id(skill)
+                .is_some_and(|known| !known.usable)
+            {
+                return ToolResult::err(SKILL_NOT_USED_ALONE);
+            }
+            inner.outbound.push_back(encode::use_skill(skill));
             ToolResult::action(TOOL_USE_SKILL)
         }
         TOOL_TARGET => {
@@ -10608,8 +11475,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     }
                 }
             }
-            if matches!(g, Goal::Bank | Goal::Ress) && crate::banks::nearest_bank(map, at).is_none()
-            {
+            if matches!(g, Goal::Bank) && crate::banks::nearest_bank(map, at).is_none() {
                 return ToolResult::err(NO_BANK_KNOWN);
             }
             inner.follow = None;
@@ -10711,7 +11577,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             })
         }
         TOOL_TRADE_OFFER => {
-            let serial = arg_serial(args, "serial");
+            let serial = match named_serial(args, TOOL_TRADE_OFFER) {
+                Ok(serial) => serial,
+                Err(refused) => return *refused,
+            };
             inner.outbound.push_back(encode::trade_start(serial));
             ToolResult::action(TOOL_TRADE_OFFER)
         }
@@ -10847,6 +11716,9 @@ fn radar_from_floor(
     world.observe_sized(size, |x, y| map.tile_from(from_z, x, y).radar_char())
 }
 
+/// `observe` lists only the skills the character has trained or locked.
+const TRAINED_SKILLS_ONLY: bool = false;
+
 fn observe_value(inner: &Inner, size: u16) -> Value {
     let w = inner.world.read();
     let idx = w.self_state.map;
@@ -10967,6 +11839,7 @@ fn observe_value(inner: &Inner, size: u16) -> Value {
     let mut value = serde_json::to_value(obs).unwrap_or(Value::Null);
     if let Some(obj) = value.as_object_mut() {
         obj.insert("doing".into(), awareness::doing(inner, &inner.world.read()));
+        play::open_panels(inner, obj, TRAINED_SKILLS_ONLY);
     }
     value
 }
@@ -11263,6 +12136,7 @@ fn say_in_channel(inner: &mut Inner, args: &Value) -> ToolResult {
         CHANNEL_SAY => speak(inner, args, SPEECH_REGULAR),
         CHANNEL_GUILD => speak(inner, args, SPEECH_GUILD),
         CHANNEL_ALLIANCE => speak(inner, args, SPEECH_ALLIANCE),
+        CHANNEL_YELL => speak(inner, args, SPEECH_YELL),
         CHANNEL_PARTY => {
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
             match send_party_line(inner, None, text) {
@@ -11273,7 +12147,9 @@ fn say_in_channel(inner: &mut Inner, args: &Value) -> ToolResult {
                 Err(e) => ToolResult::err(e),
             }
         }
-        other => ToolResult::err(format!("'{other}' is not say, party, guild or alliance")),
+        other => ToolResult::err(format!(
+            "'{other}' is not say, yell, party, guild or alliance"
+        )),
     }
 }
 
@@ -11282,6 +12158,63 @@ const CHANNEL_SAY: &str = "say";
 const CHANNEL_PARTY: &str = "party";
 const CHANNEL_GUILD: &str = "guild";
 const CHANNEL_ALLIANCE: &str = "alliance";
+const CHANNEL_YELL: &str = "yell";
+
+/// The argument that names what a tool is to do, and the one that switches
+/// something on or off.
+const ARG_ACTION: &str = "action";
+const ARG_ON: &str = "on";
+
+/// The things a party tool does.
+const PARTY_INVITE_WORD: &str = "invite";
+const PARTY_ACCEPT_WORD: &str = "accept";
+const PARTY_DECLINE_WORD: &str = "decline";
+const PARTY_LEAVE_WORD: &str = "leave";
+const PARTY_KICK_WORD: &str = "kick";
+const PARTY_LOOT_WORD: &str = "loot";
+const NO_PARTY_INVITE: &str = "no party invite waits";
+const BAD_PARTY_ACTION: &str = "action must be invite, accept, decline, leave, kick or loot";
+
+/// Invites, answers an invite, leaves, removes a member, or lets the party
+/// loot what the character kills. An invite is aimed as a player aims it:
+/// the shard gives a cursor, and the named mobile answers it.
+fn party_tool(inner: &mut Inner, args: &Value) -> ToolResult {
+    let action = args
+        .get(ARG_ACTION)
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let named = arg_serial_opt(args, ARG_SERIAL).filter(|s| s.is_valid());
+    let packet = match action {
+        PARTY_INVITE_WORD => {
+            let Some(member) = named else {
+                return ToolResult::err(format!("{TOOL_PARTY} invite {NEEDS_SERIAL}"));
+            };
+            queue_target(inner, member, Instant::now());
+            encode::party_invite(None)
+        }
+        PARTY_ACCEPT_WORD | PARTY_DECLINE_WORD => {
+            let Some(leader) = inner.world.write().party_invite.take() else {
+                return ToolResult::err(NO_PARTY_INVITE);
+            };
+            if action == PARTY_ACCEPT_WORD {
+                encode::party_accept(leader)
+            } else {
+                encode::party_decline(leader)
+            }
+        }
+        PARTY_LEAVE_WORD => encode::party_remove(inner.world.read().self_state.serial),
+        PARTY_KICK_WORD => match named {
+            Some(member) => encode::party_remove(member),
+            None => return ToolResult::err(format!("{TOOL_PARTY} kick {NEEDS_SERIAL}")),
+        },
+        PARTY_LOOT_WORD => {
+            encode::party_can_loot(args.get(ARG_ON).and_then(Value::as_bool).unwrap_or(true))
+        }
+        _ => return ToolResult::err(BAD_PARTY_ACTION),
+    };
+    inner.outbound.push_back(packet);
+    ToolResult::action(TOOL_PARTY)
+}
 
 fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -11298,6 +12231,44 @@ fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
 /// The height of the walkable surface at `x`, `y` nearest to `from`: the
 /// ground, a floor or a roof. A tile with none keeps the height a walker at
 /// `from` would meet there, and the route to it fails.
+/// Why a person cannot walk onto a tile, in words: the thing a shard would
+/// refuse him for, as nearly as the client can tell.
+fn why_not_walkable(inner: &Inner, x: u16, y: u16, z: i8) -> String {
+    let tiles = inner.tiles();
+    if !tiles.in_bounds(x, y) {
+        return "the tile is off the map".into();
+    }
+    if let Some(mobile) = inner.world.read().mobile_at(x, y) {
+        return format!("{} stands there", inner.world.read().name_of(mobile.serial));
+    }
+    if inner
+        .movement
+        .blocked
+        .tiles()
+        .iter()
+        .any(|refused| (refused.x, refused.y) == (x, y))
+    {
+        return "the shard refused a step onto it a short time ago".into();
+    }
+    let tile = tiles.tile_from(z, x, y);
+    if tile.door {
+        return "a door stands there; open it".into();
+    }
+    if let Some(wall) = tiles.statics_at(x, y).into_iter().find(|s| s.impassable()) {
+        return format!("{} is in the way", wall.name);
+    }
+    if tiles.has_pieces(x, y) {
+        return "a building or an item on the ground is in the way".into();
+    }
+    if tile.flags & uoterm_nav::TILE_IMPASSABLE != 0 {
+        return format!(
+            "the ground there ({}) is not walkable",
+            tiles.land_name(x, y)
+        );
+    }
+    "nothing there holds a person up at that height".into()
+}
+
 fn surface_z(inner: &mut Inner, from: i8, x: u16, y: u16) -> i8 {
     inner.ensure_facet();
     let tiles = inner.tiles();
@@ -11327,10 +12298,157 @@ fn arg_number(args: &Value, key: &str) -> Option<u32> {
     if let Some(n) = v.as_i64() {
         return Some(n.max(0) as u32);
     }
-    let text = v.as_str()?.trim();
-    match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => text.parse().ok(),
+    parse_unsigned(v.as_str()?).and_then(|n| u32::try_from(n).ok())
+}
+
+/// The most characters a shard takes in a prompt answer. It drops a longer
+/// one and keeps its prompt open.
+const PROMPT_TEXT_MAX: usize = 128;
+/// What a prompt answer says when nothing asks for words.
+const NO_PROMPT_OPEN: &str = "no prompt or text dialog is open";
+
+/// Which of the two ways a shard asks for words an answer is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asking {
+    /// A prompt, or else a one-field dialog.
+    Either,
+    Prompt,
+    Dialog,
+}
+
+/// Answers the words the shard waits for, in the way `asking` names.
+/// `accept` false cancels it. True when one was open to answer.
+fn answer_prompt(
+    inner: &mut Inner,
+    asking: Asking,
+    text: &str,
+    accept: bool,
+) -> std::result::Result<bool, String> {
+    let (prompt, dialog) = {
+        let world = inner.world.read();
+        (
+            world.prompt.filter(|_| asking != Asking::Dialog),
+            world
+                .text_entry
+                .clone()
+                .filter(|_| asking != Asking::Prompt),
+        )
+    };
+    if let Some(prompt) = prompt {
+        if accept && text.chars().count() > PROMPT_TEXT_MAX {
+            return Err(format!(
+                "a prompt takes at most {PROMPT_TEXT_MAX} characters"
+            ));
+        }
+        inner.world.write().prompt = None;
+        inner
+            .outbound
+            .push_back(encode::prompt_response(prompt, text, accept));
+        return Ok(true);
+    }
+    let Some(dialog) = dialog else {
+        return Ok(false);
+    };
+    let max = usize::try_from(dialog.max_len).unwrap_or(usize::MAX);
+    if accept && text.chars().count() > max {
+        return Err(format!("that dialog takes at most {max} characters"));
+    }
+    inner.world.write().text_entry = None;
+    inner
+        .outbound
+        .push_back(encode::text_entry_response(&dialog, text, accept));
+    Ok(true)
+}
+
+/// The spell a call names: by its number, or by its name however it is
+/// typed, such as "greater heal".
+fn named_spell(inner: &Inner, args: &Value) -> Option<u16> {
+    match args.get(ARG_SPELL)? {
+        Value::String(text) => inner.scripting.spells.find(text).map(|spell| spell.id),
+        number => number.as_u64().and_then(|n| u16::try_from(n).ok()),
+    }
+}
+
+/// The skill a call names: by its number, or by its name, such as "hiding".
+fn named_skill(inner: &Inner, args: &Value) -> Option<u16> {
+    match args.get(ARG_SKILL)? {
+        Value::String(text) => inner
+            .scripting
+            .skills
+            .find(text)
+            .map(|skill| skill.id)
+            .or_else(|| parse_unsigned(text).and_then(|n| u16::try_from(n).ok())),
+        number => number.as_u64().and_then(|n| u16::try_from(n).ok()),
+    }
+}
+
+/// The argument that names an object.
+const ARG_SERIAL: &str = "serial";
+/// The arguments that narrow what a find gives back.
+const ARG_NOTORIETY: &str = "notoriety";
+const ARG_SPECIES: &str = "species";
+const ARG_IN_SIGHT: &str = "in_sight";
+const ARG_HUE: &str = "hue";
+const ARG_GRAPHICS: &str = "graphics";
+
+/// One mobile a find gives back: who and what it is, where, how it stands,
+/// and whether the character can see it to shoot or cast at it.
+fn mobile_found(
+    world: &World,
+    m: &uoterm_world::Mobile,
+    here: Point3,
+    species: String,
+    in_sight: bool,
+) -> Value {
+    let mut found = json!({
+        "serial": m.serial,
+        "name": m.name,
+        "body": m.body,
+        "species": species,
+        "location": m.location,
+        "dist": here.chebyshev(m.location),
+        "notoriety": uoterm_assist::mobiles::notoriety_name(m.notoriety),
+        "war": m.flags & FLAG_WAR != 0,
+        "hidden": m.flags & FLAG_HIDDEN != 0,
+        "poisoned": world.is_poisoned(m.serial),
+        "dead": uoterm_world::is_ghost_body(m.body) || world.dead_pets.contains(&m.serial),
+        "in_sight": in_sight,
+        "worn": m.equipment.iter().map(|e| json!({"layer": e.layer, "graphic": e.graphic, "hue": e.hue})).collect::<Vec<_>>(),
+    });
+    if let (Some(hits), Some(max)) = (m.hits, m.hits_max) {
+        if max > 0 {
+            found["hits_percent"] = json!(u32::from(hits) * 100 / u32::from(max));
+        }
+    }
+    if !m.title.is_empty() {
+        found["title"] = json!(m.title);
+    }
+    found
+}
+
+/// Where a shot at an object in view aims: a mobile's eyes, or half way up
+/// an item on the ground.
+fn sight_point(inner: &Inner, serial: Serial) -> Option<Point3> {
+    let world = inner.world.read();
+    if let Some(m) = world.mobiles.get(&serial) {
+        return Some(uoterm_nav::eyes_at(m.location));
+    }
+    let at = world.map_location(serial)?;
+    let graphic = world.items.get(&serial)?.graphic;
+    let height = inner.map_files().item_stat(graphic).map_or(0, |(_, h)| h);
+    Some(uoterm_nav::middle_of(at, height))
+}
+/// What a tool says when it names no object.
+const NEEDS_SERIAL: &str = "needs serial";
+
+/// The object a tool names, or the error that the tool needs one. A call that
+/// names none must never reach the shard as object zero.
+fn named_serial(args: &Value, tool: &str) -> std::result::Result<Serial, Box<ToolResult>> {
+    let serial = arg_serial(args, ARG_SERIAL);
+    if serial.is_valid() {
+        Ok(serial)
+    } else {
+        Err(Box::new(ToolResult::err(format!("{tool} {NEEDS_SERIAL}"))))
     }
 }
 
