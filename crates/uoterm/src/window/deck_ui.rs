@@ -154,6 +154,8 @@ pub struct DeckUi {
     tab: Tab,
     first_skill: usize,
     first_spell: usize,
+    /// The first row of the worn list that shows.
+    first_worn: usize,
     /// The spells of the standard schools. A shard's own spells go through
     /// the command box.
     spells: SpellBook,
@@ -172,6 +174,7 @@ impl DeckUi {
             tab: Tab::default(),
             first_skill: 0,
             first_spell: 0,
+            first_worn: 0,
             spells: SpellBook::standard(),
             wear_wish: String::new(),
             wear_asked: Vec::new(),
@@ -595,7 +598,9 @@ const DOLL_WIDTH: f32 = 96.0;
 const DOLL_HEIGHT: f32 = 130.0;
 const SLOT_ROW: f32 = 22.0;
 const TAKE_OFF_WIDTH: f32 = 26.0;
-const WORN_ROWS: usize = 6;
+/// The worn list stands in two columns, so a full suit fits.
+const WORN_COLUMNS: usize = 2;
+const WORDS_MORE_WORN: &str = "Wheel: more";
 const WEAR_WIDTH: f32 = 54.0;
 const WORDS_WORN: &str = "Worn";
 const WORDS_TAKE_OFF: &str = "x";
@@ -681,47 +686,75 @@ fn character_tab(
             theme::TEXT,
         );
     }
-    let mut y = doll.bottom() + theme::ROW_GAP;
-    painter.text(
-        Pos2::new(body.left(), y),
-        Align2::LEFT_TOP,
-        WORDS_WORN,
-        text_font(theme::SIZE_BODY),
-        theme::TEXT_DIM,
-    );
-    y += SLOT_ROW;
     let worn: Vec<&crate::view::WatchEquip> = frame
         .look
         .equipment
         .iter()
         .filter(|item| is_worn_layer(item.layer))
         .collect();
+    let label_top = doll.bottom() + theme::ROW_GAP;
+    painter.text(
+        Pos2::new(body.left(), label_top),
+        Align2::LEFT_TOP,
+        format!("{WORDS_WORN} ({})", worn.len()),
+        text_font(theme::SIZE_BODY),
+        theme::TEXT_DIM,
+    );
+    let field = Rect::from_min_max(
+        Pos2::new(body.left(), body.bottom() - ROW),
+        body.right_bottom(),
+    );
+    // The list fills the room between its label and the field, and no more.
+    let list = Rect::from_min_max(
+        Pos2::new(body.left(), label_top + SLOT_ROW),
+        Pos2::new(body.right(), field.top() - theme::ROW_GAP),
+    );
+    let (rows, last_first) = worn_rows(list.height(), worn.len());
+    deck.first_worn = scrolled(ui, list, deck.first_worn.min(last_first), last_first);
+    if last_first > 0 {
+        painter.text(
+            Pos2::new(body.right(), label_top),
+            Align2::RIGHT_TOP,
+            WORDS_MORE_WORN,
+            text_font(theme::SIZE_SMALL),
+            theme::TEXT_FAINT,
+        );
+    }
     if worn.is_empty() {
         painter.text(
-            Pos2::new(body.left(), y),
+            list.left_top(),
             Align2::LEFT_TOP,
             WORDS_NOTHING_WORN,
             text_font(theme::SIZE_SMALL),
             theme::TEXT_FAINT,
         );
     }
-    for item in worn.iter().take(WORN_ROWS) {
-        let row = Rect::from_min_size(
-            Pos2::new(body.left(), y),
-            Vec2::new(body.width(), SLOT_ROW - 2.0),
+    let column_width = (list.width() - theme::ROW_GAP) / WORN_COLUMNS as f32;
+    let shown = worn
+        .iter()
+        .skip(deck.first_worn * WORN_COLUMNS)
+        .take(rows * WORN_COLUMNS);
+    for (i, item) in shown.enumerate() {
+        let (row, column) = (i / WORN_COLUMNS, i % WORN_COLUMNS);
+        let slot = Rect::from_min_size(
+            list.left_top()
+                + Vec2::new(
+                    column as f32 * (column_width + theme::ROW_GAP),
+                    row as f32 * SLOT_ROW,
+                ),
+            Vec2::new(column_width, SLOT_ROW - 2.0),
         );
-        worn_row(ui, row, item, frame, tools);
-        y += SLOT_ROW;
+        worn_row(ui, slot, item, frame, tools);
     }
-    deck.wear_field(
-        ui,
-        Rect::from_min_max(
-            Pos2::new(body.left(), body.bottom() - ROW),
-            body.right_bottom(),
-        ),
-        frame,
-        tools,
-    );
+    deck.wear_field(ui, field, frame, tools);
+}
+
+/// How many rows of the worn list fit in `height`, and the last first row
+/// the wheel may scroll to, for `count` worn items in their columns.
+fn worn_rows(height: f32, count: usize) -> (usize, usize) {
+    let rows = ((height / SLOT_ROW).floor() as usize).max(1);
+    let needed = count.div_ceil(WORN_COLUMNS);
+    (rows, needed.saturating_sub(rows))
 }
 
 impl DeckUi {
@@ -967,6 +1000,20 @@ fn party_tab(ui: &egui::Ui, body: Rect, frame: &WatchFrame, tools: &mut Tools<'_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The worn list takes only the rows that fit, and the wheel reaches the
+    /// rest: twelve worn items in two columns of four rows scroll two rows.
+    #[test]
+    fn the_worn_list_fits_its_room_and_scrolls_for_the_rest() {
+        const FOUR_ROWS: f32 = SLOT_ROW * 4.5;
+        assert_eq!(worn_rows(FOUR_ROWS, 12), (4, 2));
+        assert_eq!(
+            worn_rows(FOUR_ROWS, 8),
+            (4, 0),
+            "a full page does not scroll"
+        );
+        assert_eq!(worn_rows(0.0, 3), (1, 1), "one row shows at the least");
+    }
 
     const MARA: &str = "Mara";
 
