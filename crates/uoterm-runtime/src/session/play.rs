@@ -1086,6 +1086,7 @@ pub(super) fn open_panels(
             "pages": book.pages.values().collect::<Vec<_>>(),
         }))),
     );
+    into.insert("paperdoll".into(), json!(world.paperdoll));
     into.insert(
         "menu".into(),
         json!(inner.play.old_menu.as_ref().map(|menu| json!({

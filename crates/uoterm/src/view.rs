@@ -367,6 +367,14 @@ pub struct WatchBook {
     pub pages: Vec<Vec<String>>,
 }
 
+/// The last paperdoll the shard opened. `seq` grows with each one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchPaperdoll {
+    pub serial: u32,
+    pub text: String,
+    pub seq: u64,
+}
+
 /// A field of a gump that takes typed words.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WatchGumpEntry {
@@ -479,6 +487,7 @@ pub struct WatchFrame {
     pub text_entry: Option<String>,
     pub old_menu: Option<WatchOldMenu>,
     pub book: Option<WatchBook>,
+    pub paperdoll: Option<WatchPaperdoll>,
     pub board: Option<WatchBoard>,
     pub context_menu: Option<WatchMenu>,
     pub shop: Option<WatchShop>,
@@ -731,6 +740,11 @@ impl WatchFrame {
                     .and_then(Value::as_array)
                     .map(|pages| pages.iter().map(|page| string_list(Some(page))).collect())
                     .unwrap_or_default(),
+            }),
+            paperdoll: shown(value, "paperdoll").map(|doll| WatchPaperdoll {
+                serial: serial_field(doll, "serial"),
+                text: string_field(Some(doll), "text"),
+                seq: doll.get("seq").and_then(Value::as_u64).unwrap_or(0),
             }),
             context_menu: shown(value, "context_menu").map(|menu| WatchMenu {
                 serial: serial_field(menu, "serial"),
@@ -1293,6 +1307,7 @@ mod tests {
             "weather": { "kind": 2, "count": 40 },
             "prompt": true,
             "target_cursor": { "cursor_id": 1 },
+            "paperdoll": { "serial": 5, "text": "Bob the Tinker", "seq": 2 },
             "context_menu": { "serial": 5, "lines": [
                 { "index": 3, "words": "Open Paperdoll", "enabled": true }
             ]},
@@ -1376,6 +1391,11 @@ mod tests {
         assert_eq!(frame.season, 3);
         assert!(frame.prompt && frame.target_cursor);
         assert_eq!(frame.context_menu.unwrap().lines[0].words, "Open Paperdoll");
+        let doll = frame.paperdoll.unwrap();
+        assert_eq!(
+            (doll.serial, doll.text.as_str(), doll.seq),
+            (5, "Bob the Tinker", 2)
+        );
         let shop = frame.shop.unwrap();
         assert_eq!((shop.buying, shop.goods[0].price), (true, 6));
         let trade = frame.trade.unwrap();

@@ -1,9 +1,11 @@
-//! Three windows the shard opens that are not gumps: the old-style menu
-//! with a question and a list of answers, the book, and the bulletin board. Each one shows at all
-//! times. The clicks work only while the human has control.
+//! Four windows the shard opens that are not gumps: the old-style menu
+//! with a question and a list of answers, the book, the bulletin board, and
+//! the paperdoll. Each one shows at all times. The clicks work only while the
+//! human has control; a paperdoll only shows, so anyone may close it.
 
 use super::boxes_ui::{scrolled, Tools, CELL_RADIUS};
 use super::control::Act;
+use super::deck_ui::{is_worn_layer, layer_words};
 use super::theme::{self, number_font, text_font, title_font};
 use crate::view::{WatchBoard, WatchBook, WatchFrame, WatchOldMenu, WatchPost};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
@@ -22,6 +24,13 @@ const BOOK_GUTTER: f32 = 28.0;
 const PAGES_SHOWN: usize = 2;
 const PAPER: Color32 = Color32::from_rgb(226, 214, 184);
 const INK: Color32 = Color32::from_rgb(46, 36, 24);
+
+const DOLL_PANEL_WIDTH: f32 = 400.0;
+const DOLL_PICTURE: Vec2 = Vec2::new(140.0, 220.0);
+const DOLL_ROW: f32 = 30.0;
+const DOLL_ROWS: usize = 10;
+const WORDS_OUT_OF_SIGHT: &str = "Out of sight.";
+const WORDS_WEARS_NOTHING: &str = "Wears nothing.";
 
 const WORDS_CANCEL: &str = "Cancel";
 const WORDS_CLOSE: &str = "Close";
@@ -62,6 +71,10 @@ pub struct PagesUi {
     writing: Option<(usize, String)>,
     /// The title being typed for the open book.
     new_title: Option<String>,
+    /// The count of the last paperdoll seen, none before the first picture,
+    /// and the mobile whose paperdoll shows.
+    doll_seen: Option<u64>,
+    doll_shown: Option<u32>,
 }
 
 /// The left page after a turn, kept inside the book.
@@ -95,7 +108,141 @@ impl PagesUi {
             Some(board) => covered.push(self.board(ui, rect, board, frame, tools)),
             None => self.first_post = 0,
         }
+        self.take_paperdoll(frame);
+        if let Some(serial) = self.doll_shown {
+            covered.push(self.paperdoll(ui, rect, serial, frame, tools));
+        }
         covered
+    }
+
+    /// Opens each paperdoll the shard sends after the first picture. One
+    /// that came before the window opened is old. The count starts again
+    /// when the session logs in again, so any change is a new paperdoll.
+    fn take_paperdoll(&mut self, frame: &WatchFrame) {
+        let newest = frame.paperdoll.as_ref().map(|doll| doll.seq);
+        if let (Some(seen), Some(doll)) = (self.doll_seen, frame.paperdoll.as_ref()) {
+            if doll.seq != seen {
+                self.doll_shown = Some(doll.serial);
+            }
+        }
+        self.doll_seen = newest.or(self.doll_seen).or(Some(0));
+    }
+
+    /// The paperdoll of a mobile: the words the shard put at its top, his
+    /// figure, and what he wears.
+    fn paperdoll(
+        &mut self,
+        ui: &egui::Ui,
+        rect: Rect,
+        serial: u32,
+        frame: &WatchFrame,
+        tools: &mut Tools<'_>,
+    ) -> Rect {
+        let panel = Rect::from_center_size(
+            rect.center(),
+            Vec2::new(
+                DOLL_PANEL_WIDTH,
+                theme::PANEL_PAD * 2.0 + TITLE_ROW + DOLL_ROWS as f32 * DOLL_ROW + FOOT_ROW,
+            ),
+        );
+        let painter = ui.painter();
+        theme::panel(painter, panel);
+        let inner = panel.shrink(theme::PANEL_PAD);
+        let text = frame
+            .paperdoll
+            .as_ref()
+            .filter(|doll| doll.serial == serial)
+            .map_or("", |doll| doll.text.as_str());
+        painter.text(
+            inner.left_top(),
+            Align2::LEFT_TOP,
+            text,
+            title_font(theme::SIZE_TITLE),
+            theme::TEXT,
+        );
+        let doll = Rect::from_min_size(inner.left_top() + Vec2::new(0.0, TITLE_ROW), DOLL_PICTURE);
+        painter.rect_filled(doll, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+        let look = if serial == frame.serial {
+            Some(&frame.look)
+        } else {
+            frame
+                .mobiles
+                .iter()
+                .find(|mobile| mobile.serial == serial)
+                .map(|mobile| &mobile.look)
+        };
+        match look {
+            None => {
+                painter.text(
+                    doll.center(),
+                    Align2::CENTER_CENTER,
+                    WORDS_OUT_OF_SIGHT,
+                    text_font(theme::SIZE_BODY),
+                    theme::TEXT_DIM,
+                );
+            }
+            Some(look) => {
+                if let Some((texture, sprite)) = tools.scene.doll_picture(frame.map, look) {
+                    let area = theme::fit(doll, sprite.width, sprite.height);
+                    painter.image(texture, area, sprite.uv, Color32::WHITE);
+                }
+                let left = doll.right() + theme::ROW_GAP * 2.0;
+                let worn: Vec<_> = look
+                    .equipment
+                    .iter()
+                    .filter(|item| is_worn_layer(item.layer))
+                    .collect();
+                if worn.is_empty() {
+                    painter.text(
+                        Pos2::new(left, doll.top()),
+                        Align2::LEFT_TOP,
+                        WORDS_WEARS_NOTHING,
+                        text_font(theme::SIZE_SMALL),
+                        theme::TEXT_FAINT,
+                    );
+                }
+                for (i, item) in worn.iter().take(DOLL_ROWS).enumerate() {
+                    let row = Rect::from_min_size(
+                        Pos2::new(left, doll.top() + i as f32 * DOLL_ROW),
+                        Vec2::new(inner.right() - left, DOLL_ROW - theme::ROW_GAP),
+                    );
+                    let art = Rect::from_min_size(row.min, Vec2::splat(row.height()));
+                    if let Some((texture, sprite)) =
+                        tools.scene.item_picture(frame.map, item.graphic, item.hue)
+                    {
+                        let area = theme::fit(art, sprite.width, sprite.height);
+                        painter.image(texture, area, sprite.uv, Color32::WHITE);
+                    }
+                    let response = ui.interact(
+                        row,
+                        Id::new(("doll-row", item.serial, item.layer)),
+                        Sense::hover(),
+                    );
+                    painter.text(
+                        Pos2::new(art.right() + theme::ROW_GAP, row.center().y),
+                        Align2::LEFT_CENTER,
+                        layer_words(item.layer),
+                        text_font(theme::SIZE_SMALL),
+                        if response.hovered() {
+                            theme::TEXT
+                        } else {
+                            theme::TEXT_DIM
+                        },
+                    );
+                    if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
+                        tools
+                            .tips
+                            .point_at(ui, tools.hand, item.serial, "", "", tools.time);
+                    }
+                }
+            }
+        }
+        let foot = Pos2::new(inner.left(), inner.bottom() - FOOT_ROW + theme::ROW_GAP);
+        let (_, closed) = theme::button(ui, foot, WORDS_CLOSE, theme::TEXT_DIM);
+        if closed {
+            self.doll_shown = None;
+        }
+        panel
     }
 
     fn menu(
@@ -587,6 +734,37 @@ mod tests {
             .map(|(post, depth)| (post.serial, depth))
             .collect();
         assert_eq!(order, vec![(1, 0), (3, 1), (4, 2), (2, 0), (5, 0)]);
+    }
+
+    #[test]
+    fn a_paperdoll_opens_when_the_shard_sends_one_after_the_first_picture() {
+        use crate::view::WatchPaperdoll;
+        const STRANGER: u32 = 0x0000_0A11;
+        let doll = |seq| WatchPaperdoll {
+            serial: STRANGER,
+            text: "Someone the Brave".into(),
+            seq,
+        };
+        let mut pages = PagesUi::default();
+        let mut frame = WatchFrame {
+            paperdoll: Some(doll(3)),
+            ..WatchFrame::default()
+        };
+        pages.take_paperdoll(&frame);
+        assert_eq!(pages.doll_shown, None, "one from before the window is old");
+        frame.paperdoll = Some(doll(4));
+        pages.take_paperdoll(&frame);
+        assert_eq!(pages.doll_shown, Some(STRANGER));
+        pages.doll_shown = None;
+        pages.take_paperdoll(&frame);
+        assert_eq!(pages.doll_shown, None, "a closed one stays closed");
+        frame.paperdoll = Some(doll(1));
+        pages.take_paperdoll(&frame);
+        assert_eq!(
+            pages.doll_shown,
+            Some(STRANGER),
+            "after a new login the count starts again"
+        );
     }
 
     #[test]

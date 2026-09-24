@@ -192,7 +192,7 @@ fn next_lock_command(skill: &WatchSkill) -> String {
     format!("setskill '{}' {}", skill.name, LOCK_WORDS[next])
 }
 
-fn is_worn_layer(layer: u8) -> bool {
+pub(super) fn is_worn_layer(layer: u8) -> bool {
     layer != LAYER_BACKPACK
         && layer != LAYER_HAIR
         && layer != LAYER_BEARD
@@ -614,7 +614,7 @@ enum WearChoice {
 }
 
 /// The words for a layer, or its number when it has no name here.
-fn layer_words(layer: u8) -> String {
+pub(super) fn layer_words(layer: u8) -> String {
     WORN_LAYERS
         .iter()
         .find(|(known, _)| *known == layer)

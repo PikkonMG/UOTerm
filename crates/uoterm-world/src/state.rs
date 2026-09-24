@@ -267,6 +267,16 @@ pub struct Container {
     pub opened: u64,
 }
 
+/// The last paperdoll the shard opened: whose it is and the words at its
+/// top. `seq` grows with each one, so a watcher knows when a new one came,
+/// even for the same mobile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShownPaperdoll {
+    pub serial: Serial,
+    pub text: String,
+    pub seq: u32,
+}
+
 /// The spells a spellbook holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Spellbook {
@@ -576,6 +586,7 @@ pub struct World {
     pub map_patches: Vec<MapPatchCount>,
     /// The account flags the character list ended with, when it had them.
     pub account_flags: Option<u32>,
+    pub paperdoll: Option<ShownPaperdoll>,
 }
 
 /// The channel of a speech line that can name the character. System lines,
@@ -1212,6 +1223,16 @@ impl World {
                 flags,
                 ..
             } => {
+                let seq = self
+                    .paperdoll
+                    .as_ref()
+                    .map_or(0, |shown| shown.seq)
+                    .wrapping_add(1);
+                self.paperdoll = Some(ShownPaperdoll {
+                    serial: *serial,
+                    text: text.clone(),
+                    seq,
+                });
                 let name = paperdoll_name(text);
                 if *serial == self.self_state.serial {
                     if !name.is_empty() {

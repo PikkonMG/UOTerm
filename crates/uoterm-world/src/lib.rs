@@ -41,12 +41,12 @@ pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
 pub use state::Waypoint;
 pub use state::{
     body_when_alive, facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem,
-    DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, SkillValue, Spellbook,
-    Trade, World, BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE, BODY_GARGOYLE_MALE,
-    BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE, BODY_GHOST_GARGOYLE_FEMALE,
-    BODY_GHOST_GARGOYLE_MALE, BODY_GHOST_MALE, BODY_HUMAN_FEMALE, BODY_HUMAN_MALE,
-    FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, GHOST_BODIES, MAP_RULE_FREE_MOVEMENT,
-    SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE,
+    DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, ShownPaperdoll, SkillValue,
+    Spellbook, Trade, World, BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE,
+    BODY_GARGOYLE_MALE, BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE,
+    BODY_GHOST_GARGOYLE_FEMALE, BODY_GHOST_GARGOYLE_MALE, BODY_GHOST_MALE, BODY_HUMAN_FEMALE,
+    BODY_HUMAN_MALE, FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, GHOST_BODIES,
+    MAP_RULE_FREE_MOVEMENT, SPEECH_KIND_PARTY, SPEECH_KIND_PARTY_PRIVATE,
 };
 
 #[cfg(test)]
@@ -1142,6 +1142,28 @@ mod tests {
         });
         assert_eq!(w.mobiles[&STRANGER].flags, 0);
         assert_eq!(w.mobiles[&STRANGER].name, "Someone");
+    }
+
+    /// Each paperdoll the shard opens is kept with a count that grows, so a
+    /// watcher opens it again when the same mobile's doll comes twice.
+    #[test]
+    fn each_paperdoll_the_shard_opens_is_kept_with_a_new_count() {
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::MobileIncoming(stranger_view(Vec::new())));
+        let open_doll = |w: &mut World| {
+            w.apply(&Inbound::Paperdoll {
+                serial: STRANGER,
+                text: "Someone the Brave".into(),
+                flags: 0,
+            });
+            w.paperdoll.clone().expect("a paperdoll is kept")
+        };
+        let first = open_doll(&mut w);
+        assert_eq!(first.serial, STRANGER);
+        assert_eq!(first.text, "Someone the Brave");
+        let second = open_doll(&mut w);
+        assert!(second.seq > first.seq, "the same doll again is a new one");
     }
 
     #[test]
