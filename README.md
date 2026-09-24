@@ -50,6 +50,7 @@ The Options have the pages of the classic client: General, Sound, Video, Macros,
 
 - Rust 1.87 or later (stable). `rust-toolchain.toml` pins `stable`.
 - On Linux, the ALSA developer package for the sound of the watch window: `sudo apt install libasound2-dev` (Debian, Ubuntu) or `alsa-lib-devel` (Fedora).
+- On Linux, the udev developer package for game controllers: `sudo apt install libudev-dev` (Debian, Ubuntu) or `systemd-devel` (Fedora).
 - Linux or Windows. macOS is untested.
 - A TCP port for the private shard (default `2593`). The mock demo uses the same default; run only one of them.
 - A TCP port for the local HTTP API (default `127.0.0.1:7733`).
