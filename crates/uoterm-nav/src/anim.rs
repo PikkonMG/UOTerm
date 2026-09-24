@@ -188,6 +188,8 @@ pub struct AnimFrame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EquipConv {
     pub anim: u16,
+    /// The gump the item shows on a paperdoll of the body.
+    pub gump: u16,
     pub hue: u16,
 }
 
@@ -310,20 +312,31 @@ fn parse_body_def(text: &str) -> HashMap<u16, (u16, u16)> {
     out
 }
 
-/// A row is `body worn_anim new_anim gump hue`.
+/// A row is `body worn_anim new_anim gump hue`. A gump of zero is the worn
+/// animation, and one of -1 the new animation, as the classic client reads
+/// them; a row with a gump past the gump files is left out.
 fn parse_equipconv(text: &str) -> HashMap<(u16, u16), EquipConv> {
     const COLUMNS: usize = 5;
+    const GUMP_COLUMN: usize = 3;
+    const GUMP_OF_WORN: i64 = 0;
+    const GUMP_OF_NEW: [i64; 2] = [-1, 0xFFFF];
     let mut out = HashMap::new();
     for row in text.lines().filter_map(row_numbers) {
-        if row.len() < COLUMNS {
+        if row.len() < COLUMNS || row[GUMP_COLUMN] > i64::from(u16::MAX) {
             continue;
         }
         let number = |i: usize| u16::try_from(row[i]).ok();
         if let (Some(body), Some(worn), Some(anim)) = (number(0), number(1), number(2)) {
+            let gump = match row[GUMP_COLUMN] {
+                GUMP_OF_WORN => worn,
+                gump if GUMP_OF_NEW.contains(&gump) => anim,
+                _ => number(GUMP_COLUMN).unwrap_or(anim),
+            };
             out.insert(
                 (body, worn),
                 EquipConv {
                     anim,
+                    gump,
                     hue: number(4).unwrap_or(0),
                 },
             );
@@ -717,8 +730,19 @@ mod tests {
         let shown = parse_body_def("11 {28} 1401\n12 {1, 2, 3} 7\n");
         assert_eq!(shown[&11], (28, 1401));
         assert_eq!(shown[&12], (3, 7));
-        let conv = parse_equipconv("401\t1249 1250 61250\t0\t#\tHuman M to F\n");
-        assert_eq!(conv[&(401, 1249)], EquipConv { anim: 1250, hue: 0 });
+        let conv = parse_equipconv(
+            "401\t1249 1250 61250\t0\t#\tHuman M to F\n605 5 6 0 0\n605 7 8 -1 0\n",
+        );
+        assert_eq!(
+            conv[&(401, 1249)],
+            EquipConv {
+                anim: 1250,
+                gump: 61250,
+                hue: 0
+            }
+        );
+        assert_eq!(conv[&(605, 5)].gump, 5);
+        assert_eq!(conv[&(605, 7)].gump, 8);
     }
 
     #[test]

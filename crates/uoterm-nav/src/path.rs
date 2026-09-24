@@ -11,6 +11,14 @@ pub const ORTHO_COST: u32 = 10;
 pub const DIAG_COST: u32 = 14;
 pub const TURN_COST: u32 = 2;
 pub const DOOR_COST: u32 = 6;
+/// What a step onto open grass or forest costs on top of the step, when a
+/// route prefers the roads. It is small: a road a few tiles out of the way
+/// wins, and a road far out of the way does not.
+pub const OFF_ROAD_COST: u32 = 3;
+
+/// The words in the tiledata name of land that is no road: open grass and
+/// the forest floor. Dirt, cobbles and sand carry none of them.
+const OFF_ROAD_LAND_WORDS: [&str; 2] = ["grass", "forest"];
 
 /// The most nodes one search may ever open, however far the goal is.
 ///
@@ -63,7 +71,7 @@ const MOVE_KEY_FROM_SHIFT: u32 = 32;
 /// Where the first of the two ground coordinates sits in the key of a cell.
 const CELL_KEY_X_SHIFT: u32 = 16;
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum PathError {
     #[error("start is not walkable")]
     BadStart,
@@ -187,6 +195,59 @@ pub struct Path {
     pub steps: Vec<Step>,
 }
 
+/// A round area a route keeps out of: every tile no further than `radius`
+/// from its middle, measured straight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AvoidArea {
+    pub x: u16,
+    pub y: u16,
+    pub radius: u16,
+}
+
+impl AvoidArea {
+    /// True when the tile lies in the area.
+    pub fn covers(&self, x: u16, y: u16) -> bool {
+        let dx = i64::from(x) - i64::from(self.x);
+        let dy = i64::from(y) - i64::from(self.y);
+        let r = i64::from(self.radius);
+        dx * dx + dy * dy <= r * r
+    }
+}
+
+/// How one search plans its route, beyond the map and what stands on it.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteOptions<'a> {
+    /// Areas the route keeps out of. An area the walker stands in does not
+    /// hold him: he walks out of it.
+    pub avoid: &'a [AvoidArea],
+    /// Grass and forest cost a little more, so the route keeps to the roads.
+    pub prefer_roads: bool,
+    /// The route ends on the first tile this close to the goal, counted in
+    /// steps. Zero means the goal itself, which must then be walkable.
+    pub arrive_within: u16,
+    /// The most nodes the search may open. None grows the budget with the
+    /// distance, see [`MAX_EXPAND`].
+    pub max_nodes: Option<usize>,
+}
+
+impl RouteOptions<'_> {
+    /// The goal itself, no area kept out of, every kind of ground alike.
+    pub const PLAIN: Self = Self {
+        avoid: &[],
+        prefer_roads: false,
+        arrive_within: 0,
+        max_nodes: None,
+    };
+}
+
+/// What one search found, and how much of the map it opened to find it.
+#[derive(Clone, Debug)]
+pub struct Search {
+    pub outcome: Result<Path, PathError>,
+    /// The nodes the search opened.
+    pub expanded: usize,
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct Node {
     f: u32,
@@ -280,7 +341,31 @@ pub fn pathfind<M: TileQuery + ?Sized>(
     goal: Point3,
     obstacles: &Obstacles,
 ) -> Result<Path, PathError> {
-    pathfind_mode(map, start, goal, obstacles, true)
+    pathfind_mode(map, start, goal, obstacles, &RouteOptions::PLAIN, true).outcome
+}
+
+/// [`pathfind`] with the choices of [`RouteOptions`], and the count of the
+/// nodes the search opened.
+pub fn pathfind_with<M: TileQuery + ?Sized>(
+    map: &M,
+    start: Point3,
+    goal: Point3,
+    obstacles: &Obstacles,
+    options: &RouteOptions,
+) -> Search {
+    pathfind_mode(map, start, goal, obstacles, options, true)
+}
+
+/// [`pathfind_flat`] with the choices of [`RouteOptions`], and the count of
+/// the nodes the search opened.
+pub fn pathfind_flat_with<M: TileQuery + ?Sized>(
+    map: &M,
+    start: Point3,
+    goal: Point3,
+    obstacles: &Obstacles,
+    options: &RouteOptions,
+) -> Search {
+    pathfind_mode(map, start, goal, obstacles, options, false)
 }
 
 /// A* that ignores the height difference between one step and the next.
@@ -297,7 +382,7 @@ pub fn pathfind_flat<M: TileQuery + ?Sized>(
     goal: Point3,
     obstacles: &Obstacles,
 ) -> Result<Path, PathError> {
-    pathfind_mode(map, start, goal, obstacles, false)
+    pathfind_mode(map, start, goal, obstacles, &RouteOptions::PLAIN, false).outcome
 }
 
 /// Where one step puts the walker.
@@ -350,8 +435,13 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
     start: Point3,
     goal: Point3,
     obstacles: &Obstacles,
+    options: &RouteOptions,
     use_z: bool,
-) -> Result<Path, PathError> {
+) -> Search {
+    let refused = |error: PathError| Search {
+        outcome: Err(error),
+        expanded: 0,
+    };
     // The walker is on his own tile, so nothing the map believes about that
     // tile can stop him leaving it. His footing there is worked out from where
     // he is, and when nothing holds him at that height the ground of the tile
@@ -363,14 +453,31 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
     // walker's. With the walker's height, a tile at the top of a ramp or a
     // stair answers for a floor he has not climbed to yet, so every goal
     // further than one storey above him is refused before the search begins.
+    // A route that ends near the goal does not need the goal to be walkable:
+    // the goal may be a tree or an anvil he only has to stand beside.
     if !map.in_bounds(start.x, start.y) {
-        return Err(PathError::BadStart);
+        return refused(PathError::BadStart);
     }
-    if !map.can_walk_from(goal.z, goal.x, goal.y) {
-        return Err(PathError::BadGoal);
+    let exact = options.arrive_within == 0;
+    if exact && !map.can_walk_from(goal.z, goal.x, goal.y) {
+        return refused(PathError::BadGoal);
     }
-    if same_spot(start, goal) {
-        return Ok(Path { steps: Vec::new() });
+    if arrives(start, goal, options.arrive_within) {
+        return Search {
+            outcome: Ok(Path { steps: Vec::new() }),
+            expanded: 0,
+        };
+    }
+    // An area the walker stands in does not hold him, so he can walk out of
+    // it. Every other area is shut, and a goal inside one cannot be reached.
+    let avoid: Vec<AvoidArea> = options
+        .avoid
+        .iter()
+        .copied()
+        .filter(|area| !area.covers(start.x, start.y))
+        .collect();
+    if exact && avoid.iter().any(|area| area.covers(goal.x, goal.y)) {
+        return refused(PathError::BlockedGoal);
     }
     // The walker stands on the start spot, so nothing recorded there stops him
     // leaving it. Everything else that is proven shut stays shut, the goal
@@ -384,8 +491,8 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
         .copied()
         .filter(|s| !same_spot(*s, start))
     {
-        if same_spot(spot, goal) {
-            return Err(PathError::BlockedGoal);
+        if exact && same_spot(spot, goal) {
+            return refused(PathError::BlockedGoal);
         }
         note_shut(&mut shut, spot);
     }
@@ -406,15 +513,21 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
             .or_default()
             .push(*refused);
     }
+    // Whether each land id is off the road, read once for each id the search
+    // meets.
+    let mut off_road: HashMap<u16, bool> = HashMap::new();
 
-    let budget = expand_budget(start, goal);
+    let budget = options
+        .max_nodes
+        .unwrap_or_else(|| expand_budget(start, goal));
+    let within = options.arrive_within;
     let start_key = spot_key(start.x, start.y, start.z);
     let mut open = BinaryHeap::new();
     let mut g_score: HashMap<u64, u32> = HashMap::new();
     let mut came: HashMap<u64, Came> = HashMap::new();
     g_score.insert(start_key, 0);
     open.push(Node {
-        f: heuristic(start.x, start.y, goal.x, goal.y),
+        f: heuristic(start.x, start.y, goal.x, goal.y, within),
         g: 0,
         x: start.x,
         y: start.y,
@@ -434,10 +547,13 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
         // the flat mode the node keeps the walker's own height and the ground
         // it lands on is what the step recorded.
         let ground = came.get(&current_k).map_or(z, |step| step.ground);
-        if same_spot(Point3::new(x, y, ground), goal) {
-            return Ok(Path {
-                steps: reconstruct(&came, start_key, current_k),
-            });
+        if arrives(Point3::new(x, y, ground), goal, within) {
+            return Search {
+                outcome: Ok(Path {
+                    steps: reconstruct(&came, start_key, current_k),
+                }),
+                expanded: expansions,
+            };
         }
         if g_score.get(&current_k).copied().unwrap_or(u32::MAX) < g {
             continue;
@@ -453,6 +569,9 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
             }
             let nx = nx as u16;
             let ny = ny as u16;
+            if avoid.iter().any(|area| area.covers(nx, ny)) {
+                continue;
+            }
             let Some(landing) = step_landing(map, from, nx, ny, use_z) else {
                 continue;
             };
@@ -486,8 +605,16 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
                     step += TURN_COST;
                 }
             }
-            if map.tile_from(z, nx, ny).door {
+            let tile = map.tile_from(z, nx, ny);
+            if tile.door {
                 step += DOOR_COST;
+            }
+            if options.prefer_roads
+                && *off_road
+                    .entry(tile.land_id)
+                    .or_insert_with(|| is_off_road(&map.land_name(nx, ny)))
+            {
+                step += OFF_ROAD_COST;
             }
             let tentative = g + step;
             let next_k = spot_key(nx, ny, landing.read_from);
@@ -501,7 +628,7 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
                         ground: landing.ground,
                     },
                 );
-                let f = tentative + heuristic(nx, ny, goal.x, goal.y);
+                let f = tentative + heuristic(nx, ny, goal.x, goal.y, within);
                 open.push(Node {
                     f,
                     g: tentative,
@@ -512,7 +639,25 @@ fn pathfind_mode<M: TileQuery + ?Sized>(
             }
         }
     }
-    Err(PathError::Unreachable)
+    Search {
+        outcome: Err(PathError::Unreachable),
+        expanded: expansions.min(budget),
+    }
+}
+
+/// True when a walker at `at` has arrived at `goal`: on its spot, or with
+/// `reach` above zero, that many steps from it or fewer on its storey.
+fn arrives(at: Point3, goal: Point3, reach: u16) -> bool {
+    if reach == 0 {
+        return same_spot(at, goal);
+    }
+    at.chebyshev(goal) <= u32::from(reach) && within(at.z, goal.z, SAME_SPOT_HEIGHT)
+}
+
+/// True when land of this tiledata name is no road.
+fn is_off_road(land_name: &str) -> bool {
+    let name = land_name.to_ascii_lowercase();
+    OFF_ROAD_LAND_WORDS.iter().any(|word| name.contains(word))
 }
 
 /// Writes down the height one map cell is shut at.
@@ -535,9 +680,12 @@ fn is_shut_move(shut: &ShutMoves, from: Point3, to: Point3) -> bool {
         .is_some_and(|refused| refused.iter().any(|one| one.is(from, to)))
 }
 
-fn heuristic(x: u16, y: u16, gx: u16, gy: u16) -> u32 {
-    let dx = (x as i32 - gx as i32).unsigned_abs();
-    let dy = (y as i32 - gy as i32).unsigned_abs();
+/// The least a walk from `x`,`y` to within `within` steps of the goal can
+/// cost, so the search never passes over the cheapest route.
+fn heuristic(x: u16, y: u16, gx: u16, gy: u16, within: u16) -> u32 {
+    let slack = u32::from(within);
+    let dx = (x as i32 - gx as i32).unsigned_abs().saturating_sub(slack);
+    let dy = (y as i32 - gy as i32).unsigned_abs().saturating_sub(slack);
     let ortho = dx.abs_diff(dy);
     let diag = dx.min(dy);
     diag * DIAG_COST + ortho * ORTHO_COST
@@ -565,4 +713,159 @@ fn reconstruct(came: &HashMap<u64, Came>, start_k: u64, goal_k: u64) -> Vec<Step
     }
     steps.reverse();
     steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::step::TileColumn;
+    use crate::tiles::MockMap;
+
+    const GRID: u16 = 32;
+    const START: Point3 = Point3 { x: 2, y: 10, z: 0 };
+    const GOAL: Point3 = Point3 { x: 20, y: 10, z: 0 };
+    const ROAD_LAND: u16 = 0x0071;
+    const GRASS_LAND: u16 = 0x0003;
+
+    /// A flat map of grass with one road along a row.
+    struct RoadMap {
+        base: MockMap,
+        road_y: u16,
+    }
+
+    impl TileQuery for RoadMap {
+        fn column(&self, x: u16, y: u16) -> TileColumn {
+            let mut column = self.base.column(x, y);
+            column.land_id = if y == self.road_y {
+                ROAD_LAND
+            } else {
+                GRASS_LAND
+            };
+            column
+        }
+
+        fn width(&self) -> u16 {
+            self.base.width()
+        }
+
+        fn height(&self) -> u16 {
+            self.base.height()
+        }
+
+        fn land_name(&self, _x: u16, y: u16) -> String {
+            if y == self.road_y { "dirt" } else { "grass" }.into()
+        }
+    }
+
+    fn plain_search(map: &impl TileQuery, options: &RouteOptions) -> Search {
+        pathfind_with(map, START, GOAL, &Obstacles::NONE, options)
+    }
+
+    #[test]
+    fn a_route_keeps_out_of_an_avoided_area() {
+        let map = MockMap::new(GRID, GRID);
+        let area = AvoidArea {
+            x: 11,
+            y: 10,
+            radius: 3,
+        };
+        let options = RouteOptions {
+            avoid: &[area],
+            ..RouteOptions::PLAIN
+        };
+        let search = plain_search(&map, &options);
+        let path = search.outcome.unwrap();
+        assert!(path.steps.iter().all(|s| !area.covers(s.x, s.y)));
+        assert_eq!(
+            path.steps.last().map(|s| (s.x, s.y)),
+            Some((GOAL.x, GOAL.y))
+        );
+        assert!(search.expanded > 0);
+    }
+
+    #[test]
+    fn a_goal_inside_an_avoided_area_is_refused_and_one_he_stands_in_holds_nobody() {
+        let map = MockMap::new(GRID, GRID);
+        let around_goal = AvoidArea {
+            x: GOAL.x,
+            y: GOAL.y,
+            radius: 1,
+        };
+        let options = RouteOptions {
+            avoid: &[around_goal],
+            ..RouteOptions::PLAIN
+        };
+        assert_eq!(
+            plain_search(&map, &options).outcome.unwrap_err(),
+            PathError::BlockedGoal
+        );
+        let around_start = AvoidArea {
+            x: START.x,
+            y: START.y,
+            radius: 2,
+        };
+        let options = RouteOptions {
+            avoid: &[around_start],
+            ..RouteOptions::PLAIN
+        };
+        assert!(plain_search(&map, &options).outcome.is_ok());
+    }
+
+    #[test]
+    fn a_route_that_may_stop_short_ends_beside_a_goal_nobody_stands_on() {
+        const REACH: u16 = 1;
+        let mut map = MockMap::new(GRID, GRID);
+        map.set_block(GOAL.x, GOAL.y, true);
+        assert_eq!(
+            plain_search(&map, &RouteOptions::PLAIN)
+                .outcome
+                .unwrap_err(),
+            PathError::BadGoal
+        );
+        let options = RouteOptions {
+            arrive_within: REACH,
+            ..RouteOptions::PLAIN
+        };
+        let path = plain_search(&map, &options).outcome.unwrap();
+        let last = path.steps.last().unwrap();
+        assert_eq!(
+            Point3::new(last.x, last.y, last.z).chebyshev(GOAL),
+            u32::from(REACH)
+        );
+    }
+
+    #[test]
+    fn a_route_that_prefers_roads_walks_the_road() {
+        const ROAD_Y: u16 = 11;
+        let map = RoadMap {
+            base: MockMap::new(GRID, GRID),
+            road_y: ROAD_Y,
+        };
+        let straight = plain_search(&map, &RouteOptions::PLAIN).outcome.unwrap();
+        assert!(straight.steps.iter().all(|s| s.y == START.y));
+        let options = RouteOptions {
+            prefer_roads: true,
+            ..RouteOptions::PLAIN
+        };
+        let road = plain_search(&map, &options).outcome.unwrap();
+        let on_road = road.steps.iter().filter(|s| s.y == ROAD_Y).count();
+        assert!(on_road > road.steps.len() / 2, "{road:?}");
+        assert_eq!(
+            road.steps.last().map(|s| (s.x, s.y)),
+            Some((GOAL.x, GOAL.y))
+        );
+    }
+
+    #[test]
+    fn a_search_stops_at_its_node_cap() {
+        const CAP: usize = 3;
+        let map = MockMap::new(GRID, GRID);
+        let options = RouteOptions {
+            max_nodes: Some(CAP),
+            ..RouteOptions::PLAIN
+        };
+        let search = plain_search(&map, &options);
+        assert_eq!(search.outcome.unwrap_err(), PathError::Unreachable);
+        assert_eq!(search.expanded, CAP);
+    }
 }

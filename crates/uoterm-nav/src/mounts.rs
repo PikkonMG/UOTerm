@@ -98,6 +98,12 @@ pub fn mount_of(item_graphic: u16) -> Option<Mount> {
         })
 }
 
+/// True when a mobile of this body can be ridden: some mount item shows as
+/// it.
+pub fn is_mount_body(body: u16) -> bool {
+    MOUNTS.iter().any(|(_, mount_body, _)| *mount_body == body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +115,7 @@ mod tests {
         const BACKPACK: u16 = 0x0E75;
         assert_eq!(mount_of(HORSE_ITEM).map(|m| m.body), Some(HORSE_BODY));
         assert_eq!(mount_of(BACKPACK), None);
+        assert!(is_mount_body(HORSE_BODY));
+        assert!(!is_mount_body(BACKPACK));
     }
 }

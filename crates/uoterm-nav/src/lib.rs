@@ -5,44 +5,71 @@ mod anim_uop;
 mod animdata;
 mod art;
 mod bwt;
+mod client_program;
 mod cliloc;
+mod cursors;
+mod fonts;
 mod gumpart;
 mod housing;
 mod hues;
+mod lights;
 mod mounts;
 mod mul;
 mod multi;
 mod path;
+mod professions;
 mod radarcol;
 mod seasons;
 mod sight;
+mod skill_groups;
 mod skills;
 mod sound;
 mod speech;
 mod step;
+mod texmaps;
+mod text;
+mod tiledata;
 mod tiles;
+mod unifont;
 mod uop;
 
 pub use anim::{Action, AnimData, AnimFrame, Deed, EquipConv, Facing, Stance};
 pub use animdata::{ArtCycles, TILE_ANIMATED};
 pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
+pub use client_program::{client_program_version, CLIENT_PROGRAM_NAME};
 pub use cliloc::ClilocData;
-pub use gumpart::GumpArt;
+pub use cursors::{
+    cursor_graphic, cursor_hue, CursorPicture, CursorSet, CursorShape, CURSOR_OTHER_MAP_HUE,
+};
+pub use fonts::{ascii_hue_ramp, AsciiFonts, AsciiGlyph, FONTS_NAME, TEXT_PICTURE_PADDING};
+pub use gumpart::{GumpArt, GUMP_MAX_SIDE, GUMP_UOP_NAME};
 pub use housing::{HouseCatalog, HousePart, HousePartKind};
-pub use hues::{HueData, HueRamp};
-pub use mounts::{mount_of, Mount};
+pub use hues::{HueData, HueRamp, HUE_ID_MASK, HUE_PARTIAL_BIT};
+pub use lights::{
+    item_light, ItemLight, LightData, LightHolder, LightShape, LIGHT_LEVEL_MAX, LIGHT_SHAPE_COUNT,
+};
+pub use mounts::{is_mount_body, mount_of, Mount};
 pub use mul::{
     client_data_dir_from_env, infer_mul_blocks, map_block_dims, DoorTile, MapError, MapFiles,
     MapPatchFiles, MapVariant, MulMap, ENV_TEST_UOPATH, TILEDATA_NAME,
 };
 pub use multi::{MultiData, MultiFiles, MultiPiece};
 pub use path::{
-    pathfind, pathfind_flat, same_spot, BlockedMove, Obstacles, Path, PathError, Step,
-    SAME_MOVE_HEIGHT, SAME_SPOT_HEIGHT,
+    pathfind, pathfind_flat, pathfind_flat_with, pathfind_with, same_spot, AvoidArea, BlockedMove,
+    Obstacles, Path, PathError, RouteOptions, Search, Step, OFF_ROAD_COST, SAME_MOVE_HEIGHT,
+    SAME_SPOT_HEIGHT,
+};
+pub use professions::{
+    parse_professions, read_city_texts, read_professions, Profession, ProfessionKind,
+    ProfessionList, ADVANCED_DESCRIPTION_INDEX,
 };
 pub use radarcol::RadarColors;
 pub use seasons::{SeasonArt, SEASONS_NAME};
-pub use sight::{eyes_at, line_of_sight, middle_of, EYE_HEIGHT, TILE_NO_SHOOT, TILE_WINDOW};
+pub use sight::{
+    eyes_at, line_of_sight, middle_of, sight_trace, SightBlocker, SightMode, SightPoint,
+    SightTrace, EYE_HEIGHT, TILE_NO_SHOOT, TILE_WINDOW,
+};
+pub use skill_groups::{read_skill_groups, SkillGroup, FIRST_SKILL_GROUP};
 pub use skills::{read_skills, SkillEntry};
 pub use sound::{MusicList, MusicTrack, SoundData, SOUND_SAMPLE_RATE};
 pub use speech::{SpeechData, KEYWORD_SPEECH_MIN_VERSION};
@@ -50,9 +77,16 @@ pub use step::{
     is_standing_surface, land_is_ignored, LandCorners, TileColumn, TilePiece, PERSON_HEIGHT,
     STEP_HEIGHT,
 };
+pub use texmaps::{TexmapData, TEXTURE_LARGE_SIDE, TEXTURE_SMALL_SIDE};
+pub use text::{TextAlign, TextLine, TextPicture};
+pub use tiledata::{ItemTile, LandTile, TileData};
 pub use tiles::{
-    z_reachable, MockMap, Overlay, StaticView, TileInfo, TileQuery, TILE_BRIDGE, TILE_DOOR,
-    TILE_IMPASSABLE, TILE_PARTIAL_HUE, TILE_SURFACE, TILE_WET,
+    z_reachable, MockMap, Overlay, StaticView, TileFlagSet, TileInfo, TileQuery, TILE_BRIDGE,
+    TILE_DOOR, TILE_IMPASSABLE, TILE_PARTIAL_HUE, TILE_SURFACE, TILE_WET,
+};
+pub use unifont::{
+    unicode_text_color, unifont_name, UnicodeFonts, UnicodeGlyph, UnicodeStyle,
+    UNICODE_PICTURE_PADDING, UNICODE_SPACE_WIDTH, UNICODE_WHITE_HUE, UNIFONT_MAX, UNIFONT_NAME,
 };
 pub use uop::{hash_filename, map_uop_name};
 
@@ -1027,6 +1061,63 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// UltimaLive changes the land and the statics of a block while the map
+    /// is open: the next look and the next walk read the change, and the
+    /// checksum of the block follows it.
+    #[test]
+    fn live_blocks_replace_the_land_and_the_statics_of_the_files() {
+        const LIVE_HEIGHT: i8 = 5;
+        const LIVE_LAND_ID: u16 = 3;
+        let dir = scratch("mul-live");
+        write_mini_client(&dir, false);
+        let files = MapFiles {
+            map: dir.join("map0.mul"),
+            statics: dir.join("statics0.mul"),
+            staidx: dir.join("staidx0.mul"),
+            tiledata: dir.join("tiledata.mul"),
+            blocks_w: 2,
+            blocks_h: 2,
+            map_index: 0,
+            patches: MapPatchFiles::default(),
+            land_patches: 0,
+            static_patches: 0,
+        };
+        let map = MulMap::from_files(&files).unwrap();
+        assert!(!map.can_walk(FIXTURE_WALL_CX, FIXTURE_WALL_CY));
+        let before = map.block_crc(0).unwrap();
+        let mut land = Vec::new();
+        for _ in 0..BLOCK_CELLS {
+            land.extend_from_slice(&LIVE_LAND_ID.to_le_bytes());
+            land.push(LIVE_HEIGHT as u8);
+        }
+        map.set_live_land(0, &land).unwrap();
+        map.set_live_statics(0, &[]).unwrap();
+        assert_eq!(map.tile(0, 0).land_id, LIVE_LAND_ID);
+        assert_eq!(map.tile(1, 1).z, LIVE_HEIGHT);
+        assert!(
+            map.can_walk(FIXTURE_WALL_CX, FIXTURE_WALL_CY),
+            "the wall is gone"
+        );
+        let after = map.block_crc(0).unwrap();
+        assert_ne!(before, after);
+        let mut wall = FIXTURE_WALL_GRAPHIC.to_le_bytes().to_vec();
+        wall.extend_from_slice(&[1, 1, 0, 0, 0]);
+        map.set_live_statics(0, &wall).unwrap();
+        assert!(!map.can_walk(1, 1), "the new wall stands");
+        assert_eq!(map.statics_at(1, 1)[0].name, FIXTURE_WALL_NAME);
+        assert_ne!(map.block_crc(0).unwrap(), after);
+        assert!(
+            map.tile(8, 0).land_id != LIVE_LAND_ID,
+            "other blocks keep the files"
+        );
+        assert!(matches!(
+            map.set_live_land(0, &land[1..]),
+            Err(MapError::Truncated)
+        ));
+        assert!(matches!(map.block_crc(4), Err(MapError::OffMap(4))));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// The layout of a tiledata file is read from its shape, so a High Seas
     /// file with fewer statics than the client this was measured on is still
     /// High Seas, and an old file of any count is still old.
@@ -1143,7 +1234,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    fn scratch(tag: &str) -> PathBuf {
+    pub(crate) fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "uoterm-nav-{tag}-{}-{}",
             std::process::id(),

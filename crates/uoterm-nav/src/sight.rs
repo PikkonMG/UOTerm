@@ -5,10 +5,14 @@
 //! A spell or an arrow at a target out of sight is refused, so an archer or a
 //! mage asks this before it aims.
 
+use serde::{Deserialize, Serialize};
 use uoterm_protocol::Point3;
 
 use crate::step::land_is_ignored;
 use crate::tiles::TileQuery;
+
+/// The tiledata flag of a wall, which Sphere judges sight by.
+const TILE_WALL: u32 = crate::tiles::TileFlagSet::WALL.low_bits();
 
 /// Tiledata flags of a piece a shot cannot pass: a window, and anything that
 /// stops an arrow.
@@ -38,48 +42,228 @@ pub fn middle_of(at: Point3, height: u8) -> Point3 {
     Point3::new(at.x, at.y, at.z.saturating_add(lift))
 }
 
-/// True when nothing stops a line from `from` to `to`. Both points are where
-/// the line starts and ends, so a caller aims from the eyes of a mobile with
-/// [`eyes_at`], and at a mobile's eyes or an item's [`middle_of`].
-pub fn line_of_sight<M: TileQuery + ?Sized>(map: &M, from: Point3, to: Point3) -> bool {
-    if from.chebyshev(to) > SIGHT_RANGE {
-        return false;
+/// The rules a shard family judges sight by. They agree on open ground and
+/// on a plain wall; they part on windows, on the tiles a line crosses and on
+/// the height it is judged at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SightMode {
+    /// RunUO, ServUO and ModernUO: a line stepped one unit at a time in all
+    /// three axes, stopped by the ground and by windows and pieces that stop
+    /// a shot.
+    #[default]
+    RunUo,
+    /// POL: the same stepped line, stopped by the ground and by pieces that
+    /// stop a shot. A window lets the line through.
+    Pol,
+    /// Sphere: one point on each tile the line crosses, at the height the
+    /// line has there, stopped by walls and pieces that stop a shot. A window
+    /// lets the line through.
+    Sphere,
+}
+
+/// The mode names a caller writes, each with its mode.
+const SIGHT_MODE_NAMES: [(&str, SightMode); 5] = [
+    ("runuo", SightMode::RunUo),
+    ("modernuo", SightMode::RunUo),
+    ("servuo", SightMode::RunUo),
+    ("pol", SightMode::Pol),
+    ("sphere", SightMode::Sphere),
+];
+
+impl SightMode {
+    /// The mode of a name, in any case: runuo, modernuo, servuo, pol or
+    /// sphere.
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim().to_ascii_lowercase();
+        SIGHT_MODE_NAMES
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|(_, mode)| *mode)
     }
-    let end = to;
-    // The line is always walked the same way round, from the lower end.
+}
+
+/// What stops a line at one point of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SightBlocker {
+    /// The ends are further apart than a line of sight reaches.
+    TooFar,
+    /// The point is off the map.
+    OffMap,
+    /// The black edge of the world.
+    EdgeOfWorld,
+    /// The ground, from its lowest corner to its highest.
+    Land { low: i16, high: i16 },
+    /// A piece standing on the tile, with its tiledata flags.
+    Piece { bottom: i16, top: i16, flags: u32 },
+}
+
+/// One point of a line of sight, and what stops the line there, if anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SightPoint {
+    pub x: i32,
+    pub y: i32,
+    pub z: i16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<SightBlocker>,
+}
+
+/// Every point of a line of sight, and whether it gets through.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SightTrace {
+    pub in_sight: bool,
+    pub points: Vec<SightPoint>,
+}
+
+/// True when nothing stops a line from `from` to `to`, by the rules of
+/// RunUO and its heirs. Both points are where the line starts and ends, so a
+/// caller aims from the eyes of a mobile with [`eyes_at`], and at a mobile's
+/// eyes or an item's [`middle_of`].
+pub fn line_of_sight<M: TileQuery + ?Sized>(map: &M, from: Point3, to: Point3) -> bool {
+    sight_trace(map, from, to, SightMode::RunUo).in_sight
+}
+
+/// The line from `from` to `to` point by point, by the rules of `mode`, with
+/// what stops it at each point.
+pub fn sight_trace<M: TileQuery + ?Sized>(
+    map: &M,
+    from: Point3,
+    to: Point3,
+    mode: SightMode,
+) -> SightTrace {
+    if from.chebyshev(to) > SIGHT_RANGE {
+        return SightTrace {
+            in_sight: false,
+            points: vec![SightPoint {
+                x: i32::from(to.x),
+                y: i32::from(to.y),
+                z: i16::from(to.z),
+                blocker: Some(SightBlocker::TooFar),
+            }],
+        };
+    }
+    let path = match mode {
+        SightMode::RunUo | SightMode::Pol => stepped_line(from, to),
+        SightMode::Sphere => tile_line(from, to),
+    };
+    let points: Vec<SightPoint> = path
+        .into_iter()
+        .map(|(x, y, z)| SightPoint {
+            x,
+            y,
+            z,
+            blocker: blocker_at(map, (x, y, z), from, to, mode),
+        })
+        .collect();
+    SightTrace {
+        in_sight: points.iter().all(|p| p.blocker.is_none()),
+        points,
+    }
+}
+
+/// The points of the stepped line of RunUO and POL. It is always walked the
+/// same way round, from the lower end, so a line asked from either end is the
+/// same line.
+fn stepped_line(from: Point3, to: Point3) -> Vec<(i32, i32, i16)> {
     let (org, dest) = if (from.x, from.y, from.z) > (to.x, to.y, to.z) {
         (to, from)
     } else {
         (from, to)
     };
     if org == dest {
-        return true;
+        return Vec::new();
     }
-    let path = line(org, dest);
+    line(org, dest)
+}
+
+/// The tiles a line crosses between its two ends, one point on each at the
+/// height the line has there. The two end tiles are where the looker and the
+/// target stand, and are not judged.
+fn tile_line(from: Point3, to: Point3) -> Vec<(i32, i32, i16)> {
+    let steps = from.chebyshev(to) as i32;
+    let (fx, fy, fz) = (i32::from(from.x), i32::from(from.y), i32::from(from.z));
+    let (dx, dy, dz) = (
+        i32::from(to.x) - fx,
+        i32::from(to.y) - fy,
+        i32::from(to.z) - fz,
+    );
+    let share =
+        |delta: i32, i: i32| (f64::from(delta) * f64::from(i) / f64::from(steps)).round() as i32;
+    (1..steps)
+        .map(|i| {
+            (
+                fx + share(dx, i),
+                fy + share(dy, i),
+                (fz + share(dz, i)) as i16,
+            )
+        })
+        .collect()
+}
+
+/// What stops the line at one point, by the rules of `mode`.
+fn blocker_at<M: TileQuery + ?Sized>(
+    map: &M,
+    (x, y, z): (i32, i32, i16),
+    from: Point3,
+    end: Point3,
+    mode: SightMode,
+) -> Option<SightBlocker> {
+    let (Ok(tx), Ok(ty)) = (u16::try_from(x), u16::try_from(y)) else {
+        return Some(SightBlocker::OffMap);
+    };
+    if !map.in_bounds(tx, ty) {
+        return Some(SightBlocker::OffMap);
+    }
+    let column = map.column(tx, ty);
+    let (land_low, land_high) = (column.land.low(), column.land.high());
+    if mode == SightMode::Sphere {
+        let at_an_end = (tx, ty) == (from.x, from.y) || (tx, ty) == (end.x, end.y);
+        if at_an_end {
+            return None;
+        }
+        if !land_is_ignored(column.land_id) && z < land_low {
+            return Some(SightBlocker::Land {
+                low: land_low,
+                high: land_high,
+            });
+        }
+        return column
+            .pieces
+            .iter()
+            .find(|piece| {
+                let stops = piece.flags & (TILE_WALL | TILE_NO_SHOOT) != 0
+                    && piece.flags & TILE_WINDOW == 0;
+                let bottom = i16::from(piece.z);
+                stops && bottom <= z && z < bottom + piece.calc_height()
+            })
+            .map(|piece| piece_blocker(piece.z, piece.calc_height(), piece.flags));
+    }
+    let point_top = z + 1;
+    let at_end = tx == end.x && ty == end.y;
     let end_top = i16::from(end.z) + 1;
-    path.iter().all(|&(x, y, z)| {
-        let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
-            return false;
-        };
-        if !map.in_bounds(x, y) {
-            return false;
-        }
-        let point_top = z + 1;
-        let at_end = x == end.x && y == end.y;
-        let column = map.column(x, y);
-        let (land_low, land_top) = (column.land.low(), column.land.high());
-        let ground_in_the_way = land_low <= point_top
-            && land_top >= z
-            && (!at_end || land_low > end_top || land_top < i16::from(end.z))
-            && !land_is_ignored(column.land_id);
-        if ground_in_the_way {
-            return false;
-        }
-        if column.land_id == LAND_OF_THE_EDGE && column.pieces.is_empty() {
-            return false;
-        }
-        !column.pieces.iter().any(|piece| {
-            if piece.flags & (TILE_WINDOW | TILE_NO_SHOOT) == 0 {
+    let ground_in_the_way = land_low <= point_top
+        && land_high >= z
+        && (!at_end || land_low > end_top || land_high < i16::from(end.z))
+        && !land_is_ignored(column.land_id);
+    if ground_in_the_way {
+        return Some(SightBlocker::Land {
+            low: land_low,
+            high: land_high,
+        });
+    }
+    if column.land_id == LAND_OF_THE_EDGE && column.pieces.is_empty() {
+        return Some(SightBlocker::EdgeOfWorld);
+    }
+    let stopping = match mode {
+        SightMode::Pol => TILE_NO_SHOOT,
+        SightMode::RunUo | SightMode::Sphere => TILE_WINDOW | TILE_NO_SHOOT,
+    };
+    column
+        .pieces
+        .iter()
+        .find(|piece| {
+            if piece.flags & stopping == 0 {
                 return false;
             }
             let bottom = i16::from(piece.z);
@@ -88,7 +272,16 @@ pub fn line_of_sight<M: TileQuery + ?Sized>(map: &M, from: Point3, to: Point3) -
                 && top >= z
                 && (!at_end || bottom > end_top || top < i16::from(end.z))
         })
-    })
+        .map(|piece| piece_blocker(piece.z, piece.calc_height(), piece.flags))
+}
+
+fn piece_blocker(z: i8, height: i16, flags: u32) -> SightBlocker {
+    let bottom = i16::from(z);
+    SightBlocker::Piece {
+        bottom,
+        top: bottom + height,
+        flags,
+    }
 }
 
 /// The points of the line from `org` to `dest`, one unit apart in all three
@@ -183,6 +376,51 @@ mod tests {
         let map = MockMap::new(GRID, GRID);
         let far = Point3::new(ARCHER.x + SIGHT_RANGE as u16 + 1, ARCHER.y, 0);
         assert!(!line_of_sight(&map, eyes_at(ARCHER), eyes_at(far)));
+    }
+
+    #[test]
+    fn a_window_stops_the_line_only_by_the_runuo_rules() {
+        let map = MockMap::new(GRID, GRID);
+        let mut glazed = Overlay::new(&map);
+        wall_at(&mut glazed, 14, 10, TILE_WINDOW);
+        let trace = |mode| sight_trace(&glazed, eyes_at(ARCHER), eyes_at(TARGET), mode);
+        let runuo = trace(SightMode::RunUo);
+        assert!(!runuo.in_sight);
+        let stopped = runuo.points.iter().find(|p| p.blocker.is_some()).unwrap();
+        assert_eq!((stopped.x, stopped.y), (14, 10));
+        assert!(matches!(
+            stopped.blocker,
+            Some(SightBlocker::Piece {
+                flags: TILE_WINDOW,
+                ..
+            })
+        ));
+        assert!(trace(SightMode::Pol).in_sight);
+        assert!(trace(SightMode::Sphere).in_sight);
+    }
+
+    #[test]
+    fn a_wall_stops_the_line_by_every_rule_and_open_ground_by_none() {
+        let map = MockMap::new(GRID, GRID);
+        let mut walled = Overlay::new(&map);
+        wall_at(&mut walled, 14, 10, TILE_NO_SHOOT | TILE_WALL);
+        for mode in [SightMode::RunUo, SightMode::Pol, SightMode::Sphere] {
+            assert!(!sight_trace(&walled, eyes_at(ARCHER), eyes_at(TARGET), mode).in_sight);
+            let open = sight_trace(&map, eyes_at(ARCHER), eyes_at(TARGET), mode);
+            assert!(open.in_sight, "{mode:?}");
+            assert!(!open.points.is_empty(), "{mode:?}");
+        }
+        let far = Point3::new(ARCHER.x + SIGHT_RANGE as u16 + 1, ARCHER.y, 0);
+        let too_far = sight_trace(&map, eyes_at(ARCHER), eyes_at(far), SightMode::Sphere);
+        assert_eq!(too_far.points[0].blocker, Some(SightBlocker::TooFar));
+    }
+
+    #[test]
+    fn a_mode_is_read_from_its_name() {
+        assert_eq!(SightMode::from_name("ModernUO"), Some(SightMode::RunUo));
+        assert_eq!(SightMode::from_name(" pol "), Some(SightMode::Pol));
+        assert_eq!(SightMode::from_name("sphere"), Some(SightMode::Sphere));
+        assert_eq!(SightMode::from_name("uox"), None);
     }
 
     /// The line is the same line whichever end it is asked from.

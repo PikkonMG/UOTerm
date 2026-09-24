@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::step::{LandCorners, TileColumn, TilePiece};
+use crate::tiledata::TileData;
 use crate::tiles::{StaticView, TileQuery, TILE_DOOR};
 use crate::uop::{
     load_map_entries, UopIndex, UOP_CACHE_CAP, UOP_COMPRESS_NONE, UOP_MAP_BLOCK_MASK,
@@ -94,6 +95,8 @@ pub enum MapError {
     BadUop,
     #[error("map uop compression is not supported")]
     UnsupportedUop,
+    #[error("block {0} is not on the map")]
+    OffMap(u64),
 }
 
 /// Which form of a map a session walks: the one its account reads.
@@ -305,8 +308,27 @@ pub(crate) fn capped_len(file_len: u64, offset: u64, want: u32) -> usize {
 }
 
 /// One record of an index file such as `artidx.mul`: where a record of the
-/// data file starts, how long it is, and a number no reader here needs.
+/// data file starts, how long it is, and an extra number.
 const IDX_RECORD: usize = 12;
+const IDX_EXTRA_AT: usize = 8;
+pub(crate) const IDX_WIDTH_SHIFT: u32 = 16;
+const IDX_HEIGHT_MASK: u32 = 0xFFFF;
+
+/// The width and the height of each picture, from the extra number of each
+/// record of an index file. The gump and light indexes keep the size there:
+/// the width in the high half, the height in the low half.
+pub(crate) fn idx_sizes(idx: &[u8]) -> Vec<(usize, usize)> {
+    idx.chunks_exact(IDX_RECORD)
+        .map(|rec| {
+            let extra = &rec[IDX_EXTRA_AT..];
+            let extra = u32::from_le_bytes([extra[0], extra[1], extra[2], extra[3]]);
+            (
+                (extra >> IDX_WIDTH_SHIFT) as usize,
+                (extra & IDX_HEIGHT_MASK) as usize,
+            )
+        })
+        .collect()
+}
 
 /// The records of an index file, as places in its data file. An empty
 /// record is None.
@@ -335,121 +357,40 @@ pub(crate) fn is_uop_path(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("uop"))
 }
 
-/// Reads the NUL-padded latin1 name that starts at `offset`. A record cut short
-/// by a truncated file gives a blank name instead of an error.
-fn read_tile_name(data: &[u8], offset: usize) -> String {
-    let end = offset.saturating_add(TILE_NAME_LEN).min(data.len());
-    if offset >= end {
-        return String::new();
-    }
-    let raw = &data[offset..end];
-    let len = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-    raw[..len].iter().map(|&b| char::from(b)).collect()
-}
-
+/// The tiledata the map readers need: the flags, height, animation and name
+/// of each tile.
 #[derive(Clone, Debug)]
 pub(crate) struct TileFlags {
-    land: Vec<u32>,
-    land_name: Vec<String>,
-    r#static: Vec<u32>,
-    static_height: Vec<u8>,
-    static_anim: Vec<u16>,
-    static_name: Vec<String>,
+    data: TileData,
 }
 
 impl TileFlags {
     pub(crate) fn load(path: &Path) -> Result<Self, MapError> {
-        let data = read_file(path)?;
-        let hs = tiledata_is_hs(data.len());
-        let land_size = if hs { LAND_RECORD_HS } else { LAND_RECORD_OLD };
-        let static_size = if hs {
-            STATIC_RECORD_HS
-        } else {
-            STATIC_RECORD_OLD
-        };
-        let flags_size = if hs {
-            TILEDATA_FLAGS_HS
-        } else {
-            TILEDATA_FLAGS_OLD
-        };
-        let height_off = flags_size + STATIC_HEIGHT_BYTES_AFTER_FLAGS;
-        let anim_off = flags_size + STATIC_ANIM_BYTES_AFTER_FLAGS;
-        let land_name_off = flags_size + LAND_NAME_AFTER_FLAGS;
-        let static_name_off = static_size - TILE_NAME_LEN;
-        let mut land = vec![0u32; LAND_COUNT];
-        let mut land_name = vec![String::new(); LAND_COUNT];
-        let mut offset = 0usize;
-        let mut i = 0usize;
-        while i < LAND_COUNT && offset + land_size <= data.len() {
-            if i.is_multiple_of(LAND_GROUP) {
-                offset += GROUP_HEADER;
-                if offset + land_size > data.len() {
-                    break;
-                }
-            }
-            land[i] = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]);
-            land_name[i] = read_tile_name(&data, offset + land_name_off);
-            offset += land_size;
-            i += 1;
-        }
-        let mut r#static = Vec::new();
-        let mut static_height = Vec::new();
-        let mut static_anim = Vec::new();
-        let mut static_name = Vec::new();
-        while offset + static_size <= data.len() {
-            if r#static.len() % STATIC_GROUP == 0 {
-                offset += GROUP_HEADER;
-                if offset + static_size > data.len() {
-                    break;
-                }
-            }
-            let flags = u32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ]);
-            let height = data.get(offset + height_off).copied().unwrap_or(0);
-            let anim = slice_at(&data, offset + anim_off, 2)
-                .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
-            r#static.push(flags);
-            static_height.push(height);
-            static_anim.push(anim);
-            static_name.push(read_tile_name(&data, offset + static_name_off));
-            offset += static_size;
-        }
         Ok(Self {
-            land,
-            land_name,
-            r#static,
-            static_height,
-            static_anim,
-            static_name,
+            data: TileData::load(path)?,
         })
     }
 
     fn land(&self, id: u16) -> u32 {
-        self.land.get(id as usize).copied().unwrap_or(0)
+        self.data.land(id).map_or(0, |land| land.flags.low_bits())
     }
 
     fn land_name(&self, id: u16) -> &str {
-        self.land_name.get(id as usize).map_or("", String::as_str)
+        self.data.land(id).map_or("", |land| land.name.as_str())
     }
 
     pub(crate) fn stat(&self, id: u16) -> (u32, u8) {
-        (
-            self.r#static.get(id as usize).copied().unwrap_or(0),
-            self.static_height.get(id as usize).copied().unwrap_or(0),
-        )
+        self.data
+            .item(id)
+            .map_or((0, 0), |item| (item.flags.low_bits(), item.height))
+    }
+
+    fn anim(&self, id: u16) -> u16 {
+        self.data.item(id).map_or(0, |item| item.anim_id)
     }
 
     fn static_name(&self, id: u16) -> &str {
-        self.static_name.get(id as usize).map_or("", String::as_str)
+        self.data.item(id).map_or("", |item| item.name.as_str())
     }
 }
 
@@ -474,6 +415,12 @@ struct MulHandles {
     columns: Vec<(u32, TileColumn)>,
     /// Whole blocks read from disk, under their block index.
     blocks: HashMap<u64, MapBlock>,
+    /// UltimaLive: the land of each block the shard changed, in the layout
+    /// of the map file, under its block index.
+    live_land: HashMap<u64, Vec<u8>>,
+    /// UltimaLive: the statics of each block the shard changed, seven bytes
+    /// each as the statics file holds them, under its block index.
+    live_statics: HashMap<u64, Vec<u8>>,
 }
 
 /// One 8x8 block of the map in memory: the ground of each tile, and the
@@ -531,6 +478,8 @@ impl MulMap {
                 uop_cache: Vec::new(),
                 columns: Vec::new(),
                 blocks: HashMap::new(),
+                live_land: HashMap::new(),
+                live_statics: HashMap::new(),
             }),
             flags: TileFlags::load(&files.tiledata)?,
             land_patch,
@@ -545,7 +494,15 @@ impl MulMap {
         let (uop, blocks_h) = (self.uop.as_deref(), self.blocks_h);
         let mut buf = [0u8; CELL_BYTES];
         let block = block_index(blocks_h, x / CELL_PER_BLOCK_EDGE, y / CELL_PER_BLOCK_EDGE);
-        if let (Some(start), Some(dif)) = (self.land_patch.get(&block), handles.land_dif.as_mut()) {
+        if let Some(land) = handles.live_land.get(&block) {
+            let edge = usize::from(CELL_PER_BLOCK_EDGE);
+            let at = (usize::from(y % CELL_PER_BLOCK_EDGE) * edge
+                + usize::from(x % CELL_PER_BLOCK_EDGE))
+                * CELL_BYTES;
+            buf.copy_from_slice(&land[at..at + CELL_BYTES]);
+        } else if let (Some(start), Some(dif)) =
+            (self.land_patch.get(&block), handles.land_dif.as_mut())
+        {
             let offset = start + mul_cell_offset(blocks_h, x, y) - block * BLOCK_BYTES as u64;
             dif.seek(SeekFrom::Start(offset))?;
             dif.read_exact(&mut buf)?;
@@ -566,8 +523,40 @@ impl MulMap {
         handles: &mut MulHandles,
         block: u64,
     ) -> Result<Vec<Vec<StaticPiece>>, MapError> {
+        let data = self.read_block_statics_raw(handles, block)?;
         let flags = &self.flags;
         let mut out = vec![Vec::new(); CELLS_PER_BLOCK];
+        let edge = usize::from(CELL_PER_BLOCK_EDGE);
+        for chunk in data.chunks_exact(STATIC_RECORD) {
+            let graphic = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let (sx, sy) = (usize::from(chunk[2]), usize::from(chunk[3]));
+            if sx >= edge || sy >= edge {
+                continue;
+            }
+            let (st_flags, height) = flags.stat(graphic);
+            out[sy * edge + sx].push(StaticPiece {
+                graphic,
+                hue: u16::from_le_bytes([chunk[5], chunk[6]]),
+                piece: TilePiece {
+                    z: chunk[4] as i8,
+                    height,
+                    flags: st_flags,
+                },
+            });
+        }
+        Ok(out)
+    }
+
+    /// The statics records of one whole block as the files hold them: the
+    /// ones the shard sent live, a patch, or the statics file.
+    fn read_block_statics_raw(
+        &self,
+        handles: &mut MulHandles,
+        block: u64,
+    ) -> Result<Vec<u8>, MapError> {
+        if let Some(records) = handles.live_statics.get(&block) {
+            return Ok(records.clone());
+        }
         let patched = self
             .static_patch
             .get(&block)
@@ -588,7 +577,7 @@ impl MulMap {
             }
         };
         if lookup == IDX_EMPTY || length == 0 || length == IDX_EMPTY {
-            return Ok(out);
+            return Ok(Vec::new());
         }
         let file = match (patched, handles.static_dif.as_mut()) {
             (Some(_), Some(dif)) => dif,
@@ -598,33 +587,88 @@ impl MulMap {
         let file_len = file.metadata()?.len();
         let n = capped_len(file_len, offset, length);
         if n == 0 {
-            return Ok(out);
+            return Ok(Vec::new());
         }
         file.seek(SeekFrom::Start(offset))?;
         let mut data = vec![0u8; n];
         file.read_exact(&mut data)?;
-        let edge = usize::from(CELL_PER_BLOCK_EDGE);
-        for chunk in data.chunks(STATIC_RECORD) {
-            if chunk.len() < STATIC_RECORD {
-                break;
-            }
-            let graphic = u16::from_le_bytes([chunk[0], chunk[1]]);
-            let (sx, sy) = (usize::from(chunk[2]), usize::from(chunk[3]));
-            if sx >= edge || sy >= edge {
-                continue;
-            }
-            let (st_flags, height) = flags.stat(graphic);
-            out[sy * edge + sx].push(StaticPiece {
-                graphic,
-                hue: u16::from_le_bytes([chunk[5], chunk[6]]),
-                piece: TilePiece {
-                    z: chunk[4] as i8,
-                    height,
-                    flags: st_flags,
-                },
-            });
+        Ok(data)
+    }
+
+    /// How many blocks the map has across and down.
+    pub fn blocks_wide(&self) -> u16 {
+        self.blocks_w
+    }
+
+    pub fn blocks_high(&self) -> u16 {
+        self.blocks_h
+    }
+
+    fn check_block(&self, block: u64) -> Result<(), MapError> {
+        let count = u64::from(self.blocks_w) * u64::from(self.blocks_h);
+        if block < count {
+            Ok(())
+        } else {
+            Err(MapError::OffMap(block))
         }
-        Ok(out)
+    }
+
+    /// Drops what was read of one block, so the next look reads it anew.
+    /// A column holds the corners of the block beside it, so every column
+    /// goes too.
+    fn forget_block(handles: &mut MulHandles, block: u64) {
+        handles.blocks.remove(&block);
+        handles.columns.clear();
+    }
+
+    /// UltimaLive: the shard changed the land of one block. `land` is the
+    /// block in the layout of the map file, a graphic word and a height
+    /// byte for each of its 64 tiles.
+    pub fn set_live_land(&self, block: u64, land: &[u8]) -> Result<(), MapError> {
+        self.check_block(block)?;
+        if land.len() != BLOCK_CELLS * CELL_BYTES {
+            return Err(MapError::Truncated);
+        }
+        let mut handles = self.inner.lock().map_err(|_| MapError::Truncated)?;
+        handles.live_land.insert(block, land.to_vec());
+        Self::forget_block(&mut handles, block);
+        Ok(())
+    }
+
+    /// UltimaLive: the shard changed the statics of one block. `records`
+    /// are seven bytes each, as the statics file holds them; a part record
+    /// at the end is dropped.
+    pub fn set_live_statics(&self, block: u64, records: &[u8]) -> Result<(), MapError> {
+        self.check_block(block)?;
+        let whole = records.len() - records.len() % STATIC_RECORD;
+        let mut handles = self.inner.lock().map_err(|_| MapError::Truncated)?;
+        handles
+            .live_statics
+            .insert(block, records[..whole].to_vec());
+        Self::forget_block(&mut handles, block);
+        Ok(())
+    }
+
+    /// The UltimaLive checksum of one block: the Fletcher-16 sum of its land
+    /// in the layout of the map file, then its statics records.
+    pub fn block_crc(&self, block: u64) -> Result<u16, MapError> {
+        self.check_block(block)?;
+        let mut handles = self.inner.lock().map_err(|_| MapError::Truncated)?;
+        let edge = CELL_PER_BLOCK_EDGE;
+        let (bx, by) = (
+            (block / u64::from(self.blocks_h)) as u16,
+            (block % u64::from(self.blocks_h)) as u16,
+        );
+        let mut data = Vec::with_capacity(BLOCK_CELLS * CELL_BYTES);
+        for cy in 0..edge {
+            for cx in 0..edge {
+                let (land, z) = self.cell(&mut handles, bx * edge + cx, by * edge + cy)?;
+                data.extend_from_slice(&land.to_le_bytes());
+                data.push(z as u8);
+            }
+        }
+        data.extend(self.read_block_statics_raw(&mut handles, block)?);
+        Ok(fletcher16(&data))
     }
 
     /// The block that holds tile `x`, `y`, read from disk the first time it
@@ -727,6 +771,17 @@ impl MulMap {
             pieces: statics.into_iter().map(|s| s.piece).collect(),
         })
     }
+}
+
+/// The Fletcher-16 sum UltimaLive checks blocks with.
+fn fletcher16(data: &[u8]) -> u16 {
+    const MODULUS: u16 = 255;
+    let (mut low, mut high) = (0u16, 0u16);
+    for &byte in data {
+        low = (low + u16::from(byte)) % MODULUS;
+        high = (high + low) % MODULUS;
+    }
+    (high << u8::BITS) | low
 }
 
 /// The width of one number in a patch list file.
@@ -878,11 +933,7 @@ impl MulMap {
 
     /// The animation a worn item shows on a body. Zero when it has none.
     pub fn item_anim(&self, graphic: u16) -> u16 {
-        self.flags
-            .static_anim
-            .get(graphic as usize)
-            .copied()
-            .unwrap_or(0)
+        self.flags.anim(graphic)
     }
 
     /// The tiledata flags of an item graphic.
@@ -991,6 +1042,14 @@ impl TileQuery for MulMap {
 #[cfg(test)]
 mod idx_tests {
     use super::*;
+
+    /// The published Fletcher-16 check values.
+    #[test]
+    fn fletcher16_matches_the_known_sums() {
+        assert_eq!(fletcher16(b"abcde"), 0xC8F0);
+        assert_eq!(fletcher16(b"abcdef"), 0x2057);
+        assert_eq!(fletcher16(b"abcdefgh"), 0x0627);
+    }
 
     #[test]
     fn idx_skips_empty_records() {

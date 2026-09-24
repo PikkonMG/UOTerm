@@ -77,7 +77,14 @@ impl HueData {
     /// The color of words written in a hue, as red, green and blue bytes.
     /// The game writes words with a bright step of the ramp.
     pub fn text_rgb(&self, hue: u16) -> Option<[u8; 3]> {
-        let color = self.ramp(hue, false)?.colors[TEXT_RAMP_STEP];
+        self.step_rgb(hue, TEXT_RAMP_STEP)
+    }
+
+    /// One step of the ramp a hue names, as red, green and blue bytes.
+    /// None for hue zero, for a number the file does not hold, and for a
+    /// step past the end of the ramp.
+    pub fn step_rgb(&self, hue: u16, step: usize) -> Option<[u8; 3]> {
+        let color = *self.ramp(hue, false)?.colors.get(step)?;
         Some([
             channel(color >> RED_SHIFT),
             channel(color >> GREEN_SHIFT),

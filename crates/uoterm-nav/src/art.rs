@@ -54,6 +54,16 @@ impl ArtPixels {
         }
     }
 
+    /// True when the pixel at `x`, `y` is drawn. A place outside the
+    /// picture is not.
+    pub fn is_drawn(&self, x: usize, y: usize) -> bool {
+        x < self.width
+            && self
+                .colors
+                .get(y * self.width + x)
+                .is_some_and(|color| color & PIXEL_DRAWN != 0)
+    }
+
     /// The picture as RGBA bytes, in the colors of `ramp` when one is given.
     pub fn rgba(&self, ramp: Option<HueRamp<'_>>) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.colors.len() * RGBA_BYTES);
@@ -190,6 +200,15 @@ mod tests {
 
     fn words(values: &[u16]) -> Vec<u8> {
         values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn a_pixel_is_drawn_only_inside_the_picture_and_when_set() {
+        let mut art = ArtPixels::clear(2, 2);
+        art.colors[3] = RED | PIXEL_DRAWN;
+        assert!(art.is_drawn(1, 1));
+        assert!(!art.is_drawn(0, 0));
+        assert!(!art.is_drawn(2, 0) && !art.is_drawn(0, 2));
     }
 
     #[test]

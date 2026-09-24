@@ -12,6 +12,75 @@ pub const TILE_BRIDGE: u32 = 0x0000_0400;
 pub const TILE_PARTIAL_HUE: u32 = 0x0004_0000;
 pub const TILE_DOOR: u32 = 0x2000_0000;
 
+/// Every flag a tiledata record can carry, by the name the client gives it.
+/// Files older than High Seas hold the low 32 bits only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TileFlagSet(pub u64);
+
+impl TileFlagSet {
+    pub const NONE: Self = Self(0);
+    pub const BACKGROUND: Self = Self(0x0000_0001);
+    pub const WEAPON: Self = Self(0x0000_0002);
+    pub const TRANSPARENT: Self = Self(0x0000_0004);
+    pub const TRANSLUCENT: Self = Self(0x0000_0008);
+    pub const WALL: Self = Self(0x0000_0010);
+    pub const DAMAGING: Self = Self(0x0000_0020);
+    pub const IMPASSABLE: Self = Self::low(TILE_IMPASSABLE);
+    pub const WET: Self = Self::low(TILE_WET);
+    pub const SURFACE: Self = Self::low(TILE_SURFACE);
+    pub const BRIDGE: Self = Self::low(TILE_BRIDGE);
+    /// Items of this graphic stack into one pile.
+    pub const STACKABLE: Self = Self(0x0000_0800);
+    pub const WINDOW: Self = Self::low(crate::sight::TILE_WINDOW);
+    pub const NO_SHOOT: Self = Self::low(crate::sight::TILE_NO_SHOOT);
+    pub const ARTICLE_A: Self = Self(0x0000_4000);
+    pub const ARTICLE_AN: Self = Self(0x0000_8000);
+    pub const INTERNAL: Self = Self(0x0001_0000);
+    pub const FOLIAGE: Self = Self(0x0002_0000);
+    pub const PARTIAL_HUE: Self = Self::low(TILE_PARTIAL_HUE);
+    pub const NO_HOUSE: Self = Self(0x0008_0000);
+    pub const MAP: Self = Self(0x0010_0000);
+    pub const CONTAINER: Self = Self(0x0020_0000);
+    pub const WEARABLE: Self = Self(0x0040_0000);
+    pub const LIGHT_SOURCE: Self = Self(0x0080_0000);
+    pub const ANIMATION: Self = Self::low(crate::animdata::TILE_ANIMATED);
+    pub const NO_DIAGONAL: Self = Self(0x0200_0000);
+    pub const ARMOR: Self = Self(0x0800_0000);
+    pub const ROOF: Self = Self(0x1000_0000);
+    pub const DOOR: Self = Self::low(TILE_DOOR);
+    pub const STAIR_BACK: Self = Self(0x4000_0000);
+    pub const STAIR_RIGHT: Self = Self(0x8000_0000);
+    pub const ALPHA_BLEND: Self = Self(0x0001_0000_0000);
+    pub const USE_NEW_ART: Self = Self(0x0002_0000_0000);
+    pub const ART_USED: Self = Self(0x0004_0000_0000);
+    pub const NO_SHADOW: Self = Self(0x0010_0000_0000);
+    pub const PIXEL_BLEED: Self = Self(0x0020_0000_0000);
+    pub const PLAY_ANIM_ONCE: Self = Self(0x0040_0000_0000);
+    pub const MULTI_MOVABLE: Self = Self(0x0100_0000_0000);
+
+    const fn low(bits: u32) -> Self {
+        Self(bits as u64)
+    }
+
+    /// True when every flag of `other` is set here.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The low 32 bits, which every file holds and the movement rules read.
+    pub const fn low_bits(self) -> u32 {
+        self.0 as u32
+    }
+}
+
+impl std::ops::BitOr for TileFlagSet {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct TileInfo {
     pub land_id: u16,
