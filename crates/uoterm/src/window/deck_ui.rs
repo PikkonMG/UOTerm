@@ -660,7 +660,7 @@ fn character_tab(
         ("Strength", frame.stats.strength.to_string()),
         ("Dexterity", frame.stats.dexterity.to_string()),
         ("Intelligence", frame.stats.intelligence.to_string()),
-        ("Weight", format!("{} / {}", frame.weight, frame.weight_max)),
+        ("Weight", frame.carried()),
         ("Gold", frame.gold.to_string()),
     ];
     let facts_left = doll.right() + theme::ROW_GAP * 2.0;

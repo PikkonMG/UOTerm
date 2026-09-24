@@ -686,15 +686,19 @@ fn journal_job(line: &str, width: f32, alpha: f32) -> LayoutJob {
     job
 }
 
-/// The pack, the gold, the buffs and the party, in the space between the
-/// vitals and the journal.
+/// The rows the pack panel always has: the weight with the gold, and the
+/// clock.
+const PACK_FIXED_ROWS: usize = 2;
+
+/// The pack, the gold, the clock of the shard, the buffs and the party, in
+/// the space between the vitals and the journal. Each has its own row.
 fn pack(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFrame) -> Rect {
     let lists: Vec<(&str, String)> = [("Buffs", &frame.buffs), ("Party", &frame.party)]
         .into_iter()
         .filter(|(_, list)| !list.is_empty())
         .map(|(label, list)| (label, list.join(", ")))
         .collect();
-    let content = ROW_HEIGHT * (1 + lists.len()) as f32 - theme::ROW_GAP;
+    let content = ROW_HEIGHT * (PACK_FIXED_ROWS + lists.len()) as f32 - theme::ROW_GAP;
     let free_left = area.left() + SIDE_PANEL_WIDTH + PACK_MIN_GAP;
     let free_right = area.right() - JOURNAL_WIDTH - PACK_MIN_GAP;
     let width = PACK_WIDTH.min(free_right - free_left);
@@ -726,20 +730,13 @@ fn pack(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFram
         number_font(theme::SIZE_BODY),
         theme::NOTO_SELF,
     );
-    // The clock of the shard, and the lantern the character carries.
-    let clock = format!("{:02}:{:02}", frame.time.0, frame.time.1);
-    painter.text(
-        Pos2::new(rows.left, panel.bottom() - theme::PANEL_PAD),
-        Align2::LEFT_BOTTOM,
-        clock,
-        number_font(theme::SIZE_SMALL),
-        theme::TEXT_FAINT,
-    );
     rows.pair(
         "Weight",
-        &format!("{}/{} stones", frame.weight, frame.weight_max),
+        &format!("{} stones", frame.carried()),
         weight_color,
     );
+    let clock = format!("{:02}:{:02}", frame.time.0, frame.time.1);
+    rows.pair("Time", &clock, theme::TEXT_DIM);
     for (label, list) in lists {
         rows.pair(label, &list, theme::TEXT);
     }

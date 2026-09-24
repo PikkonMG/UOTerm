@@ -496,6 +496,16 @@ pub struct WatchFrame {
 }
 
 impl WatchFrame {
+    /// The weight the character carries, and the most he may carry when the
+    /// shard says it. An older shard does not, and then only the weight shows.
+    pub fn carried(&self) -> String {
+        if self.weight_max == 0 {
+            self.weight.to_string()
+        } else {
+            format!("{} / {}", self.weight, self.weight_max)
+        }
+    }
+
     pub fn from_observe(value: &Value) -> Self {
         let me = value
             .get("self_state")
@@ -1244,6 +1254,20 @@ fn bool_at(value: &Value, key: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// An older shard sends no most weight, and then no "/ 0" shows.
+    #[test]
+    fn the_carried_weight_shows_the_most_only_when_the_shard_sends_it() {
+        const CARRIED: u16 = 123;
+        const MOST: u16 = 400;
+        let mut frame = WatchFrame {
+            weight: CARRIED,
+            ..WatchFrame::default()
+        };
+        assert_eq!(frame.carried(), "123");
+        frame.weight_max = MOST;
+        assert_eq!(frame.carried(), "123 / 400");
+    }
 
     #[test]
     fn watch_frame_reads_what_only_the_watch_tool_sends() {
