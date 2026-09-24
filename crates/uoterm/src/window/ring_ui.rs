@@ -45,6 +45,49 @@ struct Ring {
 #[derive(Default)]
 pub struct RingUi {
     open: Option<Ring>,
+    /// The Classic style shows the menu of the shard as a classic gump
+    /// instead of the ring.
+    classic: bool,
+    /// Where and for what thing the Classic style asked the shard for its
+    /// menu, for the window to open the gump.
+    classic_asked: Option<(Pos2, u32)>,
+}
+
+/// The lines of the shard's own context menu for a thing, once they have
+/// come, each with its words, whether it may be picked, and the act that
+/// picks it.
+pub fn shard_lines(frame: &WatchFrame, serial: u32) -> Vec<(String, bool, Act)> {
+    frame
+        .context_menu
+        .as_ref()
+        .filter(|menu| menu.serial == serial)
+        .map(|menu| {
+            menu.lines
+                .iter()
+                .map(|line| {
+                    (
+                        line.words.clone(),
+                        line.enabled,
+                        Act::MenuPick {
+                            serial,
+                            index: line.index,
+                        },
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// True when a click on a thing opens its context menu: a right click, and
+/// in the Classic style with "Hold Shift for context menus" a click of
+/// either button with Shift held, as the classic client asks.
+pub fn opens_menu(right_click: bool, left_click: bool, shift: bool, shift_needed: bool) -> bool {
+    if shift_needed {
+        shift && (right_click || left_click)
+    } else {
+        right_click
+    }
 }
 
 /// The acts of the window for one kind of thing, in ring order.
@@ -101,7 +144,8 @@ impl RingUi {
         self.open.is_some()
     }
 
-    /// Opens the ring, and asks the shard for its own lines.
+    /// Opens the ring, and asks the shard for its own lines. In the
+    /// Classic style only the shard is asked, and the window opens its gump.
     pub fn open_at(
         &mut self,
         center: Pos2,
@@ -110,13 +154,29 @@ impl RingUi {
         subject: Subject,
         hand: &Hand,
     ) {
-        self.open = Some(Ring {
-            center,
-            serial,
-            name: name.to_string(),
-            subject,
-        });
+        if self.classic {
+            self.classic_asked = Some((center, serial));
+        } else {
+            self.open = Some(Ring {
+                center,
+                serial,
+                name: name.to_string(),
+                subject,
+            });
+        }
         hand.act(Act::Menu(serial));
+    }
+
+    /// Follows the style of the window: the Classic style asks for the
+    /// gump of the shard's menu instead of the ring.
+    pub fn set_classic(&mut self, classic: bool) {
+        self.classic = classic;
+    }
+
+    /// Where and for what thing the Classic style asked for a menu since
+    /// the last frame.
+    pub fn take_classic_ask(&mut self) -> Option<(Pos2, u32)> {
+        self.classic_asked.take()
     }
 
     /// Draws the ring. Gives the places it covers, so the map does not
@@ -141,22 +201,7 @@ impl RingUi {
                 .into_iter()
                 .map(|(words, act)| (words.to_string(), true, act))
                 .collect();
-        if let Some(menu) = frame
-            .context_menu
-            .as_ref()
-            .filter(|m| m.serial == ring.serial)
-        {
-            lines.extend(menu.lines.iter().map(|line| {
-                (
-                    line.words.clone(),
-                    line.enabled,
-                    Act::MenuPick {
-                        serial: ring.serial,
-                        index: line.index,
-                    },
-                )
-            }));
-        }
+        lines.extend(shard_lines(frame, ring.serial));
         let room = rect.shrink(RING_RADIUS + theme::SCREEN_MARGIN);
         let center = Pos2::new(
             ring.center
@@ -246,6 +291,37 @@ mod tests {
         }
         let many = ring_points(center, RING_FREE_LINES + 4);
         assert!((many[0] - center).length() > RING_RADIUS);
+    }
+
+    #[test]
+    fn the_shard_lines_are_those_of_the_thing_and_a_classic_ask_opens_no_ring() {
+        let frame = WatchFrame {
+            context_menu: Some(crate::view::WatchMenu {
+                serial: ORC,
+                lines: vec![crate::view::WatchMenuLine {
+                    index: 3,
+                    words: "Open Paperdoll".into(),
+                    enabled: true,
+                }],
+            }),
+            ..WatchFrame::default()
+        };
+        assert_eq!(
+            shard_lines(&frame, ORC),
+            vec![(
+                "Open Paperdoll".to_string(),
+                true,
+                Act::MenuPick {
+                    serial: ORC,
+                    index: 3
+                }
+            )]
+        );
+        assert!(shard_lines(&frame, BAG).is_empty());
+        assert!(opens_menu(true, false, false, false));
+        assert!(!opens_menu(false, true, false, false));
+        assert!(!opens_menu(true, false, false, true));
+        assert!(opens_menu(false, true, true, true));
     }
 
     #[test]

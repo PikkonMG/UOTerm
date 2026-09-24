@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureHandle, TextureOptions, Vec2};
 use std::collections::HashMap;
+use uoterm_nav::CursorShape;
 
 const ATLAS_SIDE: usize = 4096;
 /// Clear pixels between two pictures, so one never bleeds into the next when
@@ -14,15 +15,38 @@ const OPTIONS: TextureOptions = TextureOptions::NEAREST;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ArtKey {
-    Land(u16),
+    Land {
+        land_id: u16,
+        hue: u16,
+    },
+    /// A land texture that is stretched over a slope.
+    Texture {
+        texture_id: u16,
+        hue: u16,
+    },
     Item {
         graphic: u16,
+        hue: u16,
+        /// The hue covers every pixel, not the grey ones only.
+        whole_hue: bool,
+        /// A black border marks a cave wall.
+        border: bool,
+    },
+    /// Words in a UO font, under the hash of the words and how they look.
+    Text(u64),
+    /// A mouse pointer of the classic client.
+    Cursor {
+        shape: CursorShape,
+        war: bool,
         hue: u16,
     },
     /// A picture of a gump: a background, a button, a check box.
     Gump {
         gump: u16,
         hue: u16,
+        /// The hue covers the grey pixels only, as a body or a worn item
+        /// on a paperdoll takes it.
+        partial: bool,
     },
     /// One mobile as he looks now, under the hash of his look.
     Figure(u64),

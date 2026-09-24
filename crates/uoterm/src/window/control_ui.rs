@@ -4,32 +4,51 @@
 //!
 //! Nothing here acts while the agent has the character. The human must take
 //! control first, so a stray click never takes the character from the agent.
+//!
+//! The clicks follow the General page, as in the official client: a double
+//! click on the ground walks there when pathfinding is on (with Shift held,
+//! when the page asks for Shift), and a single click only when the page
+//! asks for it. The chat line follows the Speech page (see `keys::chat`).
 
+use super::actions::guard::aim_words;
+use super::actions::WindowCommand;
 use super::boxes_ui::{BoxesUi, Tools};
 use super::build_ui::{BuildUi, ChatUi};
 use super::control::{Act, Hand, Report};
 use super::deck_ui::DeckUi;
 use super::hud::Hud;
+use super::keys::chat::{say_line, ChatLine};
 use super::macros_ui::MacrosUi;
 use super::map_ui::MapUi;
 use super::mapitem_ui::ProfileUi;
+use super::model::asked::asked_commands;
+use super::modern::layout::{self, Spot};
+use super::modern::{ModernUi, WORDS_LAUNCHER};
 use super::options_ui::OptionsUi;
-use super::ring_ui::Subject;
-use super::scene::{PickKind, Scene};
-use super::steer::Steer;
+use super::ring_ui::{opens_menu, Subject};
+use super::scene::{MapDrag, PickKind, Scene};
+use super::settings::{GeneralOptions, Profile, SpeechOptions};
+use super::steer::{Movement, Steer};
 use super::theme::{self, number_font, text_font};
 use crate::view::{WatchFrame, WatchPackItem};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::TextFormat;
-use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Align2, CornerRadius, Id, Key, Modifiers, Pos2, Rect, Sense, Vec2};
 
 /// The top panel has one width in each state, so nothing in it moves when
 /// the buttons change.
-const STRIP_WIDTH: f32 = 880.0;
+pub(super) const BAR_WIDTH: f32 = 880.0;
 const STRIP_PAD: f32 = 10.0;
 const STRIP_ROW: f32 = 24.0;
 const RULE_GAP: f32 = 8.0;
 const SEGMENT_HEIGHT: f32 = 30.0;
+/// The bar at its tallest: the place row, the row of what the human does,
+/// and the buttons.
+pub(super) const BAR_MOST_HEIGHT: f32 =
+    STRIP_PAD * 2.0 + STRIP_ROW * 2.0 + RULE_GAP * 2.0 + SEGMENT_HEIGHT;
+/// The button that opens the panel launcher of the Modern style, at the
+/// left of the place row.
+const LAUNCHER_BUTTON_WIDTH: f32 = 72.0;
 const SEGMENT_GAP: f32 = 6.0;
 const LOCATION_GAP: f32 = 18.0;
 const WORD_GAP: f32 = 6.0;
@@ -56,8 +75,6 @@ const WORDS_PROFILE: &str = "Profile";
 const WORDS_CHAT: &str = "Chat";
 const WORDS_HELP: &str = "Help";
 const WORDS_QUIT: &str = "Quit";
-const WORDS_QUIT_SURE: &str = "Quit?";
-const REPORT_QUITTING: &str = "Leaving the world...";
 const WORDS_PIN: &str = "Pin";
 const PIN_WIDTH: f32 = 48.0;
 const REPORT_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
@@ -74,13 +91,19 @@ const HINT_MAP: &str = "Double-click: use.  Right-click: more.";
 const HINT_MAP_WAR: &str = "Double-click: attack.  Right-click: more.";
 const HINT_MAP_ITEM: &str = "Double-click: use.  Drag: move.  Right-click: more.";
 const HINT_MAP_TARGET: &str = "Click: target.";
-/// The script command that answers a prompt of the shard.
-const COMMAND_PROMPT_ANSWER: &str = "promptmsg";
-const COMMAND_PROMPT_CANCEL: &str = "cancelprompt";
-const COMMAND_ENTRY_ANSWER: &str = "textentrymsg";
-const COMMAND_ENTRY_CANCEL: &str = "canceltextentry";
 const HINT_ORDER: &str = "An order, for example: attack the orc. Press Enter.";
 const HINT_ORDER_OFF: &str = "Orders are off. Set TYPESAFE_API_KEY.";
+const HINT_CLOSED: &str = "Press Enter to chat.";
+const WORDS_YES: &str = "Yes";
+const WORDS_NO: &str = "No";
+const QUESTION_SIZE: Vec2 = Vec2::new(300.0, 110.0);
+/// The id of the chat line. The keys know it by this id.
+const CHAT_BOX: &str = "chat-box";
+
+/// The chat line's id, so the keys know when it has them.
+pub fn chat_id() -> Id {
+    Id::new(CHAT_BOX)
+}
 
 /// Where the other parts of the window are, so this part knows what a
 /// click is on.
@@ -99,6 +122,32 @@ pub struct Places<'a> {
     pub profiles: &'a mut ProfileUi,
     pub chat: &'a mut ChatUi,
     pub build: &'a BuildUi,
+    /// The Modern panels, whose launcher the bar opens.
+    pub modern: &'a mut ModernUi,
+    pub profile: &'a Profile,
+    pub movement: &'a Movement,
+    /// The Classic style draws its own questions as gumps.
+    pub classic: bool,
+    /// Where the world is drawn: the whole window, or the game window of
+    /// the Classic style.
+    pub view: Rect,
+}
+
+/// Where words beside the bar go, `gap` from it: under it, or over it when
+/// it stands `low`, at the foot of the window. Gives the point and the side
+/// of the words that touches it.
+fn beside_bar(bar: Rect, low: bool, gap: f32) -> (Pos2, Align2) {
+    if low {
+        (
+            Pos2::new(bar.center().x, bar.top() - gap),
+            Align2::CENTER_BOTTOM,
+        )
+    } else {
+        (
+            Pos2::new(bar.center().x, bar.bottom() + gap),
+            Align2::CENTER_TOP,
+        )
+    }
 }
 
 /// The click sense of the whole map. Call this before any button is made.
@@ -190,35 +239,39 @@ impl ChatMode {
     }
 }
 
-/// A prompt answer as one line of the script language. The quote that
-/// would end the text early is taken out.
-fn typed_answer(command: &str, words: &str) -> String {
-    format!("{command} '{}'", words.replace('\'', ""))
-}
-
-/// The commands that answer and cancel what the shard asks for now: a
-/// prompt, or a dialog with a text field. None when it asks for nothing.
-fn asked_commands(frame: &WatchFrame) -> Option<(&'static str, &'static str)> {
-    if frame.text_entry.is_some() {
-        Some((COMMAND_ENTRY_ANSWER, COMMAND_ENTRY_CANCEL))
-    } else if frame.prompt {
-        Some((COMMAND_PROMPT_ANSWER, COMMAND_PROMPT_CANCEL))
-    } else {
-        None
-    }
-}
-
 #[derive(Default)]
 pub struct ControlUi {
     /// The operator folded the bar away.
     folded: bool,
-    text: String,
+    /// The chat line of both styles: the Modern chat box draws it here,
+    /// the Classic style at the foot of its game window.
+    chat_line: ChatLine,
     mode: ChatMode,
     steer: Steer,
     /// The last report, and when it came.
     report: Option<(Report, f64)>,
-    /// The human pressed Quit once. The next press quits.
-    quit_asked: bool,
+    /// Window commands of the buttons for the style, for the next frame.
+    window_commands: Vec<WindowCommand>,
+}
+
+/// Which clicks on the ground run or walk there, from the General page and
+/// the keys held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct GroundClicks {
+    /// Any click runs: "Click on the ground runs there" is on, or the run
+    /// key is held.
+    run: bool,
+    /// A double click walks, by the pathfinding options.
+    double: bool,
+}
+
+impl GroundClicks {
+    fn of(general: &GeneralOptions, modifiers: Modifiers) -> Self {
+        Self {
+            run: general.click_to_run || general.run_click_key.is_held(modifiers),
+            double: general.pathfinding && (modifiers.shift || !general.shift_pathfinding),
+        }
+    }
 }
 
 /// The act for a click on the map.
@@ -227,6 +280,7 @@ fn act_for_click(
     thing: Option<(u32, PickKind)>,
     tile: (u16, u16, i8),
     double: bool,
+    ground: GroundClicks,
 ) -> Option<Act> {
     let (x, y, z) = tile;
     Some(match (thing, frame.target_cursor, double) {
@@ -235,9 +289,17 @@ fn act_for_click(
         (Some((serial, PickKind::Mobile)), false, true) if frame.war => Act::Attack(serial),
         (Some((serial, _)), false, true) => Act::Use(serial),
         (Some((serial, _)), false, false) => Act::Look(serial),
-        (None, false, false) => Act::WalkTo { x, y },
-        (None, false, true) => return None,
+        (None, false, _) if ground.run => Act::RunTo { x, y },
+        (None, false, true) if ground.double => Act::WalkTo { x, y },
+        (None, false, _) => return None,
     })
+}
+
+/// What a drag on the map takes: what the button went down on. With
+/// Sallos easy grab, a drag that began on the ground takes what the mouse
+/// is over now, as in the reference client.
+fn grabbed<T>(pressed_on: Option<T>, hovered: Option<T>, easy_grab: bool) -> Option<T> {
+    pressed_on.or(hovered.filter(|_| easy_grab))
 }
 
 fn hint_for(frame: &WatchFrame, kind: PickKind) -> &'static str {
@@ -266,17 +328,34 @@ impl ControlUi {
         }
         let mut on_controls = places.covered.to_vec();
         let map = places.map;
-        let bar = self.bar(ui, rect, frame, tools.scene, hand, &mut places, time);
+        let bar = self.bar(ui, rect, frame, tools.scene, hand, &mut places);
         on_controls.push(bar);
-        if let Some(row) = places.chat_row {
-            self.chat(ui, row, frame, hand, places.deck, time);
+        if let Some(row) = places.chat_row.filter(|_| !self.chat_line.is_hidden()) {
+            self.chat(
+                ui,
+                row,
+                frame,
+                hand,
+                places.deck,
+                time,
+                &places.profile.speech,
+            );
             on_controls.push(row);
         }
-        self.show_report(ui, bar, time);
+        self.show_report(ui, bar, places.classic, time);
+        // The Classic style asks the question with its own gump.
+        let asked = if places.classic {
+            None
+        } else {
+            question(ui, rect, hand)
+        };
+        if let Some(asked) = asked {
+            on_controls.push(asked);
+        }
         if frame.human_control {
             act_on_map(
                 ui,
-                rect,
+                places.view,
                 frame,
                 hud,
                 tools,
@@ -285,9 +364,78 @@ impl ControlUi {
                 &on_controls,
                 places.boxes,
                 places.build,
+                places.profile,
+                places.movement,
+                places.classic,
             );
         }
     }
+
+    /// The chat line holds no words.
+    pub fn chat_empty(&self) -> bool {
+        self.chat_line.text.is_empty()
+    }
+
+    /// Hides the chat line, or shows it again.
+    pub fn toggle_chat(&mut self) {
+        self.chat_line.toggle_hidden();
+    }
+
+    /// Pastes the clipboard into the chat line in the next frame.
+    pub fn paste(&mut self) {
+        self.chat_line.paste();
+    }
+
+    /// The chat line, for the Classic style to draw.
+    pub fn chat_line(&mut self) -> &mut ChatLine {
+        &mut self.chat_line
+    }
+
+    /// The window commands the buttons gave since the last frame, for the
+    /// style to do.
+    pub fn take_window_commands(&mut self) -> Vec<WindowCommand> {
+        std::mem::take(&mut self.window_commands)
+    }
+
+    /// Ctrl+Q (older) or Ctrl+W in the chat line.
+    pub fn history(&mut self, older: bool) {
+        if older {
+            self.chat_line.older();
+        } else {
+            self.chat_line.newer();
+        }
+    }
+}
+
+/// The question of the criminal action, with Yes and No. Gives its place
+/// while it waits for the answer.
+fn question(ui: &egui::Ui, rect: Rect, hand: &Hand) -> Option<Rect> {
+    let words = hand.question()?;
+    let panel = Rect::from_center_size(rect.center(), QUESTION_SIZE);
+    theme::panel(ui.painter(), panel);
+    let inner = panel.shrink(theme::PANEL_PAD);
+    ui.painter().text(
+        Pos2::new(inner.center().x, inner.top()),
+        Align2::CENTER_TOP,
+        words,
+        text_font(theme::SIZE_BODY),
+        theme::ALARM,
+    );
+    let buttons_top = inner.bottom() - SEGMENT_HEIGHT;
+    let half = (inner.width() - BUTTON_GAP) / 2.0;
+    for (at, (label, yes)) in [(WORDS_YES, true), (WORDS_NO, false)]
+        .into_iter()
+        .enumerate()
+    {
+        let area = Rect::from_min_size(
+            Pos2::new(inner.left() + at as f32 * (half + BUTTON_GAP), buttons_top),
+            Vec2::new(half, SEGMENT_HEIGHT),
+        );
+        if theme::segment(ui, area, label, theme::TEXT) {
+            hand.answer(yes);
+        }
+    }
+    Some(panel)
 }
 
 /// The clicks of the human on the map, and the hint beside the mouse.
@@ -303,20 +451,35 @@ fn act_on_map(
     on_controls: &[Rect],
     boxes: &mut BoxesUi,
     builder: &BuildUi,
+    profile: &Profile,
+    movement: &Movement,
+    classic: bool,
 ) {
     let hand = tools.hand;
-    if frame.target_cursor && ui.input(|i| i.key_pressed(Key::Escape)) {
+    let escape = ui.input(|i| i.key_pressed(Key::Escape));
+    if escape && hand.aiming().is_some() {
+        hand.cancel_aim();
+    } else if escape && frame.target_cursor {
         hand.act(Act::CancelTarget);
     }
     let mouse = ui.input(|i| i.pointer.hover_pos());
     let on_panel =
         mouse.is_some_and(|at| hud.covers(at) || on_controls.iter().any(|r| r.contains(at)));
-    tools
-        .desk
-        .carry_and_land(ui, rect, frame, tools.scene, hand, on_panel);
-    let mouse_on_map = mouse.filter(|_| !on_panel && !tools.ring.is_open());
-    let character = rect.center();
-    let steered = steer.run(ui, character, mouse_on_map, hand, tools.time);
+    tools.desk.carry_and_land(
+        ui,
+        rect,
+        frame,
+        tools.scene,
+        hand,
+        on_panel,
+        profile.general.shift_to_split_stacks,
+    );
+    let mouse_on_map = mouse.filter(|at| rect.contains(*at) && !on_panel && !tools.ring.is_open());
+    let character = tools
+        .scene
+        .place_of(frame, frame.serial)
+        .map_or(rect.center(), |place| tools.scene.screen_of(rect, place));
+    let steered = steer.run(ui, character, mouse_on_map, hand, tools.time, movement);
     let Some(mouse) = mouse_on_map else {
         return;
     };
@@ -346,13 +509,18 @@ fn act_on_map(
         return;
     }
     let thing = tools.scene.thing_at(mouse).cloned();
-    if let Some(thing) = &thing {
+    if let Some(aim) = hand.aiming() {
+        super::tips::label(ui, aim_words(aim), "");
+    } else if let Some(thing) = &thing {
         let footer = hint_for(frame, thing.kind);
         tools
             .tips
             .point_at(ui, hand, thing.serial, &thing.name, footer, tools.time);
     }
-    if let Some(thing) = thing.as_ref().filter(|_| map.secondary_clicked()) {
+    let shift = ui.input(|i| i.modifiers.shift);
+    let shift_needed = classic && profile.general.shift_for_context_menus;
+    let asks_menu = opens_menu(map.secondary_clicked(), map.clicked(), shift, shift_needed);
+    if let Some(thing) = thing.as_ref().filter(|_| asks_menu) {
         tools.ring.open_at(
             mouse,
             thing.serial,
@@ -360,11 +528,19 @@ fn act_on_map(
             Subject::OnMap(thing.kind),
             hand,
         );
-        return;
+        // A left click also looks at the thing, as in the classic client.
+        if !map.clicked() {
+            return;
+        }
     }
-    let dragged_item = thing
+    let pressed_on = ui
+        .input(|i| i.pointer.press_origin())
+        .and_then(|at| tools.scene.thing_at(at).cloned());
+    let grabbed = grabbed(pressed_on, thing.clone(), profile.general.sallos_easy_grab);
+    let dragging = map.drag_started_by(egui::PointerButton::Primary);
+    let dragged_item = grabbed
         .as_ref()
-        .filter(|t| t.kind == PickKind::Item && map.drag_started_by(egui::PointerButton::Primary))
+        .filter(|t| t.kind == PickKind::Item && dragging)
         .and_then(|t| frame.items.iter().find(|item| item.serial == t.serial));
     if let Some(item) = dragged_item {
         tools.desk.pick_up(&WatchPackItem {
@@ -373,13 +549,25 @@ fn act_on_map(
             hue: item.hue,
             amount: item.amount,
             name: item.name.clone(),
+            ..WatchPackItem::default()
         });
+        return;
+    }
+    // A drag from a mobile or from the ground is the gumps' to take: it
+    // pulls off a health bar, or selects health bars by a box.
+    let drag_from = grabbed.as_ref().map_or(Some(None), |t| {
+        (t.kind == PickKind::Mobile).then_some(Some(t.serial))
+    });
+    if let Some(mobile) = drag_from.filter(|_| dragging) {
+        let from = ui.input(|i| i.pointer.press_origin()).unwrap_or(mouse);
+        tools.scene.start_map_drag(MapDrag { from, mobile });
         return;
     }
     if map.clicked() || map.double_clicked() {
         let tile = tools.scene.tile_at(rect, frame, mouse);
         let picked = thing.map(|t| (t.serial, t.kind));
-        if let Some(act) = act_for_click(frame, picked, tile, map.double_clicked()) {
+        let ground = GroundClicks::of(&profile.general, ui.input(|i| i.modifiers));
+        if let Some(act) = act_for_click(frame, picked, tile, map.double_clicked(), ground) {
             if let Act::Use(thing) = act {
                 boxes.used(thing);
             }
@@ -389,21 +577,11 @@ fn act_on_map(
 }
 
 impl ControlUi {
-    /// The words of the quit button: it asks before it quits.
-    fn quit_words(&self) -> &'static str {
-        if self.quit_asked {
-            WORDS_QUIT_SURE
-        } else {
-            WORDS_QUIT
-        }
-    }
-
     /// The panel at the top middle of the window. Its first row is the
     /// location, with the arrow that folds the menu in its corner. Under a
     /// thin rule is the menu: who has control, then one row of equal buttons
     /// from edge to edge. Each part has the same left and right edge, so the
     /// panel reads as one piece. Folded, only the location row stays.
-    #[allow(clippy::too_many_arguments)]
     fn bar(
         &mut self,
         ui: &egui::Ui,
@@ -412,7 +590,6 @@ impl ControlUi {
         scene: &Scene,
         hand: &Hand,
         places: &mut Places<'_>,
-        time: f64,
     ) -> Rect {
         let war_words = if frame.war { WORDS_PEACE } else { WORDS_WAR };
         let buttons: Vec<(&str, Press)> = if frame.human_control {
@@ -433,7 +610,7 @@ impl ControlUi {
                     (WORDS_STOP, Press::Act(Act::Stop)),
                     (WORDS_GIVE_BACK, Press::Act(Act::GiveBack)),
                     (WORDS_OPTIONS, Press::Options),
-                    (self.quit_words(), Press::Quit),
+                    (WORDS_QUIT, Press::Quit),
                 ])
                 .collect()
         } else {
@@ -443,26 +620,28 @@ impl ControlUi {
                 (WORDS_MAP, Press::Map),
                 (WORDS_MACROS, Press::Macros),
                 (WORDS_OPTIONS, Press::Options),
-                (self.quit_words(), Press::Quit),
+                (WORDS_QUIT, Press::Quit),
             ]
         };
-        let status = match (frame.human_control, frame.target_cursor) {
-            (false, _) => None,
-            (true, false) => Some(WORDS_IN_CONTROL),
-            (true, true) => Some(WORDS_TARGET),
+        let status = match (frame.human_control, frame.target_cursor, hand.aiming()) {
+            (false, ..) => None,
+            (true, _, Some(aim)) => Some(aim_words(aim)),
+            (true, false, None) => Some(WORDS_IN_CONTROL),
+            (true, true, None) => Some(WORDS_TARGET),
         };
         let menu_height = if self.folded {
             0.0
         } else {
             RULE_GAP * 2.0 + status.map_or(0.0, |_| STRIP_ROW) + SEGMENT_HEIGHT
         };
-        let panel = Rect::from_min_size(
-            Pos2::new(
-                rect.center().x - STRIP_WIDTH / 2.0,
-                rect.top() + theme::SCREEN_MARGIN,
-            ),
-            Vec2::new(STRIP_WIDTH, STRIP_PAD * 2.0 + STRIP_ROW + menu_height),
-        );
+        let size = Vec2::new(BAR_WIDTH, STRIP_PAD * 2.0 + STRIP_ROW + menu_height);
+        // The Classic style keeps the top for its menu bar and its game
+        // window, so there the bar stands at the foot of the window.
+        let panel = if places.classic {
+            Align2::CENTER_BOTTOM.align_size_within_rect(size, rect.shrink(theme::SCREEN_MARGIN))
+        } else {
+            layout::first_place(rect, Spot::ControlBar, size)
+        };
         theme::panel(ui.painter(), panel);
         let inner = panel.shrink(STRIP_PAD);
         let top_row = Rect::from_min_size(inner.min, Vec2::new(inner.width(), STRIP_ROW));
@@ -479,11 +658,24 @@ impl ControlUi {
         if fold_arrow(ui, fold, self.folded) {
             self.folded = !self.folded;
         }
+        if !places.classic {
+            let launcher =
+                Rect::from_min_size(top_row.min, Vec2::new(LAUNCHER_BUTTON_WIDTH, STRIP_ROW));
+            let color = if places.modern.launcher_shows() {
+                theme::GOAL
+            } else {
+                theme::TEXT_DIM
+            };
+            if theme::segment(ui, launcher, WORDS_LAUNCHER, color) {
+                places.modern.toggle_launcher();
+            }
+        }
         if !scene.note().is_empty() {
+            let (at, side) = beside_bar(panel, places.classic, theme::ROW_GAP);
             theme::shadowed_text(
                 ui.painter(),
-                Pos2::new(panel.center().x, panel.bottom() + theme::ROW_GAP),
-                Align2::CENTER_TOP,
+                at,
+                side,
                 scene.note(),
                 text_font(theme::SIZE_SMALL),
                 theme::WAITING,
@@ -530,20 +722,9 @@ impl ControlUi {
                 Press::Profile if places.profiles.shows(frame.serial) => places.profiles.close(),
                 Press::Profile => places.profiles.show(frame.serial, hand),
                 Press::Chat => places.chat.toggle(),
-                // One press asks, the next one quits. A stray click on
-                // the last button of the bar must not end the game.
-                Press::Quit if self.quit_asked => {
-                    hand.act(Act::Quit);
-                    self.report = Some((
-                        Report {
-                            text: REPORT_QUITTING.into(),
-                            failed: false,
-                        },
-                        time,
-                    ));
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                Press::Quit => self.quit_asked = true,
+                // Each style asks with its own question before the game
+                // quits.
+                Press::Quit => self.window_commands.push(WindowCommand::QuitGame),
                 Press::Bag(bag) if places.boxes.shows(frame, bag) => places.boxes.close(bag),
                 Press::Bag(bag) => {
                     places.boxes.used(bag);
@@ -555,7 +736,9 @@ impl ControlUi {
     }
 
     /// The chat box under the journal. One button picks between words to
-    /// say and an order for the character.
+    /// say and an order for the character. The Speech page says when the
+    /// box takes the keys and what Enter does.
+    #[allow(clippy::too_many_arguments)]
     fn chat(
         &mut self,
         ui: &mut egui::Ui,
@@ -564,6 +747,7 @@ impl ControlUi {
         hand: &Hand,
         deck: &mut DeckUi,
         time: f64,
+        speech: &SpeechOptions,
     ) {
         if !frame.human_control {
             ui.painter().text(
@@ -575,11 +759,10 @@ impl ControlUi {
             );
             return;
         }
+        // The entry dialog of the Modern style cancels what the shard asks
+        // on Esc. A prompt of the shard takes the next line, whatever the
+        // mode is.
         let asked = asked_commands(frame);
-        if let Some((_, cancel)) = asked.filter(|_| ui.input(|i| i.key_pressed(Key::Escape))) {
-            hand.act(Act::Command(cancel.into()));
-        }
-        // A prompt of the shard takes the next line, whatever the mode is.
         let mode_words = match (asked.is_some(), self.mode) {
             (true, _) => WORDS_ANSWER,
             (false, ChatMode::Say) => WORDS_SAY,
@@ -600,10 +783,10 @@ impl ControlUi {
         if can_pin {
             let at = Pos2::new(field.right() + BUTTON_GAP, row.top());
             let (_, pinned) = theme::button(ui, at, WORDS_PIN, theme::TEXT);
-            let words = self.text.trim();
+            let words = self.chat_line.text.trim();
             if pinned && !words.is_empty() {
                 if deck.pin_command(&frame.name, words) {
-                    self.text.clear();
+                    self.chat_line.text.clear();
                 } else {
                     self.report = Some((
                         Report {
@@ -617,16 +800,9 @@ impl ControlUi {
         }
         // The box keeps one id of its own, so it does not lose the focus
         // when the buttons beside it come and go.
-        let key = Id::new("chat-box");
+        let key = chat_id();
+        self.chat_line.take_keys(ui.ctx(), key, speech);
         let typing = ui.ctx().memory(|m| m.has_focus(key));
-        // Enter opens the box, and Esc lets it go. While it has the focus
-        // the keys write words; while it has not, they walk the character.
-        if !typing && ui.input(|i| i.key_pressed(Key::Enter)) {
-            ui.ctx().memory_mut(|m| m.request_focus(key));
-        }
-        if typing && ui.input(|i| i.key_pressed(Key::Escape)) {
-            ui.ctx().memory_mut(|m| m.surrender_focus(key));
-        }
         ui.painter()
             .rect_filled(field, CornerRadius::same(FIELD_RADIUS), theme::TRACK);
         if typing {
@@ -638,14 +814,20 @@ impl ControlUi {
             );
         }
         let hint = match (asked, self.mode, hand.orders_on) {
-            (Some(_), ..) => frame.text_entry.as_deref().unwrap_or(HINT_ANSWER),
+            (Some(_), ..) => frame
+                .text_entry
+                .as_ref()
+                .map_or(HINT_ANSWER, |entry| entry.words()),
+            (None, ChatMode::Say, _) if !self.chat_line.is_open(speech) => HINT_CLOSED,
             (None, ChatMode::Say, _) => HINT_SAY,
             (None, ChatMode::Order, true) => HINT_ORDER,
             (None, ChatMode::Order, false) => HINT_ORDER_OFF,
             (None, ChatMode::Command, _) => HINT_COMMAND,
         };
-        let edit = egui::TextEdit::singleline(&mut self.text)
+        // Tab is war mode, so it must not move the keys to another field.
+        let edit = egui::TextEdit::singleline(&mut self.chat_line.text)
             .id(key)
+            .lock_focus(true)
             .frame(false)
             .font(text_font(theme::SIZE_BODY))
             .text_color(theme::TEXT)
@@ -656,22 +838,27 @@ impl ControlUi {
         if !sent {
             return;
         }
-        // The box stays open after a line, so the next one needs no click.
-        response.request_focus();
-        let words = self.text.trim().to_string();
-        if words.is_empty() {
-            return;
+        let shift = ui.input(|i| i.modifiers.shift);
+        let line = self.chat_line.enter(shift, speech);
+        // An open line stays open after a line, so the next one needs no
+        // key.
+        if self.chat_line.is_open(speech) {
+            response.request_focus();
         }
-        hand.act(match (asked, self.mode) {
-            (Some((answer, _)), _) => Act::Command(typed_answer(answer, &words)),
-            (None, ChatMode::Say) => Act::Say(words),
-            (None, ChatMode::Order) => Act::Order(words, Box::new(frame.clone())),
-            (None, ChatMode::Command) => Act::Command(words),
-        });
-        self.text.clear();
+        let Some(words) = line else {
+            return;
+        };
+        match (asked, self.mode) {
+            (Some(asked), _) => hand.act(asked.answer_act(&words)),
+            (None, ChatMode::Say) => say_line(&words, frame, speech, hand),
+            (None, ChatMode::Order) => hand.act(Act::Order(words, Box::new(frame.clone()))),
+            (None, ChatMode::Command) => hand.act(Act::Command(words)),
+        }
     }
 
-    fn show_report(&mut self, ui: &egui::Ui, bar: Rect, time: f64) {
+    /// The words of the last report beside the bar, `low` when the bar
+    /// stands at the foot of the window.
+    fn show_report(&mut self, ui: &egui::Ui, bar: Rect, low: bool, time: f64) {
         let Some((report, since)) = &self.report else {
             return;
         };
@@ -684,10 +871,11 @@ impl ControlUi {
         } else {
             theme::TEXT
         };
+        let (at, side) = beside_bar(bar, low, REPORT_GAP);
         theme::shadowed_text(
             ui.painter(),
-            Pos2::new(bar.center().x, bar.bottom() + REPORT_GAP),
-            Align2::CENTER_TOP,
+            at,
+            side,
             &report.text,
             text_font(theme::SIZE_BODY),
             color,
@@ -699,9 +887,31 @@ impl ControlUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::window::settings::ModifierKey;
 
     const ORC: u32 = 9;
     const TILE: (u16, u16, i8) = (10, 20, 5);
+
+    #[test]
+    fn words_beside_the_bar_go_under_it_or_over_it_at_the_foot() {
+        const GAP: f32 = 4.0;
+        const BAR_AT: Pos2 = Pos2::new(100.0, 200.0);
+        let bar = Rect::from_min_size(BAR_AT, Vec2::new(BAR_WIDTH, BAR_MOST_HEIGHT));
+        assert_eq!(
+            beside_bar(bar, false, GAP),
+            (
+                Pos2::new(bar.center().x, bar.bottom() + GAP),
+                Align2::CENTER_TOP
+            )
+        );
+        assert_eq!(
+            beside_bar(bar, true, GAP),
+            (
+                Pos2::new(bar.center().x, bar.top() - GAP),
+                Align2::CENTER_BOTTOM
+            )
+        );
+    }
 
     fn frame(war: bool, target_cursor: bool) -> WatchFrame {
         WatchFrame {
@@ -712,33 +922,90 @@ mod tests {
     }
 
     #[test]
-    fn the_chat_modes_go_round_and_a_prompt_answer_is_one_command() {
-        assert_eq!(ChatMode::Say.next().next().next(), ChatMode::Say);
-        let mut frame = frame(false, false);
-        assert_eq!(asked_commands(&frame), None);
-        frame.prompt = true;
-        let (answer, _) = asked_commands(&frame).unwrap();
-        assert_eq!(typed_answer(answer, "Bob's shop"), "promptmsg 'Bobs shop'");
-        frame.text_entry = Some("Name your pet".into());
-        assert_eq!(asked_commands(&frame).unwrap().0, COMMAND_ENTRY_ANSWER);
+    fn a_drag_takes_what_it_began_on_or_with_easy_grab_what_it_is_over() {
+        assert_eq!(grabbed(Some(1), Some(2), false), Some(1));
+        assert_eq!(grabbed(Some(1), Some(2), true), Some(1));
+        assert_eq!(grabbed(None, Some(2), false), None);
+        assert_eq!(grabbed(None, Some(2), true), Some(2));
     }
 
     #[test]
-    fn a_click_on_the_ground_walks_and_a_target_cursor_targets() {
+    fn the_chat_modes_go_round() {
+        assert_eq!(ChatMode::Say.next().next().next(), ChatMode::Say);
+    }
+
+    #[test]
+    fn a_click_on_the_ground_walks_as_the_general_page_says() {
         let peace = frame(false, false);
+        let off = GeneralOptions {
+            pathfinding: false,
+            ..GeneralOptions::default()
+        };
+        let still = GroundClicks::of(&off, Modifiers::NONE);
+        assert_eq!(act_for_click(&peace, None, TILE, false, still), None);
+        assert_eq!(act_for_click(&peace, None, TILE, true, still), None);
+        let mut general = GeneralOptions::default();
+        assert!(general.pathfinding, "a double click walks by default");
+        let walk = Some(Act::WalkTo { x: 10, y: 20 });
+        let pathfind = GroundClicks::of(&general, Modifiers::NONE);
+        assert_eq!(act_for_click(&peace, None, TILE, true, pathfind), walk);
+        assert_eq!(act_for_click(&peace, None, TILE, false, pathfind), None);
+        general.shift_pathfinding = true;
+        let no_shift = GroundClicks::of(&general, Modifiers::NONE);
+        assert_eq!(act_for_click(&peace, None, TILE, true, no_shift), None);
+        let shift = GroundClicks::of(&general, Modifiers::SHIFT);
+        assert_eq!(act_for_click(&peace, None, TILE, true, shift), walk);
+    }
+
+    #[test]
+    fn a_click_on_the_ground_runs_with_the_run_key_or_the_click_to_run_option() {
+        let peace = frame(false, false);
+        let run = Some(Act::RunTo { x: 10, y: 20 });
+        let mut general = GeneralOptions::default();
+        let plain = GroundClicks::of(&general, Modifiers::NONE);
+        assert_eq!(act_for_click(&peace, None, TILE, false, plain), None);
+        let alt = GroundClicks::of(&general, Modifiers::ALT);
+        assert_eq!(act_for_click(&peace, None, TILE, false, alt), run);
+        assert_eq!(act_for_click(&peace, None, TILE, true, alt), run);
+        for other in [Modifiers::CTRL, Modifiers::SHIFT] {
+            let clicks = GroundClicks::of(&general, other);
+            assert_eq!(act_for_click(&peace, None, TILE, false, clicks), None);
+        }
+        let orc = Some((ORC, PickKind::Mobile));
         assert_eq!(
-            act_for_click(&peace, None, TILE, false),
-            Some(Act::WalkTo { x: 10, y: 20 })
+            act_for_click(&peace, orc, TILE, false, alt),
+            Some(Act::Look(ORC)),
+            "the run key leaves a click on a thing as it is"
         );
-        assert_eq!(act_for_click(&peace, None, TILE, true), None);
+        general.run_click_key = ModifierKey::Ctrl;
+        let ctrl = GroundClicks::of(&general, Modifiers::CTRL);
+        assert_eq!(act_for_click(&peace, None, TILE, false, ctrl), run);
+        let alt = GroundClicks::of(&general, Modifiers::ALT);
+        assert_eq!(act_for_click(&peace, None, TILE, false, alt), None);
+        general.run_click_key = ModifierKey::None;
+        general.click_to_run = true;
+        let toggled = GroundClicks::of(&general, Modifiers::NONE);
+        assert_eq!(act_for_click(&peace, None, TILE, false, toggled), run);
+        assert_eq!(act_for_click(&peace, None, TILE, true, toggled), run);
         let aiming = frame(false, true);
         assert_eq!(
-            act_for_click(&aiming, None, TILE, false),
+            act_for_click(&aiming, None, TILE, false, toggled),
+            Some(Act::TargetGround { x: 10, y: 20, z: 5 }),
+            "a target cursor takes the click first"
+        );
+    }
+
+    #[test]
+    fn a_target_cursor_targets_what_is_clicked() {
+        let aiming = frame(false, true);
+        let ground = GroundClicks::default();
+        assert_eq!(
+            act_for_click(&aiming, None, TILE, false, ground),
             Some(Act::TargetGround { x: 10, y: 20, z: 5 })
         );
         let orc = Some((ORC, PickKind::Mobile));
         assert_eq!(
-            act_for_click(&aiming, orc, TILE, false),
+            act_for_click(&aiming, orc, TILE, false, ground),
             Some(Act::Target(ORC))
         );
     }
@@ -747,20 +1014,44 @@ mod tests {
     fn a_double_click_attacks_in_war_and_uses_in_peace() {
         let orc = Some((ORC, PickKind::Mobile));
         assert_eq!(
-            act_for_click(&frame(true, false), orc, TILE, true),
+            act_for_click(
+                &frame(true, false),
+                orc,
+                TILE,
+                true,
+                GroundClicks::default()
+            ),
             Some(Act::Attack(ORC))
         );
         assert_eq!(
-            act_for_click(&frame(false, false), orc, TILE, true),
+            act_for_click(
+                &frame(false, false),
+                orc,
+                TILE,
+                true,
+                GroundClicks::default()
+            ),
             Some(Act::Use(ORC))
         );
         assert_eq!(
-            act_for_click(&frame(true, false), orc, TILE, false),
+            act_for_click(
+                &frame(true, false),
+                orc,
+                TILE,
+                false,
+                GroundClicks::default()
+            ),
             Some(Act::Look(ORC))
         );
         let chest = Some((ORC, PickKind::Item));
         assert_eq!(
-            act_for_click(&frame(true, false), chest, TILE, true),
+            act_for_click(
+                &frame(true, false),
+                chest,
+                TILE,
+                true,
+                GroundClicks::default()
+            ),
             Some(Act::Use(ORC))
         );
     }

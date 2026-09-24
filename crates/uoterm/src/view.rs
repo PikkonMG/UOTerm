@@ -4,6 +4,7 @@
 //! not the OS window.
 
 use serde_json::Value;
+use std::time::{Duration, Instant};
 use uoterm_protocol::types::{tile_distance, DIR_MASK, DIR_RUNNING, LAYER_BACKPACK};
 
 pub const WATCH_POLL_MS: u64 = 250;
@@ -77,8 +78,20 @@ pub struct WatchMobile {
     pub notoriety: u8,
     /// The share of his hits the mobile has left, when the shard told it.
     pub hits_percent: Option<u8>,
+    /// The share of his mana and of his stamina, when the shard told them:
+    /// for a party member, and on some shards for a pet.
+    pub mana_percent: Option<u8>,
+    pub stam_percent: Option<u8>,
     pub dist: u16,
     pub look: WatchLook,
+    pub poisoned: bool,
+    /// He cannot move: a spell or a skill holds him.
+    pub paralyzed: bool,
+    /// He wears the yellow bar of the blessed.
+    pub yellow_hits: bool,
+    pub hidden: bool,
+    /// One of the followers of the character: the shard lets him rename it.
+    pub follower: bool,
 }
 
 /// One item that lies on the ground.
@@ -92,6 +105,9 @@ pub struct WatchItem {
     pub x: u16,
     pub y: u16,
     pub z: i8,
+    /// The direction byte of the item: the way a corpse lies, and the light
+    /// shape of a light on the ground.
+    pub direction: u8,
 }
 
 /// A house or a boat. Its pieces come from the multi files of the client.
@@ -121,6 +137,12 @@ pub struct WatchPackItem {
     pub hue: u16,
     pub amount: u16,
     pub name: String,
+    /// Where it lies in the container gump, in pixels, as the shard placed
+    /// it.
+    pub x: u16,
+    pub y: u16,
+    /// The layer the shard gave it; an item a corpse wears has one.
+    pub layer: u8,
 }
 
 /// A container the character has opened: his pack, a chest, a corpse.
@@ -128,9 +150,100 @@ pub struct WatchPackItem {
 pub struct WatchContainer {
     pub serial: u32,
     pub name: String,
+    /// The gump the shard opened it with, which is the picture it shows.
+    pub gump: u16,
     /// How many items it holds. `items` may list fewer.
     pub total: usize,
     pub items: Vec<WatchPackItem>,
+    /// The graphic and the hue of the container item.
+    pub graphic: u16,
+    pub hue: u16,
+    /// What holds it: a container or a mobile. None on the ground.
+    pub parent: Option<u32>,
+    /// Counts up each time a container opens, this one or another.
+    pub opened: u64,
+}
+
+/// A dye tub that waits for a colour.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchDye {
+    pub serial: u32,
+    pub graphic: u16,
+}
+
+/// The spells one spellbook holds, and its school.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchSpellbook {
+    pub serial: u32,
+    pub graphic: u16,
+    pub first_spell: u16,
+    /// magery, necromancy, chivalry, bushido, ninjitsu, spellweaving,
+    /// mysticism or mastery. Empty for a book of no school the client knows.
+    pub school: String,
+    /// Each spell in the book: its number and its name.
+    pub spells: Vec<(u16, String)>,
+}
+
+/// The weapon move armed, and the spells and stances that stay on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchAbilities {
+    /// The number and the name of the armed weapon move.
+    pub weapon: Option<(u8, String)>,
+    /// The number and the name of each spell or stance on.
+    pub spells: Vec<(u16, String)>,
+}
+
+/// A party or guild member out of sight, where the shard last said he
+/// stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchTrackedMember {
+    pub serial: u32,
+    pub name: String,
+    pub x: u16,
+    pub y: u16,
+    pub map: u8,
+    /// Only a guild list carries it.
+    pub hits_percent: Option<u8>,
+    pub guild: bool,
+}
+
+/// One buff or debuff on the character, as its icon shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchBuff {
+    pub icon: u16,
+    pub title_cliloc: u32,
+    pub description_cliloc: u32,
+    /// The words of the title and of the text under it, from the client
+    /// files. Empty without them.
+    pub title: String,
+    pub text: String,
+    /// The tab-separated numbers and words the shard put in the text.
+    pub arguments: String,
+    /// The seconds it has left. None for one that lasts until something
+    /// ends it.
+    pub remaining_secs: Option<u64>,
+}
+
+/// One map block an UltimaLive shard changed: its land in the layout of the
+/// map file, its statics records, or both. A window lays them over its own
+/// map files.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchLiveBlock {
+    pub block: u32,
+    /// The count of changes when this block last changed. A window lays a
+    /// block over its map again only when this moved.
+    pub changed: u64,
+    pub land: Option<Vec<u8>>,
+    pub statics: Option<Vec<u8>>,
+}
+
+/// The blocks an UltimaLive shard changed near the character.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchLiveMap {
+    pub map: u8,
+    /// Counts the changes: the blocks moved when it moves.
+    pub revision: u64,
+    pub blocks: Vec<WatchLiveBlock>,
 }
 
 /// A button of a gump. `id` answers the gump. `to_page` only turns the page.
@@ -190,6 +303,11 @@ pub struct WatchSkill {
     pub cap: u16,
     /// 0 up, 1 down, 2 locked.
     pub lock: u8,
+    /// The group of the skill list it shows under. Empty without the
+    /// client files.
+    pub group: String,
+    /// The place of the group in the skill list of the client files.
+    pub group_index: u16,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -197,6 +315,8 @@ pub struct WatchPartyMember {
     pub serial: u32,
     pub name: String,
     pub hits_percent: Option<u8>,
+    pub mana_percent: Option<u8>,
+    pub stam_percent: Option<u8>,
 }
 
 /// What a cue shows on the map.
@@ -207,6 +327,10 @@ pub enum WatchCueKind {
     /// The kind and the action of the newer animation packet.
     Deed(u16, u16),
     Effect(WatchEffect),
+    /// The character died: the death screen shows and its music plays.
+    DeathScreen,
+    /// The shard shut the status bar of the mobile of the cue.
+    StatusBarClosed,
 }
 
 /// A picture that flies, flashes or stays for a moment.
@@ -264,11 +388,51 @@ pub struct WatchShop {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WatchTrade {
     pub with: String,
+    /// The character's own box of the trade, which names the trade.
     pub mine: u32,
     pub i_accept: bool,
     pub they_accept: bool,
     pub mine_items: Vec<WatchPackItem>,
     pub their_items: Vec<WatchPackItem>,
+    /// The gold and platinum the other player offers.
+    pub their_gold: u32,
+    pub their_platinum: u32,
+    /// The gold and platinum the character has to offer.
+    pub my_gold: u32,
+    pub my_platinum: u32,
+}
+
+/// The style of a text entry dialog whose field takes digits only.
+pub const TEXT_ENTRY_STYLE_NUMERIC: u8 = 2;
+
+/// A dialog of the shard with one text field (0xAB).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WatchTextEntry {
+    pub title: String,
+    pub description: String,
+    /// The player may close it without an answer.
+    pub can_cancel: bool,
+    /// 0 is no field style, 1 text, 2 digits only.
+    pub style: u8,
+    /// The most chars the field takes; zero sets no limit.
+    pub max_length: u32,
+}
+
+impl WatchTextEntry {
+    /// The words that name the dialog: its title, or its description when
+    /// it has no title.
+    pub fn words(&self) -> &str {
+        if self.title.is_empty() {
+            &self.description
+        } else {
+            &self.title
+        }
+    }
+
+    /// The field takes digits only.
+    pub fn numeric(&self) -> bool {
+        self.style == TEXT_ENTRY_STYLE_NUMERIC
+    }
 }
 
 /// An old-style menu: a question and its answers. An answer of an item
@@ -325,6 +489,9 @@ pub struct WatchDesigning {
     pub serial: u32,
     /// The level the designer works on, from 1.
     pub floor: u8,
+    /// The width and the depth of the plot, in tiles, when the client files
+    /// hold the foundation.
+    pub plot: Option<(i32, i32)>,
 }
 
 /// A building the shard waits for a place for.
@@ -365,6 +532,11 @@ pub struct WatchBook {
     pub page_count: u16,
     /// The lines of each page that came from the shard.
     pub pages: Vec<Vec<String>>,
+    /// For each page of `pages`, whether the shard sent it; one not sent
+    /// yet shows empty.
+    pub arrived: Vec<bool>,
+    /// The player may write in the book.
+    pub writable: bool,
 }
 
 /// The last paperdoll the shard opened. `seq` grows with each one.
@@ -373,6 +545,8 @@ pub struct WatchPaperdoll {
     pub serial: u32,
     pub text: String,
     pub seq: u64,
+    /// The character may take items off this paperdoll and put them on.
+    pub can_lift: bool,
 }
 
 /// A field of a gump that takes typed words.
@@ -383,6 +557,31 @@ pub struct WatchGumpEntry {
     pub label: String,
     pub text: String,
     pub limit: Option<u32>,
+}
+
+/// A step the session sent: when its slot in the walk came, on the clock of
+/// this program, and how long it lasts before the next step falls due.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WatchStride {
+    pub slot: Instant,
+    pub lasts: Duration,
+}
+
+impl WatchStride {
+    /// Reads the stride the watch tells, as of the moment it is read.
+    fn read(value: &Value, now: Instant) -> Option<Self> {
+        let stride = value.get("stride").filter(|stride| !stride.is_null())?;
+        let ms = |key: &str| {
+            stride
+                .get(key)
+                .and_then(Value::as_u64)
+                .map(Duration::from_millis)
+        };
+        Some(Self {
+            slot: now.checked_sub(ms("ago_ms")?)?,
+            lasts: ms("ms")?,
+        })
+    }
 }
 
 /// The numbers of the character sheet.
@@ -414,8 +613,20 @@ pub struct WatchFrame {
     pub dead: bool,
     /// A human has the character, and the agent waits.
     pub human_control: bool,
+    /// The tile the steps the session has sent leave the character on,
+    /// before the shard has taken them. None when none are out.
+    pub stepping_to: Option<(u16, u16, i8)>,
+    /// The newest step the session sent, as its walk timed it.
+    pub stride: Option<WatchStride>,
     /// The shard waits for the character to point at something.
     pub target_cursor: bool,
+    /// What the open target cursor does to the one it lands on: 0 neutral,
+    /// 1 harmful, 2 beneficial.
+    pub target_flags: u8,
+    /// What the open target cursor asks for: 0 an object, 1 a place.
+    pub target_kind: u8,
+    /// The last thing the character targeted, as the session keeps it.
+    pub last_target: Option<u32>,
     pub poisoned: bool,
     pub hidden: bool,
     pub paralyzed: bool,
@@ -475,16 +686,21 @@ pub struct WatchFrame {
     pub time: (u8, u8),
     /// A place the shard points an arrow at.
     pub quest_arrow: Option<(u16, u16)>,
+    /// The race change the shard waits on.
+    pub race_change: Option<uoterm_world::RaceChange>,
     /// The marks the shard put on the world map.
     pub waypoints: Vec<uoterm_world::Waypoint>,
     /// A web page the shard pointed at. UOTerm never opens it.
     pub shard_url: Option<String>,
     /// The last scroll of words from the shard.
     pub shard_notice: Option<String>,
+    /// The number of the tip of the day those words are, to turn to the
+    /// tip before or after it. None for a notice.
+    pub shard_tip: Option<u32>,
     /// The shard waits for typed words.
     pub prompt: bool,
-    /// The title of a dialog that waits for typed words.
-    pub text_entry: Option<String>,
+    /// A dialog that waits for typed words.
+    pub text_entry: Option<WatchTextEntry>,
     pub old_menu: Option<WatchOldMenu>,
     pub book: Option<WatchBook>,
     pub paperdoll: Option<WatchPaperdoll>,
@@ -492,6 +708,34 @@ pub struct WatchFrame {
     pub context_menu: Option<WatchMenu>,
     pub shop: Option<WatchShop>,
     pub trade: Option<WatchTrade>,
+    /// Every trade open, the newest last.
+    pub trades: Vec<WatchTrade>,
+    pub dye: Option<WatchDye>,
+    /// Resists, luck, followers, tithing, damage, stat cap, race and the
+    /// rest of the status.
+    pub status: uoterm_protocol::StatusExtra,
+    pub female: bool,
+    /// The locks of strength, dexterity and intelligence: 0 up, 1 down,
+    /// 2 locked.
+    pub stat_locks: [u8; 3],
+    pub spellbooks: Vec<WatchSpellbook>,
+    pub abilities: WatchAbilities,
+    pub tracked_members: Vec<WatchTrackedMember>,
+    pub buff_icons: Vec<WatchBuff>,
+    /// The last round trip to the shard, once one was measured.
+    pub latency_ms: Option<u64>,
+    /// The bytes from the shard and to it in the last half second.
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub live_map: WatchLiveMap,
+    /// The leader of a party that invited the character, while the invite
+    /// waits for an answer.
+    pub party_invite: Option<u32>,
+    /// The party may loot what the character kills.
+    pub party_can_loot: bool,
+    /// The shard answers property lists, and the paperdoll carries the
+    /// combat and racial ability books.
+    pub property_lists: bool,
     pub error: String,
 }
 
@@ -561,10 +805,28 @@ impl WatchFrame {
             war: bool_field(me, "war") || bool_at(value, "war"),
             dead: bool_field(me, "dead") || bool_at(value, "dead"),
             human_control: bool_at(value, "human_control"),
+            stride: WatchStride::read(value, Instant::now()),
+            stepping_to: value
+                .get("stepping_to")
+                .filter(|at| !at.is_null())
+                .map(|at| {
+                    (
+                        num_field(Some(at), "x"),
+                        num_field(Some(at), "y"),
+                        signed_field(Some(at), "z"),
+                    )
+                }),
             target_cursor: bool_at(value, "pending_target")
                 || value
                     .get("target_cursor")
                     .is_some_and(|cursor| !cursor.is_null()),
+            target_flags: value
+                .get("target_cursor")
+                .map_or(0, |cursor| num_field(Some(cursor), "flags") as u8),
+            target_kind: value
+                .get("target_cursor")
+                .map_or(0, |cursor| num_field(Some(cursor), "kind") as u8),
+            last_target: Some(serial_field(value, "last_target")).filter(|serial| *serial != 0),
             poisoned: bool_field(me, "poisoned"),
             hidden: bool_field(me, "hidden"),
             paralyzed: bool_field(me, "paralyzed"),
@@ -635,6 +897,9 @@ impl WatchFrame {
             designing: shown(value, "designing").map(|designing| WatchDesigning {
                 serial: serial_field(designing, "serial"),
                 floor: num_field(Some(designing), "floor") as u8,
+                plot: num_opt(Some(designing), "plot_width")
+                    .zip(num_opt(Some(designing), "plot_depth"))
+                    .map(|(width, depth)| (i32::from(width), i32::from(depth))),
             }),
             house_parts: value
                 .get("house_parts")
@@ -677,6 +942,8 @@ impl WatchFrame {
                 serial: serial_field(member, "serial"),
                 name: string_field(Some(member), "name"),
                 hits_percent: hits_percent(member),
+                mana_percent: pool_percent(member, "mana", "mana_max"),
+                stam_percent: pool_percent(member, "stam", "stam_max"),
             }),
             cues: value
                 .get("cues")
@@ -700,6 +967,8 @@ impl WatchFrame {
             },
             quest_arrow: shown(value, "quest_arrow")
                 .map(|at| (num_field(Some(at), "x"), num_field(Some(at), "y"))),
+            race_change: shown(value, "race_change")
+                .and_then(|change| serde_json::from_value(change.clone()).ok()),
             waypoints: value
                 .get("waypoints")
                 .and_then(|marks| serde_json::from_value(marks.clone()).ok())
@@ -710,6 +979,9 @@ impl WatchFrame {
             shard_notice: shown(value, "shard_notice")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            shard_tip: shown(value, "shard_tip")
+                .and_then(Value::as_u64)
+                .map(|tip| tip as u32),
             weather: shown(value, "weather").map(|weather| {
                 (
                     num_field(Some(weather), "kind") as u8,
@@ -717,11 +989,15 @@ impl WatchFrame {
                 )
             }),
             prompt: bool_at(value, "prompt"),
-            text_entry: shown(value, "text_entry").map(|dialog| {
-                pick_string(
-                    string_field(Some(dialog), "title"),
-                    string_field(Some(dialog), "description"),
-                )
+            text_entry: shown(value, "text_entry").map(|dialog| WatchTextEntry {
+                title: string_field(Some(dialog), "title"),
+                description: string_field(Some(dialog), "description"),
+                can_cancel: bool_at(dialog, "can_cancel"),
+                style: num_field(Some(dialog), "style") as u8,
+                max_length: dialog
+                    .get("max_length")
+                    .and_then(Value::as_u64)
+                    .map_or(0, |most| u32::try_from(most).unwrap_or(u32::MAX)),
             }),
             old_menu: shown(value, "menu").map(|menu| WatchOldMenu {
                 question: string_field(Some(menu), "question"),
@@ -750,11 +1026,18 @@ impl WatchFrame {
                     .and_then(Value::as_array)
                     .map(|pages| pages.iter().map(|page| string_list(Some(page))).collect())
                     .unwrap_or_default(),
+                arrived: book
+                    .get("pages")
+                    .and_then(Value::as_array)
+                    .map(|pages| pages.iter().map(|page| !page.is_null()).collect())
+                    .unwrap_or_default(),
+                writable: bool_field(Some(book), "writable"),
             }),
             paperdoll: shown(value, "paperdoll").map(|doll| WatchPaperdoll {
                 serial: serial_field(doll, "serial"),
                 text: string_field(Some(doll), "text"),
                 seq: doll.get("seq").and_then(Value::as_u64).unwrap_or(0),
+                can_lift: bool_field(Some(doll), "can_lift"),
             }),
             context_menu: shown(value, "context_menu").map(|menu| WatchMenu {
                 serial: serial_field(menu, "serial"),
@@ -773,14 +1056,69 @@ impl WatchFrame {
                     price: good.get("price").and_then(Value::as_u64).unwrap_or(0) as u32,
                 }),
             }),
-            trade: shown(value, "trade").map(|trade| WatchTrade {
-                with: string_field(Some(trade), "with"),
-                mine: serial_field(trade, "mine"),
-                i_accept: bool_field(Some(trade), "i_accept"),
-                they_accept: bool_field(Some(trade), "they_accept"),
-                mine_items: list_of(trade.get("mine_items"), pack_item),
-                their_items: list_of(trade.get("their_items"), pack_item),
+            trade: shown(value, "trade").map(watch_trade),
+            trades: list_of(value.get("trades"), watch_trade),
+            dye: shown(value, "dye").map(|dye| WatchDye {
+                serial: serial_field(dye, "serial"),
+                graphic: num_field(Some(dye), "graphic"),
             }),
+            status: me
+                .and_then(|m| m.get("status"))
+                .and_then(|status| serde_json::from_value(status.clone()).ok())
+                .unwrap_or_default(),
+            female: bool_field(me, "female"),
+            stat_locks: me
+                .and_then(|m| m.get("stat_locks"))
+                .and_then(|locks| serde_json::from_value(locks.clone()).ok())
+                .unwrap_or_default(),
+            spellbooks: list_of(value.get("spellbooks"), |book| WatchSpellbook {
+                serial: serial_field(book, "book"),
+                graphic: num_field(Some(book), "graphic"),
+                first_spell: num_field(Some(book), "first_spell"),
+                school: string_field(Some(book), "school"),
+                spells: list_of(book.get("spells"), numbered_name),
+            }),
+            abilities: WatchAbilities {
+                weapon: value
+                    .get("abilities")
+                    .and_then(|abilities| shown(abilities, "weapon"))
+                    .map(|weapon| {
+                        let (number, name) = numbered_name(weapon);
+                        (number as u8, name)
+                    }),
+                spells: list_of(
+                    value.get("abilities").and_then(|a| a.get("spells")),
+                    numbered_name,
+                ),
+            },
+            tracked_members: list_of(value.get("tracked_members"), |member| WatchTrackedMember {
+                serial: serial_field(member, "serial"),
+                name: string_field(Some(member), "name"),
+                x: num_field(Some(member), "x"),
+                y: num_field(Some(member), "y"),
+                map: num_field(Some(member), "map") as u8,
+                hits_percent: num_opt(Some(member), "hits_percent").map(|n| n as u8),
+                guild: bool_field(Some(member), "guild"),
+            }),
+            buff_icons: list_of(value.get("buff_icons"), |buff| WatchBuff {
+                icon: num_field(Some(buff), "icon"),
+                title_cliloc: word_field(buff, "title_cliloc"),
+                description_cliloc: word_field(buff, "description_cliloc"),
+                title: string_field(Some(buff), "title"),
+                text: string_field(Some(buff), "text"),
+                arguments: string_field(Some(buff), "arguments"),
+                remaining_secs: buff.get("remaining_secs").and_then(Value::as_u64),
+            }),
+            latency_ms: value.get("latency_ms").and_then(Value::as_u64),
+            bytes_in: traffic_bytes(value, "bytes_in"),
+            bytes_out: traffic_bytes(value, "bytes_out"),
+            live_map: value
+                .get("live_map")
+                .map(watch_live_map)
+                .unwrap_or_default(),
+            party_invite: Some(serial_field(value, "party_invite")).filter(|serial| *serial != 0),
+            party_can_loot: bool_field(Some(value), "party_can_loot"),
+            property_lists: bool_at(value, "property_lists"),
             error: String::new(),
         }
     }
@@ -904,6 +1242,15 @@ fn overlay_dest(
     }
 }
 
+/// A count of bytes of the traffic of the link.
+fn traffic_bytes(value: &Value, key: &str) -> u64 {
+    value
+        .get("traffic")
+        .and_then(|traffic| traffic.get(key))
+        .and_then(Value::as_u64)
+        .unwrap_or_default()
+}
+
 fn radar_rows(radar: &str) -> Vec<String> {
     radar
         .lines()
@@ -965,8 +1312,15 @@ fn watch_mobiles(
                 z: signed_field(loc, "z"),
                 notoriety: num_field(Some(m), "notoriety") as u8,
                 hits_percent: hits_percent(m),
+                mana_percent: pool_percent(m, "mana", "mana_max"),
+                stam_percent: pool_percent(m, "stam", "stam_max"),
                 dist: tile_distance((x, y), (origin_x, origin_y)) as u16,
                 look: watch_look(Some(m)),
+                poisoned: bool_field(Some(m), "poisoned"),
+                paralyzed: num_field(Some(m), "flags") & MOBILE_FLAG_FROZEN != 0,
+                yellow_hits: bool_field(Some(m), "yellow_hits"),
+                hidden: num_field(Some(m), "flags") & MOBILE_FLAG_HIDDEN != 0,
+                follower: bool_field(Some(m), "follower"),
             }
         })
         .collect();
@@ -977,6 +1331,10 @@ fn watch_mobiles(
 /// The running bit of a facing byte. The other bits are the direction.
 /// The bit of the flags of a mobile that says he is in war mode.
 const MOBILE_FLAG_WAR: u16 = 0x40;
+/// The bits of the flags of a mobile that say he cannot move, and that he
+/// is hidden.
+const MOBILE_FLAG_FROZEN: u16 = 0x01;
+const MOBILE_FLAG_HIDDEN: u16 = 0x80;
 
 fn watch_look(mobile: Option<&Value>) -> WatchLook {
     let equipment = mobile
@@ -1022,6 +1380,7 @@ fn watch_items(value: Option<&Value>) -> Vec<WatchItem> {
                 x: num_field(loc, "x"),
                 y: num_field(loc, "y"),
                 z: signed_field(loc, "z"),
+                direction: num_field(Some(i), "direction") as u8,
             }
         })
         .collect()
@@ -1051,9 +1410,15 @@ fn serial_field(obj: &Value, key: &str) -> u32 {
 
 /// The share of his hits a mobile has left, when the shard told both numbers.
 fn hits_percent(mobile: &Value) -> Option<u8> {
-    let hits = num_opt(Some(mobile), "hits")?;
-    let max = num_opt(Some(mobile), "hits_max").filter(|max| *max > 0)?;
-    Some((u32::from(hits.min(max)) * PERCENT / u32::from(max)) as u8)
+    pool_percent(mobile, "hits", "hits_max")
+}
+
+/// The share of a pool (hits, mana or stamina) a mobile has left, from the
+/// keys of its value and of its most.
+fn pool_percent(mobile: &Value, value_key: &str, max_key: &str) -> Option<u8> {
+    let value = num_opt(Some(mobile), value_key)?;
+    let max = num_opt(Some(mobile), max_key).filter(|max| *max > 0)?;
+    Some((u32::from(value.min(max)) * PERCENT / u32::from(max)) as u8)
 }
 
 /// A part of the picture that is there only while its window is open.
@@ -1081,6 +1446,53 @@ fn watch_skill(skill: &Value) -> WatchSkill {
         base: num_field(Some(skill), "base"),
         cap: num_field(Some(skill), "cap"),
         lock: num_field(Some(skill), "lock") as u8,
+        group: string_field(Some(skill), "group"),
+        group_index: num_field(Some(skill), "group_index"),
+    }
+}
+
+/// A number and a name, as a spell or a move is listed.
+fn numbered_name(entry: &Value) -> (u16, String) {
+    (
+        num_field(Some(entry), "number"),
+        string_field(Some(entry), "name"),
+    )
+}
+
+/// A 32-bit field, such as a text number of the client files.
+fn word_field(obj: &Value, key: &str) -> u32 {
+    obj.get(key).and_then(Value::as_u64).unwrap_or(0) as u32
+}
+
+/// The hex digits two to a byte that `watch` sends block data in. Text that
+/// is no whole hex reads as nothing.
+fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    const HEX_DIGITS_PER_BYTE: usize = 2;
+    const HEX_RADIX: u32 = 16;
+    if !text.len().is_multiple_of(HEX_DIGITS_PER_BYTE) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(HEX_DIGITS_PER_BYTE)
+        .map(|at| u8::from_str_radix(text.get(at..at + HEX_DIGITS_PER_BYTE)?, HEX_RADIX).ok())
+        .collect()
+}
+
+/// Block data sent as hex, when the block carries it.
+fn hex_field(obj: &Value, key: &str) -> Option<Vec<u8>> {
+    obj.get(key).and_then(Value::as_str).and_then(hex_bytes)
+}
+
+fn watch_live_map(live: &Value) -> WatchLiveMap {
+    WatchLiveMap {
+        map: num_field(Some(live), "map") as u8,
+        revision: live.get("revision").and_then(Value::as_u64).unwrap_or(0),
+        blocks: list_of(live.get("blocks"), |block| WatchLiveBlock {
+            block: word_field(block, "block"),
+            changed: block.get("changed").and_then(Value::as_u64).unwrap_or(0),
+            land: hex_field(block, "land"),
+            statics: hex_field(block, "statics"),
+        }),
     }
 }
 
@@ -1089,6 +1501,8 @@ fn watch_cue(cue: &Value) -> Option<WatchCue> {
         "damage" => WatchCueKind::Damage(num_field(Some(cue), "amount")),
         "animation" => WatchCueKind::Animation(num_field(Some(cue), "action")),
         "deed" => WatchCueKind::Deed(num_field(Some(cue), "deed"), num_field(Some(cue), "action")),
+        "death_screen" => WatchCueKind::DeathScreen,
+        "status_bar_closed" => WatchCueKind::StatusBarClosed,
         "effect" => {
             let effect = cue.get("effect")?;
             let place = |key: &str| {
@@ -1118,12 +1532,36 @@ fn watch_cue(cue: &Value) -> Option<WatchCue> {
     })
 }
 
+fn watch_trade(trade: &Value) -> WatchTrade {
+    let number = |key: &str| trade.get(key).and_then(Value::as_u64).unwrap_or(0) as u32;
+    WatchTrade {
+        with: string_field(Some(trade), "with"),
+        mine: serial_field(trade, "box_serial"),
+        i_accept: bool_field(Some(trade), "i_accept"),
+        they_accept: bool_field(Some(trade), "they_accept"),
+        mine_items: list_of(trade.get("mine_items"), pack_item),
+        their_items: list_of(trade.get("their_items"), pack_item),
+        their_gold: number("their_gold"),
+        their_platinum: number("their_platinum"),
+        my_gold: number("my_gold"),
+        my_platinum: number("my_platinum"),
+    }
+}
+
 fn watch_container(value: &Value) -> WatchContainer {
     WatchContainer {
         serial: serial_field(value, "serial"),
         name: string_field(Some(value), "name"),
+        gump: num_field(Some(value), "gump"),
         total: value.get("total").and_then(Value::as_u64).unwrap_or(0) as usize,
         items: list_of(value.get("contents"), pack_item),
+        graphic: num_field(Some(value), "graphic"),
+        hue: num_field(Some(value), "hue"),
+        parent: value
+            .get("parent")
+            .filter(|parent| !parent.is_null())
+            .map(|_| serial_field(value, "parent")),
+        opened: value.get("opened").and_then(Value::as_u64).unwrap_or(0),
     }
 }
 
@@ -1134,6 +1572,9 @@ fn pack_item(item: &Value) -> WatchPackItem {
         hue: num_field(Some(item), "hue"),
         amount: num_field(Some(item), "amount"),
         name: string_field(Some(item), "name"),
+        x: num_field(Some(item), "x"),
+        y: num_field(Some(item), "y"),
+        layer: num_field(Some(item), "layer") as u8,
     }
 }
 
@@ -1269,6 +1710,78 @@ mod tests {
         assert_eq!(frame.carried(), "123 / 400");
     }
 
+    /// The data the Classic window draws beside the map, as `watch` sends
+    /// it.
+    #[test]
+    fn watch_frame_reads_the_state_of_the_classic_window() {
+        let value = json!({
+            "self_state": {
+                "female": true,
+                "stat_locks": [0, 1, 2],
+                "status": { "physical_resist": 40, "luck": 250, "followers": 1,
+                    "followers_max": 5, "tithing": 900, "damage_min": 11, "damage_max": 14,
+                    "stat_cap": 225, "race": 2 }
+            },
+            "containers": [{ "serial": 9, "name": "backpack", "gump": 60, "total": 1,
+                "contents": [{ "serial": 10, "graphic": 3821, "hue": 0, "amount": 5,
+                    "name": "gold", "x": 44, "y": 65, "grid": 0 }] }],
+            "spellbooks": [{ "book": 11, "graphic": 8787, "first_spell": 101,
+                "school": "necromancy", "spells": [{ "number": 101, "name": "Animate Dead" }] }],
+            "abilities": { "weapon": { "number": 1, "name": "Armor Ignore" },
+                "spells": [{ "number": 402, "name": "Confidence" }] },
+            "tracked_members": [{ "serial": 12, "name": "Ann", "x": 100, "y": 200, "map": 1,
+                "hits_percent": null, "guild": false }],
+            "buff_icons": [{ "icon": 1010, "title_cliloc": 1075847, "description_cliloc": 1075848,
+                "title": "Bless", "text": "+10 Strength", "arguments": "\t10", "remaining_secs": 42 }],
+            "skills": [{ "id": 27, "name": "Tactics", "group": "Combat" }],
+            "latency_ms": 85,
+            "live_map": { "map": 0, "revision": 3,
+                "blocks": [{ "block": 7, "changed": 2, "land": "0a0b", "statics": null }] },
+            "cues": [
+                { "seq": 1, "serial": 1, "kind": "death_screen" },
+                { "seq": 2, "serial": 12, "kind": "status_bar_closed" }
+            ]
+        });
+        let frame = WatchFrame::from_observe(&value);
+        assert!(frame.female);
+        assert_eq!(frame.stat_locks, [0, 1, 2]);
+        assert_eq!(frame.status.luck, 250);
+        assert_eq!(frame.status.race, 2);
+        assert_eq!(frame.containers[0].gump, 60);
+        assert_eq!(
+            (
+                frame.containers[0].items[0].x,
+                frame.containers[0].items[0].y
+            ),
+            (44, 65)
+        );
+        assert_eq!(frame.spellbooks[0].school, "necromancy");
+        assert_eq!(
+            frame.spellbooks[0].spells,
+            vec![(101, "Animate Dead".to_string())]
+        );
+        assert_eq!(
+            frame.abilities.weapon,
+            Some((1, "Armor Ignore".to_string()))
+        );
+        assert_eq!(frame.abilities.spells[0].0, 402);
+        assert_eq!(frame.tracked_members[0].name, "Ann");
+        assert_eq!(frame.tracked_members[0].hits_percent, None);
+        assert_eq!(frame.buff_icons[0].remaining_secs, Some(42));
+        assert_eq!(frame.buff_icons[0].title, "Bless");
+        assert_eq!(frame.buff_icons[0].arguments, "\t10");
+        assert_eq!(frame.skills[0].group, "Combat");
+        assert_eq!(frame.latency_ms, Some(85));
+        assert_eq!(frame.live_map.revision, 3);
+        assert_eq!(frame.live_map.blocks[0].land, Some(vec![0x0A, 0x0B]));
+        assert_eq!(frame.live_map.blocks[0].changed, 2);
+        assert_eq!(frame.live_map.blocks[0].statics, None);
+        assert_eq!(frame.cues[0].kind, WatchCueKind::DeathScreen);
+        assert_eq!(frame.cues[1].kind, WatchCueKind::StatusBarClosed);
+        assert_eq!(hex_bytes("0g"), None);
+        assert_eq!(hex_bytes("abc"), None);
+    }
+
     #[test]
     fn watch_frame_reads_what_only_the_watch_tool_sends() {
         let value = json!({
@@ -1280,7 +1793,8 @@ mod tests {
                 { "id": 44, "name": "Lumberjacking", "usable": false, "value": 702,
                   "base": 702, "cap": 1000, "lock": 2 }
             ],
-            "party_members": [{ "serial": 5, "name": "Ann", "hits": 10, "hits_max": 40 }],
+            "party_members": [{ "serial": 5, "name": "Ann", "hits": 10, "hits_max": 40,
+                                "mana": 30, "mana_max": 60, "stam": 50, "stam_max": 50 }],
             "cues": [
                 { "seq": 1, "serial": 5, "kind": "damage", "amount": 12 },
                 { "seq": 2, "serial": 5, "kind": "animation", "action": 9 },
@@ -1290,7 +1804,8 @@ mod tests {
                   "target": 9, "graphic": 14036, "hue": 33, "duration": 0, "speed": 7,
                   "from": { "x": 10, "y": 20, "z": 5 }, "to": { "x": 14, "y": 23, "z": -2 } } }
             ],
-            "text_entry": { "title": "", "description": "Name your pet" },
+            "text_entry": { "title": "", "description": "Name your pet", "can_cancel": true,
+                            "style": 2, "max_length": 12 },
             "menu": { "question": "What do you make?", "entries": [
                 { "graphic": 3922, "hue": 0, "name": "dagger" }
             ]},
@@ -1301,7 +1816,7 @@ mod tests {
                   "time": "Day 2", "lines": ["I buy."] }
             ]},
             "book": { "serial": 99, "title": "Tales", "author": "Ann", "page_count": 2,
-                "pages": [["Once", "upon"], []] },
+                "pages": [["Once", "upon"], null], "writable": true },
             "multis": [{ "serial": 50, "multi_id": 100,
                 "location": { "x": 900, "y": 800, "z": -5 } }],
             "maps": [{ "serial": 60, "facet": 1, "start_x": 1000, "start_y": 1200,
@@ -1315,7 +1830,7 @@ mod tests {
                 "channels": [{ "name": "General", "has_password": false }],
                 "lines": [{ "who": "Ann", "words": "Anyone selling ore?" }] },
             "chat_asks_for_name": false,
-            "designing": { "serial": 70, "floor": 2 },
+            "designing": { "serial": 70, "floor": 2, "plot_width": 7, "plot_depth": 8 },
             "house_parts": [{ "kind": "wall", "name": "Dark Wood", "pieces": [10, 7] }],
             "placing": { "multi_id": 100, "x_offset": -3, "y_offset": -3, "hue": 0 }
         });
@@ -1325,20 +1840,25 @@ mod tests {
             "personal_light": 4,
             "time": { "hour": 13, "minute": 45, "second": 7 },
             "quest_arrow": { "x": 1000, "y": 1200 },
+            "race_change": { "race": "elf", "female": true, "hair_styles": [0, 12224] },
             "waypoints": [{ "serial": 60, "x": 1000, "y": 1200, "z": 5, "map": 1, "kind": 3,
                 "name": "home" }],
             "shard_notice": "The world will save.",
+            "shard_tip": 4,
             "weather": { "kind": 2, "count": 40 },
             "prompt": true,
             "target_cursor": { "cursor_id": 1 },
-            "paperdoll": { "serial": 5, "text": "Bob the Tinker", "seq": 2 },
+            "paperdoll": { "serial": 5, "text": "Bob the Tinker", "seq": 2, "can_lift": true },
+            "party_invite": 12,
+            "party_can_loot": true,
+            "property_lists": true,
             "context_menu": { "serial": 5, "lines": [
                 { "index": 3, "words": "Open Paperdoll", "enabled": true }
             ]},
             "shop": { "vendor": 9, "vendor_name": "Bob", "buying": true, "goods": [
                 { "serial": 77, "graphic": 3617, "amount": 20, "price": 6, "name": "bandage" }
             ]},
-            "trade": { "with": "Ann", "mine": 100, "i_accept": false, "they_accept": true,
+            "trade": { "with": "Ann", "box_serial": 100, "their_gold": 250, "i_accept": false, "they_accept": true,
                 "mine_items": [], "their_items": [{ "serial": 78, "graphic": 3821, "amount": 500,
                 "x": 30, "y": 40 }] },
             "gumps": [{ "gump": 1, "texts": [], "buttons": [], "choices": [],
@@ -1358,6 +1878,13 @@ mod tests {
         assert_eq!((frame.speech[0].seq, frame.speech[0].kind), (7, 9));
         assert_eq!((frame.skills[0].value, frame.skills[0].lock), (702, 2));
         assert_eq!(frame.party_members[0].hits_percent, Some(25));
+        assert_eq!(
+            (
+                frame.party_members[0].mana_percent,
+                frame.party_members[0].stam_percent
+            ),
+            (Some(50), Some(100))
+        );
         assert_eq!(frame.cues.len(), 4);
         assert_eq!(frame.cues[2].kind, WatchCueKind::Deed(11, 1));
         let WatchCueKind::Effect(effect) = frame.cues[3].kind else {
@@ -1370,10 +1897,25 @@ mod tests {
         assert_eq!((frame.light, frame.weather), (18, Some((2, 40))));
         assert_eq!((frame.personal_light, frame.time), (4, (13, 45)));
         assert_eq!(frame.quest_arrow, Some((1000, 1200)));
+        assert_eq!(
+            frame.race_change,
+            Some(uoterm_world::RaceChange {
+                race: uoterm_world::Race::Elf,
+                female: true
+            })
+        );
         assert_eq!(frame.waypoints[0].name, "home");
         assert_eq!(frame.shard_notice.as_deref(), Some("The world will save."));
+        assert_eq!(frame.shard_tip, Some(4));
         assert_eq!(frame.shard_url, None);
-        assert_eq!(frame.text_entry.as_deref(), Some("Name your pet"));
+        let entry = frame.text_entry.as_ref().unwrap();
+        assert_eq!(entry.words(), "Name your pet");
+        assert!(entry.can_cancel && entry.numeric());
+        assert_eq!(entry.max_length, 12);
+        assert!(frame.paperdoll.as_ref().is_some_and(|doll| doll.can_lift));
+        assert_eq!(frame.party_invite, Some(12));
+        assert!(frame.party_can_loot);
+        assert!(frame.property_lists);
         assert_eq!(
             (frame.maps[0].width, frame.maps[0].pins[0]),
             (200, (40, 90))
@@ -1389,6 +1931,7 @@ mod tests {
         );
         assert_eq!(chat.lines[0], ("Ann".into(), "Anyone selling ore?".into()));
         assert_eq!(frame.designing.unwrap().floor, 2);
+        assert_eq!(frame.designing.unwrap().plot, Some((7, 8)));
         assert_eq!(frame.house_parts[0].pieces, vec![10, 7]);
         assert_eq!(
             frame.multis,
@@ -1411,6 +1954,8 @@ mod tests {
         assert!(board.posts[0].lines.is_none());
         let book = frame.book.as_ref().unwrap();
         assert_eq!((book.pages.len(), book.pages[0][1].as_str()), (2, "upon"));
+        assert_eq!(book.arrived, vec![true, false], "page 2 did not come");
+        assert!(book.writable);
         assert_eq!(frame.cues[0].kind, WatchCueKind::Damage(12));
         assert_eq!(frame.season, 3);
         assert!(frame.prompt && frame.target_cursor);
@@ -1425,6 +1970,7 @@ mod tests {
         let trade = frame.trade.unwrap();
         assert!(trade.they_accept);
         assert_eq!(trade.their_items[0].amount, 500);
+        assert_eq!((trade.mine, trade.their_gold), (100, 250));
         assert_eq!(frame.gumps[0].entries[0].limit, Some(12));
     }
 
@@ -1508,7 +2054,7 @@ mod tests {
             "mobiles": [
                 { "serial": SELF_SERIAL, "name": "Mara", "location": { "x": 10, "y": 10, "z": -5 } },
                 { "serial": 9, "name": "an orc", "notoriety": 6, "hits": 5, "hits_max": 20,
-                  "body": 17, "hue": 0, "direction": 0x83,
+                  "mana": 3, "mana_max": 4, "body": 17, "hue": 0, "direction": 0x83,
                   "equipment": [{ "serial": 3, "graphic": 0x13B2, "layer": 1, "hue": 5 }],
                   "location": { "x": 13, "y": 10, "z": -5 } }
             ],
@@ -1527,6 +2073,8 @@ mod tests {
                 "buttons": [{ "id": 1, "label": "Okay" }, { "to_page": 2, "label": "Next" }],
                 "choices": [{ "switch": 5, "kind": "radio", "on": true, "page": 1, "label": "Britain" }] }],
             "human_control": true,
+            "stepping_to": { "x": 13, "y": 10, "z": -5 },
+            "stride": { "ago_ms": 150, "ms": 400 },
             "pending_target": true,
             "spoken_to": [{ "name": "Ann", "text": "hail" }]
         });
@@ -1536,6 +2084,11 @@ mod tests {
         assert_eq!(frame.danger(), Danger::Critical);
         assert_eq!(frame.mobiles.len(), 1);
         assert_eq!(frame.mobiles[0].hits_percent, Some(25));
+        assert_eq!(frame.mobiles[0].mana_percent, Some(75));
+        assert_eq!(
+            frame.mobiles[0].stam_percent, None,
+            "the shard told no stamina"
+        );
         assert_eq!(frame.mobiles[0].dist, 3);
         assert_eq!(frame.mobiles[0].look.body, 17);
         assert_eq!(frame.mobiles[0].look.direction, 3);
@@ -1544,6 +2097,15 @@ mod tests {
         assert_eq!(frame.buffs, vec!["Bless"]);
         assert_eq!(frame.unanswered, 1);
         assert!(frame.human_control && frame.target_cursor);
+        assert_eq!(frame.stepping_to, Some((13, 10, -5)));
+        let stride = frame.stride.expect("the stride of the newest step");
+        assert_eq!(stride.lasts, Duration::from_millis(400));
+        assert!(stride.slot.elapsed() >= Duration::from_millis(150));
+        assert_eq!(WatchFrame::from_observe(&json!({})).stepping_to, None);
+        assert_eq!(
+            WatchFrame::from_observe(&json!({ "stride": null })).stride,
+            None
+        );
         assert_eq!(frame.sounds[0].seq, 3);
         assert_eq!(frame.sounds[0].sound, 0x023B);
         assert_eq!(frame.music, Some(9));
@@ -1586,5 +2148,49 @@ mod tests {
         });
         let frame = WatchFrame::from_observe(&value);
         assert_eq!(frame.radar[0], "@");
+    }
+
+    #[test]
+    fn a_mobile_shows_its_state_and_a_corpse_the_way_it_lies() {
+        const FROZEN_AND_HIDDEN: u16 = 0x81;
+        const SOUTH: u8 = 4;
+        let value = json!({
+            "mobiles": [{
+                "serial": 5,
+                "location": { "x": 1, "y": 1, "z": 0 },
+                "flags": FROZEN_AND_HIDDEN,
+                "poisoned": true,
+                "yellow_hits": true,
+                "follower": true,
+            }],
+            "items": [{
+                "serial": 9,
+                "graphic": 0x2006,
+                "location": { "x": 2, "y": 2, "z": 0 },
+                "direction": SOUTH,
+            }],
+        });
+        let frame = WatchFrame::from_observe(&value);
+        let mobile = &frame.mobiles[0];
+        assert!(mobile.poisoned && mobile.paralyzed && mobile.yellow_hits && mobile.hidden);
+        assert!(mobile.follower);
+        assert_eq!(frame.items[0].direction, SOUTH);
+    }
+
+    #[test]
+    fn the_traffic_of_the_link_is_read() {
+        let value = json!({ "traffic": { "bytes_in": 1200, "bytes_out": 64 } });
+        let frame = WatchFrame::from_observe(&value);
+        assert_eq!((frame.bytes_in, frame.bytes_out), (1200, 64));
+        assert_eq!(WatchFrame::from_observe(&json!({})).bytes_in, 0);
+    }
+
+    #[test]
+    fn a_target_cursor_says_whether_it_asks_for_a_place() {
+        let place = json!({ "target_cursor": { "kind": 1, "id": 7, "flags": 2 } });
+        let frame = WatchFrame::from_observe(&place);
+        assert_eq!((frame.target_kind, frame.target_flags), (1, 2));
+        assert!(frame.target_cursor);
+        assert_eq!(WatchFrame::from_observe(&json!({})).target_kind, 0);
     }
 }

@@ -1,88 +1,89 @@
-//! The map of the world round the character, seen from far above and
-//! turned as the play field is turned. A click on it walks the character
-//! to that place, while the human has control. The human moves it by its
-//! title and sizes it by its corner, and it opens again where he left it.
+//! The world map. Near the character it shows the land from far above,
+//! turned as the play field is turned; in the whole-world view it shows the
+//! facet north up, at the zoom step the World Map page keeps. It carries the
+//! marker and zone files of the player, the named places of the session,
+//! the party and the guild, the mobiles and the houses, the coordinates in
+//! tiles and by sextant, and a go-to box. A click walks the character there
+//! while the human has control, or answers a target of a place when the
+//! World Map page lets it, and Ctrl+click opens the box that marks the
+//! tile. Its buttons open the markers manager, mark where the character
+//! stands, read the marker and zone files again, and draw the map again.
+//! The human moves it by its title and sizes it by its corner, and the
+//! profile keeps where he left it. The drawing of the land and the marks is
+//! `map_view`'s, shared with the Classic world map gump.
 
-use super::control::{Act, Hand};
-use super::kept;
+use super::boxes_ui::{Tools, CELL_RADIUS};
+use super::control::Act;
+use super::map_view::{self, Lay, MapFilesCache, MapPictures, MarkLook, Marks, ZOOM_MIN};
+use super::model::world_map::{self, Marker, NEW_MARKER_COLOR};
+use super::modern::frame::{self as panel_frame, FrameEvent, PanelSpec, TITLE_ROW};
+use super::modern::layout::{self, Spot};
+use super::modern::{MarkersAsk, MarkersUi};
 use super::scene::Scene;
-use super::theme::{self, text_font, title_font};
+use super::settings::Profile;
+use super::theme::{self, number_font, text_font};
 use crate::view::WatchFrame;
-use eframe::egui::{
-    self, epaint::Vertex, Align2, Color32, ColorImage, Id, Mesh, Pos2, Rect, Sense, Shape,
-    TextureHandle, TextureOptions, Vec2,
-};
-use serde::{Deserialize, Serialize};
+use eframe::egui::{self, Align2, CornerRadius, Id, Painter, Pos2, Rect, Sense, Vec2};
 
-/// How many tiles one side of the picture covers.
-const SPAN: usize = 256;
-/// The picture is made again when the character is this far from its middle.
-const REDRAW_TILES: u16 = 48;
 /// The smallest the map field is drawn, whatever the size of the window.
 const PANEL_SIDE: f32 = 470.0;
 /// On a large screen the map grows to this share of the shorter side of the
 /// window, so a person who plays at a high resolution can still read it.
 const PANEL_SHARE: f32 = 0.7;
-const TITLE_ROW: f32 = 30.0;
-/// At this zoom the whole picture fits the field. Above it the map comes
-/// closer and shows fewer tiles.
-const ZOOM_MIN: f32 = 1.0;
-const ZOOM_MAX: f32 = 8.0;
-/// How much one notch of the wheel changes the zoom.
-const ZOOM_PER_NOTCH: f32 = 1.15;
-/// The wheel gives its step in points. This many points are one notch.
-const WHEEL_NOTCH: f32 = 50.0;
-const DOT_RADIUS: f32 = 2.5;
-const SELF_RADIUS: f32 = 4.0;
-const UNKNOWN: Color32 = Color32::from_rgb(10, 12, 18);
-
 /// The smallest the human can make the map field.
 const FIELD_SIDE_SMALLEST: f32 = 200.0;
-/// The corner that sizes the map, and the marks drawn on it.
-const GRIP_SIDE: f32 = 18.0;
-const GRIP_MARKS: [f32; 3] = [4.0, 8.0, 12.0];
-const GRIP_MARK_WIDTH: f32 = 1.5;
-const MAP_FILE: &str = "watch-map.toml";
+/// The two rows of tools under the title: the coordinates with the go-to
+/// box, and the marker buttons.
+const TOOL_ROW: f32 = 26.0;
+const TOOL_ROWS: f32 = 2.0;
+const TOOL_GAP: f32 = 6.0;
+const GOTO_WIDTH: f32 = 150.0;
+const BUTTON_WIDTH: f32 = 52.0;
+const WIDE_BUTTON_WIDTH: f32 = 78.0;
+/// Above the least zoom the land near the character comes closer and
+/// shows fewer tiles.
+const ZOOM_MAX: f32 = 8.0;
+const HALF: f32 = 2.0;
+const NOTE_SECONDS: f64 = 5.0;
 
+const MAP_ID: &str = "modern:map";
 const WORDS_TITLE: &str = "Map";
-const HINT_MOVE: &str = "Drag: move the map. Double-click: put it back.";
-const HINT_SIZE: &str = "Drag: make the map larger or smaller.";
 const WORDS_NO_FILES: &str = "The map needs the client files.";
-const HINT_WALK: &str = "Click: walk there. Wheel: zoom.";
+const WORDS_GO: &str = "Look";
+const WORDS_WALK: &str = "Walk";
+const WORDS_WORLD: &str = "World";
+const WORDS_NEAR: &str = "Near";
+const WORDS_MARKERS: &str = "Markers";
+const WORDS_MARK_ME: &str = "Mark me";
+const WORDS_RELOAD: &str = "Reload";
+const WORDS_RESET: &str = "Redraw";
+const WORDS_BUILDING: &str = "Drawing the world...";
+const WORDS_NO_PLACE: &str = "Give x y, or a sextant place.";
+const WORDS_RELOADED: &str = "The marker and zone files were read again.";
+const HINT_GOTO: &str = "x y or 12o 34'N, 56o 7'E";
+const HINT_WALK: &str = "Click: walk there. Ctrl+click: mark it. Wheel: zoom.";
+const HINT_TARGET: &str = "Click: target the ground there.";
 const HINT_ZOOM: &str = "Wheel: zoom.";
-
-struct Picture {
-    map: u8,
-    /// The tile in the middle of the picture.
-    middle: (u16, u16),
-    texture: TextureHandle,
-}
-
-/// Where the human put the map, and how wide he made its field.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-struct Placed {
-    left: f32,
-    top: f32,
-    side: f32,
-}
-
-/// What the window keeps of the map between runs. With nothing kept, the
-/// map opens in the middle of the window.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct KeptMap {
-    placed: Option<Placed>,
-}
+const HINT_PAN: &str = "Drag: move the view.";
+const HINT_MARKERS: &str = "List, find, change and go to the markers.";
+const HINT_MARK_ME: &str = "Mark the place where the character stands.";
+const HINT_RELOAD: &str = "Read the marker and zone files again.";
+const HINT_RESET: &str = "Draw the land of the map again.";
 
 pub struct MapUi {
     open: bool,
-    picture: Option<Picture>,
+    pictures: MapPictures,
+    files: MapFilesCache,
     zoom: f32,
-    placed: Option<Placed>,
-}
-
-/// The zoom after `notches` of the wheel, held inside the two bounds.
-fn zoomed(zoom: f32, notches: f32) -> f32 {
-    (zoom * ZOOM_PER_NOTCH.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX)
+    /// The turns of the wheel over the whole-world view that are not yet a
+    /// whole zoom step.
+    wheel: f32,
+    /// The tile in the middle of the whole-world view, when the player
+    /// moved the view or looked for a place.
+    looking_at: Option<(u16, u16)>,
+    goto: String,
+    note: Option<(String, f64)>,
+    markers: MarkersUi,
 }
 
 /// How wide one side of the map field is in a window of this size.
@@ -93,127 +94,65 @@ fn field_side(rect: Rect) -> f32 {
 
 /// The size of the panel round a field of this side.
 fn panel_size(side: f32) -> Vec2 {
-    Vec2::new(side, side + TITLE_ROW) + Vec2::splat(theme::PANEL_PAD * 2.0)
+    Vec2::new(side, side + TITLE_ROW + (TOOL_ROW + TOOL_GAP) * TOOL_ROWS)
+        + Vec2::splat(theme::PANEL_PAD * 2.0)
 }
 
-/// The widest field whose panel fits in the window.
-fn side_room(rect: Rect) -> f32 {
-    let pads = theme::PANEL_PAD * 2.0;
-    (rect.width() - pads)
-        .min(rect.height() - pads - TITLE_ROW)
-        .max(FIELD_SIDE_SMALLEST)
+/// The whole turns of the wheel in `wheel`, taken out of it.
+fn whole_turns(wheel: &mut f32) -> i32 {
+    let turns = wheel.trunc();
+    *wheel -= turns;
+    turns as i32
 }
 
-/// The place of the panel: where the human put it, kept inside the window
-/// however the window changed since, or else the middle of the window.
-fn panel_rect(rect: Rect, placed: Option<Placed>) -> Rect {
-    let Some(placed) = placed else {
-        return Rect::from_center_size(rect.center(), panel_size(field_side(rect)));
-    };
-    let size = panel_size(placed.side.clamp(FIELD_SIDE_SMALLEST, side_room(rect)));
-    let left = placed
-        .left
-        .clamp(rect.left(), (rect.right() - size.x).max(rect.left()));
-    let top = placed
-        .top
-        .clamp(rect.top(), (rect.bottom() - size.y).max(rect.top()));
-    Rect::from_min_size(Pos2::new(left, top), size)
+/// A small health bar in the colors of the panels.
+fn modern_bar(painter: &Painter, track: Rect, share: f32) {
+    theme::bar(painter, track, share, theme::HITS);
 }
 
-/// The side of the field inside a panel.
-fn side_of(panel: Rect) -> f32 {
-    panel.width() - theme::PANEL_PAD * 2.0
+/// The marks of a map in the colors of the Modern style.
+pub fn mark_look() -> MarkLook {
+    MarkLook {
+        font: text_font(theme::SIZE_SMALL),
+        shadowed: false,
+        square_dots: false,
+        marker: theme::WAITING,
+        waypoint: theme::WAITING,
+        multi: theme::FLAT_DOOR,
+        party: theme::GOAL,
+        guild: theme::MANA,
+        goal: theme::GOAL,
+        looking: theme::WAITING,
+        me: theme::SELF_FIGURE,
+        grid: theme::GLASS_EDGE,
+        mobile: theme::notoriety_color,
+        health_bar: modern_bar,
+    }
 }
 
-/// Where a tile is on the turned map, as a step from the character. One
-/// tile east goes right and down, one tile south goes left and down.
-fn turned(tiles: Vec2, unit: f32) -> Vec2 {
-    Vec2::new(tiles.x - tiles.y, tiles.x + tiles.y) * unit
-}
-
-/// The tiles from the character for a step on the turned map.
-fn unturned(on_screen: Vec2, unit: f32) -> Vec2 {
-    let (a, b) = (on_screen.x / unit, on_screen.y / unit);
-    Vec2::new((a + b) / 2.0, (b - a) / 2.0)
+/// One button of a tool row, from the right. Gives its place, and moves
+/// `right` past it.
+fn from_right(row: Rect, right: &mut f32, width: f32) -> Rect {
+    let area = Rect::from_min_size(
+        Pos2::new(*right - width, row.top()),
+        Vec2::new(width, row.height()),
+    );
+    *right = area.left() - TOOL_GAP;
+    area
 }
 
 impl MapUi {
     pub fn starting(open: bool) -> Self {
-        let kept: KeptMap = kept::load(MAP_FILE);
         Self {
             open,
-            picture: None,
+            pictures: MapPictures::default(),
+            files: MapFilesCache::default(),
             zoom: ZOOM_MIN,
-            placed: kept.placed,
-        }
-    }
-
-    fn keep_place(&self) {
-        kept::save(
-            MAP_FILE,
-            &KeptMap {
-                placed: self.placed,
-            },
-        );
-    }
-
-    /// The title moves the panel and the corner sizes it. A double-click on
-    /// the title puts it back in the middle. The place is kept when a drag
-    /// ends.
-    fn move_and_size(&mut self, ui: &egui::Ui, panel: Rect) {
-        let title = Rect::from_min_size(
-            panel.min,
-            Vec2::new(panel.width(), TITLE_ROW + theme::PANEL_PAD),
-        );
-        let grip = Rect::from_min_max(panel.max - Vec2::splat(GRIP_SIDE), panel.max);
-        let painter = ui.painter();
-        for mark in GRIP_MARKS {
-            painter.line_segment(
-                [
-                    Pos2::new(panel.right() - mark, panel.bottom()),
-                    Pos2::new(panel.right(), panel.bottom() - mark),
-                ],
-                egui::Stroke::new(GRIP_MARK_WIDTH, theme::TEXT_FAINT),
-            );
-        }
-        let mover = ui.interact(title, Id::new("world-map-move"), Sense::click_and_drag());
-        let sizer = ui.interact(grip, Id::new("world-map-size"), Sense::drag());
-        let placed = Placed {
-            left: panel.left(),
-            top: panel.top(),
-            side: side_of(panel),
-        };
-        if mover.double_clicked() {
-            self.placed = None;
-            self.keep_place();
-            return;
-        }
-        if mover.dragged() {
-            let moved = mover.drag_delta();
-            self.placed = Some(Placed {
-                left: placed.left + moved.x,
-                top: placed.top + moved.y,
-                ..placed
-            });
-        }
-        if sizer.dragged() {
-            let pulled = sizer.drag_delta();
-            self.placed = Some(Placed {
-                side: (placed.side + (pulled.x + pulled.y) / 2.0).max(FIELD_SIDE_SMALLEST),
-                ..placed
-            });
-        }
-        if mover.drag_stopped() || sizer.drag_stopped() {
-            self.keep_place();
-        }
-        if sizer.hovered() || sizer.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-            super::tips::label(ui, HINT_SIZE, "");
-        } else if mover.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        } else if mover.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-            super::tips::label(ui, HINT_MOVE, "");
+            wheel: 0.0,
+            looking_at: None,
+            goto: String::new(),
+            note: None,
+            markers: MarkersUi::default(),
         }
     }
 
@@ -221,83 +160,201 @@ impl MapUi {
         self.open = !self.open;
     }
 
-    fn picture_of(&mut self, ui: &egui::Ui, frame: &WatchFrame, scene: &mut Scene) -> bool {
-        let fresh = self.picture.as_ref().is_some_and(|picture| {
-            picture.map == frame.map
-                && picture.middle.0.abs_diff(frame.x) < REDRAW_TILES
-                && picture.middle.1.abs_diff(frame.y) < REDRAW_TILES
-        });
-        if fresh {
-            return true;
-        }
-        let half = (SPAN / 2) as i32;
-        let mut image = ColorImage::new([SPAN, SPAN], UNKNOWN);
-        let mut any = false;
-        for row in 0..SPAN {
-            for column in 0..SPAN {
-                let x = i32::from(frame.x) + column as i32 - half;
-                let y = i32::from(frame.y) + row as i32 - half;
-                let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
-                    continue;
-                };
-                if let Some([r, g, b]) = scene.radar_rgb(frame.map, x, y) {
-                    image.pixels[row * SPAN + column] = Color32::from_rgb(r, g, b);
-                    any = true;
-                }
-            }
-        }
-        if !any {
-            self.picture = None;
-            return false;
-        }
-        self.picture = Some(Picture {
-            map: frame.map,
-            middle: (frame.x, frame.y),
-            texture: ui
-                .ctx()
-                .load_texture("world-map", image, TextureOptions::NEAREST),
-        });
-        true
+    pub fn is_open(&self) -> bool {
+        self.open
     }
 
-    /// Draws the map when it is open. Gives the place it covers.
+    /// Closes the map, the markers manager and the marker box.
+    pub fn close(&mut self) {
+        self.open = false;
+        self.markers.close();
+    }
+
+    /// Draws the map when it is open, and the markers manager and the
+    /// marker box when they show. Gives the places they cover.
     pub fn draw(
         &mut self,
-        ui: &egui::Ui,
+        ui: &mut egui::Ui,
         rect: Rect,
         frame: &WatchFrame,
-        scene: &mut Scene,
-        hand: &Hand,
-    ) -> Option<Rect> {
-        if !self.open {
-            return None;
+        tools: &mut Tools<'_>,
+        profile: &mut Profile,
+    ) -> Vec<Rect> {
+        let mut covered = Vec::new();
+        if self.open {
+            covered.push(self.map_panel(ui, rect, frame, tools, profile));
         }
-        let panel = panel_rect(rect, self.placed);
-        self.body(ui, panel, frame, scene, hand);
-        // After the field, so the corner and the title take their own clicks.
-        self.move_and_size(ui, panel);
-        Some(panel)
+        let (marker_panels, asks) = self.markers.draw(ui, rect, tools, profile);
+        covered.extend(marker_panels);
+        for ask in asks {
+            match ask {
+                MarkersAsk::GoTo(x, y) => self.look_at(x, y, tools, profile),
+                MarkersAsk::Changed => self.files.reload(),
+            }
+        }
+        covered
     }
 
-    fn body(
+    /// Opens the whole-world view on a place.
+    fn look_at(&mut self, x: u16, y: u16, tools: &Tools<'_>, profile: &mut Profile) {
+        self.open = true;
+        self.looking_at = Some((x, y));
+        if !profile.world_map.whole_world {
+            profile.world_map.whole_world = true;
+            tools.keep_profile(profile);
+        }
+    }
+
+    fn map_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        frame: &WatchFrame,
+        tools: &mut Tools<'_>,
+        profile: &mut Profile,
+    ) -> Rect {
+        let spec = PanelSpec {
+            id: MAP_ID,
+            title: WORDS_TITLE,
+            default: layout::first_place(rect, Spot::Middle(0), panel_size(field_side(rect))),
+            min_size: Some(panel_size(FIELD_SIDE_SMALLEST)),
+            closable: true,
+        };
+        let panel = panel_frame::place(rect, &spec, profile);
+        let body = panel_frame::draw(ui.painter(), panel, WORDS_TITLE);
+        let place_row = Rect::from_min_size(body.min, Vec2::new(body.width(), TOOL_ROW));
+        let marker_row = place_row.translate(Vec2::new(0.0, TOOL_ROW + TOOL_GAP));
+        let field = Rect::from_min_max(
+            Pos2::new(body.left(), marker_row.bottom() + TOOL_GAP),
+            body.max,
+        );
+        self.place_row(ui, place_row, frame, tools, profile);
+        self.marker_row(ui, marker_row, frame, tools);
+        self.field(ui, field, frame, tools, profile);
+        if panel_frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) {
+            self.open = false;
+        }
+        panel
+    }
+
+    /// The go-to box, the buttons, and where the character stands.
+    fn place_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: Rect,
+        frame: &WatchFrame,
+        tools: &mut Tools<'_>,
+        profile: &mut Profile,
+    ) {
+        let whole = profile.world_map.whole_world;
+        let mut right = row.right();
+        let view = from_right(row, &mut right, BUTTON_WIDTH);
+        let walk = from_right(row, &mut right, BUTTON_WIDTH);
+        let go = from_right(row, &mut right, BUTTON_WIDTH);
+        let field = from_right(row, &mut right, GOTO_WIDTH);
+        let view_words = if whole { WORDS_NEAR } else { WORDS_WORLD };
+        if theme::segment_keyed(ui, view, Id::new("map-view"), view_words, theme::TEXT) {
+            profile.world_map.whole_world = !whole;
+            self.looking_at = None;
+            tools.keep_profile(profile);
+        }
+        ui.painter()
+            .rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
+        let typed = ui.put(
+            field,
+            egui::TextEdit::singleline(&mut self.goto)
+                .id(Id::new("map-goto"))
+                .frame(false)
+                .hint_text(HINT_GOTO)
+                .font(text_font(theme::SIZE_SMALL))
+                .text_color(theme::TEXT),
+        );
+        let entered = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let looked =
+            theme::segment_keyed(ui, go, Id::new("map-go"), WORDS_GO, theme::TEXT) || entered;
+        let walked = frame.human_control
+            && theme::segment_keyed(ui, walk, Id::new("map-walk"), WORDS_WALK, theme::GOAL);
+        if looked || walked {
+            match world_map::parse_goto(&self.goto) {
+                Some((x, y)) => {
+                    self.look_at(x, y, tools, profile);
+                    if walked {
+                        tools.hand.act(Act::WalkTo { x, y });
+                    }
+                }
+                None => self.note = Some((WORDS_NO_PLACE.to_string(), tools.time)),
+            }
+        }
+        if profile.world_map.show_coordinates {
+            ui.painter().text(
+                Pos2::new(row.left(), row.center().y),
+                Align2::LEFT_CENTER,
+                map_view::place_words(profile, frame.map, frame.x, frame.y),
+                number_font(theme::SIZE_SMALL),
+                theme::TEXT_DIM,
+            );
+        }
+    }
+
+    /// The buttons of the markers and of the map files.
+    fn marker_row(&mut self, ui: &egui::Ui, row: Rect, frame: &WatchFrame, tools: &Tools<'_>) {
+        let mut right = row.right();
+        let buttons = [
+            (WORDS_RESET, HINT_RESET),
+            (WORDS_RELOAD, HINT_RELOAD),
+            (WORDS_MARK_ME, HINT_MARK_ME),
+            (WORDS_MARKERS, HINT_MARKERS),
+        ];
+        let mut pressed = None;
+        for (at, (words, hint)) in buttons.into_iter().enumerate() {
+            let area = from_right(row, &mut right, WIDE_BUTTON_WIDTH);
+            let key = Id::new(("map-marker-button", at));
+            if theme::segment_keyed(ui, area, key, words, theme::TEXT) {
+                pressed = Some(words);
+            }
+            if ui.rect_contains_pointer(area) {
+                super::tips::label(ui, hint, "");
+            }
+        }
+        match pressed {
+            Some(WORDS_RESET) => self.pictures = MapPictures::default(),
+            Some(WORDS_RELOAD) => {
+                self.files.reload();
+                self.note = Some((WORDS_RELOADED.to_string(), tools.time));
+            }
+            Some(WORDS_MARK_ME) => self.markers.add(&world_map::marker_on_player(frame)),
+            Some(WORDS_MARKERS) => self.markers.toggle(),
+            _ => {}
+        }
+    }
+
+    fn field(
         &mut self,
         ui: &egui::Ui,
-        panel: Rect,
+        field: Rect,
         frame: &WatchFrame,
-        scene: &mut Scene,
-        hand: &Hand,
+        tools: &mut Tools<'_>,
+        profile: &mut Profile,
     ) {
-        theme::panel(ui.painter(), panel);
-        let inner = panel.shrink(theme::PANEL_PAD);
-        ui.painter().text(
-            inner.left_top(),
-            Align2::LEFT_TOP,
-            WORDS_TITLE,
-            title_font(theme::SIZE_TITLE),
-            theme::TEXT,
-        );
-        let field = Rect::from_min_max(inner.left_top() + Vec2::new(0.0, TITLE_ROW), inner.max);
-        if !self.picture_of(ui, frame, scene) {
+        let whole = profile.world_map.whole_world;
+        let response = ui.interact(field, Id::new("world-map"), Sense::click_and_drag());
+        let notches = map_view::wheel_notches(ui, &response);
+        let lay = if whole {
+            self.wheel += notches;
+            let turns = whole_turns(&mut self.wheel);
+            if turns != 0 {
+                let options = &mut profile.world_map;
+                options.zoom_step = world_map::zoom_step(options.zoom_step, turns);
+                tools.keep_profile(profile);
+            }
+            self.world_view(ui, field, frame, tools.scene, profile, &response)
+        } else {
+            if notches != 0.0 {
+                self.zoom = map_view::zoomed(self.zoom, notches, ZOOM_MAX);
+            }
+            self.near_view(ui, field, frame, tools.scene)
+        };
+        let Some(lay) = lay else {
             ui.painter().text(
                 field.center(),
                 Align2::CENTER_CENTER,
@@ -306,93 +363,156 @@ impl MapUi {
                 theme::TEXT_FAINT,
             );
             return;
+        };
+        let painter = ui.painter().with_clip_rect(field);
+        let session = map_view::session_markers(tools.readings, profile, frame.map);
+        let marks = Marks {
+            frame,
+            map: frame.map,
+            profile,
+            files: self.files.get(profile),
+            session: &session,
+            looking_at: self.looking_at,
+        };
+        map_view::overlays(&painter, field, lay, &marks, &mark_look());
+        if let Some((words, since)) = &self.note {
+            if tools.time - since > NOTE_SECONDS {
+                self.note = None;
+            } else {
+                painter.text(
+                    field.left_top(),
+                    Align2::LEFT_TOP,
+                    words,
+                    text_font(theme::SIZE_SMALL),
+                    theme::WAITING,
+                );
+            }
         }
-        let Some(picture) = &self.picture else {
+        let Some(mouse) = response.hover_pos() else {
             return;
         };
-        let response = ui.interact(field, Id::new("world-map"), Sense::click());
-        if response.hovered() {
-            let notches = ui.input(|input| input.raw_scroll_delta.y) / WHEEL_NOTCH;
-            if notches != 0.0 {
-                self.zoom = zoomed(self.zoom, notches);
-            }
+        let (x, y) = map_view::whole_tile(lay.tile(mouse));
+        if profile.world_map.show_mouse_coordinates {
+            theme::shadowed_text(
+                &painter,
+                field.left_bottom(),
+                Align2::LEFT_BOTTOM,
+                &map_view::place_words(profile, frame.map, x, y),
+                number_font(theme::SIZE_SMALL),
+                theme::TEXT,
+            );
+        }
+        if let Some(label) = self.files.get(profile).zone_at(frame.map, x, y) {
+            theme::shadowed_text(
+                &painter,
+                field.right_bottom(),
+                Align2::RIGHT_BOTTOM,
+                &label,
+                text_font(theme::SIZE_SMALL),
+                theme::TEXT,
+            );
+        }
+        let pan = if whole && profile.world_map.free_view {
+            HINT_PAN
+        } else {
+            ""
+        };
+        if !frame.human_control {
+            super::tips::label(ui, HINT_ZOOM, pan);
+            return;
+        }
+        let targets = world_map::targets_ground(frame, &profile.world_map);
+        super::tips::label(ui, if targets { HINT_TARGET } else { HINT_WALK }, pan);
+        if !response.clicked() {
+            return;
+        }
+        if ui.input(|i| i.modifiers.command) {
+            self.markers.add(&Marker {
+                name: String::new(),
+                map: frame.map,
+                x,
+                y,
+                icon: String::new(),
+                color: NEW_MARKER_COLOR.to_string(),
+            });
+        } else if targets {
+            let z = tools.scene.land_z(frame.map, x, y).unwrap_or(frame.z);
+            tools.hand.act(Act::TargetGround { x, y, z });
+        } else {
+            tools.hand.act(Act::WalkTo { x, y });
+        }
+    }
+
+    /// The land near the character, turned. None without the client files.
+    fn near_view(
+        &mut self,
+        ui: &egui::Ui,
+        field: Rect,
+        frame: &WatchFrame,
+        scene: &mut Scene,
+    ) -> Option<Lay> {
+        if !self
+            .pictures
+            .make_near(ui.ctx(), scene, frame.map, (frame.x, frame.y))
+        {
+            return None;
         }
         // The turned picture is a diamond as wide as the field, and the zoom
         // spreads it wider than that.
-        let unit = field.width() / (SPAN as f32 * 2.0) * self.zoom;
-        let center = field.center();
-        let from_character = Vec2::new(
-            f32::from(picture.middle.0) - f32::from(frame.x),
-            f32::from(picture.middle.1) - f32::from(frame.y),
-        );
-        let half = SPAN as f32 / 2.0;
-        let corners = [(-half, -half), (half, -half), (half, half), (-half, half)];
-        let uvs = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-        let mut mesh = Mesh::with_texture(picture.texture.id());
-        for ((dx, dy), (u, v)) in corners.into_iter().zip(uvs) {
-            mesh.vertices.push(Vertex {
-                pos: center + turned(from_character + Vec2::new(dx, dy), unit),
-                uv: Pos2::new(u, v),
-                color: Color32::WHITE,
-            });
-        }
-        mesh.indices.extend([0, 1, 2, 0, 2, 3]);
-        let painter = ui.painter().with_clip_rect(field);
-        painter.add(Shape::mesh(mesh));
-        for mobile in &frame.mobiles {
-            let step = Vec2::new(
-                f32::from(mobile.x) - f32::from(frame.x),
-                f32::from(mobile.y) - f32::from(frame.y),
-            );
-            painter.circle_filled(
-                center + turned(step, unit),
-                DOT_RADIUS,
-                theme::notoriety_color(mobile.notoriety),
-            );
-        }
-        if let (Some(x), Some(y)) = (frame.dest_x, frame.dest_y) {
-            let step = Vec2::new(
-                f32::from(x) - f32::from(frame.x),
-                f32::from(y) - f32::from(frame.y),
-            );
-            painter.circle_stroke(
-                center + turned(step, unit),
-                SELF_RADIUS,
-                egui::Stroke::new(1.5, theme::GOAL),
-            );
-        }
-        // The marks the shard put on the map, each with its name.
-        for mark in frame.waypoints.iter().filter(|mark| mark.map == frame.map) {
-            let step = Vec2::new(
-                f32::from(mark.x) - f32::from(frame.x),
-                f32::from(mark.y) - f32::from(frame.y),
-            );
-            let at = center + turned(step, unit);
-            painter.circle_filled(at, DOT_RADIUS, theme::WAITING);
-            painter.text(
-                at + Vec2::new(DOT_RADIUS * 2.0, 0.0),
-                Align2::LEFT_CENTER,
-                &mark.name,
+        let unit = field.width().min(field.height()) / (map_view::SPAN as f32 * HALF) * self.zoom;
+        let lay = Lay::Turned {
+            center: field.center(),
+            from: Vec2::new(f32::from(frame.x), f32::from(frame.y)),
+            unit,
+        };
+        self.pictures
+            .draw_near(&ui.painter().with_clip_rect(field), lay);
+        Some(lay)
+    }
+
+    /// The whole facet, north up, at the zoom step of the World Map page,
+    /// and never smaller than the field. A drag moves the view when the
+    /// page lets the view go free; else it follows the character.
+    fn world_view(
+        &mut self,
+        ui: &egui::Ui,
+        field: Rect,
+        frame: &WatchFrame,
+        scene: &mut Scene,
+        profile: &Profile,
+        response: &egui::Response,
+    ) -> Option<Lay> {
+        if self.pictures.grow_world(ui.ctx(), scene, frame.map) {
+            ui.ctx().request_repaint();
+            ui.painter().text(
+                field.center_top(),
+                Align2::CENTER_TOP,
+                WORDS_BUILDING,
                 text_font(theme::SIZE_SMALL),
                 theme::WAITING,
             );
         }
-        painter.circle_filled(center, SELF_RADIUS, theme::SELF_FIGURE);
-        if !frame.human_control {
-            if response.hovered() {
-                super::tips::label(ui, HINT_ZOOM, "");
-            }
-            return;
+        let (width, height) = world_map::facet_size(frame.map);
+        let fit = (field.width() / f32::from(width)).min(field.height() / f32::from(height));
+        let scale = world_map::zoom_points(profile.world_map.zoom_step).max(fit);
+        // The whole facet fits at the least zoom; closer, the view follows
+        // the character, or stays where the player moved it.
+        let middle = match self.looking_at {
+            Some((x, y)) => Vec2::new(f32::from(x), f32::from(y)),
+            None if scale <= fit => Vec2::new(f32::from(width), f32::from(height)) / HALF,
+            None => Vec2::new(f32::from(frame.x), f32::from(frame.y)),
+        };
+        if response.dragged() && profile.world_map.free_view {
+            self.looking_at = Some(map_view::whole_tile(middle - response.drag_delta() / scale));
         }
-        if let Some(mouse) = response.hover_pos() {
-            super::tips::label(ui, HINT_WALK, "");
-            if response.clicked() {
-                let tiles = unturned(mouse - center, unit);
-                let x = (f32::from(frame.x) + tiles.x).round().max(0.0) as u16;
-                let y = (f32::from(frame.y) + tiles.y).round().max(0.0) as u16;
-                hand.act(Act::WalkTo { x, y });
-            }
-        }
+        let lay = Lay::NorthUp {
+            center: field.center(),
+            middle,
+            scale,
+        };
+        self.pictures
+            .draw_world(&ui.painter().with_clip_rect(field), lay)
+            .then_some(lay)
     }
 }
 
@@ -401,12 +521,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_wheel_zooms_between_the_two_bounds() {
-        assert!(zoomed(ZOOM_MIN, 1.0) > ZOOM_MIN, "a notch up comes closer");
-        assert_eq!(zoomed(ZOOM_MIN, -5.0), ZOOM_MIN, "never below the fit");
-        assert_eq!(zoomed(ZOOM_MAX, 20.0), ZOOM_MAX, "never above the bound");
-        let twice = zoomed(zoomed(ZOOM_MIN, 1.0), -1.0);
-        assert!((twice - ZOOM_MIN).abs() < 0.001, "up then down comes back");
+    fn the_wheel_steps_the_world_zoom_by_whole_turns() {
+        let mut wheel = 0.6;
+        assert_eq!(whole_turns(&mut wheel), 0, "not yet a whole turn");
+        wheel += 0.6;
+        assert_eq!(whole_turns(&mut wheel), 1);
+        assert!((wheel - 0.2).abs() < 0.001, "the rest waits for the next");
+        wheel = -2.5;
+        assert_eq!(whole_turns(&mut wheel), -2);
     }
 
     #[test]
@@ -418,61 +540,12 @@ mod tests {
         assert!(field_side(large) < large.height(), "it stays in the window");
     }
 
-    /// The map opens in the middle until the human puts it somewhere. A
-    /// place or a size that no longer fits the window is held inside it.
     #[test]
-    fn a_placed_map_stays_inside_the_window() {
-        const SIDE: f32 = 300.0;
-        let window = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 900.0));
-        let middle = panel_rect(window, None);
-        assert!((middle.center() - window.center()).length() < 0.01);
-
-        let placed = Placed {
-            left: 40.0,
-            top: 60.0,
-            side: SIDE,
-        };
-        let panel = panel_rect(window, Some(placed));
-        assert_eq!(panel.min, Pos2::new(placed.left, placed.top));
-        assert!((side_of(panel) - SIDE).abs() < 0.01, "the size is kept");
-
-        let far = panel_rect(
-            window,
-            Some(Placed {
-                left: 5_000.0,
-                top: -300.0,
-                ..placed
-            }),
-        );
-        assert!(window.contains_rect(far), "dragged off, it stays in view");
-
-        let huge = panel_rect(
-            window,
-            Some(Placed {
-                side: 10_000.0,
-                ..placed
-            }),
-        );
-        assert!(window.contains_rect(huge), "pulled too large, it fits");
-        let tiny = panel_rect(
-            window,
-            Some(Placed {
-                side: 1.0,
-                ..placed
-            }),
-        );
-        assert!((side_of(tiny) - FIELD_SIDE_SMALLEST).abs() < 0.01);
-    }
-
-    #[test]
-    fn a_click_on_the_turned_map_finds_its_tile_again() {
-        const UNIT: f32 = 0.9;
-        let east = turned(Vec2::new(1.0, 0.0), UNIT);
-        assert!(east.x > 0.0 && east.y > 0.0, "east goes right and down");
-        let south = turned(Vec2::new(0.0, 1.0), UNIT);
-        assert!(south.x < 0.0 && south.y > 0.0, "south goes left and down");
-        let tiles = Vec2::new(37.0, -12.0);
-        let back = unturned(turned(tiles, UNIT), UNIT);
-        assert!((back - tiles).length() < 0.001);
+    fn closing_the_map_closes_its_marker_boxes() {
+        let mut map = MapUi::starting(false);
+        map.markers
+            .add(&world_map::marker_on_player(&WatchFrame::default()));
+        map.close();
+        assert!(!map.is_open());
     }
 }

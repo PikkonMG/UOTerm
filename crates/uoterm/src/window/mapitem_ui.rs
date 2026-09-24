@@ -1,37 +1,43 @@
-//! Two windows about people and places: the map item the character opened,
-//! with its pins, and the profile a player wrote about a character.
+//! Two windows about people and places: each map item the character
+//! opened, with its pins, and the profile a player wrote about a character.
+//! The player moves and locks each one.
 //!
-//! A map item: a treasure map with its pins, or a
-//! city map. The picture is the land of the map, drawn from the radar
-//! colors of the client files. A click puts a pin where the human clicked,
-//! when the shard lets the map be drawn on.
+//! A map item: a treasure map with its pins, or a city map. The picture is
+//! the land of the map, drawn from the radar colors of the client files,
+//! with the course line from one pin to the next. When the shard lets the
+//! map be drawn on, a click puts a pin where the human clicked, a pin drags
+//! to a new place, and a double click takes it off.
 
 use super::boxes_ui::{Tools, CELL_RADIUS};
-use super::control::{Act, Answer, Ask};
-use super::scene::Scene;
-use super::theme::{self, number_font, text_font, title_font};
+use super::control::{Act, Answer, Ask, Asker, Hand};
+use super::model::map_item::{pixel_at, pixel_of, point_of, LandPicture, UNKNOWN};
+use super::modern::frame::{self, FrameEvent, PanelSpec};
+use super::modern::layout::{self, Spot};
+use super::settings::Profile;
+use super::theme::{self, number_font, text_font};
 use crate::view::{WatchFrame, WatchMap};
-use eframe::egui::{
-    self, Align2, Color32, ColorImage, CornerRadius, Id, Pos2, Rect, Sense, TextureHandle,
-    TextureOptions, Vec2,
-};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
+use std::collections::HashMap;
 
-/// The largest picture the window draws for a map item. A larger map is
-/// drawn into this and shown at its own size.
-const PICTURE_MAX: usize = 400;
+const MAP_PLACE_ID: &str = "modern:map_item:";
+const PROFILE_ID: &str = "modern:profile";
 const TITLE_ROW: f32 = 32.0;
 const FOOT_ROW: f32 = 40.0;
 const PIN_RADIUS: f32 = 4.0;
+/// A pin takes clicks this far round it.
+const PIN_REACH: f32 = 8.0;
 const PIN_RING: f32 = 1.5;
-const UNKNOWN: Color32 = Color32::from_rgb(28, 30, 34);
+const COURSE_WIDTH: f32 = 1.5;
 const PAPER_EDGE: f32 = 2.0;
 
 const WORDS_TITLE: &str = "Map";
 const WORDS_CLEAR: &str = "Clear pins";
-const WORDS_EDIT: &str = "Let me draw";
+const WORDS_EDIT: &str = "Plot course";
+const WORDS_STOP: &str = "Stop plotting";
 const WORDS_CLOSE: &str = "Close";
 const WORDS_NO_FILES: &str = "The picture needs the client files.";
 const HINT_PIN: &str = "Click: put a pin here.";
+const HINT_PIN_MOVE: &str = "Drag: move the pin.  Double-click: take it off.";
 const WORDS_MARK: &str = "Mark";
 const HINT_WISH: &str = "Say the place in plain words, for example: Britain bank";
 const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
@@ -40,212 +46,180 @@ const MARK_WIDTH: f32 = 70.0;
 const FIELD_ROW: f32 = 30.0;
 const GAP: f32 = 10.0;
 
-struct Picture {
-    serial: u32,
-    texture: TextureHandle,
+/// A pin the player drags: its map, its place in the list, and where it
+/// is now.
+struct DraggedPin {
+    map: u32,
+    pin: usize,
+    at: Pos2,
 }
 
 #[derive(Default)]
 pub struct MapItemUi {
-    picture: Option<Picture>,
-    wish: String,
+    /// The picture of the land of each open map.
+    pictures: HashMap<u32, LandPicture>,
+    /// The place each map is asked for in plain words.
+    wishes: HashMap<u32, String>,
+    /// The map Jev looks for a place on.
+    asked_for: Option<u32>,
     /// Words for the human about the last thing Jev did.
     note: Option<(String, bool)>,
+    dragging: Option<DraggedPin>,
 }
 
-/// The pixel of a map picture that a tile of the world lies on.
-fn pixel_of(map: &WatchMap, x: u16, y: u16) -> (u16, u16) {
-    let along = |start: u16, end: u16, of: u16, at: u16| {
-        let span = u32::from(end.saturating_sub(start)).max(1);
-        let from_start = u32::from(at.saturating_sub(start));
-        (from_start * u32::from(of) / span) as u16
-    };
-    (
-        along(map.start_x, map.end_x, map.width, x),
-        along(map.start_y, map.end_y, map.height, y),
-    )
-}
-
-/// How large the picture is in pixels, and how many tiles each side covers.
-fn picture_size(map: &WatchMap) -> (usize, usize) {
-    let across = usize::from(map.end_x.saturating_sub(map.start_x)).max(1);
-    let down = usize::from(map.end_y.saturating_sub(map.start_y)).max(1);
-    (across.min(PICTURE_MAX), down.min(PICTURE_MAX))
-}
-
-/// The tile of the world at one pixel of the picture.
-fn tile_of(map: &WatchMap, pixels: (usize, usize), pixel: (usize, usize)) -> (u16, u16) {
-    let span = |start: u16, end: u16, pixels: usize, at: usize| {
-        let span = u32::from(end.saturating_sub(start));
-        start.saturating_add((span * at as u32 / pixels.max(1) as u32) as u16)
-    };
-    (
-        span(map.start_x, map.end_x, pixels.0, pixel.0),
-        span(map.start_y, map.end_y, pixels.1, pixel.1),
-    )
+/// What the player did to a pin in one frame.
+enum PinDeed {
+    Moved(usize, (u16, u16)),
+    Removed(usize),
 }
 
 impl MapItemUi {
-    /// The picture of the land of a map, made once for each map.
-    fn picture_of(&mut self, ui: &egui::Ui, map: &WatchMap, scene: &mut Scene) -> bool {
-        if self
-            .picture
-            .as_ref()
-            .is_some_and(|kept| kept.serial == map.serial)
-        {
-            return true;
-        }
-        let (across, down) = picture_size(map);
-        let mut image = ColorImage::new([across, down], UNKNOWN);
-        let mut any = false;
-        for row in 0..down {
-            for column in 0..across {
-                let (x, y) = tile_of(map, (across, down), (column, row));
-                if let Some([r, g, b]) = scene.radar_rgb(map.facet, x, y) {
-                    image.pixels[row * across + column] = Color32::from_rgb(r, g, b);
-                    any = true;
-                }
-            }
-        }
-        if !any {
-            self.picture = None;
-            return false;
-        }
-        self.picture = Some(Picture {
-            serial: map.serial,
-            texture: ui
-                .ctx()
-                .load_texture("map-item", image, TextureOptions::LINEAR),
-        });
-        true
-    }
-
-    /// Draws the map item that opened last. Gives the place it covers.
+    /// Draws each open map item. Gives the places they cover.
     pub fn draw(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
-    ) -> Option<Rect> {
-        let Some(map) = frame.maps.last() else {
-            self.picture = None;
-            return None;
-        };
-        for answer in tools.hand.new_answers() {
-            match answer {
-                Answer::Place(Ok((x, y))) => {
+        profile: &mut Profile,
+    ) -> Vec<Rect> {
+        let open = |serial: &u32| frame.maps.iter().any(|map| map.serial == *serial);
+        self.pictures.retain(|serial, _| open(serial));
+        self.wishes.retain(|serial, _| open(serial));
+        if self
+            .dragging
+            .as_ref()
+            .is_some_and(|drag| !frame.maps.iter().any(|map| map.serial == drag.map))
+        {
+            self.dragging = None;
+        }
+        self.take_answers(frame, tools.hand);
+        frame
+            .maps
+            .iter()
+            .enumerate()
+            .map(|(index, map)| self.map(ui, rect, index, map, frame, tools, profile))
+            .collect()
+    }
+
+    /// Takes the place Jev found: its tile becomes a pin of the map it was
+    /// asked for.
+    fn take_answers(&mut self, frame: &WatchFrame, hand: &Hand) {
+        for answer in hand.new_answers(Asker::MapItem) {
+            let map = self
+                .asked_for
+                .and_then(|serial| frame.maps.iter().find(|map| map.serial == serial));
+            match (answer, map) {
+                (Answer::Place(Ok((x, y))), Some(map)) => {
                     let (x, y) = pixel_of(map, x, y);
-                    tools.hand.act(Act::MapPin { x, y });
-                    self.wish.clear();
+                    hand.act(Act::MapPin { x, y });
+                    self.wishes.remove(&map.serial);
                     self.note = None;
                 }
-                Answer::Place(Err(words)) => self.note = Some((words, true)),
-                // The macro editor, the designer and the chat take the rest.
+                (Answer::Place(Err(words)), _) => self.note = Some((words, true)),
+                // The map item asks only for a place, and its map is gone.
                 _ => {}
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn map(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        index: usize,
+        map: &WatchMap,
+        frame: &WatchFrame,
+        tools: &mut Tools<'_>,
+        profile: &mut Profile,
+    ) -> Rect {
+        let live = frame.human_control;
         let paper = Vec2::new(f32::from(map.width.max(1)), f32::from(map.height.max(1)));
-        let panel = Rect::from_center_size(
-            rect.center(),
-            paper
-                + Vec2::new(
-                    theme::PANEL_PAD * 2.0,
-                    TITLE_ROW + FOOT_ROW + theme::PANEL_PAD,
-                ),
-        );
-        theme::panel(ui.painter(), panel);
-        let inner = panel.shrink(theme::PANEL_PAD);
-        ui.painter().text(
-            inner.left_top(),
-            Align2::LEFT_TOP,
-            WORDS_TITLE,
-            title_font(theme::SIZE_TITLE),
-            theme::TEXT,
-        );
+        let size = paper
+            + Vec2::new(
+                theme::PANEL_PAD * 2.0,
+                frame::TITLE_ROW + FIELD_ROW + GAP * 2.0 + FOOT_ROW + theme::PANEL_PAD * 2.0,
+            );
+        let id = format!("{MAP_PLACE_ID}{}", index + 1);
+        let spec = PanelSpec {
+            id: &id,
+            title: WORDS_TITLE,
+            default: layout::first_place(rect, Spot::Middle(index), size),
+            min_size: None,
+            closable: live,
+        };
+        let panel = frame::place(rect, &spec, profile);
+        let body = frame::draw(ui.painter(), panel, WORDS_TITLE);
         // The rows are laid from the bottom up, so every one of them stays
         // inside the panel whatever size the map has.
-        let foot = Pos2::new(inner.left(), inner.bottom() - FOOT_ROW + theme::ROW_GAP);
+        let foot = Pos2::new(body.left(), body.bottom() - FOOT_ROW + theme::ROW_GAP);
         let wish_row = Rect::from_min_size(
-            Pos2::new(inner.left(), foot.y - GAP - FIELD_ROW),
-            Vec2::new(inner.width(), FIELD_ROW),
+            Pos2::new(body.left(), foot.y - GAP - FIELD_ROW),
+            Vec2::new(body.width(), FIELD_ROW),
         );
-        let picture = Rect::from_min_max(
-            inner.left_top() + Vec2::new(0.0, TITLE_ROW),
-            Pos2::new(inner.right(), wish_row.top() - GAP),
-        );
+        let picture = Rect::from_min_max(body.min, Pos2::new(body.right(), wish_row.top() - GAP));
         ui.painter()
             .rect_filled(picture, CornerRadius::same(CELL_RADIUS), UNKNOWN);
-        if self.picture_of(ui, map, tools.scene) {
-            if let Some(kept) = &self.picture {
+        let land = picture.shrink(PAPER_EDGE);
+        let scene = &mut *tools.scene;
+        let texture =
+            self.pictures
+                .entry(map.serial)
+                .or_default()
+                .texture(ui.ctx(), map, |facet, x, y| scene.radar_rgb(facet, x, y));
+        match texture {
+            Some(texture) => {
                 ui.painter().image(
-                    kept.texture.id(),
-                    picture.shrink(PAPER_EDGE),
+                    texture,
+                    land,
                     Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                     Color32::WHITE,
                 );
             }
-        } else {
-            ui.painter().text(
-                picture.center(),
-                Align2::CENTER_CENTER,
-                WORDS_NO_FILES,
-                text_font(theme::SIZE_BODY),
-                theme::TEXT_FAINT,
-            );
-        }
-        for (i, (x, y)) in map.pins.iter().enumerate() {
-            let at = picture.left_top()
-                + Vec2::new(
-                    f32::from(*x) * picture.width() / f32::from(map.width.max(1)),
-                    f32::from(*y) * picture.height() / f32::from(map.height.max(1)),
+            None => {
+                ui.painter().text(
+                    picture.center(),
+                    Align2::CENTER_CENTER,
+                    WORDS_NO_FILES,
+                    text_font(theme::SIZE_BODY),
+                    theme::TEXT_FAINT,
                 );
-            ui.painter().circle_filled(at, PIN_RADIUS, theme::ALARM);
-            ui.painter()
-                .circle_stroke(at, PIN_RADIUS, egui::Stroke::new(PIN_RING, theme::TEXT));
-            ui.painter().text(
-                at + Vec2::new(PIN_RADIUS * 2.0, 0.0),
-                Align2::LEFT_CENTER,
-                (i + 1).to_string(),
-                number_font(theme::SIZE_SMALL),
-                theme::TEXT,
-            );
+            }
         }
-        if !frame.human_control {
-            return Some(panel);
+        let plotting = live && map.may_plot;
+        if plotting {
+            let response = ui.interact(land, Id::new(("map-item", map.serial)), Sense::click());
+            if response.hovered() {
+                super::tips::label(ui, HINT_PIN, "");
+            }
+            if let Some(at) = response
+                .interact_pointer_pos()
+                .filter(|_| response.clicked())
+            {
+                let (x, y) = pixel_at(map, land, at);
+                tools.hand.act(Act::MapPin { x, y });
+            }
+        } else {
+            self.dragging = None;
         }
-        let response = ui.interact(picture, Id::new(("map-item", map.serial)), Sense::click());
-        if map.may_plot && response.hovered() {
-            super::tips::label(ui, HINT_PIN, "");
+        match self.pins(ui, land, map, plotting) {
+            Some(PinDeed::Moved(pin, (x, y))) => tools.hand.act(Act::MapPinMove {
+                pin: u8::try_from(pin).unwrap_or(u8::MAX),
+                x,
+                y,
+            }),
+            Some(PinDeed::Removed(pin)) => {
+                tools
+                    .hand
+                    .act(Act::MapPinRemove(u8::try_from(pin).unwrap_or(u8::MAX)));
+            }
+            None => {}
         }
-        if let Some(at) = response.interact_pointer_pos().filter(|_| map.may_plot) {
-            let on_paper = at - picture.left_top();
-            let pixel = |along: f32, of: f32, width: u16| {
-                (along / of.max(1.0) * f32::from(width)).round().max(0.0) as u16
-            };
-            tools.hand.act(Act::MapPin {
-                x: pixel(on_paper.x, picture.width(), map.width),
-                y: pixel(on_paper.y, picture.height(), map.height),
-            });
+        if live {
+            self.ask_field(ui, wish_row, map, tools);
+            self.buttons(ui, foot, map, tools);
         }
-        self.ask_field(ui, wish_row, map, tools);
-        let (clear, cleared) = theme::button(ui, foot, WORDS_CLEAR, theme::TEXT);
-        let (edit, edited) = theme::button(
-            ui,
-            Pos2::new(clear.right() + theme::ROW_GAP, foot.y),
-            WORDS_EDIT,
-            if map.may_plot {
-                theme::GOAL
-            } else {
-                theme::TEXT_DIM
-            },
-        );
-        let (_, closed) = theme::button(
-            ui,
-            Pos2::new(edit.right() + theme::ROW_GAP, foot.y),
-            WORDS_CLOSE,
-            theme::TEXT_DIM,
-        );
         if let Some((words, failed)) = &self.note {
             let color = if *failed {
                 theme::ALARM
@@ -260,6 +234,108 @@ impl MapItemUi {
                 color,
             );
         }
+        if frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) && live {
+            tools.hand.act(Act::MapClose(map.serial));
+        }
+        panel
+    }
+
+    /// The pins, the course line from one to the next, and their numbers.
+    /// While the player plots, a pin drags and a double click takes it
+    /// off. Gives what he did to one of them.
+    fn pins(
+        &mut self,
+        ui: &egui::Ui,
+        land: Rect,
+        map: &WatchMap,
+        plotting: bool,
+    ) -> Option<PinDeed> {
+        let spots: Vec<Pos2> = map
+            .pins
+            .iter()
+            .enumerate()
+            .map(|(at, pixel)| match &self.dragging {
+                Some(drag) if drag.map == map.serial && drag.pin == at => drag.at,
+                _ => point_of(map, land, *pixel),
+            })
+            .collect();
+        for pair in spots.windows(2) {
+            ui.painter()
+                .line_segment([pair[0], pair[1]], Stroke::new(COURSE_WIDTH, theme::TEXT));
+        }
+        let mut deed = None;
+        for (at, spot) in spots.into_iter().enumerate() {
+            ui.painter().circle_filled(spot, PIN_RADIUS, theme::ALARM);
+            ui.painter()
+                .circle_stroke(spot, PIN_RADIUS, Stroke::new(PIN_RING, theme::TEXT));
+            ui.painter().text(
+                spot + Vec2::new(PIN_RADIUS * 2.0, 0.0),
+                Align2::LEFT_CENTER,
+                (at + 1).to_string(),
+                number_font(theme::SIZE_SMALL),
+                theme::TEXT,
+            );
+            if !plotting {
+                continue;
+            }
+            let area = Rect::from_center_size(spot, Vec2::splat(PIN_REACH * 2.0));
+            let response = ui.interact(
+                area,
+                Id::new(("map-pin", map.serial, at)),
+                Sense::click_and_drag(),
+            );
+            if response.hovered() {
+                super::tips::label(ui, HINT_PIN_MOVE, "");
+            }
+            if response.drag_started() {
+                self.dragging = Some(DraggedPin {
+                    map: map.serial,
+                    pin: at,
+                    at: spot,
+                });
+            }
+            if let Some(drag) = self
+                .dragging
+                .as_mut()
+                .filter(|drag| drag.map == map.serial && drag.pin == at)
+            {
+                if response.dragged() {
+                    let moved = drag.at + response.drag_delta();
+                    drag.at = Pos2::new(
+                        moved.x.clamp(land.left(), land.right()),
+                        moved.y.clamp(land.top(), land.bottom()),
+                    );
+                }
+                if response.drag_stopped() {
+                    deed = Some(PinDeed::Moved(at, pixel_at(map, land, drag.at)));
+                    self.dragging = None;
+                }
+            } else if response.double_clicked() {
+                deed = Some(PinDeed::Removed(at));
+            }
+        }
+        deed
+    }
+
+    fn buttons(&self, ui: &egui::Ui, foot: Pos2, map: &WatchMap, tools: &Tools<'_>) {
+        let (clear, cleared) = theme::button(ui, foot, WORDS_CLEAR, theme::TEXT);
+        let (edit_words, edit_color) = if map.may_plot {
+            (WORDS_STOP, theme::WAITING)
+        } else {
+            (WORDS_EDIT, theme::GOAL)
+        };
+        let (edit, edited) = theme::button(
+            ui,
+            Pos2::new(clear.right() + theme::ROW_GAP, foot.y),
+            edit_words,
+            edit_color,
+        );
+        let (_, closed) = theme::button(
+            ui,
+            Pos2::new(edit.right() + theme::ROW_GAP, foot.y),
+            WORDS_CLOSE,
+            theme::TEXT_DIM,
+        );
         if cleared {
             tools.hand.act(Act::MapClear);
         } else if edited {
@@ -267,11 +343,8 @@ impl MapItemUi {
         } else if closed {
             tools.hand.act(Act::MapClose(map.serial));
         }
-        Some(panel)
     }
-}
 
-impl MapItemUi {
     /// The field that takes a place in plain words. Jev picks the place
     /// from the named places that lie on this map, and its tile becomes a
     /// pin. Without a TypeSafe key the field is off.
@@ -288,9 +361,11 @@ impl MapItemUi {
         } else {
             HINT_WISH_OFF
         };
+        let wish = self.wishes.entry(map.serial).or_default();
         let typed = ui.put(
             field,
-            egui::TextEdit::singleline(&mut self.wish)
+            egui::TextEdit::singleline(wish)
+                .id(Id::new(("map-wish", map.serial)))
                 .frame(false)
                 .margin(egui::Margin::symmetric(8, 6))
                 .hint_text(hint)
@@ -304,86 +379,26 @@ impl MapItemUi {
             if on { theme::GOAL } else { theme::TEXT_FAINT },
         );
         let asked = mark || (typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-        if asked && on && !self.wish.trim().is_empty() {
-            tools.hand.ask(Ask::PlaceOnMap {
-                wish: self.wish.trim().to_string(),
-                map: map.facet,
-                from: (map.start_x, map.start_y),
-                to: (map.end_x, map.end_y),
-            });
+        if asked && on && !wish.trim().is_empty() {
+            tools.hand.ask(
+                Asker::MapItem,
+                Ask::PlaceOnMap {
+                    wish: wish.trim().to_string(),
+                    map: map.facet,
+                    from: (map.start_x, map.start_y),
+                    to: (map.end_x, map.end_y),
+                },
+            );
+            self.asked_for = Some(map.serial);
             self.note = Some((WORDS_ASKING.into(), false));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn treasure_map() -> WatchMap {
-        WatchMap {
-            serial: 60,
-            start_x: 1000,
-            start_y: 1200,
-            end_x: 1400,
-            end_y: 1600,
-            width: 200,
-            height: 200,
-            ..WatchMap::default()
-        }
-    }
-
-    #[test]
-    fn the_picture_covers_the_land_of_the_map() {
-        let map = treasure_map();
-        let (across, down) = picture_size(&map);
-        assert_eq!((across, down), (400, 400));
-        assert_eq!(tile_of(&map, (across, down), (0, 0)), (1000, 1200));
-        assert_eq!(tile_of(&map, (across, down), (200, 200)), (1200, 1400));
-        assert_eq!(tile_of(&map, (across, down), (399, 399)), (1399, 1599));
-    }
-
-    #[test]
-    fn a_map_larger_than_the_picture_is_drawn_into_it() {
-        let wide = WatchMap {
-            end_x: 6000,
-            end_y: 6000,
-            ..treasure_map()
-        };
-        let (across, down) = picture_size(&wide);
-        assert_eq!((across, down), (PICTURE_MAX, PICTURE_MAX));
-        assert_eq!(tile_of(&wide, (across, down), (0, 0)), (1000, 1200));
-        let (x, _) = tile_of(&wide, (across, down), (PICTURE_MAX / 2, 0));
-        assert_eq!(x, 1000 + (6000 - 1000) / 2);
-    }
-
-    #[test]
-    fn a_tile_of_the_world_finds_its_pixel_on_the_map() {
-        let map = treasure_map();
-        assert_eq!(pixel_of(&map, 1000, 1200), (0, 0));
-        assert_eq!(pixel_of(&map, 1200, 1400), (100, 100));
-        assert_eq!(pixel_of(&map, 1400, 1600), (200, 200));
-        // A tile off the map lands on its edge.
-        assert_eq!(pixel_of(&map, 900, 1100), (0, 0));
-    }
-
-    #[test]
-    fn a_map_with_no_land_of_its_own_still_has_a_picture_size() {
-        let empty = WatchMap {
-            start_x: 500,
-            end_x: 500,
-            start_y: 500,
-            end_y: 500,
-            ..treasure_map()
-        };
-        assert_eq!(picture_size(&empty), (1, 1));
-        assert_eq!(tile_of(&empty, (1, 1), (0, 0)), (500, 500));
     }
 }
 
 const PROFILE_WIDTH: f32 = 420.0;
 const PROFILE_ROWS: usize = 8;
 const PROFILE_LINE: f32 = 20.0;
+const WORDS_PROFILE: &str = "Profile";
 const WORDS_WRITE: &str = "Write";
 const WORDS_SAVE: &str = "Save";
 const HINT_PROFILE: &str = "What your character says about himself";
@@ -410,7 +425,7 @@ impl ProfileUi {
     }
 
     /// Asks the session for the profile of a character and shows it.
-    pub fn show(&mut self, serial: u32, hand: &super::control::Hand) {
+    pub fn show(&mut self, serial: u32, hand: &Hand) {
         self.shown = Some(serial);
         self.writing = None;
         hand.act(Act::ProfileRead(serial));
@@ -431,6 +446,7 @@ impl ProfileUi {
         rect: Rect,
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
+        profile: &mut Profile,
     ) -> Option<Rect> {
         if std::mem::take(&mut self.show_own) && frame.serial != 0 {
             self.show(frame.serial, tools.hand);
@@ -438,32 +454,33 @@ impl ProfileUi {
         let serial = self.shown?;
         let known = frame.profiles.iter().find(|kept| kept.serial == serial);
         let body_rows = PROFILE_ROWS as f32 * PROFILE_LINE;
-        let panel = Rect::from_center_size(
-            rect.center(),
-            Vec2::new(
-                PROFILE_WIDTH,
-                TITLE_ROW * 2.0 + body_rows + FOOT_ROW + theme::PANEL_PAD * 2.0,
-            ),
-        );
-        theme::panel(ui.painter(), panel);
-        let inner = panel.shrink(theme::PANEL_PAD);
         let name = known.map_or("", |kept| kept.name.as_str());
+        let title = if name.is_empty() { WORDS_PROFILE } else { name };
+        let spec = PanelSpec {
+            id: PROFILE_ID,
+            title,
+            default: layout::first_place(
+                rect,
+                Spot::Middle(0),
+                Vec2::new(
+                    PROFILE_WIDTH,
+                    frame::TITLE_ROW + TITLE_ROW + body_rows + FOOT_ROW + theme::PANEL_PAD * 2.0,
+                ),
+            ),
+            min_size: None,
+            closable: true,
+        };
+        let panel = frame::place(rect, &spec, profile);
+        let inner = frame::draw(ui.painter(), panel, title);
         ui.painter().text(
             inner.left_top(),
-            Align2::LEFT_TOP,
-            if name.is_empty() { "Profile" } else { name },
-            title_font(theme::SIZE_TITLE),
-            theme::TEXT,
-        );
-        ui.painter().text(
-            inner.left_top() + Vec2::new(0.0, TITLE_ROW),
             Align2::LEFT_TOP,
             known.map_or("", |kept| kept.title.as_str()),
             text_font(theme::SIZE_BODY),
             theme::TEXT_DIM,
         );
         let body = Rect::from_min_size(
-            inner.left_top() + Vec2::new(0.0, TITLE_ROW * 2.0),
+            inner.left_top() + Vec2::new(0.0, TITLE_ROW),
             Vec2::new(inner.width(), body_rows),
         );
         match self.writing.as_mut() {
@@ -524,10 +541,54 @@ impl ProfileUi {
             }
         }
         let (_, closed) = theme::button(ui, next, WORDS_CLOSE, theme::TEXT_DIM);
-        if closed {
-            self.shown = None;
-            self.writing = None;
+        let closed_mark =
+            frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
+        if closed || closed_mark {
+            self.close();
         }
         Some(panel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::window::modern::testing::draw_frames;
+
+    fn map(serial: u32) -> WatchMap {
+        WatchMap {
+            serial,
+            start_x: 1000,
+            start_y: 1200,
+            end_x: 1400,
+            end_y: 1600,
+            width: 200,
+            height: 200,
+            may_plot: true,
+            pins: vec![(40, 90), (100, 20)],
+            ..WatchMap::default()
+        }
+    }
+
+    #[test]
+    fn each_open_map_has_its_panel_and_its_picture_goes_with_it() {
+        let frame = WatchFrame {
+            human_control: true,
+            maps: vec![map(1), map(2)],
+            ..WatchFrame::default()
+        };
+        let mut maps = MapItemUi::default();
+        let mut profile = Profile::default();
+        let mut covered = Vec::new();
+        draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
+            covered = maps.draw(ui, rect, &frame, tools, profile);
+        });
+        assert_eq!(covered.len(), 2);
+        assert_ne!(covered[0], covered[1], "each map opens in its own place");
+        assert_eq!(maps.pictures.len(), 2);
+        draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
+            covered = maps.draw(ui, rect, &WatchFrame::default(), tools, profile);
+        });
+        assert!(covered.is_empty() && maps.pictures.is_empty());
     }
 }

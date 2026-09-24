@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use uoterm_protocol::types::{ClientVersion, Era, Point3, EXIT_OK, EXIT_USAGE};
 use uoterm_runtime::config::{
-    load_app_config, load_persona, load_profile, password_from_env, ConnectOptions,
+    load_app_config, load_persona, load_profile, password_from_env, ConnectOptions, PROFILES_DIR,
+    PROFILE_EXT,
 };
 use uoterm_runtime::mock;
 use uoterm_runtime::persona::Persona;
@@ -227,6 +228,9 @@ enum HarvestCmd {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // The program keeps its files in the person's folders. A test never
+    // runs this, so a test never changes them.
+    uoterm_runtime::config::use_user_folders();
     let cli = match Cli::try_parse() {
         Ok(c) => c,
         Err(e) => {
@@ -458,11 +462,6 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         Era::Modern => ERA_MODERN.into(),
     });
     let era: Era = era_raw.parse().unwrap_or(cfg.era);
-    let version_raw = version.or(profile_version);
-    let version: ClientVersion = version_raw
-        .as_deref()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| era.default_version());
     let persona = match persona {
         Some(p) => load_persona(&p)?,
         None => Persona::lumberjack_yew(),
@@ -470,7 +469,13 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     let host = host.unwrap_or(cfg.host);
     let port = port.unwrap_or(cfg.port);
     let uopath = uopath.or(cfg.uopath);
+    let version = uoterm_runtime::config::client_version(
+        version.or(profile_version).as_deref(),
+        era,
+        uopath.as_deref(),
+    );
     let view_uopath = uopath.clone();
+    let view_shard = window::shard_address(&host, port);
     // The file may ask for the window. The terminal view takes its place.
     let view = view || (cfg.view && !text_view);
     let markers = markers.or(cfg.markers);
@@ -502,6 +507,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         play_along: cfg.play_along,
         picker: None,
         reconnect: cfg.reconnect,
+        proxy: cfg.proxy.clone(),
     };
     let rt = Runtime::new(cfg.max_sessions);
     let handle = rt.connect(opts).await?;
@@ -546,6 +552,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
             },
             uopath: view_uopath,
             shown: window::Shown::default(),
+            shard: Some(view_shard),
         };
         if let Err(e) = tokio::task::block_in_place(|| window::open(options)) {
             tracing::error!(error = %e, "watch window");
@@ -613,6 +620,7 @@ async fn watch_session(
         },
         uopath,
         shown,
+        shard: None,
     })
     .map_err(RuntimeError::Network)?;
     Ok(EXIT_OK as u8)
@@ -632,8 +640,6 @@ async fn remote_tool(
     Ok(EXIT_OK as u8)
 }
 
-const PROFILES_DIR: &str = "profiles";
-const PROFILE_EXT: &str = "toml";
 const NEEDS_PASSWORD: &str = "Type the password.";
 const NEEDS_ACCOUNT: &str = "Type the account.";
 const BAD_PORT: &str = "The port must be a number from 1 to 65535.";
@@ -653,6 +659,24 @@ fn saved_profiles() -> Vec<(String, uoterm_runtime::Profile)> {
         .collect();
     saved.sort_by(|a, b| a.0.cmp(&b.0));
     saved
+}
+
+/// The era and the client version of a login: the saved login's, or the
+/// era of the config and its version.
+fn login_era_version(
+    cfg: &uoterm_runtime::AppConfig,
+    profile: Option<&uoterm_runtime::Profile>,
+) -> (Era, ClientVersion) {
+    let era: Era = profile
+        .and_then(|p| p.era.as_deref())
+        .and_then(|era| era.parse().ok())
+        .unwrap_or(cfg.era);
+    let version = uoterm_runtime::config::client_version(
+        profile.and_then(|p| p.version.as_deref()),
+        era,
+        cfg.uopath.as_deref(),
+    );
+    (era, version)
 }
 
 /// The options of a login from what the human typed. The password comes
@@ -682,10 +706,7 @@ fn play_options(
     } else {
         form.password.clone()
     };
-    let era: Era = profile
-        .and_then(|p| p.era.as_deref())
-        .and_then(|era| era.parse().ok())
-        .unwrap_or(cfg.era);
+    let (era, version) = login_era_version(cfg, profile);
     let shard = form.shard.trim();
     Ok(ConnectOptions {
         host: form.host.trim().to_string(),
@@ -694,10 +715,7 @@ fn play_options(
         password,
         shard: (!shard.is_empty()).then(|| shard.to_string()),
         character: form.character.trim().to_string(),
-        version: uoterm_runtime::config::version_from_str(
-            profile.and_then(|p| p.version.as_deref()),
-            era,
-        ),
+        version,
         era,
         uopath: cfg.uopath.clone(),
         markers: cfg.markers.clone(),
@@ -710,6 +728,7 @@ fn play_options(
         play_along: cfg.play_along,
         picker: Some(picker),
         reconnect: cfg.reconnect,
+        proxy: cfg.proxy.clone(),
         ..ConnectOptions::default()
     })
 }
@@ -746,6 +765,7 @@ fn play(
         profile: start_with.map(|(name, _)| name.clone()),
         password: String::new(),
     };
+    let (_, version) = login_era_version(&cfg, start_with.map(|(_, p)| p));
     let listed = saved
         .iter()
         .map(|(name, p)| window::SavedLogin {
@@ -753,6 +773,7 @@ fn play(
             account: p.account.clone(),
             character: p.character.clone(),
             shard: p.shard.clone().unwrap_or_default(),
+            version: login_era_version(&cfg, Some(p)).1,
         })
         .collect();
     let rt = Runtime::new(cfg.max_sessions);
@@ -784,6 +805,7 @@ fn play(
         connect,
         uopath,
         connect_at_once: go,
+        version,
     };
     tokio::task::block_in_place(|| window::play(options)).map_err(RuntimeError::Network)?;
     Ok(EXIT_OK as u8)

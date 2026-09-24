@@ -12,7 +12,7 @@ use uoterm_runtime::Runtime;
 
 /// How often the window asks for the state of the session. A call inside one
 /// program costs little, so that window asks at the pace of the screen.
-const POLL_MS_SAME_PROGRAM: u64 = 33;
+pub const POLL_MS_SAME_PROGRAM: u64 = 33;
 const POLL_MS_OVER_HTTP: u64 = 100;
 const TOOL_FAILED: &str = "tool failed";
 

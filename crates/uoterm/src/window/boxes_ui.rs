@@ -1,37 +1,32 @@
 //! The windows a player knows from the game, as glass panels: the open
-//! containers with their items, and the gumps with their words, boxes and
-//! buttons. Each one shows at all times, so the operator sees what the agent
-//! sees. The clicks work only while the human has control.
+//! containers as grids of their items, and the gumps with their words,
+//! boxes and buttons. Each one shows at all times, so the operator sees
+//! what the agent sees. The clicks work only while the human has control.
 
 use super::control::{Act, Hand};
-use super::desk::{Desk, Zone};
-use super::ring_ui::{RingUi, Subject};
+use super::desk::Desk;
+use super::model::clicks::ClickDelay;
+use super::model::compare::ItemLayers;
+use super::model::places;
+use super::model::reads::Readings;
+use super::modern::frame::{self, FrameEvent, PanelSpec};
+use super::modern::layout::{self, Spot};
+use super::modern::GridUi;
+use super::ring_ui::RingUi;
 use super::scene::Scene;
-use super::theme::{self, number_font, text_font, title_font};
+use super::settings::{Profile, ProfileHome};
+use super::theme::{self, text_font};
 use super::tips::Tips;
-use crate::view::{WatchContainer, WatchFrame, WatchGump, WatchPackItem};
-use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
+use crate::view::{WatchFrame, WatchGump};
+use eframe::egui::{self, Align2, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use std::collections::{HashMap, HashSet};
 
-const LEFT_COLUMN_TOP: f32 = 150.0;
 pub(super) const CELL: f32 = 46.0;
 pub(super) const CELL_GAP: f32 = 4.0;
 pub(super) const CELL_RADIUS: u8 = 5;
-const COLUMNS: usize = 6;
-const MAX_ROWS: usize = 3;
-/// How many containers the window shows at once. The newest comes first,
-/// so the one just opened always has a place.
-const MAX_CONTAINERS: usize = 3;
-const TITLE_ROW: f32 = 28.0;
-const CLOSE_SIDE: f32 = 20.0;
-const CLOSE_STROKE: f32 = 1.5;
-const PANEL_GAP: f32 = 12.0;
-/// The vitals panel is at the bottom of the left side. The containers stop
-/// above it.
-const VITALS_ROOM: f32 = 230.0;
 
+const GUMP_PLACE_ID: &str = "modern:gump:";
 const GUMP_WIDTH: f32 = 300.0;
-const GUMP_TOP: f32 = 330.0;
 const GUMP_MAX_TEXTS: usize = 8;
 const GUMP_MAX_ROWS: usize = 10;
 const GUMP_ROW: f32 = 26.0;
@@ -40,8 +35,7 @@ const BOX_RADIUS: u8 = 3;
 pub(super) const FIRST_PAGE: u32 = 1;
 const EVERY_PAGE: u32 = 0;
 
-const WORDS_CLOSE: &str = "Close";
-const HINT_USE: &str = "Double-click: use.  Drag: move.  Right-click: more.";
+const WORDS_GUMP: &str = "Shard window";
 
 /// The parts of the window a panel works with.
 pub struct Tools<'a> {
@@ -51,6 +45,19 @@ pub struct Tools<'a> {
     pub tips: &'a mut Tips,
     pub ring: &'a mut RingUi,
     pub time: f64,
+    /// Where the profile is kept.
+    pub profile_home: &'a ProfileHome,
+    /// The session read for the panels: agents, the meter, properties.
+    pub readings: &'a mut Readings,
+    /// The layer each wearable graphic is worn on.
+    pub layers: &'a ItemLayers,
+}
+
+impl Tools<'_> {
+    /// Keeps the profile in its file, after a panel changed it.
+    pub fn keep_profile(&self, profile: &Profile) {
+        self.profile_home.save(&places::for_saving(profile));
+    }
 }
 
 /// What the human did to one gump before he answers it.
@@ -70,16 +77,7 @@ pub struct BoxesUi {
     /// a container, so the window keeps it. A use of the container shows it
     /// again.
     closed: HashSet<u32>,
-    /// The first row each container shows. The mouse wheel turns it.
-    first_row: HashMap<u32, usize>,
-}
-
-fn panel_size(columns: usize, rows: usize) -> Vec2 {
-    Vec2::new(
-        columns as f32 * (CELL + CELL_GAP) - CELL_GAP,
-        rows as f32 * (CELL + CELL_GAP) - CELL_GAP,
-    ) + Vec2::splat(theme::PANEL_PAD * 2.0)
-        + Vec2::new(0.0, TITLE_ROW)
+    grids: GridUi,
 }
 
 /// The boxes that are ticked now: the ticks the gump came with, with the
@@ -152,6 +150,40 @@ pub(super) fn on_page(item_page: u32, shown: u32) -> bool {
     item_page == EVERY_PAGE || item_page == shown
 }
 
+/// A click on an item of a panel: under a target cursor a click targets
+/// the item, and else a single click asks its name once the double click
+/// time is over. True on a double click, whose act is the panel's.
+pub(super) fn single_or_double(
+    response: &egui::Response,
+    clicks: &mut ClickDelay,
+    frame: &WatchFrame,
+    hand: &Hand,
+    serial: u32,
+    time: f64,
+) -> bool {
+    if response.double_clicked() {
+        clicks.double_clicked();
+        return true;
+    }
+    if response.clicked() {
+        if let Some(act) = clicks.single_click(frame, serial, time) {
+            hand.act(act);
+        }
+    }
+    false
+}
+
+/// Asks the name of the item whose single click waited long enough, and
+/// keeps the window drawing while one waits.
+pub(super) fn ask_waiting_name(ui: &egui::Ui, clicks: &mut ClickDelay, hand: &Hand, time: f64) {
+    if let Some(act) = clicks.due_look(time) {
+        hand.act(act);
+    }
+    if clicks.is_waiting() {
+        ui.ctx().request_repaint();
+    }
+}
+
 impl BoxesUi {
     /// True when the window shows this container now.
     pub fn shows(&self, frame: &WatchFrame, container: u32) -> bool {
@@ -167,203 +199,51 @@ impl BoxesUi {
         self.closed.remove(&thing);
     }
 
-    /// Draws the containers down the left side, and the gump on the right
-    /// side between the roster and the journal. The middle stays clear.
-    /// Gives the places it covered, so the map does not take their clicks.
+    /// Draws the containers as grids and, without the gump art of the
+    /// client, each open gump of the shard as a list, first at the right
+    /// side between the roster and the journal. The player moves and locks
+    /// each one. Gives the places it covered, so the map does not take
+    /// their clicks.
     pub fn draw(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
+        profile: &mut Profile,
         gumps_as_lists: bool,
     ) -> Vec<Rect> {
-        let mut covered = Vec::new();
-        let mut top = rect.top() + LEFT_COLUMN_TOP;
-        let left = rect.left() + theme::SCREEN_MARGIN;
-        let floor = rect.bottom() - VITALS_ROOM;
         self.closed
             .retain(|serial| frame.containers.iter().any(|c| c.serial == *serial));
-        let open: Vec<&WatchContainer> = frame
-            .containers
-            .iter()
-            .filter(|c| !self.closed.contains(&c.serial))
-            .take(MAX_CONTAINERS)
-            .collect();
-        for container in open {
-            if top + panel_size(COLUMNS, MAX_ROWS).y > floor && !covered.is_empty() {
-                break;
-            }
-            let panel = self.container(ui, Pos2::new(left, top), container, frame, tools);
-            top = panel.bottom() + PANEL_GAP;
-            covered.push(panel);
-        }
+        let mut covered = self
+            .grids
+            .draw(ui, rect, frame, tools, profile, &mut self.closed);
         self.gumps
             .retain(|id, _| frame.gumps.iter().any(|g| g.gump == *id));
         // With the gump art of the client, the gumps show in their own
         // layout, not as lists.
-        if let Some(gump) = frame.gumps.first().filter(|_| gumps_as_lists) {
-            let at = Pos2::new(
-                rect.right() - theme::SCREEN_MARGIN - GUMP_WIDTH,
-                rect.top() + GUMP_TOP,
-            );
-            covered.push(self.gump(ui, at, gump, frame, tools.hand));
+        if gumps_as_lists {
+            for (index, gump) in frame.gumps.iter().enumerate() {
+                covered.push(self.gump(ui, rect, index, gump, frame, tools, profile));
+            }
         }
         covered
     }
 
-    fn container(
-        &mut self,
-        ui: &egui::Ui,
-        left_top: Pos2,
-        container: &WatchContainer,
-        frame: &WatchFrame,
-        tools: &mut Tools<'_>,
-    ) -> Rect {
-        let all_rows = container.items.len().div_ceil(COLUMNS).max(1);
-        let rows = all_rows.min(MAX_ROWS);
-        let panel = Rect::from_min_size(left_top, panel_size(COLUMNS, rows));
-        let first_row = {
-            let kept = self.first_row.entry(container.serial).or_default();
-            *kept = scrolled(ui, panel, *kept, all_rows - rows);
-            *kept
-        };
-        let shown: Vec<&WatchPackItem> = container
-            .items
-            .iter()
-            .skip(first_row * COLUMNS)
-            .take(COLUMNS * MAX_ROWS)
-            .collect();
-        tools.desk.zone(panel, Zone::Into(container.serial));
-        let painter = ui.painter();
-        theme::panel(painter, panel);
-        let inner = panel.shrink(theme::PANEL_PAD);
-        painter.text(
-            inner.left_top(),
-            Align2::LEFT_TOP,
-            &container.name,
-            title_font(theme::SIZE_TITLE),
-            theme::TEXT,
-        );
-        let close = Rect::from_min_size(
-            Pos2::new(
-                inner.right() - CLOSE_SIDE,
-                inner.top() + theme::ROW_GAP / 2.0,
-            ),
-            Vec2::splat(CLOSE_SIDE),
-        );
-        let response = ui.interact(
-            close,
-            Id::new(("container-close", container.serial)),
-            Sense::click(),
-        );
-        let cross = if response.hovered() {
-            theme::TEXT
-        } else {
-            theme::TEXT_DIM
-        };
-        let arm = close.shrink(CLOSE_SIDE / 4.0);
-        let stroke = egui::Stroke::new(CLOSE_STROKE, cross);
-        painter.line_segment([arm.left_top(), arm.right_bottom()], stroke);
-        painter.line_segment([arm.right_top(), arm.left_bottom()], stroke);
-        if response.clicked() {
-            self.close(container.serial);
-        }
-        painter.text(
-            Pos2::new(
-                close.left() - theme::ROW_GAP * 2.0,
-                inner.top() + theme::ROW_GAP,
-            ),
-            Align2::RIGHT_TOP,
-            container.total.to_string(),
-            number_font(theme::SIZE_BODY),
-            theme::TEXT_DIM,
-        );
-        for (i, item) in shown.into_iter().enumerate() {
-            let cell = Rect::from_min_size(
-                inner.left_top()
-                    + Vec2::new(
-                        (i % COLUMNS) as f32 * (CELL + CELL_GAP),
-                        TITLE_ROW + (i / COLUMNS) as f32 * (CELL + CELL_GAP),
-                    ),
-                Vec2::splat(CELL),
-            );
-            self.cell(ui, cell, item, frame, tools);
-        }
-        panel
-    }
-
-    fn cell(
-        &mut self,
-        ui: &egui::Ui,
-        cell: Rect,
-        item: &WatchPackItem,
-        frame: &WatchFrame,
-        tools: &mut Tools<'_>,
-    ) {
-        let response = ui.interact(
-            cell,
-            Id::new(("pack-item", item.serial)),
-            Sense::click_and_drag(),
-        );
-        // An item dropped on a bag goes in, and on a pile of its kind joins.
-        tools.desk.zone(cell, Zone::Into(item.serial));
-        let painter = ui.painter();
-        let fill = if response.hovered() {
-            theme::BUTTON_HOVER
-        } else {
-            theme::TRACK
-        };
-        painter.rect_filled(cell, CornerRadius::same(CELL_RADIUS), fill);
-        if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, item.hue)
-        {
-            let area = theme::fit(cell, sprite.width, sprite.height);
-            painter.image(texture, area, sprite.uv, Color32::WHITE);
-        }
-        if item.amount > 1 {
-            theme::shadowed_text(
-                painter,
-                cell.right_bottom() - Vec2::splat(theme::CELL_ART_PAD),
-                Align2::RIGHT_BOTTOM,
-                &item.amount.to_string(),
-                number_font(theme::SIZE_SMALL),
-                theme::TEXT,
-            );
-        }
-        if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
-            let footer = if frame.human_control { HINT_USE } else { "" };
-            tools
-                .tips
-                .point_at(ui, tools.hand, item.serial, &item.name, footer, tools.time);
-        }
-        if !frame.human_control {
-            return;
-        }
-        if response.drag_started_by(egui::PointerButton::Primary) {
-            tools.desk.pick_up(item);
-        } else if response.double_clicked() {
-            // The item may be a bag that the human closed before.
-            self.used(item.serial);
-            tools.hand.act(Act::Use(item.serial));
-        } else if response.secondary_clicked() {
-            tools.ring.open_at(
-                cell.center(),
-                item.serial,
-                &item.name,
-                Subject::Packed,
-                tools.hand,
-            );
-        }
-    }
-
+    /// One gump of the shard as a list: its words, its boxes, its fields
+    /// and its buttons, on the page that shows.
+    #[allow(clippy::too_many_arguments)]
     fn gump(
         &mut self,
         ui: &mut egui::Ui,
-        left_top: Pos2,
+        rect: Rect,
+        index: usize,
         gump: &WatchGump,
         frame: &WatchFrame,
-        hand: &Hand,
+        tools: &mut Tools<'_>,
+        profile: &mut Profile,
     ) -> Rect {
+        let hand = tools.hand;
         let state = self.gumps.entry(gump.gump).or_default();
         let page = state.page.unwrap_or(FIRST_PAGE);
         let texts: Vec<&str> = gump
@@ -391,15 +271,27 @@ impl BoxesUi {
             .filter(|e| on_page(e.page, page))
             .take(GUMP_MAX_ROWS)
             .collect();
-        let rows = texts.len() + choices.len() + entries.len() + buttons.len() + 1;
-        let panel = Rect::from_min_size(
-            left_top,
-            Vec2::new(GUMP_WIDTH, rows as f32 * GUMP_ROW + theme::PANEL_PAD * 2.0),
-        );
+        let rows = texts.len() + choices.len() + entries.len() + buttons.len();
+        let live = frame.human_control;
+        let id = format!("{GUMP_PLACE_ID}{:08X}", gump.gump);
+        let spec = PanelSpec {
+            id: &id,
+            title: WORDS_GUMP,
+            default: layout::first_place(
+                rect,
+                Spot::RightColumn(index),
+                Vec2::new(
+                    GUMP_WIDTH,
+                    frame::TITLE_ROW + rows as f32 * GUMP_ROW + theme::PANEL_PAD * 2.0,
+                ),
+            ),
+            min_size: None,
+            closable: live,
+        };
+        let panel = frame::place(rect, &spec, profile);
         let painter = ui.painter().clone();
         let painter = &painter;
-        theme::panel(painter, panel);
-        let inner = panel.shrink(theme::PANEL_PAD);
+        let inner = frame::draw(painter, panel, WORDS_GUMP);
         let mut y = inner.top();
         let row = |y: &mut f32| {
             let area = Rect::from_min_size(
@@ -419,7 +311,6 @@ impl BoxesUi {
                 theme::TEXT_DIM,
             );
         }
-        let live = frame.human_control;
         let now_on = ticked(gump, &state.flipped);
         for choice in choices {
             let area = row(&mut y);
@@ -526,20 +417,7 @@ impl BoxesUi {
                 (None, None) => {}
             }
         }
-        let close = row(&mut y).shrink2(Vec2::new(0.0, 2.0));
-        let response = ui.interact(close, Id::new(("gump-close", gump.gump)), Sense::click());
-        painter.text(
-            close.left_center(),
-            Align2::LEFT_CENTER,
-            WORDS_CLOSE,
-            text_font(theme::SIZE_BODY),
-            if live {
-                theme::WAITING
-            } else {
-                theme::TEXT_FAINT
-            },
-        );
-        if live && response.clicked() {
+        if frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) && live {
             hand.act(Act::GumpClose(gump.gump));
         }
         panel
@@ -549,7 +427,7 @@ impl BoxesUi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::WatchGumpChoice;
+    use crate::view::{WatchContainer, WatchGumpChoice};
 
     #[test]
     fn a_closed_container_shows_again_when_it_is_used() {
@@ -608,6 +486,29 @@ mod tests {
         assert_eq!(next_first_row(2, -1.0, 2), 2);
         assert_eq!(next_first_row(0, 1.0, 2), 0);
         assert_eq!(next_first_row(2, 0.0, 1), 1, "the container lost rows");
+    }
+
+    #[test]
+    fn every_open_gump_shows_as_a_list_without_the_gump_art() {
+        use crate::window::modern::testing::draw_frames;
+        let gump = |gump| WatchGump {
+            gump,
+            ..WatchGump::default()
+        };
+        let frame = WatchFrame {
+            human_control: true,
+            gumps: vec![gump(1), gump(2), gump(3)],
+            ..WatchFrame::default()
+        };
+        let mut boxes = BoxesUi::default();
+        let mut profile = Profile::default();
+        for (as_lists, shown) in [(true, 3), (false, 0)] {
+            let mut covered = Vec::new();
+            draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
+                covered = boxes.draw(ui, rect, &frame, tools, profile, as_lists);
+            });
+            assert_eq!(covered.len(), shown);
+        }
     }
 
     #[test]

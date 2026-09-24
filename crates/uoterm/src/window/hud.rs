@@ -1,18 +1,25 @@
-//! The panels that float on the map. Each panel has one fixed place and
-//! owns one subject, so the eye learns where to look.
+//! The panels that float on the map: what the agent does, the vitals, and
+//! the pack. Each owns one subject and starts at its own place, so the eye
+//! learns where to look; the player moves each by its title and locks it,
+//! and the profile keeps where he left it. The journal and the near list
+//! are Modern panels of their own. The plan of the Modern style
+//! (`modern::layout`) gives each panel its first place.
 
+use super::boxes_ui::Tools;
+use super::modern::frame::{self as panel_frame, PanelSpec};
+use super::modern::layout::{self, Spot};
+use super::settings::Profile;
 use super::theme::{self, number_font, text_font, title_font};
-use crate::view::{Danger, WatchFrame, WatchMobile, JOURNAL_LINES, MOBILE_LINES};
+use crate::view::{Danger, WatchFrame};
 use eframe::egui::{
     self,
     epaint::{Mesh, Vertex, WHITE_UV},
     text::LayoutJob,
-    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, TextFormat, Vec2,
+    Align2, Color32, Painter, Pos2, Rect, Shape, Vec2,
 };
 
-const SIDE_PANEL_WIDTH: f32 = 300.0;
-const JOURNAL_WIDTH: f32 = 400.0;
-const PACK_WIDTH: f32 = 340.0;
+pub(super) const SIDE_PANEL_WIDTH: f32 = 300.0;
+pub(super) const PACK_WIDTH: f32 = 340.0;
 const MESSAGE_WIDTH: f32 = 440.0;
 const ROW_HEIGHT: f32 = 20.0;
 const TITLE_HEIGHT: f32 = 28.0;
@@ -20,16 +27,21 @@ const BAR_ROW_GAP: f32 = 10.0;
 const BAR_LABEL_WIDTH: f32 = 58.0;
 const CHIP_PAD: Vec2 = Vec2::new(7.0, 3.0);
 const CHIP_GAP: f32 = 6.0;
-const PACK_MIN_GAP: f32 = 12.0;
 const CHIP_RADIUS: u8 = 4;
 const CHIP_FILL_ALPHA: f32 = 0.18;
-const DOT_RADIUS: f32 = 4.0;
-const ROSTER_PIP_WIDTH: f32 = 40.0;
-const ROSTER_DIST_WIDTH: f32 = 30.0;
-const JOURNAL_OLD_ALPHA: f32 = 0.55;
-const JOURNAL_LINE_GAP: f32 = 4.0;
-const CHAT_ROW_HEIGHT: f32 = 30.0;
-const PERCENT: f32 = 100.0;
+const ACTIVITY_ID: &str = "modern:activity";
+const VITALS_ID: &str = "modern:vitals";
+const PACK_ID: &str = "modern:pack";
+const WORDS_PACK: &str = "Pack";
+/// The most detail rows of the activity panel: the job, the walk goal, the
+/// one followed and the script.
+const ACTIVITY_MOST_DETAILS: usize = 4;
+/// The lists the pack panel shows when they hold anything.
+const PACK_LISTS: [&str; 2] = ["Buffs", "Party"];
+/// The tallest each panel grows, for the plan to keep room for it.
+pub(super) const ACTIVITY_MOST_HEIGHT: f32 = activity_height(ACTIVITY_MOST_DETAILS);
+pub(super) const VITALS_MOST_HEIGHT: f32 = vitals_height(true, true);
+pub(super) const PACK_MOST_HEIGHT: f32 = pack_height(PACK_LISTS.len());
 
 /// The share of the way to its goal that a bar covers each second.
 const BAR_RATE: f32 = 10.0;
@@ -48,87 +60,20 @@ const DEAD_ALPHA: f32 = 0.38;
 
 const WEIGHT_WARN_SHARE: f32 = 0.9;
 
+/// The bars of the vitals: hits, mana and stamina.
+const BAR_COUNT: usize = 3;
+
 #[derive(Default)]
 pub struct Hud {
-    bars: [Bar; 3],
-    /// Where the panels were drawn this frame.
-    panels: Vec<Rect>,
-    journal_filter: JournalFilter,
-    /// The left middle of the row of filter words, when the journal has them.
-    filter_row: Option<Pos2>,
+    bars: [Bar; BAR_COUNT],
+    /// Where the panels were drawn this frame, by their ids.
+    panels: Vec<(&'static str, Rect)>,
 }
-
-/// Which lines the journal shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum JournalFilter {
-    #[default]
-    All,
-    /// What mobiles said.
-    Talk,
-    /// What the shard wrote.
-    System,
-}
-
-const JOURNAL_FILTERS: [(JournalFilter, &str); 3] = [
-    (JournalFilter::All, "All"),
-    (JournalFilter::Talk, "Talk"),
-    (JournalFilter::System, "System"),
-];
-const FILTER_LEFT: f32 = 96.0;
-const FILTER_GAP: f32 = 12.0;
-/// The message types of lines the shard wrote: a system line, a name label.
-const KINDS_SYSTEM: [u8; 2] = [1, 6];
-
-/// The lines of the journal in words. The full journal of `watch` can be
-/// filtered; the short one of `observe` shows as it is.
-fn journal_texts(frame: &WatchFrame, filter: JournalFilter) -> Vec<String> {
-    // A notice of the shard, and a web page it points at, are lines of
-    // their own. UOTerm never opens a page by itself.
-    let from_shard = |words: &Option<String>, mark: &str| {
-        words
-            .iter()
-            .filter(|_| filter != JournalFilter::Talk)
-            .map(move |words| format!("{mark}{words}"))
-            .collect::<Vec<_>>()
-    };
-    let notices: Vec<String> = from_shard(&frame.shard_notice, "")
-        .into_iter()
-        .chain(from_shard(&frame.shard_url, WEB_PAGE_MARK))
-        .collect();
-    if frame.speech.is_empty() {
-        return frame.journal.iter().cloned().chain(notices).collect();
-    }
-    frame
-        .speech
-        .iter()
-        .filter(|line| {
-            let system = line.serial == 0 || KINDS_SYSTEM.contains(&line.kind);
-            match filter {
-                JournalFilter::All => true,
-                JournalFilter::Talk => !system,
-                JournalFilter::System => system,
-            }
-        })
-        .map(|line| {
-            if line.name.is_empty() {
-                line.text.clone()
-            } else {
-                format!("{}: {}", line.name, line.text)
-            }
-        })
-        .chain(notices)
-        .collect()
-}
-
-/// The mark in front of a web page the shard pointed at.
-const WEB_PAGE_MARK: &str = "The shard points at ";
 
 /// What the panels tell the rest of the window after they are drawn.
 pub struct Drawn {
     /// True while a bar still moves or the alarm pulses.
     pub moving: bool,
-    /// The free row under the journal, when one was asked for.
-    pub chat_row: Option<Rect>,
     /// The pack panel at the bottom middle. The hotbar sits on it.
     pub pack: Rect,
 }
@@ -161,7 +106,8 @@ fn share(now: u16, max: u16) -> f32 {
     }
 }
 
-fn capitalized(word: &str) -> String {
+/// The word with a capital first letter.
+pub(super) fn capitalized(word: &str) -> String {
     let mut chars = word.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
@@ -313,84 +259,114 @@ fn rows<'a>(painter: &'a Painter, panel: Rect) -> Rows<'a> {
     }
 }
 
-/// One panel on the map. The window keeps its place, so that a click on it
-/// is not a click on the map.
-fn glass(painter: &Painter, panels: &mut Vec<Rect>, panel: Rect) {
+/// One panel on the map of `size`, where the player left it, else at its
+/// spot of the plan. The window keeps its place, so that a click on it is
+/// not a click on the map. Gives its place.
+fn glass(
+    painter: &Painter,
+    panels: &mut Vec<(&'static str, Rect)>,
+    (id, spot, size): (&'static str, Spot, Vec2),
+    window: Rect,
+    profile: &Profile,
+) -> Rect {
+    let default = layout::first_place(window, spot, size);
+    let panel = panel_frame::place(window, &spec(id, default), profile);
     theme::panel(painter, panel);
-    panels.push(panel);
+    panels.push((id, panel));
+    panel
 }
 
-fn panel_height(content: f32) -> f32 {
+/// The frame of a panel on the map: it moves by its title and locks, and
+/// has a size of its own.
+fn spec(id: &'static str, default: Rect) -> PanelSpec<'static> {
+    PanelSpec {
+        id,
+        title: "",
+        default,
+        min_size: None,
+        closable: false,
+    }
+}
+
+const fn panel_height(content: f32) -> f32 {
     content + theme::PANEL_PAD * 2.0
 }
 
+/// The height of the activity panel with `details` rows under its title.
+/// With none it tells that the agent is idle.
+const fn activity_height(details: usize) -> f32 {
+    let rows = if details == 0 { 1 } else { details };
+    panel_height(TITLE_HEIGHT + ROW_HEIGHT * rows as f32)
+}
+
+/// The height of the vitals panel, with the row of states and the row of
+/// the fight when they show.
+const fn vitals_height(states: bool, fights: bool) -> f32 {
+    let bars = BAR_COUNT as f32;
+    let states_row = if states {
+        ROW_HEIGHT + theme::ROW_GAP
+    } else {
+        0.0
+    };
+    let fight_row = if fights { ROW_HEIGHT } else { 0.0 };
+    panel_height(
+        TITLE_HEIGHT
+            + states_row
+            + theme::BAR_HEIGHT_MAIN
+            + theme::BAR_HEIGHT * (bars - 1.0)
+            + BAR_ROW_GAP * bars
+            + fight_row,
+    )
+}
+
+/// The height of the pack panel with `lists` lists under its fixed rows.
+const fn pack_height(lists: usize) -> f32 {
+    panel_height(TITLE_HEIGHT + ROW_HEIGHT * (PACK_FIXED_ROWS + lists) as f32 - theme::ROW_GAP)
+}
+
 impl Hud {
-    /// Draws every panel. `chat_row` keeps a row free for the chat box.
+    /// Draws every panel where the player left it.
     pub fn draw(
         &mut self,
         painter: &Painter,
         rect: Rect,
         frame: &WatchFrame,
-        chat_row: bool,
-        time: f64,
-        dt: f32,
+        (time, dt): (f64, f32),
+        profile: &Profile,
     ) -> Drawn {
         let danger = frame.danger();
         vignette(painter, rect, danger, time);
-        let area = rect.shrink(theme::SCREEN_MARGIN);
         self.panels.clear();
-        activity(painter, &mut self.panels, area, frame);
-        roster(painter, &mut self.panels, area, frame);
-        // A notice of the shard goes into the journal, so the operator
-        // reads it with the rest.
-        let lines = journal_texts(frame, self.journal_filter);
-        let (chat_row, title_row) =
-            journal(painter, &mut self.panels, area, frame, &lines, chat_row);
-        self.filter_row = (!frame.speech.is_empty()).then_some(title_row);
-        let pack = pack(painter, &mut self.panels, area, frame);
-        let bars_move = self.vitals(painter, area, frame, dt);
+        let window = Window { rect, profile };
+        activity(painter, &mut self.panels, &window, frame);
+        let pack = pack(painter, &mut self.panels, &window, frame);
+        let bars_move = self.vitals(painter, &window, frame, dt);
         Drawn {
             moving: bars_move || danger != Danger::Calm,
-            chat_row,
             pack,
         }
     }
 
-    /// The words that pick which journal lines show. Call this after
-    /// `draw`, with the `Ui` that takes the clicks.
-    pub fn journal_filters(&mut self, ui: &egui::Ui) {
-        let Some(mut at) = self.filter_row else {
-            return;
-        };
-        for (filter, words) in JOURNAL_FILTERS {
-            let color = if filter == self.journal_filter {
-                theme::GOAL
-            } else {
-                theme::TEXT_FAINT
-            };
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(words.to_string(), text_font(theme::SIZE_SMALL), color);
-            let area = Align2::LEFT_CENTER.anchor_size(at, galley.size());
-            let response = ui.interact(
-                area.expand(FILTER_GAP / 2.0),
-                egui::Id::new(("journal-filter", words)),
-                egui::Sense::click(),
-            );
-            ui.painter().galley(area.min, galley, color);
-            if response.clicked() {
-                self.journal_filter = filter;
-            }
-            at.x = area.right() + FILTER_GAP;
+    /// Takes the drags on the titles of the panels and the clicks on their
+    /// locks. Call it after the panels over them are drawn.
+    pub fn controls(&self, ui: &egui::Ui, tools: &Tools<'_>, profile: &mut Profile) {
+        for (id, panel) in &self.panels {
+            panel_frame::controls(ui, *panel, &spec(id, *panel), profile, tools);
         }
     }
 
     /// True when the point is on a panel and not on the map.
     pub fn covers(&self, point: Pos2) -> bool {
-        self.panels.iter().any(|panel| panel.contains(point))
+        self.panels.iter().any(|(_, panel)| panel.contains(point))
     }
 
-    fn vitals(&mut self, painter: &Painter, area: Rect, frame: &WatchFrame, dt: f32) -> bool {
+    fn vitals(
+        &mut self,
+        painter: &Painter,
+        window: &Window<'_>,
+        frame: &WatchFrame,
+        dt: f32,
+    ) -> bool {
         let panels = &mut self.panels;
         let goals = [
             share(frame.hits, frame.hits_max),
@@ -403,21 +379,14 @@ impl Hud {
         }
         let states = states(frame);
         let fights = !frame.combatant.is_empty();
-        let content = TITLE_HEIGHT
-            + if states.is_empty() {
-                0.0
-            } else {
-                ROW_HEIGHT + theme::ROW_GAP
-            }
-            + theme::BAR_HEIGHT_MAIN
-            + theme::BAR_HEIGHT * (self.bars.len() - 1) as f32
-            + BAR_ROW_GAP * self.bars.len() as f32
-            + if fights { ROW_HEIGHT } else { 0.0 };
-        let panel = Rect::from_min_size(
-            Pos2::new(area.left(), area.bottom() - panel_height(content)),
-            Vec2::new(SIDE_PANEL_WIDTH, panel_height(content)),
+        let size = Vec2::new(SIDE_PANEL_WIDTH, vitals_height(!states.is_empty(), fights));
+        let panel = glass(
+            painter,
+            panels,
+            (VITALS_ID, Spot::Vitals, size),
+            window.rect,
+            window.profile,
         );
-        glass(painter, panels, panel);
         let mut rows = rows(painter, panel);
         rows.title(&frame.name, theme::NOTO_SELF);
         if !states.is_empty() {
@@ -473,8 +442,19 @@ fn states(frame: &WatchFrame) -> Vec<(&'static str, Color32)> {
     .collect()
 }
 
+/// The window the panels stand in, and the profile that keeps their places.
+struct Window<'a> {
+    rect: Rect,
+    profile: &'a Profile,
+}
+
 /// What the agent does now: the goal is the heading, the detail is below it.
-fn activity(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFrame) {
+fn activity(
+    painter: &Painter,
+    panels: &mut Vec<(&'static str, Rect)>,
+    window: &Window<'_>,
+    frame: &WatchFrame,
+) {
     let mut detail: Vec<(&str, String, Color32)> = Vec::new();
     if frame.job != "-" && !frame.job.is_empty() {
         let job = if frame.phase.is_empty() {
@@ -499,12 +479,14 @@ fn activity(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &Watch
         detail.push(("Script", frame.script.clone(), theme::TEXT));
     }
     let idle = detail.is_empty();
-    let content = TITLE_HEIGHT + ROW_HEIGHT * detail.len().max(1) as f32;
-    let panel = Rect::from_min_size(
-        area.left_top(),
-        Vec2::new(SIDE_PANEL_WIDTH, panel_height(content)),
+    let size = Vec2::new(SIDE_PANEL_WIDTH, activity_height(detail.len()));
+    let panel = glass(
+        painter,
+        panels,
+        (ACTIVITY_ID, Spot::Activity, size),
+        window.rect,
+        window.profile,
     );
-    glass(painter, panels, panel);
     let mut rows = rows(painter, panel);
     let goal = if frame.goal.is_empty() || frame.goal == "-" {
         "Idle".to_string()
@@ -520,197 +502,34 @@ fn activity(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &Watch
     }
 }
 
-fn roster(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFrame) {
-    let shown: Vec<&WatchMobile> = frame.mobiles.iter().take(MOBILE_LINES).collect();
-    let content = TITLE_HEIGHT + ROW_HEIGHT * shown.len().max(1) as f32;
-    let panel = Rect::from_min_size(
-        Pos2::new(area.right() - SIDE_PANEL_WIDTH, area.top()),
-        Vec2::new(SIDE_PANEL_WIDTH, panel_height(content)),
-    );
-    glass(painter, panels, panel);
-    let mut rows = rows(painter, panel);
-    painter.text(
-        Pos2::new(rows.right, rows.y + TITLE_HEIGHT / 2.0 - theme::ROW_GAP),
-        Align2::RIGHT_CENTER,
-        frame.mobiles.len().to_string(),
-        number_font(theme::SIZE_BODY),
-        theme::TEXT_DIM,
-    );
-    rows.title("Near", theme::TEXT);
-    if shown.is_empty() {
-        rows.line("Nobody is near.", theme::TEXT_FAINT);
-    }
-    for mobile in shown {
-        roster_row(painter, &rows, mobile, mobile.name == frame.combatant);
-        rows.y += ROW_HEIGHT;
-    }
-}
-
-fn roster_row(painter: &Painter, rows: &Rows<'_>, mobile: &WatchMobile, target: bool) {
-    let middle = rows.y + ROW_HEIGHT / 2.0 - theme::ROW_GAP / 2.0;
-    let color = theme::notoriety_color(mobile.notoriety);
-    painter.circle_filled(Pos2::new(rows.left + DOT_RADIUS, middle), DOT_RADIUS, color);
-    let name_left = rows.left + DOT_RADIUS * 2.0 + CHIP_GAP;
-    let pip_left = rows.right - ROSTER_DIST_WIDTH - ROSTER_PIP_WIDTH;
-    let mut name = LayoutJob::default();
-    name.wrap.max_width = pip_left - CHIP_GAP - name_left;
-    name.wrap.max_rows = 1;
-    name.wrap.break_anywhere = true;
-    let name_color = if target { theme::ALARM } else { theme::TEXT };
-    let format = |color: Color32| TextFormat::simple(text_font(theme::SIZE_BODY), color);
-    name.append(&mobile.name, 0.0, format(name_color));
-    if !mobile.title.is_empty() {
-        name.append(&mobile.title, CHIP_GAP, format(theme::TEXT_FAINT));
-    }
-    let galley = painter.layout_job(name);
-    painter.galley(
-        Pos2::new(name_left, middle - galley.size().y / 2.0),
-        galley,
-        name_color,
-    );
-    if let Some(percent) = mobile.hits_percent {
-        let track = Rect::from_min_size(
-            Pos2::new(pip_left, middle - theme::PIP_HEIGHT / 2.0),
-            Vec2::new(ROSTER_PIP_WIDTH - CHIP_GAP, theme::PIP_HEIGHT),
-        );
-        painter.rect_filled(track, theme::BAR_RADIUS, theme::TRACK);
-        let mut fill = track;
-        fill.set_width(track.width() * f32::from(percent) / PERCENT);
-        painter.rect_filled(fill, theme::BAR_RADIUS, color);
-    }
-    painter.text(
-        Pos2::new(rows.right, middle),
-        Align2::RIGHT_CENTER,
-        mobile.dist.to_string(),
-        number_font(theme::SIZE_SMALL),
-        theme::TEXT_DIM,
-    );
-}
-
-/// The newest lines, newest at the bottom. The speaker is dim and the words
-/// are bright. Older lines fade.
-/// `chat_row` keeps one row free at the bottom for the chat box, and gives
-/// its place.
-fn journal(
-    painter: &Painter,
-    panels: &mut Vec<Rect>,
-    area: Rect,
-    frame: &WatchFrame,
-    all_lines: &[String],
-    chat_row: bool,
-) -> (Option<Rect>, Pos2) {
-    let width = JOURNAL_WIDTH - theme::PANEL_PAD * 2.0;
-    let start = all_lines.len().saturating_sub(JOURNAL_LINES);
-    let lines = &all_lines[start..];
-    let galleys: Vec<_> = lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let age = (lines.len() - 1 - i) as f32 / JOURNAL_LINES as f32;
-            let alpha = 1.0 - age * (1.0 - JOURNAL_OLD_ALPHA);
-            painter.layout_job(journal_job(line, width, alpha))
-        })
-        .collect();
-    let text_height: f32 = galleys
-        .iter()
-        .map(|g| g.size().y + JOURNAL_LINE_GAP)
-        .sum::<f32>()
-        .max(ROW_HEIGHT);
-    let row_height = if chat_row { CHAT_ROW_HEIGHT } else { 0.0 };
-    let content = TITLE_HEIGHT + text_height + row_height;
-    let panel = Rect::from_min_size(
-        Pos2::new(
-            area.right() - JOURNAL_WIDTH,
-            area.bottom() - panel_height(content),
-        ),
-        Vec2::new(JOURNAL_WIDTH, panel_height(content)),
-    );
-    glass(painter, panels, panel);
-    let mut rows = rows(painter, panel);
-    if frame.unanswered > 0 {
-        painter.text(
-            Pos2::new(rows.right, rows.y + TITLE_HEIGHT / 2.0 - theme::ROW_GAP),
-            Align2::RIGHT_CENTER,
-            waiting_words(frame.unanswered),
-            text_font(theme::SIZE_SMALL),
-            theme::WAITING,
-        );
-    }
-    let title_row = Pos2::new(
-        rows.left + FILTER_LEFT,
-        rows.y + TITLE_HEIGHT / 2.0 - theme::ROW_GAP,
-    );
-    rows.title("Journal", theme::TEXT);
-    if galleys.is_empty() {
-        rows.line("No lines yet.", theme::TEXT_FAINT);
-    }
-    for galley in galleys {
-        let height = galley.size().y;
-        painter.galley(Pos2::new(rows.left, rows.y), galley, theme::TEXT);
-        rows.y += height + JOURNAL_LINE_GAP;
-    }
-    let chat = chat_row.then(|| {
-        let inner = panel.shrink(theme::PANEL_PAD);
-        Rect::from_min_max(
-            Pos2::new(
-                inner.left(),
-                inner.bottom() - CHAT_ROW_HEIGHT + JOURNAL_LINE_GAP,
-            ),
-            inner.right_bottom(),
-        )
-    });
-    (chat, title_row)
-}
-
-fn waiting_words(persons: usize) -> String {
-    if persons == 1 {
-        "1 person waits for an answer".to_string()
-    } else {
-        format!("{persons} persons wait for an answer")
-    }
-}
-
-fn journal_job(line: &str, width: f32, alpha: f32) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = width;
-    let format =
-        |font: FontId, color: Color32| TextFormat::simple(font, theme::with_alpha(color, alpha));
-    let font = text_font(theme::SIZE_BODY);
-    match line.split_once(": ") {
-        Some((speaker, words)) => {
-            job.append(speaker, 0.0, format(font.clone(), theme::GOAL));
-            job.append(words, CHIP_GAP, format(font, theme::TEXT));
-        }
-        None => job.append(line, 0.0, format(font, theme::TEXT_DIM)),
-    }
-    job
-}
-
 /// The rows the pack panel always has: the weight with the gold, and the
 /// clock.
 const PACK_FIXED_ROWS: usize = 2;
 
 /// The pack, the gold, the clock of the shard, the buffs and the party, in
-/// the space between the vitals and the journal. Each has its own row.
-fn pack(painter: &Painter, panels: &mut Vec<Rect>, area: Rect, frame: &WatchFrame) -> Rect {
-    let lists: Vec<(&str, String)> = [("Buffs", &frame.buffs), ("Party", &frame.party)]
+/// the middle between the vitals and the journal. Each has its own row.
+fn pack(
+    painter: &Painter,
+    panels: &mut Vec<(&'static str, Rect)>,
+    window: &Window<'_>,
+    frame: &WatchFrame,
+) -> Rect {
+    let lists: Vec<(&str, String)> = PACK_LISTS
         .into_iter()
+        .zip([&frame.buffs, &frame.party])
         .filter(|(_, list)| !list.is_empty())
         .map(|(label, list)| (label, list.join(", ")))
         .collect();
-    let content = ROW_HEIGHT * (PACK_FIXED_ROWS + lists.len()) as f32 - theme::ROW_GAP;
-    let free_left = area.left() + SIDE_PANEL_WIDTH + PACK_MIN_GAP;
-    let free_right = area.right() - JOURNAL_WIDTH - PACK_MIN_GAP;
-    let width = PACK_WIDTH.min(free_right - free_left);
-    let panel = Rect::from_min_size(
-        Pos2::new(
-            (free_left + free_right - width) / 2.0,
-            area.bottom() - panel_height(content),
-        ),
-        Vec2::new(width, panel_height(content)),
+    let size = Vec2::new(PACK_WIDTH, pack_height(lists.len()));
+    let panel = glass(
+        painter,
+        panels,
+        (PACK_ID, Spot::Pack, size),
+        window.rect,
+        window.profile,
     );
-    glass(painter, panels, panel);
     let mut rows = rows(painter, panel);
+    rows.title(WORDS_PACK, theme::TEXT);
     let heavy = f32::from(frame.weight) >= f32::from(frame.weight_max) * WEIGHT_WARN_SHARE
         && frame.weight_max > 0;
     let weight_color = if heavy { theme::WAITING } else { theme::TEXT };
@@ -847,52 +666,6 @@ mod tests {
     const HALF: f32 = 0.5;
 
     #[test]
-    fn the_journal_filter_keeps_talk_or_system_lines() {
-        use crate::view::WatchSpeech;
-        let line = |serial: u32, name: &str, kind: u8, text: &str| WatchSpeech {
-            serial,
-            name: name.into(),
-            kind,
-            text: text.into(),
-            ..WatchSpeech::default()
-        };
-        let frame = WatchFrame {
-            journal: vec!["short journal".into()],
-            speech: vec![
-                line(5, "Ann", 0, "hail"),
-                line(0, "", 1, "The world will save."),
-                line(5, "Ann", 6, "Ann"),
-            ],
-            ..WatchFrame::default()
-        };
-        assert_eq!(journal_texts(&frame, JournalFilter::All).len(), 3);
-        assert_eq!(
-            journal_texts(&frame, JournalFilter::Talk),
-            vec!["Ann: hail"]
-        );
-        assert_eq!(journal_texts(&frame, JournalFilter::System).len(), 2);
-        let from_observe = WatchFrame {
-            journal: vec!["short journal".into()],
-            ..WatchFrame::default()
-        };
-        assert_eq!(
-            journal_texts(&from_observe, JournalFilter::Talk),
-            vec!["short journal"]
-        );
-        // A notice of the shard is a line, and a web page is named, not
-        // opened.
-        let with_notice = WatchFrame {
-            shard_notice: Some("The world will save.".into()),
-            shard_url: Some("http://example.com".into()),
-            ..from_observe.clone()
-        };
-        let lines = journal_texts(&with_notice, JournalFilter::All);
-        assert_eq!(lines[1], "The world will save.");
-        assert_eq!(lines[2], "The shard points at http://example.com");
-        assert_eq!(journal_texts(&with_notice, JournalFilter::Talk).len(), 1);
-    }
-
-    #[test]
     fn a_lost_part_of_a_bar_stays_behind_the_fill() {
         let mut bar = Bar {
             fill: 1.0,
@@ -911,14 +684,37 @@ mod tests {
     }
 
     #[test]
-    fn one_person_waits_and_two_persons_wait() {
-        assert_eq!(waiting_words(1), "1 person waits for an answer");
-        assert_eq!(waiting_words(2), "2 persons wait for an answer");
-    }
-
-    #[test]
     fn a_bar_with_no_maximum_is_empty() {
         assert_eq!(share(10, 0), 0.0);
         assert_eq!(share(30, 20), 1.0);
+    }
+
+    #[test]
+    fn the_panels_stand_where_the_player_left_them() {
+        use crate::window::model::places;
+        let window = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+        let kept = Rect::from_min_size(Pos2::new(600.0, 300.0), Vec2::new(10.0, 10.0));
+        let mut profile = Profile::default();
+        places::remember(&mut profile, VITALS_ID, kept, false);
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut hud = Hud::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            hud.draw(
+                &painter,
+                window,
+                &WatchFrame::default(),
+                (0.0, ONE_FRAME),
+                &profile,
+            );
+        });
+        let ids: Vec<&str> = hud.panels.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![ACTIVITY_ID, PACK_ID, VITALS_ID]);
+        assert!(
+            hud.covers(kept.min + Vec2::splat(1.0)),
+            "the vitals moved there"
+        );
+        assert!(!hud.covers(window.left_bottom() - Vec2::new(-20.0, 20.0)));
     }
 }

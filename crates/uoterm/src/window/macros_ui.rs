@@ -8,7 +8,7 @@
 //! only picks from the hotkeys the session has.
 
 use super::boxes_ui::{scrolled, Tools, CELL_RADIUS};
-use super::control::{Act, Answer, Ask};
+use super::control::{Act, Answer, Ask, Asker};
 use super::deck_ui::DeckUi;
 use super::theme::{self, number_font, text_font, title_font};
 use crate::view::WatchFrame;
@@ -96,7 +96,7 @@ fn with_lines(macro_lines: &str, new_lines: &str) -> String {
 
 /// The script line that runs a macro by name. A name cannot hold a quote,
 /// because the session refuses such a name when the macro is saved.
-fn play_line(name: &str) -> String {
+pub fn play_line(name: &str) -> String {
     format!("{COMMAND_PLAY} '{name}'")
 }
 
@@ -105,6 +105,10 @@ impl MacrosUi {
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.list_asked = false;
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
     }
 
     fn say(&mut self, words: &str, failed: bool, time: f64) {
@@ -126,7 +130,7 @@ impl MacrosUi {
                     self.note = None;
                 }
                 Answer::Lines(Err(words)) => self.say(&words, true, time),
-                // The map item, the designer and the chat take the rest.
+                // The editor asks for no place and no pick.
                 Answer::Place(_) | Answer::Picked(_) => {}
             }
         }
@@ -142,17 +146,17 @@ impl MacrosUi {
         deck: &mut DeckUi,
     ) -> Option<Rect> {
         let time = tools.time;
-        self.take_answers(tools.hand.new_answers(), time);
+        self.take_answers(tools.hand.new_answers(Asker::Macros), time);
         if !self.open {
             return None;
         }
         if !self.list_asked {
             self.list_asked = true;
-            tools.hand.ask(Ask::Scripts);
+            tools.hand.ask(Asker::Macros, Ask::Scripts);
         }
         if time - self.last_status_ask >= STATUS_EVERY {
             self.last_status_ask = time;
-            tools.hand.ask(Ask::ScriptStatus);
+            tools.hand.ask(Asker::Macros, Ask::ScriptStatus);
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs_f64(STATUS_EVERY));
         }
@@ -243,7 +247,9 @@ impl MacrosUi {
         );
         let wished = add || (wish.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
         if wished && orders_on && !self.wish.trim().is_empty() {
-            tools.hand.ask(Ask::LinesFor(self.wish.trim().to_string()));
+            tools
+                .hand
+                .ask(Asker::Macros, Ask::LinesFor(self.wish.trim().to_string()));
             self.say(NOTE_ASKING, false, time);
         }
         self.buttons(
@@ -289,7 +295,7 @@ impl MacrosUi {
             }
         }
         if let Some(name) = picked {
-            tools.hand.ask(Ask::ScriptText(name));
+            tools.hand.ask(Asker::Macros, Ask::ScriptText(name));
         }
     }
 
@@ -350,7 +356,7 @@ impl MacrosUi {
                     name,
                     text: self.lines.clone(),
                 });
-                tools.hand.ask(Ask::Scripts);
+                tools.hand.ask(Asker::Macros, Ask::Scripts);
             }
             Some(WORDS_RECORD) => {
                 self.recording = true;
@@ -359,8 +365,8 @@ impl MacrosUi {
             Some(WORDS_STOP_RECORDING) => {
                 self.recording = false;
                 tools.hand.act(Act::RecordStop);
-                tools.hand.ask(Ask::Scripts);
-                tools.hand.ask(Ask::ScriptText(name));
+                tools.hand.ask(Asker::Macros, Ask::Scripts);
+                tools.hand.ask(Asker::Macros, Ask::ScriptText(name));
             }
             Some(WORDS_PIN) => {
                 let pinned = deck.pin_command(&frame.name, &play_line(&name));

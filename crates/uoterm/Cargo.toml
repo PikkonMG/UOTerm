@@ -31,7 +31,10 @@ chrono.workspace = true
 uuid.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
+rand.workspace = true
 eframe = "0.31"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 rodio = { version = "0.22", default-features = false, features = ["playback", "mp3"] }
+gilrs = "0.11"
+rustysynth = "1.3"

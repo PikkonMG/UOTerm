@@ -1,5 +1,5 @@
 //! What the window keeps between runs, as small TOML files in the config
-//! folder: the sound volumes, the hotbar.
+//! folder: the profiles of the options, the hotbar.
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::Path;

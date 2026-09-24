@@ -140,7 +140,17 @@ pub async fn session_observe(base: &str, id: &str, size: u16) -> Result<Value> {
 }
 
 pub async fn call_tool(base: &str, id: &str, name: &str, args: Value) -> Result<Value> {
-    let v = post_json(&format!("{base}/v1/sessions/{id}/tools/{name}"), &args).await?;
+    tool_answer(post_json(&format!("{base}/v1/sessions/{id}/tools/{name}"), &args).await?)
+}
+
+/// Calls a tool of the runtime itself, which needs no session: the
+/// character list, a new character, a login.
+pub async fn call_runtime_tool(base: &str, name: &str, args: Value) -> Result<Value> {
+    tool_answer(post_json(&format!("{base}/v1/tools/{name}"), &args).await?)
+}
+
+/// The answer of a tool, or its error.
+fn tool_answer(v: Value) -> Result<Value> {
     if v.get("ok") == Some(&json!(false)) {
         let msg = v
             .get("error")

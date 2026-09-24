@@ -44,6 +44,16 @@ impl Tips {
         self.known.retain(|_, known| time - known.at < KEEP_SECONDS);
     }
 
+    /// The words of a thing as the shard gave them, for a window that draws
+    /// its own tooltip. The shard is asked once while they are not known.
+    pub fn lines_of(&mut self, hand: &Hand, serial: u32) -> Option<&[String]> {
+        if !self.known.contains_key(&serial) && self.asked != Some(serial) {
+            self.asked = Some(serial);
+            hand.want_tip(serial);
+        }
+        self.known.get(&serial).map(|known| known.lines.as_slice())
+    }
+
     /// The mouse is on this thing now. `fallback` shows until the shard
     /// answers, and when it has no words for the thing.
     pub fn point_at(
@@ -52,6 +62,22 @@ impl Tips {
         hand: &Hand,
         serial: u32,
         fallback: &str,
+        footer: &str,
+        time: f64,
+    ) {
+        self.point_at_with(ui, hand, serial, fallback, &[], footer, time);
+    }
+
+    /// The tooltip of a thing with lines of the window's own under the
+    /// shard's words: a compare, or what a bag holds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn point_at_with(
+        &mut self,
+        ui: &egui::Ui,
+        hand: &Hand,
+        serial: u32,
+        fallback: &str,
+        extra: &[String],
         footer: &str,
         time: f64,
     ) {
@@ -73,13 +99,14 @@ impl Tips {
         let Some(mouse) = ui.input(|i| i.pointer.hover_pos()) else {
             return;
         };
-        let lines: Vec<&str> = match self.known.get(&serial) {
+        let mut lines: Vec<&str> = match self.known.get(&serial) {
             Some(known) if !known.lines.is_empty() => {
                 known.lines.iter().map(String::as_str).collect()
             }
             _ if fallback.is_empty() => Vec::new(),
             _ => vec![fallback],
         };
+        lines.extend(extra.iter().map(String::as_str));
         draw(ui, mouse, &lines, footer);
     }
 }

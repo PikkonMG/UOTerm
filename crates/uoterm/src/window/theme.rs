@@ -2,9 +2,10 @@
 //! window names a color or a size.
 
 use eframe::egui::{
-    self, epaint::Shadow, Color32, CornerRadius, FontFamily, FontId, Painter, Rect, Stroke,
-    StrokeKind,
+    self, epaint::Shadow, Color32, CornerRadius, FontFamily, FontId, FontTweak, Painter, Rect,
+    Stroke, StrokeKind,
 };
+use std::sync::atomic::{AtomicU8, Ordering};
 
 // Ground behind the map, and the glass of the panels. The panels are tinted
 // toward blue so that they read as one family on any terrain.
@@ -14,6 +15,8 @@ pub const GLASS_EDGE: Color32 = Color32::from_rgba_premultiplied(44, 52, 66, 140
 pub const BUTTON: Color32 = Color32::from_rgba_premultiplied(40, 48, 62, 230);
 pub const BUTTON_HOVER: Color32 = Color32::from_rgba_premultiplied(62, 74, 94, 240);
 pub const TRACK: Color32 = Color32::from_rgba_premultiplied(2, 3, 5, 190);
+/// The near-black glass of the journal in dark mode.
+pub const DARK_GLASS: Color32 = Color32::from_rgba_premultiplied(2, 2, 4, 240);
 
 pub const TEXT: Color32 = Color32::from_rgb(236, 240, 247);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(158, 170, 190);
@@ -79,6 +82,11 @@ const PANEL_SHADOW: Shadow = Shadow {
     color: Color32::from_rgba_premultiplied(0, 0, 0, 150),
 };
 const EDGE_WIDTH: f32 = 1.0;
+const PERCENT: f32 = 100.0;
+/// The opacity of the panels, in percent, from the Interface page.
+static PANEL_OPACITY: AtomicU8 = AtomicU8::new(100);
+/// The player's own font takes the place of Barlow under this name.
+const PLAYER_FACE: &str = "player-font";
 
 // Barlow, under the SIL Open Font License. See assets/fonts/OFL.txt.
 const TEXT_FACE: &str = "Barlow-Medium";
@@ -125,17 +133,45 @@ pub fn with_alpha(color: Color32, alpha: f32) -> Color32 {
     color.gamma_multiply(alpha.clamp(0.0, 1.0))
 }
 
+/// Sets how opaque every panel is, in percent.
+pub fn set_panel_opacity(percent: u8) {
+    PANEL_OPACITY.store(percent, Ordering::Relaxed);
+}
+
+/// The share of the panel opacity, from 0 to 1.
+pub fn panel_opacity() -> f32 {
+    f32::from(PANEL_OPACITY.load(Ordering::Relaxed)) / PERCENT
+}
+
 /// One floating glass panel: shadow, fill, light edge.
 pub fn panel(painter: &Painter, rect: Rect) {
+    panel_with(painter, rect, GLASS, GLASS_EDGE);
+}
+
+/// A glass panel of its own fill and edge, under the panel opacity.
+pub fn panel_with(painter: &Painter, rect: Rect, fill: Color32, edge: Color32) {
     let radius = CornerRadius::same(PANEL_RADIUS);
-    painter.add(PANEL_SHADOW.as_shape(rect, radius));
-    painter.rect_filled(rect, radius, GLASS);
+    let opacity = panel_opacity();
+    let shadow = Shadow {
+        color: with_alpha(PANEL_SHADOW.color, opacity),
+        ..PANEL_SHADOW
+    };
+    painter.add(shadow.as_shape(rect, radius));
+    painter.rect_filled(rect, radius, with_alpha(fill, opacity));
     painter.rect_stroke(
         rect,
         radius,
-        Stroke::new(EDGE_WIDTH, GLASS_EDGE),
+        Stroke::new(EDGE_WIDTH, with_alpha(edge, opacity)),
         StrokeKind::Inside,
     );
+}
+
+/// A bar: its dark track, and its fill for a share from 0 to 1.
+pub fn bar(painter: &Painter, track: Rect, share: f32, fill: Color32) {
+    painter.rect_filled(track, CornerRadius::same(BAR_RADIUS), TRACK);
+    let mut part = track;
+    part.set_width(track.width() * share.clamp(0.0, 1.0));
+    painter.rect_filled(part, CornerRadius::same(BAR_RADIUS), fill);
 }
 
 /// Text that stays readable on the map: a dark copy one pixel down-right.
@@ -215,10 +251,16 @@ const ART_MAX_SCALE: f32 = 2.0;
 
 /// A picture scaled to fit a cell, with its proportions kept.
 pub fn fit(cell: Rect, width: f32, height: f32) -> Rect {
+    fit_up_to(cell, width, height, ART_MAX_SCALE)
+}
+
+/// A picture that shrinks to fit a cell, and grows no more than
+/// `max_scale`.
+pub fn fit_up_to(cell: Rect, width: f32, height: f32, max_scale: f32) -> Rect {
     let room = cell.shrink(CELL_ART_PAD);
     let scale = (room.width() / width)
         .min(room.height() / height)
-        .min(ART_MAX_SCALE);
+        .min(max_scale);
     Rect::from_center_size(room.center(), egui::Vec2::new(width, height) * scale)
 }
 
@@ -227,12 +269,19 @@ pub fn install(ctx: &egui::Context) {
     visuals.panel_fill = VOID;
     visuals.window_fill = VOID;
     ctx.set_visuals(visuals);
-    ctx.set_fonts(fonts());
+    ctx.set_fonts(fonts(None));
+}
+
+/// Puts the player's TrueType font in the place of Barlow, at its scale,
+/// or Barlow back with None.
+pub fn use_player_font(ctx: &egui::Context, font: Option<(Vec<u8>, f32)>) {
+    ctx.set_fonts(fonts(font));
 }
 
 /// The bundled egui faces stay as the last choice, so a glyph that Barlow
-/// does not hold still shows.
-fn fonts() -> egui::FontDefinitions {
+/// does not hold still shows. The player's font, when he chose one, comes
+/// before Barlow.
+fn fonts(player: Option<(Vec<u8>, f32)>) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     let bundled = fonts
         .families
@@ -250,6 +299,20 @@ fn fonts() -> egui::FontDefinitions {
         .entry(FontFamily::Proportional)
         .or_default()
         .insert(0, TEXT_FACE.to_string());
+    if let Some((bytes, scale)) = player {
+        fonts.font_data.insert(
+            PLAYER_FACE.to_string(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes).tweak(FontTweak {
+                scale,
+                ..FontTweak::default()
+            })),
+        );
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, PLAYER_FACE.to_string());
+    }
     let mut title = vec![TITLE_FACE.to_string()];
     title.extend(bundled);
     fonts

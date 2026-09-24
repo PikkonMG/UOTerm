@@ -48,6 +48,33 @@ const PAINT_ORDER: [u8; 22] = [
 const FACING_NORTH: u8 = 0;
 const FACING_SOUTH_EAST: u8 = 3;
 
+/// Each layer the figure paints, with its name, in layer order.
+pub const WORN_LAYERS: [(u8, &str); 23] = [
+    (LAYER_ONE_HANDED, "Right hand"),
+    (LAYER_TWO_HANDED, "Left hand"),
+    (LAYER_SHOES, "Shoes"),
+    (LAYER_PANTS, "Pants"),
+    (LAYER_SHIRT, "Shirt"),
+    (LAYER_HELMET, "Helmet"),
+    (LAYER_GLOVES, "Gloves"),
+    (LAYER_RING, "Ring"),
+    (LAYER_TALISMAN, "Talisman"),
+    (LAYER_NECKLACE, "Necklace"),
+    (LAYER_HAIR, "Hair"),
+    (LAYER_WAIST, "Waist"),
+    (LAYER_TORSO, "Chest"),
+    (LAYER_BRACELET, "Bracelet"),
+    (LAYER_FACE, "Face"),
+    (LAYER_BEARD, "Beard"),
+    (LAYER_TUNIC, "Tunic"),
+    (LAYER_EARRINGS, "Earrings"),
+    (LAYER_ARMS, "Arms"),
+    (LAYER_CLOAK, "Cloak"),
+    (LAYER_ROBE, "Robe"),
+    (LAYER_SKIRT, "Skirt"),
+    (LAYER_LEGS, "Legs"),
+];
+
 /// The game lifts each mobile this far above the center of his tile.
 const LIFT: i32 = 3;
 const OUTLINE: usize = 1;
@@ -146,6 +173,7 @@ impl Source<'_> {
         facing: Facing,
         pose: Pose,
         rider_drop: Option<i32>,
+        whole_hue: Option<u16>,
     ) -> Option<Part> {
         let own = self.tiledata.item_anim(item.graphic);
         if own == 0 {
@@ -158,12 +186,18 @@ impl Source<'_> {
             pose,
             rider_drop.is_some(),
         )?;
-        let hue = if item.hue == 0 {
-            conv.map_or(0, |c| c.hue)
-        } else {
-            item.hue
+        let (hue, partial) = match whole_hue {
+            Some(hue) => (hue, false),
+            None => {
+                let hue = if item.hue == 0 {
+                    conv.map_or(0, |c| c.hue)
+                } else {
+                    item.hue
+                };
+                let partial = self.tiledata.item_flags(item.graphic) & TILE_PARTIAL_HUE != 0;
+                (hue, partial)
+            }
         };
-        let partial = self.tiledata.item_flags(item.graphic) & TILE_PARTIAL_HUE != 0;
         Some(self.part(&frame, facing, hue, partial, rider_drop.unwrap_or(0)))
     }
 }
@@ -213,7 +247,10 @@ pub fn is_mounted(look: &WatchLook) -> bool {
     mount_item(look).is_some()
 }
 
-fn parts(source: &Source<'_>, look: &WatchLook, pose: Pose) -> Vec<Part> {
+/// The parts of a figure in paint order. `whole_hue` paints every part in
+/// one hue, as the client paints a mobile under the mouse or a ghost's
+/// world.
+fn parts(source: &Source<'_>, look: &WatchLook, pose: Pose, whole_hue: Option<u16>) -> Vec<Part> {
     let facing = Facing::from_direction(look.direction);
     let body = shown_body(look);
     // A mount whose body has no pictures is left out, and the rider stands.
@@ -225,7 +262,7 @@ fn parts(source: &Source<'_>, look: &WatchLook, pose: Pose) -> Vec<Part> {
     let rider_drop = mount.as_ref().map(|(_, m, _)| i32::from(m.rider_drop));
     let mut out = Vec::new();
     if let Some((item, _, frame)) = &mount {
-        out.push(source.part(frame, facing, item.hue, false, 0));
+        out.push(source.part(frame, facing, whole_hue.unwrap_or(item.hue), false, 0));
     }
     let Some(frame) = source.frame(body, facing, pose, rider_drop.is_some()) else {
         return Vec::new();
@@ -234,8 +271,8 @@ fn parts(source: &Source<'_>, look: &WatchLook, pose: Pose) -> Vec<Part> {
     out.push(source.part(
         &frame,
         facing,
-        look.hue,
-        look.hue & HUE_PARTIAL_BIT != 0,
+        whole_hue.unwrap_or(look.hue),
+        whole_hue.is_none() && look.hue & HUE_PARTIAL_BIT != 0,
         rider_drop.unwrap_or(0),
     ));
     if !source.anim.is_person(body) {
@@ -246,16 +283,16 @@ fn parts(source: &Source<'_>, look: &WatchLook, pose: Pose) -> Vec<Part> {
             continue;
         }
         let worn = look.equipment.iter().filter(|item| item.layer == layer);
-        out.extend(
-            worn.filter_map(|item| source.worn_part(look.body, item, facing, pose, rider_drop)),
-        );
+        out.extend(worn.filter_map(|item| {
+            source.worn_part(look.body, item, facing, pose, rider_drop, whole_hue)
+        }));
     }
     out
 }
 
 /// Paints `part` on the canvas. The canvas starts at `origin`, counted from
 /// the point on the tile.
-fn paint(canvas: &mut [u8], canvas_width: usize, origin: (i32, i32), part: &Part) {
+fn paint_part(canvas: &mut [u8], canvas_width: usize, origin: (i32, i32), part: &Part) {
     for row in 0..part.height {
         for column in 0..part.width {
             let from_column = if part.mirrored {
@@ -294,13 +331,26 @@ fn outline(canvas: &mut [u8], width: usize, height: usize, color: Color32) {
     }
 }
 
-pub fn compose(
-    source: &Source<'_>,
-    look: &WatchLook,
-    pose: Pose,
-    outline_color: Color32,
-) -> Option<Picture> {
-    let parts = parts(source, look, pose);
+/// How a figure is painted: the ring round it, and one hue over all of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Paint {
+    /// Clear draws no ring.
+    pub outline: [u8; 4],
+    pub whole_hue: Option<u16>,
+}
+
+impl Paint {
+    /// The paint of the Modern style: a ring of one color, own hues.
+    pub fn outlined(outline: Color32) -> Self {
+        Self {
+            outline: outline.to_array(),
+            whole_hue: None,
+        }
+    }
+}
+
+pub fn compose(source: &Source<'_>, look: &WatchLook, pose: Pose, paint: Paint) -> Option<Picture> {
+    let parts = parts(source, look, pose, paint.whole_hue);
     let margin = OUTLINE as i32;
     let left = parts.iter().map(|p| p.left).min()? - margin;
     let top = parts.iter().map(|p| p.top).min()? - margin;
@@ -309,9 +359,17 @@ pub fn compose(
     let (width, height) = ((right - left) as usize, (bottom - top) as usize);
     let mut rgba = vec![0u8; width * height * RGBA];
     for part in &parts {
-        paint(&mut rgba, width, (left, top), part);
+        paint_part(&mut rgba, width, (left, top), part);
     }
-    outline(&mut rgba, width, height, outline_color);
+    let [red, green, blue, alpha] = paint.outline;
+    if alpha > 0 {
+        outline(
+            &mut rgba,
+            width,
+            height,
+            Color32::from_rgba_premultiplied(red, green, blue, alpha),
+        );
+    }
     Some(Picture {
         width,
         height,
@@ -353,6 +411,14 @@ mod tests {
     }
 
     #[test]
+    fn every_painted_layer_has_a_name() {
+        let mut painted = paint_order(WEST);
+        painted.sort_unstable();
+        let named: Vec<u8> = WORN_LAYERS.iter().map(|(layer, _)| *layer).collect();
+        assert_eq!(painted, named);
+    }
+
+    #[test]
     fn a_robe_hides_the_chest_armor() {
         let robe = [WatchEquip {
             layer: LAYER_ROBE,
@@ -376,7 +442,7 @@ mod tests {
         };
         let (width, height) = (4, 3);
         let mut canvas = vec![0u8; width * height * RGBA];
-        paint(&mut canvas, width, (-1, -1), &part);
+        paint_part(&mut canvas, width, (-1, -1), &part);
         outline(&mut canvas, width, height, Color32::WHITE);
         let pixel = |x: usize, y: usize| &canvas[(y * width + x) * RGBA..][..RGBA];
         assert_eq!(pixel(2, 1), RED);

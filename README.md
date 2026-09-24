@@ -21,11 +21,30 @@ Treat every capability as unproven until a test in this tree proves it.
 
 ## What it is not
 
-- Not a copy of the classic client. `--view` / `uoterm watch` shows what the agent does, and it is a full way to play when you press "Take control". You walk with a click, with the arrow keys or W A S D, or with the right mouse button held. You drag items between bags, onto your character, onto other mobiles, onto the ground and into a trade. A right-click opens a ring of acts with the context menu of the shard. It has tooltips, a character sheet with worn items, skills with locks, spells and the party, a hotbar, shop and trade windows, gumps with text fields, old-style menus, books, prompts, speech over heads, damage numbers, spell effects, night, rain and snow, houses and boats, and sound. It draws the land, the items, and the mobiles from your client files. Each mobile shows with its mount and worn items, and it walks, runs, stands, or swings by what the shard sends. The pictures come from the classic `anim*.mul` files and from the newer `AnimationFrame*.uop` packages. A person in war mode stands ready, a person with a weapon walks armed, a swing or a cast plays when the shard sends it, and a corpse shows the fallen body. A mobile with no picture in these files shows as a plain colored figure. A Map button opens a map of the land round you, and a click on it walks you there. Drag its title to move it and its corner to size it; it opens where you left it (saved in `watch-map.toml`), and a double-click on its title puts it back in the middle. A map item you open, such as a treasure map, shows its own land with its pins; a click puts a pin, and with a TypeSafe key a field takes the place in plain words, such as `the bank in britain`, and Jev picks it from the named places of your marker file. An arrow points at a place the shard names, and it waits at the edge of the window when that place is out of view. Marks the shard puts on the map show with their names, and its notices and its web links go in the journal; UOTerm never opens a link by itself. A Chat button opens the chat of the shard: its channels, its lines and a box to talk in; with a TypeSafe key a field joins a channel from plain words such as `the trade one`. A Help button asks the shard for its help menu. When the shard opens the house designer, a Build panel shows the parts of the client catalog; you pick a style and a piece and click the house to build, and a field takes the part in plain words, such as `a stone wall`, which Jev picks from the catalog. A Profile button shows what a player wrote about his character, and a right-click on a mobile shows his; you may change your own. A paperdoll the shard opens, such as with "Open Paperdoll" in the ring, shows the person with his title, his figure and what he wears; point at a worn item to read it. The land and the trees change with the season the shard sets, houses players designed show with their own walls and floors, and a building that waits for its place shows where the mouse points before you put it there. Gumps show in their shard layout, from the gump art of the client; without the client files they show as lists. A book can be written in: "Write" takes a page and "Name it" takes the title. A bulletin board shows its messages with each answer under its message, and you can read, post, answer and remove.
+- Not a copy of the classic client's code. The play window (`--view`, `uoterm watch`, `uoterm play`) shows what the agent does, and it is a full way to play when you press "Take control". See "The play window" below.
 - Not a click-macro overlay.
 - Not an official-server farm bot.
 - Not a cheat tool for EA or Broadsword shards.
 - Not a replacement for a live shard. `mock-shard` is a demo only.
+
+## The play window
+
+The window has two looks, and each has every feature of the classic client:
+
+- **Modern** (the default): glass panels over the world, a bar at the top, the character sheet, the hotbar, a journal with the chat box under it, and a ring of acts on a right click. The panels move by their titles, lock, and open where you left them.
+- **Classic**: the look of the official client. Floating gumps drawn from the gump art of your client files, its fonts and its mouse pointers, a game window in a frame that you move and size, and the chat line at the foot of that window. Pick it on the Interface page of the Options ("UI style"). It needs the client files; without them the window keeps the Modern look.
+
+Both looks read the same data and send the same acts. The login screens are one plain UOTerm form for both looks, with no music.
+
+You walk with the arrow keys, with the right mouse button held, with a double-click on the ground when pathfinding is on, or with a game controller; Alt+click on the ground runs there, and W A S D and a plain click that runs are options. You drag items between bags, onto your character, onto other mobiles, onto the ground and into a trade. A right-click opens a ring of acts (Modern) or the context menu of the shard (Classic). There are tooltips, the paperdoll with worn items, the status, skills with locks and groups, spellbooks, the party with the hits, mana and stamina of each member the shard tells, health bars, a hotbar, buff icons, shop and trade windows, gumps with text fields, old-style menus, books, bulletin boards, prompts, speech over heads, damage numbers, spell effects, night, rain and snow, houses and boats, and sound.
+
+The world is drawn from your client files: the land, the items, and the mobiles with their mounts and worn items, from the classic `anim*.mul` files and the newer `AnimationFrame*.uop` packages. A mobile walks, runs, stands, swings or casts by what the shard sends, and a corpse shows the fallen body. A mobile with no picture in these files shows as a plain colored figure. The land and the trees change with the season the shard sets, houses players designed show with their own walls and floors, and a building that waits for its place shows where the mouse points.
+
+A map of the land round you walks you where you click it. A map item, such as a treasure map, shows its own land with its pins; a click puts a pin, and with a TypeSafe key a field takes a place in plain words, such as `the bank in britain`, and Jev picks it from the named places of your marker file. An arrow points at a place the shard names. Marks the shard puts on the map show with their names, and its notices and web links go in the journal; UOTerm never opens a link by itself. The chat of the shard shows its channels, its lines and a box to talk in; with a TypeSafe key a field joins a channel from plain words such as `the trade one`.
+
+When the shard opens the house designer, both looks show the parts of the client catalog: pick a style and a piece and click the house to build, erase a part, or pick a part off the house with the eyedropper. A button for each storey turns how it shows while you design (walls or floor see-through or hidden, or all hidden), and the designer counts the components, the fixtures (doors and teleporters) and the cost against what the plot allows, as the classic designer does. A field takes a part in plain words, such as `a stone wall`, which Jev picks from the catalog.
+
+The Options have the pages of the classic client: General, Sound, Video, Macros, Tooltip, Fonts, Speech, Combat & Spells, Counters, Info Bar, Containers, Experimental, Ignore List, Interface, Nameplates, Journal, World Map and Agents. Apply and Okay keep a change, Cancel drops it, and Default puts one page back. The options, the places of the windows and the gumps you keep open are a profile for each character of each shard, in the `profiles` folder of the UOTerm config folder (Linux `~/.config/uoterm`, Windows `%APPDATA%\uoterm`): `default.toml` is where a new character starts, and each character has `<shard>/<character>.toml`. The hotbar of each character is kept in `watch-hotbar.toml`.
 
 ## Requirements
 
@@ -90,7 +109,7 @@ Load order for `uoterm.toml`:
 1. `./uoterm.toml` in the current working directory.
 2. Linux: `~/.config/uoterm/uoterm.toml`. Windows: `%APPDATA%\uoterm\uoterm.toml`.
 
-Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `connect` uses this file for every `AppConfig` key when the matching CLI flag is omitted: `host`, `port`, `era`, `log_level`, `api_bind`, `max_sessions`, `obey_shard_rules`, `answer_when_named`, `play_along`, `view`, `reconnect`, `uopath`, `markers`.
+Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `connect` uses this file for every `AppConfig` key when the matching CLI flag is omitted: `host`, `port`, `era`, `log_level`, `api_bind`, `max_sessions`, `obey_shard_rules`, `answer_when_named`, `play_along`, `view`, `reconnect`, `uopath`, `markers`, `proxy`.
 
 `obey_shard_rules` (default `true`): some shards send a list of assistant features they forbid, such as auto-open doors, auto-bandage, and auto-potions. With `true`, the character does not use those features by itself on that shard. With `false`, it ignores the list. The client answers the shard in both cases. A session made with `POST /v1/sessions` takes the same `obey_shard_rules` field.
 
@@ -99,6 +118,8 @@ Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `conne
 `play_along` (default `false`): with `answer_when_named` on, lets the agent say yes to a player's plans: join their party, follow them and help them fight. With `false`, the agent answers in a few words and says no to plans, and the client refuses to follow or join the party of a player who asked in chat. `POST /v1/sessions` takes the same field.
 
 `reconnect` (default `true`): when the link to the shard drops, the session logs in again by itself. It waits 5 s before the first try, and it doubles the wait after each failed try, up to 60 s. While it waits, the agent gets a `disconnected` event and each tool call says the session waits to log in again. A logout that the agent or you ask for does not log in again. With `false`, the session ends when the link drops. `POST /v1/sessions` takes the same field.
+
+`proxy` (default none): reach the shard through a proxy, `socks5://host:port` or `http://host:port` (HTTP CONNECT), with `user:password@` before the host when the proxy asks for a login. The login and the game link both go through it. `POST /v1/sessions` takes the same field. The log shows the proxy with its password left out.
 
 Account profile: copy `profiles/example.toml`. Extra `profiles/*.toml` files are gitignored. `--profile` supplies account, character, password env, and shard.
 
@@ -193,7 +214,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `uoterm open-door` | Client | Tool `open_door` (`0x12`/`0x58`). |
 | `uoterm look` | Client | Radar. `--json` prints full observe JSON. |
 | `uoterm play [--profile FILE] [--go] [--encryption none\|osi] [--uopath DIR] [--api-bind ADDR]` | Server | Play by hand. It opens the login screens: a form with host, port, account, password, shard and character, and the saved logins of the `profiles` folder. You type the password in a field that hides it; it stays in memory for the login and is written nowhere. When the field is empty, the password comes from the environment variable of the saved login. A shard list with more than one shard shows as a list to click. The characters of the account show with an empty slot for each free place: click one to play, press Delete twice to remove one, or type a name and press "New character" to make one. When the shard refuses, it says why. With a TypeSafe key, a field takes plain words such as `my miner on the test shard`; Jev picks the saved login, and later the shard and the character, from the lists. Jev sees the words and the names of the lists, never the account or the password. After the login the same window is the game window, you have control, and the HTTP API runs as with `connect`. `--go` logs in at once with `--profile`. |
-| `uoterm watch [--text] [--uopath DIR] [--open sheet\|map\|macros\|profile\|chat] [--snapshot FILE.png]` | Client | Live window of the running session: the map, vitals, what the agent does, who is near, the journal, the pack. With client files (`--uopath`, or `uopath` in `uoterm.toml`) it draws the real map. Without them it draws flat colors from the radar. Scroll to zoom. "Take control" stops the agent and lets you click: the ground to walk, a double-click to use (or to attack in war mode), one click to look, and the target cursor. You also walk with the arrow keys or W A S D (Shift runs) and with the right mouse button held. You drag items to move, wear, give, trade or drop them; hold Shift to split a pile. A right-click on a thing opens a ring of acts with the context menu of the shard. "Bag", "Sheet" and "Map" open the backpack, the character sheet (worn items, skills with locks, spells, party) and the map of the land; `--open` opens the sheet or the map at the start. The hotbar takes a dragged item, a pinned skill or spell, or a pinned command; the keys 1 to 0 use its slots, and it is saved in `watch-hotbar.toml`. "Macros" opens the macro editor: pick a script of the scripts folder, change its lines, run it once or in a loop, save it, record what you do as a new macro, or pin it to the hotbar. With a TypeSafe key, a field takes the next step in plain words, such as `heal myself with a bandage`; Jev picks the hotkey that does it, and the script lines of that hotkey go into the macro. The chat box says words. In Do mode it runs one script command. When the shard asks for words, the box answers it. In Order mode it takes a plain order such as `attack the orc`; TypeSafe's Jev model picks the act and the target, and the order and the names of the things near go to `api.typesafe.ai`. Order mode is on only when `TYPESAFE_API_KEY` is set (environment or `.env`). "Give back", or 90 s with no act, returns the character to the agent. The "Options" button opens the sound panel: a master volume, and one volume each for music, sound effects, and footsteps, with a switch for silence. The sounds and the music come from your client files. The settings are saved in `watch-audio.toml` in the UOTerm config folder. `--snapshot` saves one PNG picture and closes. `--text` prints the radar in the terminal. |
+| `uoterm watch [--text] [--uopath DIR] [--open sheet\|map\|macros\|profile\|chat] [--snapshot FILE.png]` | Client | Live window of the running session: the map, vitals, what the agent does, who is near, the journal, the pack. With client files (`--uopath`, or `uopath` in `uoterm.toml`) it draws the real map. Without them it draws flat colors from the radar. Scroll to zoom. "Take control" stops the agent and lets you click: a double-click to use (or to attack in war mode), one click to look, and the target cursor. You walk with the arrow keys (Shift runs) and with the right mouse button held; a left click while it is held keeps you going. A double-click on the ground walks there when "Enable pathfinding" is on (General page; "Use Shift for pathfinding" asks for Shift too), Alt+click on the ground runs there, and "Click on the ground runs there" and "Use W A S D to walk" are options of the same page. See "Keys, macros and the controller" below. You drag items to move, wear, give, trade or drop them; hold Shift to split a pile. A right-click on a thing opens a ring of acts with the context menu of the shard (in the Classic look, the context menu gump). "Bag", "Sheet" and "Map" open the backpack, the character sheet (worn items, skills with locks, spells, party) and the map of the land; `--open` opens the sheet or the map at the start. The hotbar takes a dragged item, a pinned skill or spell, or a pinned command; the keys 1 to 0 use its slots, it moves and locks like the other panels, and it is saved in `watch-hotbar.toml`. "Macros" opens the macro editor: pick a script of the scripts folder, change its lines, run it once or in a loop, save it, record what you do as a new macro, or pin it to the hotbar. With a TypeSafe key, a field takes the next step in plain words, such as `heal myself with a bandage`; Jev picks the hotkey that does it, and the script lines of that hotkey go into the macro. The chat box says words. In Do mode it runs one script command. When the shard asks for words, the box answers it. In Order mode it takes a plain order such as `attack the orc`; TypeSafe's Jev model picks the act and the target, and the order and the names of the things near go to `api.typesafe.ai`. Order mode is on only when `TYPESAFE_API_KEY` is set (environment or `.env`). "Give back", or 90 s with no act, returns the character to the agent. The "Options" button opens the Options with all their pages (see "The play window" above); the sounds and the music come from your client files, and the options are kept in the profile of the character. `--snapshot` saves one PNG picture and closes. `--text` prints the radar in the terminal. |
 | `uoterm state` | Client | YAML. `--json` for JSON. Field name is `self_state`. |
 | `uoterm agent run --persona FILE [--goal NAME]` | Client | `set_persona` then `set_goal`. |
 | `uoterm agent stop` | Client | `cancel_goal`. |
@@ -210,7 +231,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `--password-env` | `UO_PASS` | Env var that holds the password |
 | `--character` | required unless `--profile` | Character name on the account |
 | `--shard` | none | Select by name when the server list has more than one |
-| `--version` | era default (`7.0.102.3` for `modern`) | Client version string (`0xBD`) |
+| `--version` | the version of `client.exe` in `--uopath`; else the era default (`7.0.102.3` for `modern`) | Client version string (`0xBD`). Shards that check versions kick a client older than their own `client.exe`. |
 | `--era` | `modern` | `t2a` or `modern` |
 | `--encryption` | `none` | `none` = nocrypt. `osi` = Classic Client encryption. |
 | `--uopath` | from config | Client data directory. Without it, nav uses an open mock grid |
@@ -227,7 +248,7 @@ Start `connect` or `populate` first. Then point the model host at `uoterm mcp`.
 
 The process speaks JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`). It accepts newline JSON and MCP `Content-Length` framing. Bodies larger than 1 MiB are rejected. Bad JSON returns JSON-RPC error `-32700`.
 
-It lists tools and proxies `tools/call` to `POST /v1/sessions/{id}/tools/{name}`. Resources: `uo://session/{id}/state` (observe JSON) and `uo://playbook/{name}` (markdown in `docs/playbooks/`). Read `driver` first, then `hunt` or `walk`.
+It lists tools and proxies `tools/call` to `POST /v1/sessions/{id}/tools/{name}`. The runtime's own tools, `connect`, `disconnect`, `characters`, `character_create` and `character_delete`, need no session and go to `POST /v1/tools/{name}`: an agent can list the characters of an account, make or delete one, and log in, with the password in an environment variable (`password_env`) or a saved login (`profile`), never in a call. Resources: `uo://session/{id}/state` (observe JSON) and `uo://playbook/{name}` (markdown in `docs/playbooks/`). Read `driver` first, then `hunt` or `walk`.
 
 ```json
 {
@@ -245,6 +266,8 @@ It lists tools and proxies `tools/call` to `POST /v1/sessions/{id}/tools/{name}`
 ```
 
 Give the model `observe` plus `say`, `move_to`, `job_start`, and `next_event`. Read playbook `driver` first. Do not ask it to walk tile by tile. Full tool notes: `docs/AGENT_API.md`.
+
+Tools for the map and the world beyond `observe`: `find_tiles` (water, trees, ore, a forge or an anvil, by kind, graphic, tiledata flag or name, on any map), `map_tile` (everything on one tile), `multi_parts` (the parts of houses and boats), `find_entrances` (stairs, ladders and pads into dungeons), `line_of_sight` (any point to any point, by the rules of RunUO, POL or Sphere, with a trace), `find_landmarks` and `landmarks_info`. `move_to` and `route` take `run`, `accuracy`, `open_doors`, `avoid`, `roads`, `exact` and a landmark `name`, and say how long the route took to plan. One-click acts are tools too: `virtue` (all eight), `virtue_gump`, `skill_lock`, `stat_lock`, `rename`, `set_ability`, `emote_action`, `fly`, `menu_button`, `target_resource`, `use_type`, `use_on`, `mount`, `dismount`, `attack_nearest`, `catch_bag`, `ignore_list` and `skill_gains`. The windows the shard opens have tools of their own: `dye`, `race_change`, `trade_gold`, `book_write`, `board_post`, `map_pin`, `profile`, `house_edit`, `chat`, `tip` and `quest_arrow`.
 
 ## Personas
 
@@ -280,7 +303,9 @@ while not dead
 endwhile
 ```
 
-Run it with the `run_script` tool. Agents loot, pick up, organize, restock,
+Run it with the `run_script` tool. Several scripts run side by side, each in
+a named slot (a healer beside a task), and `for` and `iterations` bound a run.
+Agents loot, pick up, organize, restock,
 dress, buy, sell, bandage and remount on their own; hotkeys are named actions
 such as `Bandage Self` or `Cast Greater Heal`; and `record_macro` writes what
 you do as a script. Everything goes at the pace a person plays.
@@ -289,6 +314,61 @@ A shard can send a list of assistant features it forbids. UOTerm obeys the
 list by default; set `obey_shard_rules = false` to ignore it.
 
 See `docs/SCRIPTS.md` and `docs/AGENTS.md`.
+
+## Keys, macros and the controller
+
+The play window reads the keys as the official client does:
+
+- **Chat line.** The Modern look has it under the journal; the Classic look
+  at the foot of the game window, on a dark band ("Hide chat gradient" takes
+  the band away), with the shard's own words and the party, guild and
+  alliance lines over it for ten seconds. Both are the same line, with the
+  same history. With "Activate chat when pressing Enter" off (the default,
+  Speech page) the chat line always takes the keys you type; with it on,
+  Enter opens it, Enter sends and closes it, and Shift+Enter sends and keeps
+  it open ("Use Shift+Enter to send without closing chat"). The prefix keys
+  also open it when "Speech prefix keys open the chat" is on. A line that
+  starts with `! ` is yelled, `; ` whispered, `: ` an emote, `/` goes to the
+  party (`/2 ` to its second member), `\` to the guild, `|` to the alliance
+  and `,` to the global chat. Each goes out in the color the Speech page
+  gives it. `/add`, `/rem`, `/loot`, `/accept`, `/decline` and `/quit` are
+  party orders; one that cannot be done now prints the classic client's
+  answer in the journal, such as "You are not in a party.", and words to a
+  party you are not in come back as "Note to self". Ctrl+Q and Ctrl+W bring
+  back the lines you sent.
+- **Click to run.** A click on the ground with Alt held runs there by
+  pathfinding ("Click with this key held runs there", General page: None,
+  Ctrl, Shift or Alt). With "Click on the ground runs there" on, a plain
+  click runs there too; the "Click-to-run on / off" action (Macros page)
+  switches it from a key, and the journal says if it is on or off.
+- **Tab** holds war mode while it is down, or switches it at each press when
+  "Hold Tab for combat" is off (Combat & Spells page).
+- **Default keys** of the official client: Alt+P paperdoll, Alt+O options,
+  Alt+J journal, Alt+I backpack, Alt+R minimap, Ctrl+B bow, Ctrl+S salute.
+- **Macros** (Options, Macros page): a macro has a name, a key chord or
+  controller buttons, and steps. Each step is an action with its argument:
+  every macro type of the reference client (say, walk, open or close any window, cast,
+  use skill, zoom, toggles for roofs, trees, vegetation, caves, the circle
+  of transparency, names and auras, select next / previous / nearest, grab,
+  the view range, delays and "wait for target"), any hotkey of the session,
+  a saved script, a script line, a screenshot, and mouse clicks for a
+  controller. Click the key field and press the chord to bind it. While you
+  type in a field of a panel or a gump, only chords with Ctrl or Alt and the
+  F keys run macros.
+- The **Experimental** page turns off the default keys, the arrow keys, Tab
+  and Ctrl+Q / Ctrl+W, and the left click that keeps you walking.
+- **Screenshots** (a macro step, or "Take a screenshot on death" on the
+  Interface page) go to the `screenshots` folder of the config folder, and
+  the journal tells where unless "Hide "Screenshot stored in" message" is on.
+- **Criminal actions.** An attack, or a harmful target, on an innocent asks
+  "This may flag you criminal!" first ("Query before attack"), as does a
+  beneficial target on a criminal, a murderer or a gray one when "Query
+  before beneficial acts" is on (Combat & Spells page).
+- **Game controller** ("Use a game controller", Macros page): the left stick
+  walks (pushed far, it runs), the right stick moves the mouse at the speed
+  of the page, and buttons run macros. With the default buttons, South is a
+  left click, East a right click, West a double click, North war / peace and
+  Start the options.
 
 ## Populate (several sessions)
 
@@ -306,7 +386,7 @@ export UO_PASS=your_password
 uoterm connect \
   --host 192.168.1.10 --port 2593 \
   --account your_account --character "Mara of Yew" \
-  --version 7.0.102.3 --era modern --encryption none \
+  --era modern --encryption none \
   --uopath /path/to/uo \
   --persona personas/lumberjack.toml
 ```
@@ -317,7 +397,7 @@ For a shard that uses Classic Client login encryption:
 uoterm connect \
   --host 192.168.1.10 --port 2593 \
   --account your_account --character "Mara of Yew" \
-  --version 7.0.102.3 --era modern --encryption osi \
+  --era modern --encryption osi \
   --uopath /path/to/uo
 ```
 
@@ -337,6 +417,11 @@ No official client files required:
 ```bash
 cargo test --workspace
 ```
+
+A test never reads or writes your own UOTerm folders: only the `uoterm`
+program uses `~/.config/uoterm` and `~/.local/share/uoterm`, and any other
+process, such as a test, keeps its files in a folder of its own under the
+temp folder.
 
 Some checks compare the map reader against real Ultima Online files. They skip
 themselves when they have none. Point `UOTERM_TEST_UOPATH` at a client

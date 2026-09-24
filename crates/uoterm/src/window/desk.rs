@@ -1,16 +1,23 @@
 //! What the panels and the map share while the human plays: the item on
 //! the mouse, the places that take a dropped item, and the box that asks
-//! how much of a pile to move.
+//! how much of a pile to move, by the "Hold Shift to split stacks" option.
 
+use super::boxes_ui::Tools;
 use super::control::{Act, DropTo, Hand};
+use super::model::clicks::asks_amount;
+use super::modern::frame::{self, PanelSpec};
+use super::modern::layout::{self, Spot};
 use super::scene::Scene;
-use super::theme::{self, number_font, text_font};
+use super::settings::Profile;
+use super::theme::{self, number_font};
 use crate::view::{WatchFrame, WatchPackItem};
-use eframe::egui::{self, Align2, Color32, Id, Key, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Color32, Id, Key, Pos2, Rect, Sense, Vec2};
+use uoterm_nav::TileFlagSet;
 
 const CARRY_SIDE: f32 = 52.0;
 const CARRY_ALPHA: f32 = 0.85;
-const SPLIT_SIZE: Vec2 = Vec2::new(260.0, 118.0);
+const SPLIT_ID: &str = "modern:split";
+const SPLIT_WIDTH: f32 = 260.0;
 const SPLIT_ROW: f32 = 28.0;
 const WORDS_SPLIT: &str = "How many?";
 const WORDS_MOVE: &str = "Move";
@@ -36,10 +43,20 @@ struct Split {
 #[derive(Default)]
 pub struct Desk {
     carry: Option<WatchPackItem>,
+    /// Where the middle of the carried picture is from the mouse, in window
+    /// points.
+    grab: Vec2,
+    /// The item was picked up in this frame, so a mouse button that comes up
+    /// in it, as the click of an Okay button, does not drop it.
+    picked_now: bool,
     zones: Vec<(Rect, Zone)>,
     split: Option<Split>,
     /// The slot an item was dropped on this frame, for the hotbar to take.
     pub slotted: Option<(usize, WatchPackItem)>,
+    /// The container whose gump is under the mouse in this frame, and in
+    /// the last one, whose item the other gumps mark.
+    hovered_container: Option<u32>,
+    marked_container: Option<u32>,
 }
 
 impl Desk {
@@ -47,6 +64,18 @@ impl Desk {
     pub fn begin(&mut self) {
         self.zones.clear();
         self.slotted = None;
+        self.marked_container = self.hovered_container.take();
+        self.picked_now = false;
+    }
+
+    /// A container gump is under the mouse: the other gumps mark its item.
+    pub fn hover_container(&mut self, container: u32) {
+        self.hovered_container = Some(container);
+    }
+
+    /// The container whose gump was under the mouse in the last frame.
+    pub fn marked_container(&self) -> Option<u32> {
+        self.marked_container
     }
 
     pub fn zone(&mut self, area: Rect, zone: Zone) {
@@ -59,7 +88,30 @@ impl Desk {
 
     /// A panel calls this when the human starts to drag one of its items.
     pub fn pick_up(&mut self, item: &WatchPackItem) {
+        self.pick_up_at(item, Vec2::ZERO);
+    }
+
+    /// Picks up an item that stays `grab` away from the mouse, as a gump
+    /// with relative drag and drop holds it.
+    pub fn pick_up_at(&mut self, item: &WatchPackItem, grab: Vec2) {
         self.carry = Some(item.clone());
+        self.grab = grab;
+        self.picked_now = true;
+    }
+
+    /// The item on the mouse.
+    pub fn carried(&self) -> Option<&WatchPackItem> {
+        self.carry.as_ref()
+    }
+
+    /// For a gump that lands a dropped item itself, as a container puts it
+    /// at the place of the mouse: the carried item and its grab, when the
+    /// mouse button came up in this frame. The desk then carries nothing.
+    pub fn land(&mut self, ui: &egui::Ui) -> Option<(WatchPackItem, Vec2)> {
+        if self.picked_now || !ui.input(|i| i.pointer.any_released()) {
+            return None;
+        }
+        self.carry.take().map(|item| (item, self.grab))
     }
 
     /// The last zone named is on top, as it was drawn last.
@@ -73,7 +125,9 @@ impl Desk {
 
     /// Draws the carried item at the mouse and lands it when the button
     /// comes up. `on_panel` is true when the mouse is on a panel that is
-    /// no zone, where a drop does nothing.
+    /// no zone, where a drop does nothing. A pile asks how many to move by
+    /// the "Hold Shift to split stacks" option, `shift_to_split`.
+    #[allow(clippy::too_many_arguments)]
     pub fn carry_and_land(
         &mut self,
         ui: &egui::Ui,
@@ -82,17 +136,19 @@ impl Desk {
         scene: &mut Scene,
         hand: &Hand,
         on_panel: bool,
+        shift_to_split: bool,
     ) {
         let Some(item) = self.carry.clone() else {
             return;
         };
-        let (mouse, released, whole_pile) = ui.input(|i| {
+        let (mouse, released, shift) = ui.input(|i| {
             (
                 i.pointer.interact_pos(),
                 i.pointer.any_released(),
-                !i.modifiers.shift,
+                i.modifiers.shift,
             )
         });
+        let released = released && !self.picked_now;
         let Some(mouse) = mouse else {
             self.carry = None;
             return;
@@ -102,7 +158,7 @@ impl Desk {
                 egui::Order::Tooltip,
                 Id::new("desk-carry"),
             ));
-            let area = Rect::from_center_size(mouse, Vec2::splat(CARRY_SIDE));
+            let area = Rect::from_center_size(mouse + self.grab, Vec2::splat(CARRY_SIDE));
             if let Some((texture, sprite)) = scene.item_picture(frame.map, item.graphic, item.hue) {
                 let fitted = theme::fit(area, sprite.width, sprite.height);
                 let tint = theme::with_alpha(Color32::WHITE, CARRY_ALPHA);
@@ -134,7 +190,12 @@ impl Desk {
                 }
             },
         };
-        if item.amount > 1 && !whole_pile {
+        if asks_amount(
+            item.amount,
+            stacks(scene, item.graphic),
+            shift_to_split,
+            shift,
+        ) {
             self.split = Some(Split {
                 amount: item.amount,
                 item,
@@ -148,56 +209,75 @@ impl Desk {
             to,
         });
     }
+}
 
-    /// The box that asks how much of a pile to move. Gives its place.
-    pub fn split_box(&mut self, ui: &mut egui::Ui, rect: Rect, hand: &Hand) -> Option<Rect> {
-        let split = self.split.as_mut()?;
-        let panel = Rect::from_center_size(rect.center(), SPLIT_SIZE);
-        theme::panel(ui.painter(), panel);
-        let inner = panel.shrink(theme::PANEL_PAD);
-        ui.painter().text(
-            inner.left_top(),
-            Align2::LEFT_TOP,
-            format!("{WORDS_SPLIT}  {}", split.item.name),
-            text_font(theme::SIZE_BODY),
-            theme::TEXT,
-        );
-        let slider_row = Rect::from_min_size(
-            inner.left_top() + Vec2::new(0.0, SPLIT_ROW),
-            Vec2::new(inner.width(), SPLIT_ROW),
-        );
-        ui.put(
-            slider_row,
-            egui::Slider::new(&mut split.amount, 1..=split.item.amount).text_color(theme::TEXT),
-        );
-        ui.painter().text(
-            inner.right_top(),
-            Align2::RIGHT_TOP,
-            split.amount.to_string(),
-            number_font(theme::SIZE_BODY),
-            theme::GOAL,
-        );
-        let (_, go) = theme::button(
-            ui,
-            inner.left_bottom() - Vec2::new(0.0, SPLIT_ROW),
-            WORDS_MOVE,
-            theme::GOAL,
-        );
-        let backdrop = ui.interact(panel, Id::new("desk-split"), Sense::click());
-        let cancel = ui.input(|i| i.key_pressed(Key::Escape))
-            || (ui.input(|i| i.pointer.any_click()) && !backdrop.hovered());
-        if go || ui.input(|i| i.key_pressed(Key::Enter)) {
-            hand.act(Act::Move {
-                item: split.item.serial,
-                amount: split.amount,
-                to: split.to,
-            });
-            self.split = None;
-        } else if cancel {
-            self.split = None;
-        }
-        Some(panel)
+/// True when items of this graphic stack into one pile. With no tile data
+/// the amount of the item tells.
+fn stacks(scene: &Scene, graphic: u16) -> bool {
+    scene
+        .item_tile(graphic)
+        .is_none_or(|tile| tile.flags.contains(TileFlagSet::STACKABLE))
+}
+
+/// The box that asks how much of a pile to move, which the player moves
+/// and locks. Gives its place.
+pub fn split_box(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    tools: &mut Tools<'_>,
+    profile: &mut Profile,
+) -> Option<Rect> {
+    let mut split = tools.desk.split.take()?;
+    let title = format!("{WORDS_SPLIT}  {}", split.item.name);
+    let spec = PanelSpec {
+        id: SPLIT_ID,
+        title: &title,
+        default: layout::first_place(
+            rect,
+            Spot::Middle(0),
+            Vec2::new(
+                SPLIT_WIDTH,
+                frame::TITLE_ROW + SPLIT_ROW * 2.0 + theme::PANEL_PAD * 2.0,
+            ),
+        ),
+        min_size: None,
+        closable: true,
+    };
+    let panel = frame::place(rect, &spec, profile);
+    let body = frame::draw(ui.painter(), panel, &title);
+    let slider_row = Rect::from_min_size(body.left_top(), Vec2::new(body.width(), SPLIT_ROW));
+    ui.put(
+        slider_row,
+        egui::Slider::new(&mut split.amount, 1..=split.item.amount).text_color(theme::TEXT),
+    );
+    ui.painter().text(
+        slider_row.right_center(),
+        egui::Align2::RIGHT_CENTER,
+        split.amount.to_string(),
+        number_font(theme::SIZE_BODY),
+        theme::GOAL,
+    );
+    let (_, go) = theme::button(
+        ui,
+        Pos2::new(body.left(), slider_row.bottom()),
+        WORDS_MOVE,
+        theme::GOAL,
+    );
+    let backdrop = ui.interact(panel, Id::new("desk-split"), Sense::click());
+    let closed = frame::controls(ui, panel, &spec, profile, tools).is_some();
+    let cancel = closed
+        || ui.input(|i| i.key_pressed(Key::Escape))
+        || (ui.input(|i| i.pointer.any_click()) && !backdrop.hovered());
+    if go || ui.input(|i| i.key_pressed(Key::Enter)) {
+        tools.hand.act(Act::Move {
+            item: split.item.serial,
+            amount: split.amount,
+            to: split.to,
+        });
+    } else if !cancel {
+        tools.desk.split = Some(split);
     }
+    Some(panel)
 }
 
 #[cfg(test)]

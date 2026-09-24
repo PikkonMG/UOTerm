@@ -1,24 +1,29 @@
-//! The sound of the watch window: the music of the region, the sound effects
-//! the shard asks for, and the footsteps of the mobiles near. Each kind has
-//! its own volume, and one master volume is over them all.
+//! The sound of the window: the music of the region, the music of war and
+//! of death, the sound effects the shard asks for, the footsteps of the
+//! mobiles near, and the rain. The volumes and the rules are the Sound page
+//! of the profile.
 //!
 //! The sounds come from the client files. With no client files, or with no
 //! sound device, the window is silent and the rest of it works the same.
 
-use super::kept;
+mod effects;
+mod midi;
+mod score;
+
+use super::settings::{SoundKind, SoundOptions};
 use crate::view::{WatchFrame, WatchSound};
+use effects::{EffectCue, Effects, ONE_CHANNEL, SAMPLE_RATE};
+use midi::{music_file, MidiSource, MusicFile, SoundFonts};
+use rand::Rng;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
-use serde::{Deserialize, Serialize};
+use score::{Moment, Score, COMBAT_MUSIC};
 use std::collections::HashMap;
-use std::num::NonZero;
-use std::path::Path;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use uoterm_nav::{MusicList, SoundData, SOUND_SAMPLE_RATE};
+use uoterm_nav::{MusicList, SoundData};
 
-const SETTINGS_FILE: &str = "watch-audio.toml";
-const ONE_CHANNEL: NonZero<u16> = NonZero::new(1).unwrap();
-const SAMPLE_RATE: NonZero<u32> = NonZero::new(SOUND_SAMPLE_RATE).unwrap();
 const SAMPLE_FULL_SCALE: f32 = 32_768.0;
 /// A sound this many tiles away is silent. Nearer sounds are louder.
 const HEARING_TILES: f32 = 18.0;
@@ -28,67 +33,26 @@ const SOUND_CACHE_CAP: usize = 128;
 /// makes these two. A mount that walks makes the first foot sound only.
 const STEPS_ON_FOOT: [u16; 2] = [0x012B, 0x012C];
 const STEPS_MOUNT_RUN: [u16; 2] = [0x0129, 0x012A];
-const DEFAULT_MASTER: f32 = 0.8;
-const DEFAULT_MUSIC: f32 = 0.5;
-const DEFAULT_EFFECTS: f32 = 0.8;
-const DEFAULT_FOOTSTEPS: f32 = 0.4;
+/// The weather kinds with rain: rain, and a fierce storm.
+const WEATHER_RAIN: u8 = 0;
+const WEATHER_FIERCE_STORM: u8 = 1;
+/// Rain of more drops than this is heavy.
+const HEAVY_RAIN_DROPS: u8 = 30;
+/// The water loops of the client files that sound as rain.
+const HEAVY_RAIN_SOUND: u16 = 0x0010;
+const LIGHT_RAIN_SOUND: u16 = 0x0011;
+/// The rain plays this much as loud as the sound effects.
+const RAIN_LOUDNESS: f32 = 0.2;
+/// The volume of all sound while the window may be heard, and while not.
+const HEARD: f32 = 1.0;
+const UNHEARD: f32 = 0.0;
 
 pub const NOTE_NO_FILES: &str = "No sound: the client files hold no sounds.";
 pub const NOTE_NO_DEVICE: &str = "No sound: this computer gave no sound device.";
-
-/// The kinds of sound that have a volume of their own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Music,
-    Effects,
-    Footsteps,
-}
-
-/// What the operator set. Each volume is from 0 to 1.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    pub muted: bool,
-    pub master: f32,
-    pub music: f32,
-    pub effects: f32,
-    pub footsteps: f32,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            muted: false,
-            master: DEFAULT_MASTER,
-            music: DEFAULT_MUSIC,
-            effects: DEFAULT_EFFECTS,
-            footsteps: DEFAULT_FOOTSTEPS,
-        }
-    }
-}
-
-impl Settings {
-    /// How loud one kind plays: its own volume under the master volume.
-    pub fn volume(&self, kind: Kind) -> f32 {
-        if self.muted {
-            return 0.0;
-        }
-        let own = match kind {
-            Kind::Music => self.music,
-            Kind::Effects => self.effects,
-            Kind::Footsteps => self.footsteps,
-        };
-        (own * self.master).clamp(0.0, 1.0)
-    }
-
-    pub fn load() -> Self {
-        kept::load(SETTINGS_FILE)
-    }
-
-    pub fn save(&self) {
-        kept::save(SETTINGS_FILE, self);
-    }
-}
+pub const NOTE_NEEDS_SOUND_FONT: &str =
+    "No music: this client has MIDI music only. Set a MIDI SoundFont file.";
+pub const NOTE_BAD_SOUND_FONT: &str =
+    "No music: the MIDI SoundFont file or the MIDI file could not be read.";
 
 /// One step a mobile took this frame, for the footstep sound.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -112,23 +76,71 @@ fn nearness(tiles_away: f32) -> f32 {
     (1.0 - tiles_away / HEARING_TILES).clamp(0.0, 1.0)
 }
 
+/// The volume of all sound: a window out of focus is silent, unless the
+/// player wants to hear it in the background.
+fn gain(focused: bool, play_in_background: bool) -> f32 {
+    if focused || play_in_background {
+        HEARD
+    } else {
+        UNHEARD
+    }
+}
+
+/// The rain loop the weather asks for, when the player wants rain.
+fn rain_sound(weather: Option<(u8, u8)>, options: &SoundOptions) -> Option<u16> {
+    let (kind, drops) = weather.filter(|_| options.rain_sound)?;
+    let rains = kind == WEATHER_RAIN || kind == WEATHER_FIERCE_STORM;
+    let sound = if drops > HEAVY_RAIN_DROPS {
+        HEAVY_RAIN_SOUND
+    } else {
+        LIGHT_RAIN_SOUND
+    };
+    (rains && drops > 0 && !options.filters_sound(sound)).then_some(sound)
+}
+
+fn rain_volume(options: &SoundOptions) -> f32 {
+    options.volume(SoundKind::Effects) * RAIN_LOUDNESS
+}
+
 struct Device {
     sink: MixerDeviceSink,
     music: Player,
 }
 
+/// The music asked for last: its number, its volume, and the SoundFont
+/// setting when the track has a MIDI file. The same ask plays on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MusicAsked {
+    number: Option<u16>,
+    kind: SoundKind,
+    sound_font: Option<PathBuf>,
+}
+
+/// The rain that plays, and its loop. No loop when the files lack it.
+struct Rain {
+    sound: u16,
+    player: Option<Player>,
+}
+
 pub struct Audio {
-    pub settings: Settings,
     /// Why there is no sound. Empty when there is sound.
     note: &'static str,
+    /// Why the music asked for does not play. Empty when it plays.
+    music_note: &'static str,
     device: Option<Device>,
     sounds: Option<SoundData>,
     music_list: Option<MusicList>,
     decoded: HashMap<u16, Arc<[f32]>>,
     /// The number of the last sound cue played. None before the first frame.
     last_cue: Option<u64>,
-    playing_music: Option<u16>,
+    music: Option<MusicAsked>,
+    score: Score,
+    sound_fonts: SoundFonts,
+    effects: Effects,
+    rain: Option<Rain>,
     steps_taken: usize,
+    /// The volume of all sound, by the window focus.
+    gain: f32,
 }
 
 impl Audio {
@@ -146,85 +158,190 @@ impl Audio {
             (Some(_), Some(_)) => "",
         };
         Self {
-            settings: Settings::load(),
             note,
+            music_note: "",
             device,
             sounds,
             music_list: uopath.and_then(|dir| MusicList::open(dir).ok()),
             decoded: HashMap::new(),
             last_cue: None,
-            playing_music: None,
+            music: None,
+            score: Score::default(),
+            sound_fonts: SoundFonts::default(),
+            effects: Effects::default(),
+            rain: None,
             steps_taken: 0,
+            gain: HEARD,
         }
     }
 
+    /// Why there is no sound, or no music. Empty when all plays.
     pub fn note(&self) -> &str {
-        self.note
+        if self.note.is_empty() {
+            self.music_note
+        } else {
+            self.note
+        }
     }
 
-    /// Plays what is new in this frame.
-    pub fn play(&mut self, frame: &WatchFrame, steps: &[Step]) {
+    /// Plays what is new in this frame, as loud as `options` says.
+    /// `focused` is true while the window has the keyboard.
+    pub fn play(
+        &mut self,
+        frame: &WatchFrame,
+        steps: &[Step],
+        options: &SoundOptions,
+        focused: bool,
+    ) {
         if self.device.is_none() {
             return;
         }
-        self.follow_music(frame.music);
+        self.follow_focus(focused, options);
+        let moment = Moment {
+            region: frame.music,
+            war: frame.war,
+            dead: frame.dead,
+        };
+        let combat_music = || rand::thread_rng().gen_range(COMBAT_MUSIC);
+        let music = self.score.follow(moment, options, combat_music);
+        self.follow_music(music, SoundKind::Music, options);
+        self.follow_rain(frame.weather, options);
         for cue in new_cues(&frame.sounds, &mut self.last_cue) {
             let tiles_away =
                 uoterm_protocol::types::tile_distance((cue.x, cue.y), (frame.x, frame.y)) as f32;
-            self.play_sound(cue.sound, Kind::Effects, tiles_away);
+            self.play_sound(cue.sound, SoundKind::Effects, tiles_away, options);
         }
         for step in steps {
             self.steps_taken += 1;
             let sound = step_sound(*step, self.steps_taken);
-            self.play_sound(sound, Kind::Footsteps, step.tiles_away);
+            self.play_sound(sound, SoundKind::Footsteps, step.tiles_away, options);
         }
     }
 
-    /// Call this when the operator moved a volume, so the music follows.
-    pub fn settings_changed(&self) {
-        if let Some(device) = &self.device {
-            device.music.set_volume(self.settings.volume(Kind::Music));
+    /// Plays a sound effect of the window itself, such as a container gump
+    /// that opens, as loud as a sound at the character.
+    pub fn play_effect(&mut self, sound: u16, options: &SoundOptions) {
+        if self.device.is_some() {
+            self.play_sound(sound, SoundKind::Effects, 0.0, options);
         }
     }
 
-    fn follow_music(&mut self, wanted: Option<u16>) {
-        if wanted == self.playing_music {
+    /// Call this when the player changed the sound options, so what plays
+    /// follows at once.
+    pub fn options_changed(&self, options: &SoundOptions) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        if let Some(music) = &self.music {
+            device
+                .music
+                .set_volume(options.volume(music.kind) * self.gain);
+        }
+        self.effects.set_volumes(options, self.gain);
+        if let Some(player) = self.rain.as_ref().and_then(|rain| rain.player.as_ref()) {
+            player.set_volume(rain_volume(options) * self.gain);
+        }
+    }
+
+    fn follow_focus(&mut self, focused: bool, options: &SoundOptions) {
+        let gain = gain(focused, options.play_in_background);
+        if gain != self.gain {
+            self.gain = gain;
+            self.options_changed(options);
+        }
+    }
+
+    fn follow_music(&mut self, number: Option<u16>, kind: SoundKind, options: &SoundOptions) {
+        let number = number.filter(|music| !options.filters_music(*music));
+        let track = number
+            .and_then(|music| self.music_list.as_ref()?.track(music))
+            .cloned();
+        let has_midi = track.as_ref().is_some_and(|track| track.midi.is_some());
+        let asked = MusicAsked {
+            number,
+            kind,
+            sound_font: options.midi_sound_font.clone().filter(|_| has_midi),
+        };
+        if self.music.as_ref() == Some(&asked) {
             return;
         }
-        self.playing_music = wanted;
+        self.music = Some(asked);
+        self.music_note = "";
         let Some(device) = &self.device else {
             return;
         };
         device.music.stop();
-        let track = wanted.and_then(|music| self.music_list.as_ref()?.track(music));
         let Some(track) = track else {
             return;
         };
-        let Ok(file) = std::fs::File::open(&track.path) else {
-            return;
-        };
-        device.music.set_volume(self.settings.volume(Kind::Music));
-        if track.repeats {
-            if let Ok(source) = Decoder::new_looped(std::io::BufReader::new(file)) {
-                device.music.append(source);
+        device.music.set_volume(options.volume(kind) * self.gain);
+        let font = options
+            .midi_sound_font
+            .as_deref()
+            .filter(|_| has_midi)
+            .and_then(|path| self.sound_fonts.get(path));
+        match music_file(&track, font.is_some()) {
+            Some(MusicFile::Mp3(path)) => {
+                let Ok(file) = std::fs::File::open(path) else {
+                    return;
+                };
+                let reader = BufReader::new(file);
+                if track.repeats {
+                    if let Ok(source) = Decoder::new_looped(reader) {
+                        device.music.append(source);
+                    }
+                } else if let Ok(source) = Decoder::new(reader) {
+                    device.music.append(source);
+                }
             }
-        } else if let Ok(source) = Decoder::new(std::io::BufReader::new(file)) {
-            device.music.append(source);
+            Some(MusicFile::Midi(path)) => {
+                match font.and_then(|font| MidiSource::open(path, &font, track.repeats)) {
+                    Some(source) => device.music.append(source),
+                    None => self.music_note = NOTE_BAD_SOUND_FONT,
+                }
+            }
+            None if options.midi_sound_font.is_some() => self.music_note = NOTE_BAD_SOUND_FONT,
+            None => self.music_note = NOTE_NEEDS_SOUND_FONT,
         }
         device.music.play();
     }
 
-    fn play_sound(&mut self, sound: u16, kind: Kind, tiles_away: f32) {
-        let volume = self.settings.volume(kind) * nearness(tiles_away);
-        if volume <= 0.0 {
+    fn follow_rain(&mut self, weather: Option<(u8, u8)>, options: &SoundOptions) {
+        let wanted = rain_sound(weather, options);
+        if self.rain.as_ref().map(|rain| rain.sound) == wanted {
+            return;
+        }
+        // The old loop stops when its player drops.
+        self.rain = None;
+        let Some(sound) = wanted else {
+            return;
+        };
+        let samples = self.samples(sound);
+        let player = samples.zip(self.device.as_ref()).map(|(samples, device)| {
+            let player = Player::connect_new(device.sink.mixer());
+            player.set_volume(rain_volume(options) * self.gain);
+            let source = SamplesBuffer::new(ONE_CHANNEL, SAMPLE_RATE, samples.to_vec());
+            player.append(source.repeat_infinite());
+            player
+        });
+        self.rain = Some(Rain { sound, player });
+    }
+
+    fn play_sound(&mut self, sound: u16, kind: SoundKind, tiles_away: f32, options: &SoundOptions) {
+        let cue = EffectCue {
+            sound,
+            kind,
+            nearness: nearness(tiles_away),
+        };
+        if self.gain <= UNHEARD || cue.loudness(options) <= 0.0 || options.filters_sound(sound) {
             return;
         }
         let Some(samples) = self.samples(sound) else {
             return;
         };
         if let Some(device) = &self.device {
-            let source = SamplesBuffer::new(ONE_CHANNEL, SAMPLE_RATE, samples.to_vec());
-            device.sink.mixer().add(source.amplify(volume));
+            self.effects
+                .start(device.sink.mixer(), cue, &samples, options, self.gain);
         }
     }
 
@@ -293,18 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn each_kind_is_under_the_master_and_mute_silences_all() {
-        let mut settings = Settings {
-            master: 0.5,
-            music: 0.4,
-            ..Settings::default()
-        };
-        assert!((settings.volume(Kind::Music) - 0.2).abs() < f32::EPSILON);
-        settings.muted = true;
-        assert_eq!(settings.volume(Kind::Effects), 0.0);
-    }
-
-    #[test]
     fn feet_take_turns_and_a_mount_that_walks_has_one_sound() {
         let step = |mounted, running| Step {
             tiles_away: 0.0,
@@ -333,18 +438,33 @@ mod tests {
     }
 
     #[test]
-    fn settings_come_back_from_the_file_and_a_bad_file_gives_the_defaults() {
-        let dir = std::env::temp_dir().join(format!("uoterm-audio-{}", uuid::Uuid::new_v4()));
-        let path = dir.join(SETTINGS_FILE);
-        let settings = Settings {
-            music: 0.1,
-            muted: true,
-            ..Settings::default()
+    fn a_window_out_of_focus_is_silent_unless_set_to_play_in_the_background() {
+        assert_eq!(gain(true, false), HEARD);
+        assert_eq!(gain(true, true), HEARD);
+        assert_eq!(gain(false, true), HEARD);
+        assert_eq!(gain(false, false), UNHEARD);
+    }
+
+    #[test]
+    fn rain_and_fierce_storms_loop_the_rain_by_its_drops() {
+        const SNOW: u8 = 2;
+        let options = SoundOptions::default();
+        let heavy = Some((WEATHER_RAIN, HEAVY_RAIN_DROPS + 1));
+        assert_eq!(rain_sound(heavy, &options), Some(HEAVY_RAIN_SOUND));
+        let light = Some((WEATHER_FIERCE_STORM, HEAVY_RAIN_DROPS));
+        assert_eq!(rain_sound(light, &options), Some(LIGHT_RAIN_SOUND));
+        assert_eq!(rain_sound(Some((WEATHER_RAIN, 0)), &options), None);
+        assert_eq!(rain_sound(Some((SNOW, HEAVY_RAIN_DROPS)), &options), None);
+        assert_eq!(rain_sound(None, &options), None);
+        let no_rain = SoundOptions {
+            rain_sound: false,
+            ..SoundOptions::default()
         };
-        kept::save_to(&path, &settings);
-        assert_eq!(kept::load_from::<Settings>(&path), settings);
-        std::fs::write(&path, "music = \"loud\"").unwrap();
-        assert_eq!(kept::load_from::<Settings>(&path), Settings::default());
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(rain_sound(heavy, &no_rain), None);
+        let filtered = SoundOptions {
+            sound_filter: vec![HEAVY_RAIN_SOUND],
+            ..SoundOptions::default()
+        };
+        assert_eq!(rain_sound(heavy, &filtered), None);
     }
 }

@@ -2,6 +2,7 @@
 //! spells, the dark of the night, rain and snow.
 
 use super::scene::Scene;
+use super::settings::VideoOptions;
 use super::theme;
 use crate::view::{WatchCueKind, WatchEffect, WatchFrame};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
@@ -22,10 +23,7 @@ const LIGHTNING_SWAY: f32 = 26.0;
 /// An effect stands in the middle of the body, not at the feet.
 const BODY_LIFT: f32 = 22.0;
 
-/// The light level of the darkest night the shard sends.
-const LIGHT_DARKEST: f32 = 30.0;
-/// The night never hides the map: this is the most the dark covers.
-const NIGHT_ALPHA_MAX: f32 = 0.62;
+/// The tint of a storm.
 const NIGHT: Color32 = Color32::from_rgb(8, 12, 40);
 
 const WEATHER_SNOW: u8 = 2;
@@ -77,11 +75,6 @@ fn seconds_of(effect: &WatchEffect) -> f64 {
     }
 }
 
-/// How much of the map the night covers, from 0 to `NIGHT_ALPHA_MAX`.
-fn night_alpha(light: u8) -> f32 {
-    (f32::from(light) / LIGHT_DARKEST).clamp(0.0, 1.0) * NIGHT_ALPHA_MAX
-}
-
 /// The constants of a 32-bit hash finalizer: every bit of the input moves
 /// about half the bits of the output.
 const SCATTER_SALT_MIX: u32 = 0x9E37_79B9;
@@ -124,8 +117,8 @@ impl Sky {
             .retain(|live| time - live.born < seconds_of(&live.effect));
     }
 
-    /// Draws the effects, then the night, then the weather. True while
-    /// something still moves.
+    /// Draws the effects and the weather, then lays the light of the world
+    /// over them, as the Video page says. True while something still moves.
     pub fn draw(
         &mut self,
         painter: &Painter,
@@ -133,8 +126,10 @@ impl Sky {
         frame: &WatchFrame,
         scene: &mut Scene,
         time: f64,
+        video: &VideoOptions,
     ) -> bool {
         self.take_in(frame, time);
+        let mut lit = Vec::new();
         for live in &self.live {
             let effect = &live.effect;
             let from = scene
@@ -155,6 +150,7 @@ impl Sky {
                 EFFECT_ON_MOBILE => from,
                 _ => tiles(effect.from),
             };
+            lit.push((place, effect.graphic));
             let Some((texture, sprite)) = scene.item_picture(frame.map, effect.graphic, effect.hue)
             else {
                 continue;
@@ -165,14 +161,12 @@ impl Sky {
                 Rect::from_center_size(center, Vec2::new(sprite.width, sprite.height) * zoom);
             painter.image(texture, area, sprite.uv, Color32::WHITE);
         }
-        let dark = night_alpha(frame.light);
-        if dark > 0.0 {
-            painter.rect_filled(rect, 0.0, theme::with_alpha(NIGHT, dark));
-        }
-        if let Some((kind, count)) = frame.weather {
+        let weather_shows = frame.weather.filter(|_| video.weather_effects);
+        if let Some((kind, count)) = weather_shows {
             weather(painter, rect, kind, count, time);
         }
-        !self.live.is_empty() || frame.weather.is_some()
+        scene.draw_lights(painter, rect, frame, &lit);
+        !self.live.is_empty() || weather_shows.is_some()
     }
 }
 
@@ -270,13 +264,6 @@ mod tests {
         assert_eq!(sky.live.len(), 1);
         sky.take_in(&frame, 1.0 + FLY_SECONDS_MIN * 2.0);
         assert!(sky.live.is_empty());
-    }
-
-    #[test]
-    fn the_night_gets_darker_but_never_hides_the_map() {
-        assert_eq!(night_alpha(0), 0.0);
-        assert!(night_alpha(10) < night_alpha(20));
-        assert_eq!(night_alpha(u8::MAX), NIGHT_ALPHA_MAX);
     }
 
     #[test]

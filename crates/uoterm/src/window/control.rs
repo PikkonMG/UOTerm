@@ -5,26 +5,39 @@
 //! Each call says `human: true`. The session lets those through while it
 //! refuses the agent.
 
+use super::actions::guard::{Checked, Guard};
+use super::actions::LocalAim;
 use super::link::Link;
 use super::orders;
+use super::settings::CombatOptions;
 use crate::view::WatchFrame;
 use eframe::egui;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
+use uoterm_runtime::tools::TOOL_BOOK_READ;
+use uoterm_runtime::tools::TOOL_RACE_CHANGE;
 use uoterm_runtime::tools::{
     ARG_HUMAN, TOOL_ATTACK, TOOL_BOARD_CLOSE, TOOL_BOARD_POST, TOOL_BOARD_READ, TOOL_BOARD_REMOVE,
     TOOL_BOOK_CLOSE, TOOL_BOOK_WRITE, TOOL_CAST, TOOL_CHAT, TOOL_CLOSE_MENU, TOOL_COMMAND,
     TOOL_CONTEXT_MENU, TOOL_DEPOSIT, TOOL_DROP, TOOL_EQUIP, TOOL_FIND_LANDMARKS, TOOL_FOLLOW,
-    TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_HELP, TOOL_HOTKEYS, TOOL_HOUSE_EDIT, TOOL_LIFT,
-    TOOL_LIST_SCRIPTS, TOOL_LOGOUT, TOOL_LOOT, TOOL_MAP_CLOSE, TOOL_MAP_PIN, TOOL_MENU_PICK,
-    TOOL_MOVE_TO, TOOL_PROFILE, TOOL_PROPERTIES, TOOL_RECORD_MACRO, TOOL_RELEASE_CONTROL,
-    TOOL_RUN_SCRIPT, TOOL_SAY, TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE, TOOL_SCRIPT_STATUS,
-    TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK, TOOL_STOP, TOOL_STOP_SCRIPT,
-    TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL, TOOL_TRADE_GOLD,
-    TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK, TOOL_WAR_MODE,
+    TOOL_GUMP_CLOSE, TOOL_GUMP_RESPOND, TOOL_HELP, TOOL_HOTKEYS, TOOL_HOUSE_CONTENT,
+    TOOL_HOUSE_EDIT, TOOL_LIFT, TOOL_LIST_SCRIPTS, TOOL_LOGOUT, TOOL_LOOT, TOOL_MAP_CLOSE,
+    TOOL_MAP_PIN, TOOL_MENU_PICK, TOOL_MOVE_TO, TOOL_PROFILE, TOOL_PROPERTIES, TOOL_RECORD_MACRO,
+    TOOL_RELEASE_CONTROL, TOOL_RUN_SCRIPT, TOOL_SAY, TOOL_SCRIPT_READ, TOOL_SCRIPT_SAVE,
+    TOOL_SCRIPT_STATUS, TOOL_SHOP_CHECKOUT, TOOL_SHOP_CLOSE, TOOL_SINGLE_CLICK, TOOL_STOP,
+    TOOL_STOP_SCRIPT, TOOL_TAKE_CONTROL, TOOL_TARGET, TOOL_TRADE_ACCEPT, TOOL_TRADE_CANCEL,
+    TOOL_TRADE_GOLD, TOOL_TRADE_OFFER, TOOL_UNEQUIP, TOOL_USE, TOOL_USE_SKILL, TOOL_WALK,
+    TOOL_WAR_MODE,
 };
+use uoterm_runtime::tools::{
+    TOOL_AGENT_ON, TOOL_AGENT_RUN, TOOL_AGENT_SET, TOOL_AGENT_STOP, TOOL_DAMAGE_METER, TOOL_PARTY,
+};
+use uoterm_runtime::tools::{TOOL_DYE, TOOL_OPEN_SPELLBOOK};
+use uoterm_runtime::tools::{TOOL_HOTKEY, TOOL_QUEST_ARROW, TOOL_TIP, TOOL_WHISPER};
+use uoterm_runtime::tools::{TOOL_MOBILE_STATUS, TOOL_VIRTUE_GUMP};
 
 /// The shard refuses a drop that comes too soon after the lift.
 const LIFT_TO_DROP: Duration = Duration::from_millis(650);
@@ -40,12 +53,64 @@ const STEP_HOLD_MS: u64 = 600;
 /// A lift of this many takes the whole pile: the shard cuts it to the pile.
 pub const WHOLE_PILE: u16 = u16::MAX;
 
+/// The equip tool's word for the weapon the character held last.
+const WHO_LAST_WEAPON: &str = "last";
+/// The mark round the words of an emote, as the official client sends it.
+const EMOTE_MARK: char = '*';
+const QUOTE_SINGLE: char = '\'';
+const QUOTE_DOUBLE: char = '"';
+
+/// The way words are spoken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Yell,
+    Whisper,
+    Emote,
+    /// To the whole party.
+    Party,
+    /// To one member of the party, by serial.
+    PartyMember(u32),
+    Guild,
+    Alliance,
+}
+
+impl Channel {
+    /// The channel as the say tool names it. None for the ones it does not
+    /// speak on.
+    fn say_channel(self) -> Option<&'static str> {
+        Some(match self {
+            Channel::Yell => "yell",
+            Channel::Party => "party",
+            Channel::Guild => "guild",
+            Channel::Alliance => "alliance",
+            Channel::Whisper | Channel::Emote | Channel::PartyMember(_) => return None,
+        })
+    }
+}
+
+/// Words in the quotes of a script line: single quotes, or double quotes
+/// for words with an apostrophe. Words with both lose the double quotes,
+/// which a line cannot hold.
+pub fn quoted(words: &str) -> String {
+    if !words.contains(QUOTE_SINGLE) {
+        format!("{QUOTE_SINGLE}{words}{QUOTE_SINGLE}")
+    } else {
+        let kept: String = words.chars().filter(|c| *c != QUOTE_DOUBLE).collect();
+        format!("{QUOTE_DOUBLE}{kept}{QUOTE_DOUBLE}")
+    }
+}
+
 /// One thing the human tells the character to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     Take,
     GiveBack,
     WalkTo {
+        x: u16,
+        y: u16,
+    },
+    /// Pathfind to a tile at a run, whatever the stamina.
+    RunTo {
         x: u16,
         y: u16,
     },
@@ -62,13 +127,30 @@ pub enum Act {
     },
     CancelTarget,
     War(bool),
-    Say(String),
+    /// Plain speech, in a hue.
+    Say {
+        text: String,
+        hue: u16,
+    },
+    /// Words on another channel than plain speech, in a hue. A party line
+    /// carries none.
+    Speak {
+        channel: Channel,
+        text: String,
+        hue: u16,
+    },
+    /// A hotkey of the session, by name.
+    Hotkey(String),
     Stop,
     Deposit,
+    /// Ask the shard to show what stands inside public houses, or not.
+    HouseContent(bool),
     /// One step while a key or the right mouse button is down.
     Step {
         direction: &'static str,
         run: bool,
+        /// A closed door ahead opens, by the General page's auto open doors.
+        open_doors: bool,
     },
     /// Lift an item, or a part of a pile, and drop it at a place.
     Move {
@@ -77,6 +159,8 @@ pub enum Act {
         to: DropTo,
     },
     Wear(u32),
+    /// Wear the weapon the character held last.
+    WearLastWeapon,
     /// Take off what the character wears on this layer.
     TakeOff(u8),
     /// Ask the shard for the context menu of a thing.
@@ -98,6 +182,9 @@ pub enum Act {
         page: u16,
         text: String,
     },
+    /// Ask the shard for a page of the open book, from one, that it has
+    /// not sent yet.
+    BookRead(u16),
     /// Ask for the lines of a message of the open bulletin board.
     BoardRead(u32),
     BoardPost {
@@ -112,6 +199,14 @@ pub enum Act {
         x: u16,
         y: u16,
     },
+    /// Move one pin of the open map, by its place in the list from 0.
+    MapPinMove {
+        pin: u8,
+        x: u16,
+        y: u16,
+    },
+    /// Take one pin off the open map, by its place in the list from 0.
+    MapPinRemove(u8),
     MapClear,
     /// Ask the shard to let the open map be drawn on.
     MapEdit,
@@ -137,24 +232,57 @@ pub enum Act {
     HouseCommand(&'static str),
     /// Ask the shard for its help menu.
     Help,
+    /// Click the arrow the shard points at a place, with the right button
+    /// or the left one.
+    QuestArrow {
+        right: bool,
+    },
+    /// Answer the race change of the shard with new looks, or say no.
+    RaceChange(Option<uoterm_protocol::NewLooks>),
     ChatOpen(String),
     ChatJoin(String),
+    /// Join a chat channel that has a password.
+    ChatJoinWithPassword {
+        channel: String,
+        password: String,
+    },
+    /// Make a chat channel and join it.
+    ChatCreate(String),
     ChatSay(String),
     ChatLeave,
+    /// Ask for the tip of the day after the one shown, or before it.
+    Tip {
+        next: bool,
+    },
     /// Leave the world. The window closes and the program ends.
     Quit,
     /// Buy or sell the rows of the cart: the item and how many.
     Checkout(Vec<(u32, u16)>),
     ShopClose,
     TradeWith(u32),
-    TradeAccept,
-    TradeCancel,
+    /// Tick or untick the accept box of a trade, named by the character's
+    /// own box of it.
+    TradeAccept {
+        trade: u32,
+        accept: bool,
+    },
+    TradeCancel(u32),
     TradeGold {
+        trade: u32,
         gold: u32,
         platinum: u32,
     },
     UseSkill(u16),
     Cast(u16),
+    /// Cast a spell from one spellbook, as a click in the book does.
+    CastFrom {
+        spell: u16,
+        book: u32,
+    },
+    /// Answer the dye tub that asks for a colour.
+    Dye(u16),
+    /// Ask the shard to open the character's spellbook of a school.
+    OpenSpellbook(&'static str),
     /// One line of the script language: a prompt answer, a skill lock.
     Command(String),
     ScriptRun {
@@ -177,6 +305,38 @@ pub enum Act {
         texts: Vec<(u16, String)>,
     },
     GumpClose(u32),
+    /// Switch an agent of the session on or off.
+    AgentOn {
+        agent: String,
+        on: bool,
+    },
+    /// Replace the settings of an agent, or one named list of it.
+    AgentSet {
+        agent: String,
+        list: Option<String>,
+        settings: Value,
+    },
+    /// Run an agent job once, with its list when it needs one.
+    AgentRun {
+        agent: String,
+        list: Option<String>,
+    },
+    AgentStop,
+    /// Start, pause, resume or stop the damage meter.
+    DamageMeter(&'static str),
+    PartyInvite(u32),
+    PartyLeave,
+    PartyKick(u32),
+    /// Let the party loot what the character kills, or not.
+    PartyLoot(bool),
+    /// Ask the shard for the status of a mobile, whose health bar opens,
+    /// or tell it the bar closed.
+    MobileStatus {
+        serial: u32,
+        close: bool,
+    },
+    /// Ask the shard for the virtue gump of a mobile.
+    VirtueGump(u32),
     /// Words for Jev to turn into one of the acts above.
     Order(String, Box<WatchFrame>),
 }
@@ -186,6 +346,12 @@ pub enum Act {
 pub enum DropTo {
     /// Into a container or onto a mobile. The shard picks the spot.
     Into(u32),
+    /// Into a container at a place in its gump, in its pixels.
+    IntoAt {
+        container: u32,
+        x: u16,
+        y: u16,
+    },
     Ground {
         x: u16,
         y: u16,
@@ -200,7 +366,42 @@ pub struct Tip {
     pub lines: Vec<String>,
 }
 
-/// A thing the macro editor asks the session, or Jev, for.
+/// The panel that asked. Each panel takes only the answers to its own asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Asker {
+    Macros,
+    Designer,
+    Chat,
+    Deck,
+    MapItem,
+}
+
+/// The answers that came, kept for their askers. A panel that takes its
+/// answers leaves the answers of the other panels in the box.
+struct AnswerBox {
+    inbox: Receiver<(Asker, Answer)>,
+    kept: RefCell<Vec<(Asker, Answer)>>,
+}
+
+impl AnswerBox {
+    fn new(inbox: Receiver<(Asker, Answer)>) -> Self {
+        Self {
+            inbox,
+            kept: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The answers to the asks of `asker`, in the order they came.
+    fn take(&self, asker: Asker) -> Vec<Answer> {
+        let mut kept = self.kept.borrow_mut();
+        kept.extend(self.inbox.try_iter());
+        let (own, others): (Vec<_>, Vec<_>) = kept.drain(..).partition(|(by, _)| *by == asker);
+        *kept = others;
+        own.into_iter().map(|(_, answer)| answer).collect()
+    }
+}
+
+/// A thing a panel asks the session, or Jev, for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ask {
     Scripts,
@@ -265,6 +466,9 @@ impl Act {
             Self::Take => vec![(TOOL_TAKE_CONTROL, json!({}))],
             Self::GiveBack => vec![(TOOL_RELEASE_CONTROL, json!({}))],
             Self::WalkTo { x, y } => vec![(TOOL_MOVE_TO, json!({ "x": x, "y": y }))],
+            Self::RunTo { x, y } => {
+                vec![(TOOL_MOVE_TO, json!({ "x": x, "y": y, "run": true }))]
+            }
             Self::Use(s) => vec![(TOOL_USE, serial(s))],
             Self::Look(s) => vec![(TOOL_SINGLE_CLICK, serial(s))],
             Self::Attack(s) => vec![(TOOL_ATTACK, serial(s))],
@@ -276,10 +480,28 @@ impl Act {
             }
             Self::CancelTarget => vec![(TOOL_TARGET, json!({}))],
             Self::War(on) => vec![(TOOL_WAR_MODE, json!({ "on": on }))],
-            Self::Say(text) => vec![(TOOL_SAY, json!({ "text": text }))],
+            Self::Say { text, hue } => vec![(TOOL_SAY, json!({ "text": text, "hue": hue }))],
+            Self::Speak { channel, text, hue } => vec![match (channel, channel.say_channel()) {
+                (_, Some(on)) => (TOOL_SAY, json!({ "text": text, "channel": on, "hue": hue })),
+                (Channel::Whisper, _) => (TOOL_WHISPER, json!({ "text": text, "hue": hue })),
+                (Channel::PartyMember(member), _) => (
+                    TOOL_COMMAND,
+                    json!({ "text": format!("partymsg {} 0 {member:#010X}", quoted(text)) }),
+                ),
+                (_, None) => (
+                    TOOL_COMMAND,
+                    json!({ "text": format!("emotemsg {} {hue:#06X}", quoted(&format!("{EMOTE_MARK}{text}{EMOTE_MARK}"))) }),
+                ),
+            }],
+            Self::Hotkey(name) => vec![(TOOL_HOTKEY, json!({ "name": name }))],
             Self::Stop => vec![(TOOL_STOP, json!({}))],
             Self::Deposit => vec![(TOOL_DEPOSIT, json!({}))],
-            Self::Step { direction, run } => {
+            Self::HouseContent(show) => vec![(TOOL_HOUSE_CONTENT, json!({ "show": show }))],
+            Self::Step {
+                direction,
+                run,
+                open_doors,
+            } => {
                 vec![(
                     TOOL_WALK,
                     json!({
@@ -289,6 +511,7 @@ impl Act {
                         // A held walk slides along a wall, so a doorway
                         // taken a little off the line does not stop him.
                         "slide": true,
+                        "open_doors": open_doors,
                     }),
                 )]
             }
@@ -296,6 +519,11 @@ impl Act {
                 let mut drop = json!({ "serial": item });
                 match *to {
                     DropTo::Into(dest) => drop["dest"] = json!(dest),
+                    DropTo::IntoAt { container, x, y } => {
+                        drop["dest"] = json!(container);
+                        drop["x"] = json!(x);
+                        drop["y"] = json!(y);
+                    }
                     DropTo::Ground { x, y, z } => {
                         drop["x"] = json!(x);
                         drop["y"] = json!(y);
@@ -308,6 +536,7 @@ impl Act {
                 ]
             }
             Self::Wear(s) => vec![(TOOL_EQUIP, serial(s))],
+            Self::WearLastWeapon => vec![(TOOL_EQUIP, json!({ "who": WHO_LAST_WEAPON }))],
             Self::TakeOff(layer) => vec![(TOOL_UNEQUIP, json!({ "layer": layer }))],
             Self::Menu(s) => vec![(TOOL_CONTEXT_MENU, serial(s))],
             Self::MenuPick { serial, index } => vec![(
@@ -324,6 +553,7 @@ impl Act {
             Self::BookPage { page, text } => {
                 vec![(TOOL_BOOK_WRITE, json!({ "page": page, "text": text }))]
             }
+            Self::BookRead(page) => vec![(TOOL_BOOK_READ, json!({ "page": page }))],
             Self::BoardRead(message) => vec![(TOOL_BOARD_READ, json!({ "message": message }))],
             Self::BoardPost {
                 subject,
@@ -338,6 +568,13 @@ impl Act {
             }
             Self::BoardClose => vec![(TOOL_BOARD_CLOSE, json!({}))],
             Self::MapPin { x, y } => vec![(TOOL_MAP_PIN, json!({ "x": x, "y": y }))],
+            Self::MapPinMove { pin, x, y } => vec![(
+                TOOL_MAP_PIN,
+                json!({ "action": "move", "pin": pin, "x": x, "y": y }),
+            )],
+            Self::MapPinRemove(pin) => {
+                vec![(TOOL_MAP_PIN, json!({ "action": "remove", "pin": pin }))]
+            }
             Self::MapClear => vec![(TOOL_MAP_PIN, json!({ "action": "clear" }))],
             Self::MapEdit => vec![(TOOL_MAP_PIN, json!({ "action": "edit" }))],
             Self::MapClose(map) => vec![(TOOL_MAP_CLOSE, json!({ "serial": map }))],
@@ -363,14 +600,34 @@ impl Act {
                 vec![(TOOL_HOUSE_EDIT, json!({ "action": action }))]
             }
             Self::Help => vec![(TOOL_HELP, json!({}))],
+            Self::QuestArrow { right } => vec![(TOOL_QUEST_ARROW, json!({ "right": right }))],
+            Self::RaceChange(None) => vec![(TOOL_RACE_CHANGE, json!({ "cancel": true }))],
+            Self::RaceChange(Some(looks)) => vec![(
+                TOOL_RACE_CHANGE,
+                json!({
+                    "skin_hue": looks.skin_hue,
+                    "hair": looks.hair,
+                    "hair_hue": looks.hair_hue,
+                    "beard": looks.beard,
+                    "beard_hue": looks.beard_hue,
+                }),
+            )],
             Self::ChatOpen(name) => {
                 vec![(TOOL_CHAT, json!({ "action": "open", "name": name }))]
             }
             Self::ChatJoin(channel) => {
                 vec![(TOOL_CHAT, json!({ "action": "join", "channel": channel }))]
             }
+            Self::ChatJoinWithPassword { channel, password } => vec![(
+                TOOL_CHAT,
+                json!({ "action": "join", "channel": channel, "password": password }),
+            )],
+            Self::ChatCreate(channel) => {
+                vec![(TOOL_CHAT, json!({ "action": "create", "channel": channel }))]
+            }
             Self::ChatSay(text) => vec![(TOOL_CHAT, json!({ "action": "say", "text": text }))],
             Self::ChatLeave => vec![(TOOL_CHAT, json!({ "action": "leave" }))],
+            Self::Tip { next } => vec![(TOOL_TIP, json!({ "next": next }))],
             Self::Quit => vec![(TOOL_LOGOUT, json!({}))],
             Self::Checkout(rows) => {
                 let items: Vec<Value> = rows
@@ -381,14 +638,26 @@ impl Act {
             }
             Self::ShopClose => vec![(TOOL_SHOP_CLOSE, json!({}))],
             Self::TradeWith(s) => vec![(TOOL_TRADE_OFFER, serial(s))],
-            Self::TradeAccept => vec![(TOOL_TRADE_ACCEPT, json!({}))],
-            Self::TradeCancel => vec![(TOOL_TRADE_CANCEL, json!({}))],
-            Self::TradeGold { gold, platinum } => vec![(
+            Self::TradeAccept { trade, accept } => vec![(
+                TOOL_TRADE_ACCEPT,
+                json!({ "trade": trade, "accept": accept }),
+            )],
+            Self::TradeCancel(trade) => vec![(TOOL_TRADE_CANCEL, json!({ "trade": trade }))],
+            Self::TradeGold {
+                trade,
+                gold,
+                platinum,
+            } => vec![(
                 TOOL_TRADE_GOLD,
-                json!({ "gold": gold, "platinum": platinum }),
+                json!({ "trade": trade, "gold": gold, "platinum": platinum }),
             )],
             Self::UseSkill(skill) => vec![(TOOL_USE_SKILL, json!({ "skill": skill }))],
             Self::Cast(spell) => vec![(TOOL_CAST, json!({ "spell": spell }))],
+            Self::CastFrom { spell, book } => {
+                vec![(TOOL_CAST, json!({ "spell": spell, "book": book }))]
+            }
+            Self::Dye(hue) => vec![(TOOL_DYE, json!({ "hue": hue }))],
+            Self::OpenSpellbook(kind) => vec![(TOOL_OPEN_SPELLBOOK, json!({ "kind": kind }))],
             Self::Command(text) => vec![(TOOL_COMMAND, json!({ "text": text }))],
             Self::ScriptRun { text, looping } => {
                 vec![(TOOL_RUN_SCRIPT, json!({ "text": text, "loop": looping }))]
@@ -418,6 +687,35 @@ impl Act {
                 )]
             }
             Self::GumpClose(gump) => vec![(TOOL_GUMP_CLOSE, json!({ "gump": gump }))],
+            Self::AgentOn { agent, on } => {
+                vec![(TOOL_AGENT_ON, json!({ "agent": agent, "on": on }))]
+            }
+            Self::AgentSet {
+                agent,
+                list,
+                settings,
+            } => vec![(
+                TOOL_AGENT_SET,
+                json!({ "agent": agent, "list": list, "settings": settings }),
+            )],
+            Self::AgentRun { agent, list } => {
+                vec![(TOOL_AGENT_RUN, json!({ "agent": agent, "list": list }))]
+            }
+            Self::AgentStop => vec![(TOOL_AGENT_STOP, json!({}))],
+            Self::DamageMeter(action) => {
+                vec![(TOOL_DAMAGE_METER, json!({ "action": action }))]
+            }
+            Self::PartyInvite(s) => {
+                vec![(TOOL_PARTY, json!({ "action": "invite", "serial": s }))]
+            }
+            Self::PartyLeave => vec![(TOOL_PARTY, json!({ "action": "leave" }))],
+            Self::PartyKick(s) => vec![(TOOL_PARTY, json!({ "action": "kick", "serial": s }))],
+            Self::PartyLoot(on) => vec![(TOOL_PARTY, json!({ "action": "loot", "on": on }))],
+            Self::MobileStatus { serial, close } => vec![(
+                TOOL_MOBILE_STATUS,
+                json!({ "serial": serial, "close": close }),
+            )],
+            Self::VirtueGump(s) => vec![(TOOL_VIRTUE_GUMP, serial(s))],
             Self::Order(..) => Vec::new(),
         }
     }
@@ -428,6 +726,7 @@ impl Act {
             Self::Take => "You have the character.".into(),
             Self::GiveBack => "The agent has the character again.".into(),
             Self::WalkTo { x, y } => format!("Walk to {x}, {y}."),
+            Self::RunTo { x, y } => format!("Run to {x}, {y}."),
             Self::Use(_) => "Use.".into(),
             Self::Look(_) => "Look.".into(),
             Self::Attack(_) => "Attack.".into(),
@@ -437,21 +736,26 @@ impl Act {
             Self::CancelTarget => "Target canceled.".into(),
             Self::War(true) => "War mode.".into(),
             Self::War(false) => "Peace mode.".into(),
-            Self::Say(text) => format!("Said: {text}"),
+            Self::Say { text, .. } | Self::Speak { text, .. } => format!("Said: {text}"),
+            Self::Hotkey(name) => format!("Hotkey: {name}"),
             Self::Stop => "Stop.".into(),
             Self::Deposit => "Put the pack in the bank.".into(),
+            // The window asks it by itself, so it says nothing.
+            Self::HouseContent(_) => String::new(),
             // A step comes many times each second, so it says nothing.
             Self::Step { .. } => String::new(),
             Self::Move { .. } => "Item moved.".into(),
-            Self::Wear(_) => "Put on.".into(),
+            Self::Wear(_) | Self::WearLastWeapon => "Put on.".into(),
             Self::TakeOff(_) => "Taken off.".into(),
             Self::Menu(_) | Self::MenuClose | Self::BookClose => String::new(),
-            Self::BoardRead(_) | Self::BoardClose => String::new(),
+            Self::BoardRead(_) | Self::BoardClose | Self::BookRead(_) => String::new(),
             Self::BookName { .. } => "Book named.".into(),
             Self::BookPage { page, .. } => format!("Page {page} written."),
             Self::BoardPost { .. } => "Message posted.".into(),
             Self::BoardRemove(_) => "Message removed.".into(),
             Self::MapPin { .. } => "Pin put on the map.".into(),
+            Self::MapPinMove { .. } => "Pin moved.".into(),
+            Self::MapPinRemove(_) => "Pin taken off.".into(),
             Self::MapClear => "Pins cleared.".into(),
             Self::MapEdit | Self::MapClose(_) | Self::ProfileRead(_) => String::new(),
             Self::ProfileWrite { .. } => "Profile written.".into(),
@@ -460,9 +764,15 @@ impl Act {
             Self::HouseFloor(level) => format!("Floor {level}."),
             Self::HouseCommand(action) => format!("House: {action}."),
             Self::Help => "Help asked for.".into(),
+            Self::QuestArrow { .. } => "Quest arrow clicked.".into(),
+            Self::RaceChange(Some(_)) => "Race changed.".into(),
+            Self::RaceChange(None) => "Race change refused.".into(),
             Self::ChatOpen(_) => "Chat opened.".into(),
-            Self::ChatJoin(channel) => format!("Joined {channel}."),
-            Self::ChatSay(_) => String::new(),
+            Self::ChatJoin(channel) | Self::ChatJoinWithPassword { channel, .. } => {
+                format!("Joined {channel}.")
+            }
+            Self::ChatCreate(channel) => format!("Made {channel}."),
+            Self::ChatSay(_) | Self::Tip { .. } => String::new(),
             Self::ChatLeave => "Left the channel.".into(),
             Self::Quit => "Leaving the world.".into(),
             Self::OldMenuPick(Some(_)) => "Menu answered.".into(),
@@ -471,11 +781,14 @@ impl Act {
             Self::Checkout(_) => "Deal made.".into(),
             Self::ShopClose => "Shop closed.".into(),
             Self::TradeWith(_) => "Trade offered.".into(),
-            Self::TradeAccept => "Trade accepted.".into(),
-            Self::TradeCancel => "Trade canceled.".into(),
+            Self::TradeAccept { accept: true, .. } => "Trade accepted.".into(),
+            Self::TradeAccept { accept: false, .. } => "Trade not accepted.".into(),
+            Self::TradeCancel(_) => "Trade canceled.".into(),
             Self::TradeGold { .. } => "Gold offered.".into(),
             Self::UseSkill(_) => "Skill used.".into(),
-            Self::Cast(_) => "Spell cast.".into(),
+            Self::Cast(_) | Self::CastFrom { .. } => "Spell cast.".into(),
+            Self::Dye(_) => "Color picked.".into(),
+            Self::OpenSpellbook(_) => "Spellbook opened.".into(),
             Self::Command(text) => format!("Command: {text}"),
             Self::ScriptRun { .. } => "Macro started.".into(),
             Self::ScriptStop => "Macro stopped.".into(),
@@ -486,6 +799,20 @@ impl Act {
             Self::RecordStop => "Recording saved.".into(),
             Self::GumpButton { .. } => "Gump answered.".into(),
             Self::GumpClose(_) => "Gump closed.".into(),
+            Self::AgentOn { agent, on: true } => format!("{agent} is on."),
+            Self::AgentOn { agent, on: false } => format!("{agent} is off."),
+            Self::AgentSet { agent, .. } => format!("{agent} settings kept."),
+            Self::AgentRun { agent, .. } => format!("{agent} runs."),
+            Self::AgentStop => "Agent job stopped.".into(),
+            Self::DamageMeter(action) => format!("Damage meter: {action}."),
+            Self::PartyInvite(_) => "Party invite sent.".into(),
+            Self::PartyLeave => "Left the party.".into(),
+            Self::PartyKick(_) => "Removed from the party.".into(),
+            Self::PartyLoot(true) => "The party may loot your kills.".into(),
+            Self::PartyLoot(false) => "The party may not loot your kills.".into(),
+            Self::MobileStatus { close: false, .. } => "Status asked for.".into(),
+            Self::MobileStatus { close: true, .. } => "Status bar closed.".into(),
+            Self::VirtueGump(_) => "Virtue gump asked for.".into(),
             Self::Order(order, _) => format!("Order: {order}"),
         }
     }
@@ -497,9 +824,17 @@ pub struct Hand {
     reports: Receiver<Report>,
     wanted_tips: Sender<u32>,
     tips: Receiver<Tip>,
-    asks: Sender<Ask>,
-    answers: Receiver<Answer>,
+    asks: Sender<(Asker, Ask)>,
+    answers: AnswerBox,
     pub orders_on: bool,
+    /// Checks each act before it goes: the criminal question, and a click
+    /// the window waits for.
+    guard: RefCell<Guard>,
+    /// Reports the window makes itself, with no call to the session.
+    own_reports: RefCell<Vec<Report>>,
+    /// Words of the client for the journal, as the classic client prints
+    /// its own answers, until the keys take them.
+    notes: RefCell<Vec<String>>,
 }
 
 impl Hand {
@@ -533,8 +868,11 @@ impl Hand {
             wanted_tips,
             tips,
             asks,
-            answers,
+            answers: AnswerBox::new(answers),
             orders_on,
+            guard: RefCell::new(Guard::default()),
+            own_reports: RefCell::new(Vec::new()),
+            notes: RefCell::new(Vec::new()),
         }
     }
 
@@ -544,31 +882,114 @@ impl Hand {
         let _ = self.wanted_tips.send(serial);
     }
 
-    /// Asks for something that comes back as an answer. It does not wait
-    /// behind the acts.
-    pub fn ask(&self, ask: Ask) {
-        let _ = self.asks.send(ask);
+    /// Asks for something that comes back as an answer to `asker`. It does
+    /// not wait behind the acts.
+    pub fn ask(&self, asker: Asker, ask: Ask) {
+        let _ = self.asks.send((asker, ask));
     }
 
-    pub fn new_answers(&self) -> Vec<Answer> {
-        self.answers.try_iter().collect()
+    /// The answers that came to the asks of `asker`.
+    pub fn new_answers(&self, asker: Asker) -> Vec<Answer> {
+        self.answers.take(asker)
     }
 
     pub fn new_tips(&self) -> Vec<Tip> {
         self.tips.try_iter().collect()
     }
 
+    /// Sends one act, after the guard checked it.
     pub fn act(&self, act: Act) {
+        let checked = self.guard.borrow_mut().check(act);
+        match checked {
+            Checked::Send(acts) => acts.into_iter().for_each(|act| self.send(act)),
+            Checked::Asked => {}
+            Checked::Aimed(words) => self.own_reports.borrow_mut().push(Report {
+                text: words.to_string(),
+                failed: false,
+            }),
+        }
+    }
+
+    fn send(&self, act: Act) {
         // The worker lives as long as the window, so a send cannot fail.
         let _ = self.acts.send(act);
     }
 
+    /// Gives the guard the newest picture and the combat options.
+    pub fn watch_over(&self, frame: &WatchFrame, combat: &CombatOptions) {
+        self.guard.borrow_mut().watch_over(frame, combat);
+    }
+
+    /// The next click on a thing does this in place of its usual act.
+    pub fn aim(&self, aim: LocalAim) {
+        self.guard.borrow_mut().aim(aim);
+    }
+
+    pub fn aiming(&self) -> Option<LocalAim> {
+        self.guard.borrow().aiming()
+    }
+
+    pub fn cancel_aim(&self) {
+        self.guard.borrow_mut().cancel_aim();
+    }
+
+    /// The thing the last click took for this aim, once.
+    pub fn take_picked(&self, aim: LocalAim) -> Option<u32> {
+        self.guard.borrow_mut().take_picked(aim)
+    }
+
+    /// The bag grabbed items go into: the one the player set, or the
+    /// backpack.
+    pub fn grab_bag(&self) -> Option<u32> {
+        self.guard.borrow_mut().grab_bag()
+    }
+
+    /// The question that waits for the player, in words.
+    pub fn question(&self) -> Option<&'static str> {
+        self.guard.borrow().question()
+    }
+
+    /// Answers the question. Yes sends the act that waited.
+    pub fn answer(&self, yes: bool) {
+        let waited = self.guard.borrow_mut().answer(yes);
+        if let Some(act) = waited {
+            self.send(act);
+        }
+    }
+
+    /// Leaves the world and closes the whole program.
+    pub fn quit(&self, ctx: &egui::Context) {
+        self.act(Act::Quit);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Tells the player something the window found, as a report of an act.
+    pub fn report(&self, words: &str) {
+        self.own_reports.borrow_mut().push(Report {
+            text: words.to_string(),
+            failed: false,
+        });
+    }
+
+    /// Prints words of the client in the journal, as the classic client
+    /// prints its own answers, such as "You are not in a party."
+    pub fn note(&self, words: &str) {
+        self.notes.borrow_mut().push(words.to_string());
+    }
+
+    /// The words to print since the last frame.
+    pub fn take_notes(&self) -> Vec<String> {
+        std::mem::take(&mut *self.notes.borrow_mut())
+    }
+
     /// The newest report with words, when one came since the last frame.
     pub fn newest_report(&self) -> Option<Report> {
+        let own = self.own_reports.borrow_mut().pop();
         self.reports
             .try_iter()
             .filter(|report| !report.text.is_empty())
             .last()
+            .or(own)
     }
 }
 
@@ -630,8 +1051,8 @@ fn read_tips(link: &Link, inbox: &Receiver<u32>, outbox: &Sender<Tip>, ctx: &egu
 fn answer_asks(
     link: &Link,
     key: Option<&str>,
-    inbox: &Receiver<Ask>,
-    outbox: &Sender<Answer>,
+    inbox: &Receiver<(Asker, Ask)>,
+    outbox: &Sender<(Asker, Answer)>,
     ctx: &egui::Context,
 ) {
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
@@ -640,9 +1061,9 @@ fn answer_asks(
     else {
         return;
     };
-    for ask in inbox {
+    for (asker, ask) in inbox {
         let answer = rt.block_on(answer_one(link, key, ask));
-        if outbox.send(answer).is_err() {
+        if outbox.send((asker, answer)).is_err() {
             return;
         }
         ctx.request_repaint();
@@ -845,6 +1266,28 @@ mod tests {
     }
 
     #[test]
+    fn each_asker_takes_only_its_own_answers() {
+        let (outbox, inbox) = mpsc::channel();
+        let answers = AnswerBox::new(inbox);
+        outbox.send((Asker::Chat, Answer::Picked(Ok(2)))).unwrap();
+        outbox.send((Asker::Deck, Answer::Picked(Ok(5)))).unwrap();
+        outbox
+            .send((Asker::Chat, Answer::Picked(Err("no".into()))))
+            .unwrap();
+        assert_eq!(
+            answers.take(Asker::Chat),
+            vec![Answer::Picked(Ok(2)), Answer::Picked(Err("no".into()))]
+        );
+        assert!(answers.take(Asker::Designer).is_empty());
+        outbox.send((Asker::Deck, Answer::Picked(Ok(6)))).unwrap();
+        assert_eq!(
+            answers.take(Asker::Deck),
+            vec![Answer::Picked(Ok(5)), Answer::Picked(Ok(6))]
+        );
+        assert!(answers.take(Asker::Deck).is_empty());
+    }
+
+    #[test]
     fn a_failed_script_tells_its_line_and_its_fault() {
         let failed = json!({ "status": "failed", "line": 3, "error": "no such command" });
         assert_eq!(
@@ -866,10 +1309,64 @@ mod tests {
     }
 
     #[test]
+    fn words_keep_their_apostrophes_in_a_script_line() {
+        assert_eq!(quoted("hail"), "'hail'");
+        assert_eq!(quoted("Bob's shop"), "\"Bob's shop\"");
+        assert_eq!(quoted("say \"hi\" Bob's"), "\"say hi Bob's\"");
+    }
+
+    #[test]
+    fn each_channel_speaks_with_the_tool_that_knows_it() {
+        const HUE: u16 = 0x0022;
+        let speak = |channel| {
+            Act::Speak {
+                channel,
+                text: "hi".into(),
+                hue: HUE,
+            }
+            .calls()
+        };
+        assert_eq!(
+            speak(Channel::Guild),
+            vec![(
+                TOOL_SAY,
+                json!({ "text": "hi", "channel": "guild", "hue": HUE })
+            )]
+        );
+        assert_eq!(
+            speak(Channel::Whisper),
+            vec![(TOOL_WHISPER, json!({ "text": "hi", "hue": HUE }))]
+        );
+        assert_eq!(
+            speak(Channel::Emote),
+            vec![(TOOL_COMMAND, json!({ "text": "emotemsg '*hi*' 0x0022" }))]
+        );
+        assert_eq!(
+            Act::Say {
+                text: "hail".into(),
+                hue: HUE
+            }
+            .calls(),
+            vec![(TOOL_SAY, json!({ "text": "hail", "hue": HUE }))]
+        );
+        assert_eq!(
+            speak(Channel::PartyMember(0x1234)),
+            vec![(
+                TOOL_COMMAND,
+                json!({ "text": "partymsg 'hi' 0 0x00001234" })
+            )]
+        );
+    }
+
+    #[test]
     fn an_act_is_the_tool_calls_the_session_knows() {
         assert_eq!(
             Act::WalkTo { x: 10, y: 20 }.calls(),
             vec![(TOOL_MOVE_TO, json!({ "x": 10, "y": 20 }))]
+        );
+        assert_eq!(
+            Act::RunTo { x: 10, y: 20 }.calls(),
+            vec![(TOOL_MOVE_TO, json!({ "x": 10, "y": 20, "run": true }))]
         );
         assert_eq!(Act::CancelTarget.calls(), vec![(TOOL_TARGET, json!({}))]);
         let to_ground = Act::Move {
@@ -887,6 +1384,30 @@ mod tests {
                 ),
             ]
         );
+        let into_spot = Act::Move {
+            item: ITEM,
+            amount: 1,
+            to: DropTo::IntoAt {
+                container: BAG,
+                x: 60,
+                y: 70,
+            },
+        };
+        assert_eq!(
+            into_spot.calls()[1],
+            (
+                TOOL_DROP,
+                json!({ "serial": ITEM, "dest": BAG, "x": 60, "y": 70 })
+            )
+        );
+        assert_eq!(
+            Act::CastFrom {
+                spell: 5,
+                book: BAG
+            }
+            .calls(),
+            vec![(TOOL_CAST, json!({ "spell": 5, "book": BAG }))]
+        );
     }
 
     #[test]
@@ -896,6 +1417,7 @@ mod tests {
             Act::Take,
             Act::GiveBack,
             Act::WalkTo { x: 0, y: 0 },
+            Act::RunTo { x: 0, y: 0 },
             Act::Use(ITEM),
             Act::Look(ITEM),
             Act::Attack(ITEM),
@@ -903,12 +1425,38 @@ mod tests {
             Act::Loot(ITEM),
             Act::Target(ITEM),
             Act::War(true),
-            Act::Say("hail".into()),
+            Act::Say {
+                text: "hail".into(),
+                hue: 0,
+            },
+            Act::Speak {
+                channel: Channel::Yell,
+                text: "guards".into(),
+                hue: 0,
+            },
+            Act::Speak {
+                channel: Channel::Whisper,
+                text: "psst".into(),
+                hue: 0,
+            },
+            Act::Speak {
+                channel: Channel::Emote,
+                text: "smiles".into(),
+                hue: 0,
+            },
+            Act::Speak {
+                channel: Channel::PartyMember(ITEM),
+                text: "heal me".into(),
+                hue: 0,
+            },
+            Act::Hotkey("Resync".into()),
             Act::Stop,
             Act::Deposit,
+            Act::HouseContent(true),
             Act::Step {
                 direction: "n",
                 run: false,
+                open_doors: false,
             },
             Act::Move {
                 item: ITEM,
@@ -916,6 +1464,7 @@ mod tests {
                 to: DropTo::Into(BAG),
             },
             Act::Wear(ITEM),
+            Act::WearLastWeapon,
             Act::TakeOff(1),
             Act::Menu(ITEM),
             Act::MenuPick {
@@ -934,6 +1483,7 @@ mod tests {
                 page: 1,
                 text: "Once".into(),
             },
+            Act::BookRead(1),
             Act::BoardRead(ITEM),
             Act::BoardPost {
                 subject: "Hi".into(),
@@ -943,6 +1493,8 @@ mod tests {
             Act::BoardRemove(ITEM),
             Act::BoardClose,
             Act::MapPin { x: 1, y: 2 },
+            Act::MapPinMove { pin: 0, x: 1, y: 2 },
+            Act::MapPinRemove(0),
             Act::MapClear,
             Act::MapEdit,
             Act::MapClose(ITEM),
@@ -961,22 +1513,41 @@ mod tests {
             Act::HouseFloor(2),
             Act::HouseCommand("commit"),
             Act::Help,
+            Act::QuestArrow { right: true },
+            Act::RaceChange(None),
+            Act::RaceChange(Some(uoterm_protocol::NewLooks::default())),
             Act::ChatOpen("Mara".into()),
             Act::ChatJoin("General".into()),
+            Act::ChatJoinWithPassword {
+                channel: "Guild".into(),
+                password: "pw".into(),
+            },
+            Act::ChatCreate("Trade".into()),
             Act::ChatSay("hail".into()),
             Act::ChatLeave,
+            Act::Tip { next: true },
             Act::Quit,
             Act::Checkout(vec![(ITEM, 1)]),
             Act::ShopClose,
             Act::TradeWith(ITEM),
-            Act::TradeAccept,
-            Act::TradeCancel,
+            Act::TradeAccept {
+                trade: ITEM,
+                accept: true,
+            },
+            Act::TradeCancel(ITEM),
             Act::TradeGold {
+                trade: ITEM,
                 gold: 1,
                 platinum: 0,
             },
             Act::UseSkill(1),
             Act::Cast(1),
+            Act::CastFrom {
+                spell: 1,
+                book: ITEM,
+            },
+            Act::Dye(2),
+            Act::OpenSpellbook("magery"),
             Act::Command("promptmsg 'hi'".into()),
             Act::ScriptRun {
                 text: "msg 'hi'".into(),
@@ -996,6 +1567,30 @@ mod tests {
                 texts: Vec::new(),
             },
             Act::GumpClose(1),
+            Act::AgentOn {
+                agent: "bandage".into(),
+                on: true,
+            },
+            Act::AgentSet {
+                agent: "bandage".into(),
+                list: None,
+                settings: json!({}),
+            },
+            Act::AgentRun {
+                agent: "organizer".into(),
+                list: Some("reagents".into()),
+            },
+            Act::AgentStop,
+            Act::DamageMeter("start"),
+            Act::PartyInvite(ITEM),
+            Act::PartyLeave,
+            Act::PartyKick(ITEM),
+            Act::PartyLoot(true),
+            Act::MobileStatus {
+                serial: ITEM,
+                close: true,
+            },
+            Act::VirtueGump(ITEM),
         ];
         for act in acts {
             for (tool, _) in act.calls() {

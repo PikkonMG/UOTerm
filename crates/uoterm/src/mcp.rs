@@ -297,6 +297,9 @@ async fn tools_call(base: &str, params: &Value) -> Result<Value> {
         .and_then(|n| n.as_str())
         .ok_or_else(|| RuntimeError::Usage("tools/call needs name".into()))?;
     let mut args = params.get("arguments").cloned().unwrap_or(json!({}));
+    if uoterm_runtime::characters::is_runtime_tool(name) {
+        return remote::call_runtime_tool(base, name, args).await;
+    }
     let wanted = args
         .get("session_id")
         .and_then(|v| v.as_str())
