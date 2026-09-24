@@ -142,6 +142,8 @@ desktop.ini
 .context/
 .worktrees/
 .sandbox/
+.impeccable/
+.hindsight/
 
 # ---------------------------------------------------------------------------
 # Local scratch notes and reference material. Kept on disk, never committed.
