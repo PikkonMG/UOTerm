@@ -322,6 +322,10 @@ pub const POPUP_CHAR_IN_WORLD: u8 = 0x05;
 pub const POPUP_IDLE_WARNING: u8 = 0x07;
 pub const PKT_LOGIN_COMPLETE: u8 = 0x55;
 pub const PKT_PAPERDOLL: u8 = 0x88;
+/// A double click on a mobile with this bit set asks for its paperdoll.
+pub const PAPERDOLL_REQUEST_BIT: u32 = 0x8000_0000;
+/// The width of the name and title field of a paperdoll.
+pub const PAPERDOLL_TEXT_LEN: usize = 60;
 pub const PKT_BATCH_QUERY_PROPERTIES: u8 = 0xD6;
 pub const PKT_OPL_INFO: u8 = 0xDC;
 pub const PKT_COMPRESSED_GUMP: u8 = 0xDD;

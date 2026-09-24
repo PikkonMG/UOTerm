@@ -2997,7 +2997,7 @@ fn parse_paperdoll(packet: &[u8]) -> Result<Inbound> {
     r.u8()?;
     Ok(Inbound::Paperdoll {
         serial: r.serial()?,
-        text: r.ascii_fixed(60).unwrap_or_default(),
+        text: r.ascii_fixed(PAPERDOLL_TEXT_LEN).unwrap_or_default(),
         flags: r.u8().unwrap_or(0),
     })
 }

@@ -18,7 +18,6 @@ const WAIT_DEFAULT: Duration = Duration::from_secs(5);
 /// A walk that has not ended after this long is given up.
 const WALK_LIMIT: Duration = Duration::from_secs(60);
 /// A paperdoll is asked for by double-clicking the mobile with this bit set.
-const PAPERDOLL_REQUEST_BIT: u32 = 0x8000_0000;
 /// The member a party remove names when the shard is to ask for one with a
 /// target cursor.
 const ASKS_FOR_TARGET: Serial = Serial(0);

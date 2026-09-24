@@ -58,6 +58,8 @@ const SERIAL_LEN: usize = 4;
 const TARGET_REST: usize = 18;
 const PING_REST: usize = 1;
 const WAR_MODE_REST: usize = 4;
+/// The paperdoll flags of a player who may lift the items on it.
+const PAPERDOLL_FLAGS_OWN: u8 = 0x02;
 const QUERY_REST: usize = 9;
 const SPEECH_HEADER_SKIP: usize = 5;
 const VAR_LEN_HEADER: usize = 3;
@@ -515,7 +517,9 @@ async fn handle_client_io(
                 let mut ser = [0u8; SERIAL_LEN];
                 read_unwrapped(reader, &mut crypt, &mut ser).await?;
                 let serial = u32::from_be_bytes(ser);
-                if serial == MOCK_HATCHET || serial == MOCK_PLAYER {
+                if serial == MOCK_PLAYER | PAPERDOLL_REQUEST_BIT {
+                    send_h(tx, huff, &mut crypt, &table, &paperdoll())?;
+                } else if serial == MOCK_HATCHET || serial == MOCK_PLAYER {
                     send_h(tx, huff, &mut crypt, &table, &target_cursor())?;
                 }
             }
@@ -830,6 +834,15 @@ fn tree() -> Vec<u8> {
     w.finish_variable().expect("mock packet length fits in u16")
 }
 
+/// The paperdoll of the player, as a shard opens it when asked.
+fn paperdoll() -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_PAPERDOLL);
+    w.u32(MOCK_PLAYER)
+        .ascii_fixed(MOCK_CHAR, PAPERDOLL_TEXT_LEN)
+        .u8(PAPERDOLL_FLAGS_OWN);
+    w.finish()
+}
+
 fn target_cursor() -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_TARGET);
     w.u8(TARGET_OBJECT)
@@ -922,6 +935,18 @@ mod tests {
     }
 
     #[test]
+    fn the_paperdoll_it_sends_names_the_player() {
+        use uoterm_protocol::{parse, Inbound};
+        match parse(&paperdoll()).unwrap() {
+            Inbound::Paperdoll { serial, text, .. } => {
+                assert_eq!(serial.0, MOCK_PLAYER);
+                assert_eq!(text, MOCK_CHAR);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn rest_sizes_match_t2a_table() {
         let table = PacketTable::t2a();
         assert_eq!(
@@ -962,6 +987,7 @@ mod tests {
             backpack(),
             hatchet(era),
             tree(),
+            paperdoll(),
             target_cursor(),
             chop_msg(),
             add_logs(era),
