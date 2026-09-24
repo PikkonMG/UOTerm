@@ -68,6 +68,31 @@ pub struct SpeechLine {
     pub hue: u16,
     pub name: String,
     pub text: String,
+    /// Words a `0xCC` line puts before or after its message, such as the
+    /// ": 42" of "Durability: 42". They go on once the message is words.
+    #[serde(default)]
+    pub affix: Option<Affix>,
+}
+
+/// Words that go before or after a message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Affix {
+    pub words: String,
+    pub before: bool,
+}
+
+/// The bit of the affix type that puts the words before the message.
+const AFFIX_PREPEND: u8 = 0x01;
+
+impl Affix {
+    /// The message with the words on it.
+    pub fn around(&self, message: &str) -> String {
+        if self.before {
+            format!("{}{message}", self.words)
+        } else {
+            format!("{message}{}", self.words)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1430,6 +1455,7 @@ fn parse_ascii_message(packet: &[u8]) -> Result<Inbound> {
     let name = r.ascii_fixed(30)?;
     let text = r.ascii_z()?;
     Ok(Inbound::Speech(SpeechLine {
+        affix: None,
         serial,
         graphic,
         kind,
@@ -1452,6 +1478,7 @@ fn parse_unicode_message(packet: &[u8]) -> Result<Inbound> {
     let name = r.ascii_fixed(30)?;
     let text = r.utf16be_z().unwrap_or_default();
     Ok(Inbound::Speech(SpeechLine {
+        affix: None,
         serial,
         graphic,
         kind,
@@ -2398,16 +2425,20 @@ fn parse_cliloc(packet: &[u8]) -> Result<Inbound> {
     let hue = r.u16().unwrap_or(0);
     let _font = r.u16().unwrap_or(DEFAULT_FONT);
     let number = r.u32().unwrap_or(0);
-    let (name, args) = if id == PKT_CLILOC_AFFIX {
-        let _affix_type = r.u8().unwrap_or(0);
+    let (name, args, affix) = if id == PKT_CLILOC_AFFIX {
+        let affix_type = r.u8().unwrap_or(0);
         let name = r.ascii_fixed(30).unwrap_or_default();
-        let _affix = r.ascii_z().unwrap_or_default();
+        let words = r.ascii_z().unwrap_or_default();
         let args = r.utf16be_z().unwrap_or_default();
-        (name, args)
+        let affix = (!words.is_empty()).then_some(Affix {
+            words,
+            before: affix_type & AFFIX_PREPEND != 0,
+        });
+        (name, args, affix)
     } else {
         let name = r.ascii_fixed(30).unwrap_or_default();
         let args = r.utf16le_z().unwrap_or_default();
-        (name, args)
+        (name, args, None)
     };
     let text = if args.is_empty() {
         format!("#{number}")
@@ -2415,6 +2446,7 @@ fn parse_cliloc(packet: &[u8]) -> Result<Inbound> {
         format!("#{number} {args}")
     };
     Ok(Inbound::Speech(SpeechLine {
+        affix,
         serial,
         graphic,
         kind,
@@ -5441,9 +5473,26 @@ mod tests {
             Inbound::Speech(s) => {
                 assert_eq!(s.name, "Npc");
                 assert!(s.text.contains("arg"));
+                let affix = s.affix.expect("the affix words are kept");
+                assert_eq!(affix.around("Durability"), "Durability!");
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Affix words go after the message unless the prepend bit is set.
+    #[test]
+    fn affix_words_go_on_the_side_the_type_says() {
+        let after = Affix {
+            words: ": 42".into(),
+            before: false,
+        };
+        assert_eq!(after.around("Durability"), "Durability: 42");
+        let before = Affix {
+            words: "Lord ".into(),
+            before: true,
+        };
+        assert_eq!(before.around("Mara"), "Lord Mara");
     }
 
     /// Bytes of a server health bar packet: id, length, serial, one entry count,

@@ -166,7 +166,7 @@ An API bound to this machine answers only a caller that names this machine in it
 
 ## Names on a shard with no property lists
 
-A shard says at login whether it sends property lists, the tooltips that name every object. When it does not, the session reads names the way a player does: it clicks each nameless object once, one every half second, and takes the name the shard shows over it. What a click tells of an item (its maker, whether its magic is known, its charges) comes back in `properties`.
+A shard says at login whether it sends property lists, the tooltips that name every object. When it does not, the session reads names the way a player does: it clicks each nameless object once, one every half second, and takes the name the shard shows over it. What a click tells of an item comes back in `properties`, in the form of the shard's era: on the oldest shards, the label lines, which say it all in words (for example `a vanquishing katana crafted by Bob`, or a bag's name and then what it holds); on later ones, the click info (its name, its maker, its quality and magic, whether the magic is known, its charges). `properties` asks again by a new click when the last answer is more than 10 s old, and never more than once a second for one object.
 
 ## MCP
 

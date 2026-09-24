@@ -172,7 +172,16 @@ pub(super) struct Play {
     /// The house the designer works on, and the level it works on.
     designing: Option<(Serial, u8)>,
     chat: Chat,
+    /// When the window last asked the shard what each object is.
+    asked_what: std::collections::HashMap<Serial, Instant>,
 }
+
+/// A click answer this old is asked again, since a bag fills and a tool
+/// wears down. The window keeps a tooltip as long.
+const CLICK_ANSWER_KEEP: Duration = Duration::from_secs(10);
+/// The shortest time between two asks about the same object, so a mouse
+/// that rests on it clicks it at a human pace.
+const ASK_WHAT_GAP: Duration = Duration::from_secs(1);
 
 impl Play {
     /// The design a player built for a house, once the shard has sent it.
@@ -1024,7 +1033,19 @@ pub(super) fn properties(inner: &mut Inner, args: &Value) -> ToolResult {
         return ToolResult::err(format!("{TOOL_PROPERTIES} {NEEDS_SERIAL}"));
     }
     let lines = property_lines(inner, serial);
-    if lines.is_empty() {
+    let now = Instant::now();
+    let fresh = {
+        let world = inner.world.read();
+        world.properties.contains_key(&serial)
+            || world
+                .click_answers
+                .get(&serial)
+                .is_some_and(|answer| now.saturating_duration_since(answer.at) < CLICK_ANSWER_KEEP)
+    };
+    let asked = &mut inner.play.asked_what;
+    asked.retain(|_, at| now.saturating_duration_since(*at) < ASK_WHAT_GAP);
+    if !fresh && !asked.contains_key(&serial) {
+        asked.insert(serial, now);
         ask_what_it_is(inner, serial);
     }
     ToolResult::ok(json!({ "serial": serial, "lines": lines }))

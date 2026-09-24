@@ -12,7 +12,7 @@ pub mod types;
 
 pub use decode::character_refusal;
 pub use decode::{
-    parse, parse_with_version, BoatRider, BookPage, BuffEntry, BulletinEvent, CharacterSlot,
+    parse, parse_with_version, Affix, BoatRider, BookPage, BuffEntry, BulletinEvent, CharacterSlot,
     ChatEvent, ContainerItem, ContextMenuEntry, CustomHouse, DisplayMap, EquipAttribute, EquipInfo,
     EquipItem, GraphicEffect, GroundItem, HealthBarStatus, HousePlane, Inbound, MapChange,
     MapPatchCount, MenuEntry, MobileView, ObjectProperty, OpenGump, PartyEvent, PromptRequest,

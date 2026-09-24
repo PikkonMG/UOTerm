@@ -40,9 +40,9 @@ pub use radar::{
 pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
 pub use state::Waypoint;
 pub use state::{
-    body_when_alive, facet_free_movement, facet_rules, is_ghost_body, Buff, Container, DoorItem,
-    DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, ShownPaperdoll, SkillValue,
-    Spellbook, Trade, World, BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE,
+    body_when_alive, facet_free_movement, facet_rules, is_ghost_body, Buff, ClickAnswer, Container,
+    DoorItem, DoorUpdate, Harm, Item, Mobile, MultiItem, MultiUpdate, SelfState, ShownPaperdoll,
+    SkillValue, Spellbook, Trade, World, BODY_ELF_FEMALE, BODY_ELF_MALE, BODY_GARGOYLE_FEMALE,
     BODY_GARGOYLE_MALE, BODY_GHOST_ELF_FEMALE, BODY_GHOST_ELF_MALE, BODY_GHOST_FEMALE,
     BODY_GHOST_GARGOYLE_FEMALE, BODY_GHOST_GARGOYLE_MALE, BODY_GHOST_MALE, BODY_HUMAN_FEMALE,
     BODY_HUMAN_MALE, FACET_RULES_FELUCCA, FACET_RULES_TRAMMEL, GHOST_BODIES,
@@ -161,6 +161,7 @@ mod tests {
             "the nameless sword is asked for"
         );
         w.apply(&Inbound::Speech(SpeechLine {
+            affix: None,
             serial: SWORD,
             graphic: 0x0F61,
             kind: uoterm_protocol::SPEECH_LABEL,
@@ -275,6 +276,7 @@ mod tests {
             effects: Vec::new(),
         });
         w.apply(&Inbound::Speech(SpeechLine {
+            affix: None,
             serial: Serial::INVALID,
             graphic: 0,
             kind: uoterm_protocol::SPEECH_SYSTEM,
@@ -743,6 +745,7 @@ mod tests {
         let mut w = World::new();
         login(&mut w);
         w.apply(&Inbound::Speech(SpeechLine {
+            affix: None,
             serial: Serial(0xCD),
             graphic: 0x190,
             kind: 0,
@@ -840,6 +843,7 @@ mod tests {
             equipment: Vec::new(),
         }));
         w.apply(&Inbound::Speech(SpeechLine {
+            affix: None,
             serial: Serial(0x51),
             graphic: 0x190,
             kind: 0,
@@ -1142,6 +1146,35 @@ mod tests {
         });
         assert_eq!(w.mobiles[&STRANGER].flags, 0);
         assert_eq!(w.mobiles[&STRANGER].name, "Someone");
+    }
+
+    /// One click can bring more than one label: a bag says its name and
+    /// then what it holds. Both are kept as the answer of that click.
+    #[test]
+    fn the_labels_of_one_click_are_kept_together() {
+        const BAG: Serial = Serial(0x4000_0B01);
+        let mut w = World::new();
+        login(&mut w);
+        for text in ["a bag", "(4 items, 4 stones)"] {
+            w.apply(&Inbound::Speech(SpeechLine {
+                affix: None,
+                serial: BAG,
+                graphic: 0,
+                kind: uoterm_protocol::SPEECH_LABEL,
+                hue: 0,
+                name: String::new(),
+                text: text.into(),
+            }));
+        }
+        assert_eq!(
+            w.click_answers[&BAG].lines,
+            vec!["a bag".to_string(), "(4 items, 4 stones)".to_string()]
+        );
+        w.apply(&Inbound::Delete(BAG));
+        assert!(
+            !w.click_answers.contains_key(&BAG),
+            "a gone object says nothing"
+        );
     }
 
     /// Each paperdoll the shard opens is kept with a count that grows, so a
@@ -1990,6 +2023,7 @@ mod tests {
 
     fn say(w: &mut World, serial: Serial, kind: u8, text: &str) {
         w.apply(&Inbound::Speech(SpeechLine {
+            affix: None,
             serial,
             graphic: 0x191,
             kind,

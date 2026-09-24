@@ -267,6 +267,20 @@ pub struct Container {
     pub opened: u64,
 }
 
+/// What the shard said the last time an object was clicked: the label lines,
+/// and when the last word about it came. One click can answer with more than
+/// one label, such as the name of a bag and then what it holds. On a shard
+/// with no property lists this is all a player learns of an object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClickAnswer {
+    pub lines: Vec<String>,
+    #[serde(skip, default = "Instant::now")]
+    pub at: Instant,
+}
+
+/// Labels that come closer together than this answer the same click.
+const CLICK_ANSWER_BURST: Duration = Duration::from_secs(1);
+
 /// The last paperdoll the shard opened: whose it is and the words at its
 /// top. `seq` grows with each one, so a watcher knows when a new one came,
 /// even for the same mobile.
@@ -587,6 +601,8 @@ pub struct World {
     /// The account flags the character list ended with, when it had them.
     pub account_flags: Option<u32>,
     pub paperdoll: Option<ShownPaperdoll>,
+    /// What the last click on each object brought back.
+    pub click_answers: HashMap<Serial, ClickAnswer>,
 }
 
 /// The channel of a speech line that can name the character. System lines,
@@ -728,6 +744,7 @@ impl World {
         self.bars.remove(&serial);
         self.properties.remove(&serial);
         self.equip_info.remove(&serial);
+        self.click_answers.remove(&serial);
         self.spellbooks.remove(&serial);
         self.dead_pets.remove(&serial);
     }
@@ -841,8 +858,9 @@ impl World {
                         mob.name.clone_from(&line.name);
                     }
                 }
-                if line.kind == SPEECH_LABEL {
+                if line.kind == SPEECH_LABEL && line.serial.is_valid() {
                     self.take_label(line.serial, &line.text);
+                    self.hear_click_answer(line.serial, Some(&line.text));
                 }
                 self.journal.push(JournalEntry::from(line));
                 self.push_event(Event::new(
@@ -1070,6 +1088,7 @@ impl World {
             }
             Inbound::EquipInfo(info) => {
                 self.equip_info.insert(info.serial, info.clone());
+                self.hear_click_answer(info.serial, None);
             }
             Inbound::BondedStatus { serial, dead } => {
                 if *dead {
@@ -1756,6 +1775,24 @@ impl World {
             item.name = text.to_string();
         }
         self.names.accept(serial, LABEL_NAME_REVISION);
+    }
+
+    /// Keeps a word the shard said about a clicked object: a label line, or
+    /// with `None` the click info that came instead. A word long after the
+    /// last one answers a new click, so the old lines go.
+    fn hear_click_answer(&mut self, serial: Serial, line: Option<&str>) {
+        let now = Instant::now();
+        let answer = self.click_answers.entry(serial).or_insert(ClickAnswer {
+            lines: Vec::new(),
+            at: now,
+        });
+        if now.saturating_duration_since(answer.at) > CLICK_ANSWER_BURST {
+            answer.lines.clear();
+        }
+        answer.at = now;
+        if let Some(line) = line.filter(|line| !line.is_empty()) {
+            answer.lines.push(line.to_string());
+        }
     }
 
     /// Put a name learned from a property list on whichever object owns it.

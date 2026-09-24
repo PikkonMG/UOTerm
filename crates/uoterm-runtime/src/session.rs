@@ -5493,6 +5493,7 @@ mod relay_tests {
                 equipment: Vec::new(),
             }));
             w.apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                affix: None,
                 serial: ANN,
                 graphic: 0x191,
                 kind: SPEECH_REGULAR,
@@ -5533,6 +5534,7 @@ mod relay_tests {
             .world
             .write()
             .apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                affix: None,
                 serial: ANN,
                 graphic: 0x191,
                 kind: SPEECH_REGULAR,
@@ -5565,6 +5567,7 @@ mod relay_tests {
             .world
             .write()
             .apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                affix: None,
                 serial: ANN,
                 graphic: 0x191,
                 kind: SPEECH_REGULAR,
@@ -5622,6 +5625,7 @@ mod relay_tests {
             .world
             .write()
             .apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                affix: None,
                 serial: ANN,
                 graphic: 0x191,
                 kind: SPEECH_GUILD,
@@ -6315,6 +6319,7 @@ mod relay_tests {
                 equipment: Vec::new(),
             }));
             w.apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                affix: None,
                 serial: OLIN,
                 graphic: 0x190,
                 kind: SPEECH_REGULAR,
@@ -6374,6 +6379,7 @@ mod relay_tests {
                 equipment: Vec::new(),
             }));
             w.apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                affix: None,
                 serial: DUNN,
                 graphic: 0x190,
                 kind: SPEECH_REGULAR,
@@ -6763,6 +6769,71 @@ mod relay_tests {
         assert_eq!(
             inner.outbound.pop_front(),
             Some(encode::single_click(HORSE))
+        );
+    }
+
+    /// On a shard with no property lists, the tooltip of an object is what
+    /// a click on it brought back: the labels of the oldest shards, which say
+    /// it all in words, and the click info of later ones. The click goes out
+    /// once, not on every look while the mouse rests.
+    #[test]
+    fn a_tooltip_without_property_lists_is_what_a_click_brought_back() {
+        const KATANA: Serial = Serial(0x4000_0C11);
+        const AXE: Serial = Serial(0x4000_0C12);
+        const CLILOC_AXE: u32 = 1_023_913;
+        const CLILOC_EXCEPTIONAL: u32 = 1_018_305;
+        const KATANA_WORDS: &str = "a vanquishing katana crafted by Bob";
+        let mut inner = test_session();
+        inner.world.write().account_flags = Some(uoterm_protocol::ACCOUNT_FLAG_CONTEXT_MENUS);
+        let lines = |inner: &mut Inner, serial: Serial| {
+            play::properties(inner, &json!({ "serial": serial.0 })).result["lines"].clone()
+        };
+
+        assert_eq!(lines(&mut inner, KATANA), json!([]));
+        assert_eq!(
+            inner.outbound.drain(..).collect::<Vec<_>>(),
+            vec![encode::single_click(KATANA)]
+        );
+        lines(&mut inner, KATANA);
+        assert!(inner.outbound.is_empty(), "one click while the mouse rests");
+        inner
+            .world
+            .write()
+            .apply(&Inbound::Speech(uoterm_protocol::SpeechLine {
+                affix: None,
+                serial: KATANA,
+                graphic: 0,
+                kind: uoterm_protocol::SPEECH_LABEL,
+                hue: 0,
+                name: String::new(),
+                text: KATANA_WORDS.into(),
+            }));
+        assert_eq!(lines(&mut inner, KATANA), json!([KATANA_WORDS]));
+        assert!(
+            inner.outbound.is_empty(),
+            "a fresh answer is not asked again"
+        );
+
+        inner
+            .world
+            .write()
+            .apply(&Inbound::EquipInfo(uoterm_protocol::EquipInfo {
+                serial: AXE,
+                cliloc: CLILOC_AXE,
+                crafter: "Bob".into(),
+                unidentified: false,
+                attributes: vec![uoterm_protocol::EquipAttribute {
+                    cliloc: CLILOC_EXCEPTIONAL,
+                    charges: uoterm_protocol::EQUIP_NO_CHARGES,
+                }],
+            }));
+        assert_eq!(
+            lines(&mut inner, AXE),
+            json!([
+                format!("#{CLILOC_AXE}"),
+                format!("{CRAFTED_BY}Bob"),
+                format!("#{CLILOC_EXCEPTIONAL}")
+            ])
         );
     }
 
@@ -8142,6 +8213,9 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         if let Some(cliloc) = &inner.cliloc {
                             line.text = cliloc.render_line(&line.text);
                         }
+                        if let Some(affix) = line.affix.take() {
+                            line.text = affix.around(&line.text);
+                        }
                     }
                     match &msg {
                         Inbound::MoveAck { sequence, .. } => {
@@ -9450,11 +9524,18 @@ fn property_lines(inner: &Inner, serial: Serial) -> Vec<String> {
             .map(|p| words(p.cliloc, &p.arguments))
             .collect();
     }
+    // A shard with no property lists answers a click. The oldest shards say
+    // it all in labels, such as "a vanquishing katana crafted by Bob"; later
+    // ones send a label for a named object and the click info for the rest.
+    let mut lines = w
+        .click_answers
+        .get(&serial)
+        .map(|answer| answer.lines.clone())
+        .unwrap_or_default();
     let Some(info) = w.equip_info.get(&serial) else {
-        return Vec::new();
+        return lines;
     };
-    let mut lines = Vec::new();
-    if info.cliloc != 0 {
+    if info.cliloc != 0 && lines.is_empty() {
         lines.push(words(info.cliloc, ""));
     }
     if !info.crafter.is_empty() {
@@ -9487,7 +9568,9 @@ fn ask_what_it_is(inner: &mut Inner, serial: Serial) {
 
 /// True when the shard has said what an object is, in either form.
 fn knows_what_it_is(world: &World, serial: Serial) -> bool {
-    world.properties.contains_key(&serial) || world.equip_info.contains_key(&serial)
+    world.properties.contains_key(&serial)
+        || world.equip_info.contains_key(&serial)
+        || world.click_answers.contains_key(&serial)
 }
 
 /// The words a click on an older shard puts before a maker's name, and the

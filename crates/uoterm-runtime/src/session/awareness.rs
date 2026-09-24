@@ -332,6 +332,7 @@ mod tests {
         let mut inner = player();
         mobile(&inner, ANN, NOTO_INNOCENT, 1);
         inner.world.write().apply(&Inbound::Speech(SpeechLine {
+            affix: None,
             serial: ANN,
             graphic: 0x190,
             kind: SPEECH_REGULAR,
