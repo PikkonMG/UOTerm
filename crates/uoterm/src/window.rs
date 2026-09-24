@@ -237,6 +237,8 @@ struct WatchApp {
     video: video::Video,
     /// The last choice about public house content the shard was told.
     house_content_sent: Option<bool>,
+    /// When the shard hears the size of the game view.
+    game_view: model::game_view::GameViewReport,
     profile_home: ProfileHome,
     audio: Audio,
     floats: floats::Floats,
@@ -302,6 +304,7 @@ impl WatchApp {
         Self {
             video,
             house_content_sent: None,
+            game_view: model::game_view::GameViewReport::default(),
             journal_file: model::journal::JournalFile::default(),
             rx,
             frame: None,
@@ -537,6 +540,13 @@ impl eframe::App for WatchApp {
                         if frame.human_control && self.house_content_sent != Some(house_content) {
                             self.hand.act(control::Act::HouseContent(house_content));
                             self.house_content_sent = Some(house_content);
+                        }
+                        // The shard hears the size of the game view the
+                        // window draws, as the reference client tells the
+                        // size of its game window.
+                        let size = [view.width().round() as u32, view.height().round() as u32];
+                        if let Some(act) = self.game_view.due(frame.serial, size, time) {
+                            self.hand.act(act);
                         }
                         moving |= self.sky.draw(
                             &view_painter,

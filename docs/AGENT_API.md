@@ -163,6 +163,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `ignore_list` | session exists. `list` `gumps` or `journal`, `action` `add`, `remove`, `clear` or `show` (default), `value` a gump id or words. An ignored gump is left out of `observe` and does not wake `next_event`; an ignored line (by speaker or words) is left out of `observe`, `journal_search` and `wait_journal` and does not count as spoken to. Saved per character |
 | `command` | For the watch window. One script command line (`text`) as one act of a human; needs `human` true |
 | `take_control` / `release_control` | For the watch window, not for an agent. While a human has control, only a call with `human` true acts. Control goes back by itself after 90 s with no human act |
+| `game_view` | For the watch window, not for an agent. `width` and `height`: the size in pixels of the game view the window draws. The shard hears it (`0xBF` `0x05`) at each login, and at once when it changes in the world. A session with no window tells 600 by 480 |
 | `jobs` / `job_start` / `job_stop` | session exists / in world / a job is running. Hunt: `job` `hunt`, optional `include` and `avoid`. Walk: `job` `walk`, `x` and `y` or `name`, `watch`. `replace` true stops the old job (`job_ended` `stopped`) then starts the new one. Hands back with `job_ended`. See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md) |
 
 ## Scripts, agents, hotkeys and macros
@@ -241,7 +242,7 @@ JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`). Newline JSON and `Conten
 
 Methods: `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`.
 
-`tools/list` gives every tool an agent may call, each with its own arguments, their types, and the ones it cannot do without (`required`); a tool that needs one of several says so in its description. The runtime's tools come first and take no `session_id` (see [Characters and login](#characters-and-login)). For every other tool, `session_id` names the session a call is for; with none, the first session answers. The window's own tools (`command`, `take_control`, `release_control`) are not listed.
+`tools/list` gives every tool an agent may call, each with its own arguments, their types, and the ones it cannot do without (`required`); a tool that needs one of several says so in its description. The runtime's tools come first and take no `session_id` (see [Characters and login](#characters-and-login)). For every other tool, `session_id` names the session a call is for; with none, the first session answers. The window's own tools (`command`, `take_control`, `release_control`, `game_view`) are not listed.
 
 Resource URIs:
 

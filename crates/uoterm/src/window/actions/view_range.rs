@@ -4,9 +4,7 @@
 
 use super::RangeChange;
 use crate::view::WatchFrame;
-
-pub const MIN_VIEW_RANGE: u8 = 5;
-pub const MAX_VIEW_RANGE: u8 = 24;
+use uoterm_protocol::types::{CLIENT_VIEW_RANGE_MAX, CLIENT_VIEW_RANGE_MIN};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewRange {
@@ -16,7 +14,7 @@ pub struct ViewRange {
 impl Default for ViewRange {
     fn default() -> Self {
         Self {
-            tiles: MAX_VIEW_RANGE,
+            tiles: CLIENT_VIEW_RANGE_MAX,
         }
     }
 }
@@ -34,16 +32,16 @@ impl ViewRange {
             RangeChange::Set(tiles) => tiles,
             RangeChange::Up => self.tiles.saturating_add(1),
             RangeChange::Down => self.tiles.saturating_sub(1),
-            RangeChange::Max | RangeChange::Default => MAX_VIEW_RANGE,
-            RangeChange::Min => MIN_VIEW_RANGE,
+            RangeChange::Max | RangeChange::Default => CLIENT_VIEW_RANGE_MAX,
+            RangeChange::Min => CLIENT_VIEW_RANGE_MIN,
         };
-        self.tiles = tiles.clamp(MIN_VIEW_RANGE, MAX_VIEW_RANGE);
+        self.tiles = tiles.clamp(CLIENT_VIEW_RANGE_MIN, CLIENT_VIEW_RANGE_MAX);
         self.tiles
     }
 
     /// Takes the mobiles and items out of range from the picture.
     pub fn cull(self, frame: &mut WatchFrame) {
-        if self.tiles >= MAX_VIEW_RANGE {
+        if self.tiles >= CLIENT_VIEW_RANGE_MAX {
             return;
         }
         let here = (frame.x, frame.y);
@@ -61,11 +59,11 @@ mod tests {
     #[test]
     fn the_range_stays_inside_the_limits_of_the_official_client() {
         let mut range = ViewRange::default();
-        assert_eq!(range.change(RangeChange::Up), MAX_VIEW_RANGE);
-        assert_eq!(range.change(RangeChange::Set(2)), MIN_VIEW_RANGE);
-        assert_eq!(range.change(RangeChange::Up), MIN_VIEW_RANGE + 1);
-        assert_eq!(range.change(RangeChange::Default), MAX_VIEW_RANGE);
-        assert_eq!(range.change(RangeChange::Min), MIN_VIEW_RANGE);
+        assert_eq!(range.change(RangeChange::Up), CLIENT_VIEW_RANGE_MAX);
+        assert_eq!(range.change(RangeChange::Set(2)), CLIENT_VIEW_RANGE_MIN);
+        assert_eq!(range.change(RangeChange::Up), CLIENT_VIEW_RANGE_MIN + 1);
+        assert_eq!(range.change(RangeChange::Default), CLIENT_VIEW_RANGE_MAX);
+        assert_eq!(range.change(RangeChange::Min), CLIENT_VIEW_RANGE_MIN);
     }
 
     #[test]

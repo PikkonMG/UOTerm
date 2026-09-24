@@ -102,6 +102,7 @@ pub const TOOL_TRADE_GOLD: &str = "trade_gold";
 pub const TOOL_COMMAND: &str = "command";
 pub const TOOL_TAKE_CONTROL: &str = "take_control";
 pub const TOOL_RELEASE_CONTROL: &str = "release_control";
+pub const TOOL_GAME_VIEW: &str = "game_view";
 pub const TOOL_OPEN_SPELLBOOK: &str = "open_spellbook";
 pub const TOOL_TIP: &str = "tip";
 pub const TOOL_QUEST_ARROW: &str = "quest_arrow";
@@ -803,6 +804,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "For the watch window, not for an agent. Gives the character back to the agent. Sends control_released.",
         "session exists",
     ),
+    (
+        TOOL_GAME_VIEW,
+        "For the watch window, not for an agent. The size of the game view the window draws: width and height in pixels. The shard hears it at each login, and at once when it changes in the world.",
+        "session exists",
+    ),
 ];
 
 /// The tools that only look. An agent may call them while a human has the
@@ -844,7 +850,12 @@ pub fn is_read_only(tool: &str) -> bool {
 
 /// The tools only a human's window calls. An agent is refused each one, so
 /// the list an agent reads does not offer them.
-const HUMAN_ONLY_TOOLS: [&str; 3] = [TOOL_COMMAND, TOOL_TAKE_CONTROL, TOOL_RELEASE_CONTROL];
+const HUMAN_ONLY_TOOLS: [&str; 4] = [
+    TOOL_COMMAND,
+    TOOL_TAKE_CONTROL,
+    TOOL_RELEASE_CONTROL,
+    TOOL_GAME_VIEW,
+];
 
 /// The argument that names the session a call is for. The MCP server reads
 /// it; with none, it takes a session of its own choosing.

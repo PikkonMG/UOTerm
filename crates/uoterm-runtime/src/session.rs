@@ -50,6 +50,7 @@ use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World, RADAR_DEFAULT}
 
 mod actions;
 mod agents;
+mod arrival;
 mod awareness;
 mod control;
 mod gather;
@@ -448,12 +449,15 @@ fn fresh_world(opts: &ConnectOptions) -> World {
 
 /// Clears the world for a new login and tells the agent why the link ended.
 /// The event count goes on from where it was, so an agent that waits on
-/// events hears of this and of each event after it once.
+/// events hears of this and of each event after it once. The game view
+/// size stays, as the window that drew it does.
 fn begin_again(world: &RwLock<World>, opts: &ConnectOptions, why: &str) {
     let mut w = world.write();
     let seq = w.event_seq;
+    let game_view = w.game_view;
     *w = fresh_world(opts);
     w.event_seq = seq;
+    w.game_view = game_view;
     w.push_event(uoterm_world::Event::new(
         uoterm_world::EventKind::Disconnected,
         None,
@@ -595,6 +599,8 @@ struct Inner {
     relog_as: Option<String>,
     /// The last ping and the round trip it measured.
     latency: latency::Latency,
+    /// What the client says as the character enters the world.
+    arrival: arrival::Arrival,
     /// The map changes of an UltimaLive shard.
     ultima_live: ultima_live::UltimaLive,
     /// The groups of the skill list, from the client files. Empty without
@@ -1133,6 +1139,7 @@ async fn run_session(
         logged_out: false,
         relog_as: None,
         latency: latency::Latency::default(),
+        arrival: arrival::Arrival::default(),
         ultima_live: ultima_live::UltimaLive::default(),
         skill_groups,
         terrain: terrain::Terrain::default(),
@@ -1217,6 +1224,7 @@ async fn run_session(
                 pump_door_macro(&mut inner);
                 pump_movement(&mut inner, Instant::now());
                 pump_names(&mut inner);
+                arrival::pump(&mut inner, Instant::now());
                 harvest_new_events(&mut inner);
                 actions::note_skills(&mut inner);
                 actions::share_listen_range(&inner);
@@ -1366,16 +1374,20 @@ async fn write_sealed(
     tcp_write(writer, &seal_outbound(inner, pkt)).await
 }
 
-/// Answer the shard's version question (`0xBD`). UOTerm never says this on
-/// its own: a shard that does not ask learns nothing, and a shard that asks
-/// gets a Classic Client version and nothing else.
-async fn answer_version_request(
+/// Sends at once what the packets of the login queued: the answer to a
+/// version request, and what the client says as the character enters the
+/// world. A shard holds the login until its version request is answered.
+async fn send_queued(
     inner: &mut Inner,
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    opts: &ConnectOptions,
 ) -> Result<()> {
-    write_sealed(inner, writer, encode::client_version(opts.version)).await?;
-    Ok(())
+    if inner.outbound.is_empty() {
+        return Ok(());
+    }
+    while let Some(pkt) = inner.outbound.pop_front() {
+        write_sealed(inner, writer, pkt).await?;
+    }
+    tcp_flush(writer).await
 }
 
 async fn login(
@@ -1419,6 +1431,7 @@ async fn login(
             return Err(RuntimeError::Network("login closed".into()));
         }
         let packets = ingest_wire(inner, &mut buf[..n]);
+        send_queued(inner, &mut writer).await?;
         for msg in &packets {
             if let Some(err) = login_abort(msg) {
                 return Err(err);
@@ -1517,11 +1530,7 @@ async fn login(
                     tcp_flush(&mut writer).await?;
                     inner.world.write().self_state.name = name;
                 }
-                Inbound::VersionRequest => {
-                    tracing::info!("login version request 0xBD");
-                    answer_version_request(inner, &mut writer, opts).await?;
-                    tcp_flush(&mut writer).await?;
-                }
+                Inbound::VersionRequest => tracing::info!("login version request 0xBD"),
                 Inbound::LoginConfirm {
                     serial, x, y, z, ..
                 } => {
@@ -1536,10 +1545,7 @@ async fn login(
         }
         if packets.iter().any(inbound_enters_world) || inner.world.read().logged_in {
             inner.world.write().logged_in = true;
-            drain_login_world(inner, &mut reader, &mut buf).await?;
-            // The shard sends skills only when asked.
-            let me = inner.world.read().self_state.serial;
-            inner.outbound.push_back(encode::query_skills(me));
+            drain_login_world(inner, &mut reader, &mut writer, &mut buf).await?;
             return Ok((reader, writer));
         }
     }
@@ -1555,6 +1561,7 @@ fn inbound_enters_world(msg: &Inbound) -> bool {
 async fn drain_login_world(
     inner: &mut Inner,
     reader: &mut tokio::net::tcp::OwnedReadHalf,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
     buf: &mut [u8],
 ) -> Result<()> {
     loop {
@@ -1562,6 +1569,7 @@ async fn drain_login_world(
             Ok(Ok(0)) => return Ok(()),
             Ok(Ok(n)) => {
                 let _ = ingest_wire(inner, &mut buf[..n]);
+                send_queued(inner, writer).await?;
             }
             Ok(Err(e)) => return Err(RuntimeError::Network(e.to_string())),
             Err(_) => return Ok(()),
@@ -2198,6 +2206,7 @@ mod relay_tests {
             logged_out: false,
             relog_as: None,
             latency: latency::Latency::default(),
+            arrival: arrival::Arrival::default(),
             ultima_live: ultima_live::UltimaLive::default(),
             skill_groups: Vec::new(),
             terrain: terrain::Terrain::default(),
@@ -5979,11 +5988,17 @@ mod relay_tests {
         let opts = ConnectOptions::default();
         let world = RwLock::new(fresh_world(&opts));
         world.write().self_state.name = "Mara".into();
+        let drawn = uoterm_world::GameView {
+            width: 1024,
+            height: 768,
+        };
+        world.write().game_view = drawn;
         let before = world.read().event_seq;
         const WHY: &str = "the link dropped";
         begin_again(&world, &opts, WHY);
         let w = world.read();
         assert!(w.self_state.name.is_empty(), "the world starts again");
+        assert_eq!(w.game_view, drawn, "the window still draws that size");
         assert_eq!(w.event_seq, before + 1);
         assert_eq!(
             w.events.last().map(|e| (e.kind, e.text.as_str())),
@@ -8764,6 +8779,7 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                             }
                         }
                     }
+                    arrival::on_packet(inner, &msg, Instant::now());
                     play::on_book_or_menu(inner, &msg);
                     play::on_map_or_profile(inner, &msg);
                     play::on_chat(inner, &msg);
@@ -12167,6 +12183,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_BOAT_MOVE => requests::boat_move(inner, args),
         TOOL_TRACK_MEMBERS => requests::track_members(inner, args),
         TOOL_HOUSE_CONTENT => requests::house_content(inner, args),
+        TOOL_GAME_VIEW => arrival::game_view(inner, args),
         TOOL_VIRTUE => actions::virtue(inner, args),
         TOOL_VIRTUE_GUMP => actions::virtue_gump(inner, args),
         TOOL_SKILL_LOCK => actions::skill_lock(inner, args),

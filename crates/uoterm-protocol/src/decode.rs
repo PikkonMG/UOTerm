@@ -757,6 +757,10 @@ pub enum Inbound {
         count: u8,
     },
     VersionRequest,
+    /// `0xC8`. The view range the shard keeps for the client, in tiles.
+    ViewRange {
+        tiles: u8,
+    },
     /// `0x2E`. A mobile put an item on. The shard sends it to everyone in
     /// range, so `owner` says who wears it.
     Equipped {
@@ -1231,6 +1235,7 @@ pub fn parse_with_version(packet: &[u8], version: ClientVersion) -> Result<Inbou
         PKT_GLOBAL_LIGHT => parse_global_light(packet),
         PKT_WEATHER => parse_weather(packet),
         PKT_CLIENT_VERSION => Ok(Inbound::VersionRequest),
+        PKT_VIEW_RANGE => parse_view_range(packet),
         PKT_EQUIPPED => parse_equipped(packet),
         PKT_SWING => parse_swing(packet),
         PKT_COMBATANT => parse_combatant(packet),
@@ -2347,6 +2352,12 @@ fn parse_season(packet: &[u8]) -> Result<Inbound> {
         season: r.u8()?,
         play_sound: r.u8()? != 0,
     })
+}
+
+fn parse_view_range(packet: &[u8]) -> Result<Inbound> {
+    let mut r = PacketReader::new(packet);
+    r.u8()?;
+    Ok(Inbound::ViewRange { tiles: r.u8()? })
 }
 
 fn parse_equipped(packet: &[u8]) -> Result<Inbound> {
@@ -5151,6 +5162,17 @@ mod tests {
             parse(&p).unwrap(),
             Inbound::AssistantVersionRequest
         ));
+    }
+
+    /// A shard answers the view range of the client with the range it keeps.
+    #[test]
+    fn the_shard_names_the_view_range_it_keeps() {
+        const KEPT: u8 = 18;
+        assert!(matches!(
+            parse(&[PKT_VIEW_RANGE, KEPT]).unwrap(),
+            Inbound::ViewRange { tiles: KEPT }
+        ));
+        assert!(parse(&[PKT_VIEW_RANGE]).is_err());
     }
 
     #[test]

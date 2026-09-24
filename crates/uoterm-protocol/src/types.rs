@@ -280,6 +280,23 @@ pub const EXT_BOAT_MOVE: u16 = 0x0033;
 /// looks for another race, or closes that window; the client answers with
 /// the looks, or with nothing to say no.
 pub const EXT_RACE_CHANGE: u16 = 0x002A;
+/// `0xBF` sub-command from the client: the width and the height in pixels
+/// of its game view.
+pub const EXT_GAME_WINDOW_SIZE: u16 = 0x0005;
+/// `0xBF` sub-command from the client: the language it speaks.
+pub const EXT_LANGUAGE: u16 = 0x000B;
+/// `0xBF` sub-command from the client: the kind of client and the
+/// expansions it has.
+pub const EXT_CLIENT_TYPE: u16 = 0x000F;
+/// The byte the reference client writes before the flags of its client
+/// type.
+pub const CLIENT_TYPE_MARK: u8 = 0x0A;
+/// `0xC8`, both ways: the view range. The client says how far it wants to
+/// see, and the shard says the range it keeps.
+pub const PKT_VIEW_RANGE: u8 = 0xC8;
+/// The smallest and the largest view range a client asks for, in tiles.
+pub const CLIENT_VIEW_RANGE_MIN: u8 = 5;
+pub const CLIENT_VIEW_RANGE_MAX: u8 = 24;
 /// The speeds a pilot asks of a boat.
 pub const BOAT_SPEED_STOP: u8 = 0;
 pub const BOAT_SPEED_SLOW: u8 = 1;
@@ -403,18 +420,18 @@ pub const ACCOUNT_FLAG_NEW_FELUCCA_AREAS: u32 = 0x8000;
 /// Client version is below it.
 pub const KINGDOM_REBORN_MAJOR: u32 = 66;
 
+/// The versions the reference client gates its login talk on. It writes
+/// the client type gate as 3.0.0 with the letter e, below 3.0.5d, and
+/// compares versions the same way, so the same number is kept here.
+const V_200: ClientVersion = ClientVersion::new(2, 0, 0, 0);
+const V_305D: ClientVersion = ClientVersion::new(3, 0, 5, b'd' as u32);
+const V_306E: ClientVersion = ClientVersion::new(3, 0, 0, b'e' as u32);
+const V_70796: ClientVersion = ClientVersion::new(7, 0, 79, 6);
+
 /// Each expansion: the first client version that has it, and the bit a client
 /// of that version reports.
 const EXPANSION_STEPS: [(ClientVersion, u32); 6] = [
-    (
-        ClientVersion {
-            major: 2,
-            minor: 0,
-            revision: 0,
-            patch: 0,
-        },
-        CLIENT_FLAG_RENAISSANCE,
-    ),
+    (V_200, CLIENT_FLAG_RENAISSANCE),
     (
         ClientVersion {
             major: 3,
@@ -1034,11 +1051,42 @@ impl ClientVersion {
         flags
     }
 
+    /// The flags the client type (`0xBF` `0x0F`) carries. The reference
+    /// client sets one bit for each step up to the number its expansion bits
+    /// make, and its shift wraps at 32 bits, so from Age of Shadows up every
+    /// bit is set. Both server families read nothing in it.
+    pub fn client_type_flags(self) -> u32 {
+        (0..self.expansion_flags()).fold(0, |flags, bit| flags | 1u32.wrapping_shl(bit))
+    }
+
     /// True when a shard reads this version as the Classic Client. A shard
     /// reads major [`KINGDOM_REBORN_MAJOR`] as the Kingdom Reborn client and
     /// anything above it as the Enhanced Client.
     pub fn is_classic(self) -> bool {
         self.major < KINGDOM_REBORN_MAJOR
+    }
+
+    /// Clients from 2.0.0 up tell the shard the size of their game view and
+    /// their language as the character enters the world.
+    pub fn reports_game_view(self) -> bool {
+        self.at_least(V_200)
+    }
+
+    /// Clients from the version the reference client writes as 3.0.0e up
+    /// send their client type at login complete.
+    pub fn reports_client_type(self) -> bool {
+        self.at_least(V_306E)
+    }
+
+    /// Clients from 3.0.5d up send their view range at login complete.
+    pub fn reports_view_range(self) -> bool {
+        self.at_least(V_305D)
+    }
+
+    /// Clients from 7.0.79.6 up tell the shard whether to show what stands
+    /// inside public houses as the character enters the world.
+    pub fn reports_house_content(self) -> bool {
+        self.at_least(V_70796)
     }
 
     pub fn has_container_grid(self) -> bool {
@@ -1372,6 +1420,43 @@ mod tests {
             patch: 0,
         };
         assert!(!enhanced.is_classic());
+    }
+
+    /// The reference client sets one bit for each step up to its expansion
+    /// number, and the shift wraps past 31.
+    #[test]
+    fn the_client_type_flags_follow_the_reference_loop() {
+        let third_dawn = ClientVersion::new(3, 0, 0, 0);
+        let blackthorn = ClientVersion::new(3, 0, 8, 0);
+        let samurai = ClientVersion::new(4, 0, 5, u32::from(b'a'));
+        assert_eq!(ClientVersion::new(1, 26, 4, 0).client_type_flags(), 0);
+        assert_eq!(ClientVersion::T2A.client_type_flags(), 0x0000_0001);
+        assert_eq!(third_dawn.client_type_flags(), 0x0000_0007);
+        assert_eq!(blackthorn.client_type_flags(), 0x0000_007F);
+        assert_eq!(samurai.client_type_flags(), 0x7FFF_FFFF);
+        assert_eq!(ClientVersion::MODERN.client_type_flags(), u32::MAX);
+    }
+
+    #[test]
+    fn the_login_talk_follows_the_reference_version_gates() {
+        let before_t2a = ClientVersion::new(1, 26, 4, 0);
+        let client_type_first = ClientVersion::new(3, 0, 0, u32::from(b'e'));
+        let view_range_first = ClientVersion::new(3, 0, 5, u32::from(b'd'));
+        let house_content_first = ClientVersion::new(7, 0, 79, 6);
+        let house_content_before = ClientVersion::new(7, 0, 79, 5);
+        assert!(!before_t2a.reports_game_view());
+        assert!(ClientVersion::T2A.reports_game_view());
+        assert!(!ClientVersion::T2A.reports_client_type());
+        assert!(!ClientVersion::T2A.reports_view_range());
+        assert!(!ClientVersion::T2A.reports_house_content());
+        assert!(client_type_first.reports_client_type());
+        assert!(!client_type_first.reports_view_range());
+        assert!(view_range_first.reports_view_range());
+        assert!(!house_content_before.reports_house_content());
+        assert!(house_content_first.reports_house_content());
+        let modern = ClientVersion::MODERN;
+        assert!(modern.reports_game_view() && modern.reports_client_type());
+        assert!(modern.reports_view_range() && modern.reports_house_content());
     }
 
     #[test]

@@ -6,14 +6,14 @@ use uoterm_protocol::{
     weapon_range, BuffEntry, ContainerItem, EquipInfo, EquipItem, GroundItem, HealthBarStatus,
     Inbound, MapPatchCount, MemberPosition, MobileView, ObjectProperty, OpenGump, PartyEvent,
     Point3, PromptRequest, SecureTrade, Serial, StatusExtra, TargetCursor, TextEntryDialog,
-    ACCOUNT_FLAG_CONTEXT_MENUS, ACCOUNT_FLAG_PROPERTY_LISTS, DEATH_SCREEN_ALIVE, DIR_RUNNING,
-    FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED, FLAG_WAR, HEALTH_BAR_POISON,
-    HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED, RANGE_MELEE,
-    SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD, SPEECH_LABEL, SPEECH_REGULAR, SPEECH_SYSTEM,
-    SPEECH_WHISPER, SPEECH_YELL, SPEED_MODE_NORMAL, SPELLBOOK_BUSHIDO, SPELLBOOK_CHIVALRY,
-    SPELLBOOK_MAGERY, SPELLBOOK_MYSTICISM, SPELLBOOK_NECROMANCY, SPELLBOOK_NINJITSU,
-    SPELLBOOK_SPELLWEAVING, TRADE_CLOSE, TRADE_DISPLAY, TRADE_UPDATE, TRADE_UPDATE_GOLD,
-    TRADE_UPDATE_LEDGER, WINDOW_CONTAINER,
+    ACCOUNT_FLAG_CONTEXT_MENUS, ACCOUNT_FLAG_PROPERTY_LISTS, CLIENT_VIEW_RANGE_MAX,
+    DEATH_SCREEN_ALIVE, DIR_RUNNING, FLAG_BLESSED, FLAG_FROZEN, FLAG_HIDDEN, FLAG_POISONED,
+    FLAG_WAR, HEALTH_BAR_POISON, HEALTH_BAR_YELLOW, LAYER_BANK, LAYER_ONE_HANDED, LAYER_TWO_HANDED,
+    RANGE_MELEE, SPEECH_ALLIANCE, SPEECH_ENCODED, SPEECH_GUILD, SPEECH_LABEL, SPEECH_REGULAR,
+    SPEECH_SYSTEM, SPEECH_WHISPER, SPEECH_YELL, SPEED_MODE_NORMAL, SPELLBOOK_BUSHIDO,
+    SPELLBOOK_CHIVALRY, SPELLBOOK_MAGERY, SPELLBOOK_MYSTICISM, SPELLBOOK_NECROMANCY,
+    SPELLBOOK_NINJITSU, SPELLBOOK_SPELLWEAVING, TRADE_CLOSE, TRADE_DISPLAY, TRADE_UPDATE,
+    TRADE_UPDATE_GOLD, TRADE_UPDATE_LEDGER, WINDOW_CONTAINER,
 };
 
 use crate::addressed::{
@@ -518,7 +518,7 @@ const GONE_NAMES_KEEP: usize = 1024;
 /// nothing when the character walks or gates away from it, so the client
 /// must forget it. 24 is the largest view range a client can ask for, so no
 /// shard keeps an object up to date past it.
-pub const VIEW_RANGE_MAX: u32 = 24;
+pub const VIEW_RANGE_MAX: u32 = CLIENT_VIEW_RANGE_MAX as u32;
 /// How far off a house or a boat is kept. A shard keeps a multi in view
 /// farther than an ordinary object, by half its size: ServUO up to one tile
 /// inside its radar range of 40, ModernUO at 22. Forgetting one sooner leaves
@@ -751,6 +751,31 @@ pub struct World {
     /// one before or after it. None when the words shown are a notice.
     #[serde(default)]
     pub tip: Option<u32>,
+    /// The size of the game view a window draws, which the session tells
+    /// the shard. It outlives a new login, as the window does.
+    #[serde(default)]
+    pub game_view: GameView,
+}
+
+/// The width and the height in pixels of the game view. A session with no
+/// window tells the size the reference client opens its game window at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameView {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The game window size the reference client opens with.
+pub const GAME_VIEW_DEFAULT_WIDTH: u32 = 600;
+pub const GAME_VIEW_DEFAULT_HEIGHT: u32 = 480;
+
+impl Default for GameView {
+    fn default() -> Self {
+        Self {
+            width: GAME_VIEW_DEFAULT_WIDTH,
+            height: GAME_VIEW_DEFAULT_HEIGHT,
+        }
+    }
 }
 
 /// The channel of a speech line that can name the character. System lines,

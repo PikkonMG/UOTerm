@@ -51,8 +51,8 @@ pub fn game_login(auth_id: u32, account: &str, password: &str) -> Vec<u8> {
 
 /// Play the character in `slot`. `client_flags` are the expansion bits, which
 /// [`ClientVersion::expansion_flags`] builds. They tell the shard which maps
-/// and rules the client has, and their clear 3D bits are the one place a
-/// Classic Client names itself in the login talk.
+/// and rules the client has, and their clear 3D bits tell it the session is
+/// a Classic Client.
 pub fn play_character(slot: u32, name: &str, client_flags: u32, client_ip: u32) -> Vec<u8> {
     let mut w = PacketWriter::new(PKT_PLAY_CHARACTER);
     w.u32(PLAY_CHAR_PATTERN)
@@ -69,6 +69,37 @@ pub fn client_version(version: ClientVersion) -> Vec<u8> {
     let mut w = PacketWriter::with_variable(PKT_CLIENT_VERSION);
     w.ascii_z(&version.as_string());
     var_bytes(w)
+}
+
+/// `0xBF` `0x05`: the width and the height in pixels of the game view.
+pub fn game_window_size(width: u32, height: u32) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_GAME_WINDOW_SIZE).u32(width).u32(height);
+    var_bytes(w)
+}
+
+/// `0xBF` `0x0B`: the language the client speaks, three letters and a zero.
+pub fn language(code: [u8; LANGUAGE_LEN]) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_LANGUAGE).bytes(&code);
+    var_bytes(w)
+}
+
+/// `0xBF` `0x0F`: the client type, with the flags of this version.
+pub fn client_type(version: ClientVersion) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_EXTENDED);
+    w.u16(EXT_CLIENT_TYPE)
+        .u8(CLIENT_TYPE_MARK)
+        .u32(version.client_type_flags());
+    var_bytes(w)
+}
+
+/// `0xC8`: the view range the client asks for, inside the range a client
+/// may ask for.
+pub fn view_range(tiles: u8) -> Vec<u8> {
+    let mut w = PacketWriter::new(PKT_VIEW_RANGE);
+    w.u8(tiles.clamp(CLIENT_VIEW_RANGE_MIN, CLIENT_VIEW_RANGE_MAX));
+    w.finish()
 }
 
 /// Classic Client 7.x / server movement request (`0x02`, 7 bytes):
@@ -1283,17 +1314,24 @@ pub fn chat_leave() -> Vec<u8> {
     var_bytes(chat_command(CHAT_LEAVE))
 }
 
-/// `0xB5`: open the chat of the shard under this name.
+/// `0xB5`: open the chat of the shard under this name. The packet has a
+/// fixed size, and both server families read it so: a zero, the name, and
+/// zeros to the end.
 pub fn chat_open(name: &str) -> Vec<u8> {
-    let mut w = PacketWriter::with_variable(PKT_OPEN_CHAT);
+    let mut w = PacketWriter::new(PKT_OPEN_CHAT);
     w.u8(0);
-    let name: String = name.chars().take(CHAT_NAME_MAX_CHARS).collect();
-    utf16be(&mut w, &name);
-    var_bytes(w)
+    for unit in name.encode_utf16().take(CHAT_NAME_MAX_UNITS) {
+        w.u16(unit);
+    }
+    let mut packet = w.finish();
+    packet.resize(OPEN_CHAT_LEN, 0);
+    packet
 }
 
-/// The most characters of a name the chat takes.
-const CHAT_NAME_MAX_CHARS: usize = 30;
+/// The most UTF-16 units of a name the chat takes.
+const CHAT_NAME_MAX_UNITS: usize = 30;
+/// The fixed size of `0xB5`.
+const OPEN_CHAT_LEN: usize = 0x40;
 
 /// The bytes a delete request pads before the slot.
 const DELETE_PAD: usize = 30;
@@ -1672,8 +1710,82 @@ mod tests {
             &[0, b'T', 0, b'r', 0, b'a', 0, b'd', 0, b'e', 0, 0]
         );
         let open = chat_open("Mara");
-        assert_eq!((open[0], open[3]), (PKT_OPEN_CHAT, 0));
-        assert_eq!(&open[4..6], &[0, b'M']);
+        assert_eq!(open.len(), OPEN_CHAT_LEN);
+        assert_eq!(
+            &open[..10],
+            &[PKT_OPEN_CHAT, 0, 0, b'M', 0, b'a', 0, b'r', 0, b'a']
+        );
+        assert!(open[10..].iter().all(|&byte| byte == 0));
+        let unnamed = chat_open("");
+        assert_eq!(unnamed.len(), OPEN_CHAT_LEN);
+        assert_eq!(unnamed[0], PKT_OPEN_CHAT);
+        assert!(unnamed[1..].iter().all(|&byte| byte == 0));
+        let long = chat_open(&"x".repeat(CHAT_NAME_MAX_UNITS * 2));
+        assert_eq!(long.len(), OPEN_CHAT_LEN);
+        assert_eq!(long[2 + CHAT_NAME_MAX_UNITS * 2 - 1], b'x');
+        assert!(long[2 + CHAT_NAME_MAX_UNITS * 2..].iter().all(|&b| b == 0));
+    }
+
+    /// The layouts of what the client says as it enters the world, as the
+    /// reference client writes them.
+    #[test]
+    fn the_login_talk_packets_are_byte_exact() {
+        const WIDTH: u32 = 600;
+        const HEIGHT: u32 = 480;
+        assert_eq!(
+            game_window_size(WIDTH, HEIGHT),
+            vec![
+                PKT_EXTENDED,
+                0x00,
+                0x0D,
+                0x00,
+                0x05,
+                0,
+                0,
+                0x02,
+                0x58,
+                0,
+                0,
+                0x01,
+                0xE0
+            ]
+        );
+        assert_eq!(
+            language(LANGUAGE_ENU),
+            vec![PKT_EXTENDED, 0x00, 0x09, 0x00, 0x0B, b'E', b'N', b'U', 0]
+        );
+        assert_eq!(
+            client_type(ClientVersion::MODERN),
+            vec![
+                PKT_EXTENDED,
+                0x00,
+                0x0A,
+                0x00,
+                0x0F,
+                0x0A,
+                0xFF,
+                0xFF,
+                0xFF,
+                0xFF
+            ]
+        );
+        assert_eq!(
+            client_type(ClientVersion::T2A),
+            vec![PKT_EXTENDED, 0x00, 0x0A, 0x00, 0x0F, 0x0A, 0, 0, 0, 0x01]
+        );
+        assert_eq!(view_range(18), vec![PKT_VIEW_RANGE, 18]);
+        assert_eq!(
+            view_range(CLIENT_VIEW_RANGE_MAX + 1),
+            vec![PKT_VIEW_RANGE, CLIENT_VIEW_RANGE_MAX]
+        );
+        assert_eq!(
+            view_range(CLIENT_VIEW_RANGE_MIN - 1),
+            vec![PKT_VIEW_RANGE, CLIENT_VIEW_RANGE_MIN]
+        );
+        assert_eq!(
+            client_version(ClientVersion::T2A),
+            [&[PKT_CLIENT_VERSION, 0x00, 0x0B][..], b"2.0.7.0\0"].concat()
+        );
     }
 
     #[test]

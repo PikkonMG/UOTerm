@@ -57,6 +57,43 @@ The mock shard accepts both paths after the seed: `0x80` account login, or `0x91
 
 The character is in the world when the server has sent `0x1B`.
 
+## Entering the world
+
+UOTerm is a headless Classic Client. As the character enters the world it
+tells the shard what the Classic Client tells it, in the same order and from
+the same client versions as the reference client:
+
+| When | Packets, in order | From version |
+| --- | --- | --- |
+| `0x1B` login confirm | `0xBF` `0x05` game view size, `0xBF` `0x0B` language `ENU` | 2.0.0 |
+| | `0xBD` client version, `0x09` click on the character, `0x34` skill request | every version |
+| | `0xFB` public house content, off | 7.0.79.6 |
+| `0x55` login complete, the first one | `0x34` status request, `0xB5` chat under no name, `0x34` skill request | every version |
+| | `0xBF` `0x0F` client type | 3.0.0e |
+| | `0xC8` view range | 3.0.5d |
+| one second after `0x55` | `0x06` double click on the character with bit `0x80000000`, which opens the paperdoll | every version |
+
+The version gates are the numbers the reference client compares: it writes the
+client type gate as 3.0.0 with the letter e. A shard that asks for the version
+(`0xBD`) gets it at once, at login and in the world.
+
+- Game view size: width and height, 32 bits each. A session with no window
+  tells the size the reference client opens its game window at, 600 by 480.
+  The watch window tells the size of the game view it draws (`game_view` in
+  [AGENT_API.md](AGENT_API.md)), and the shard hears a new size when it has
+  held for half a second, as the reference client tells it when its game
+  window is resized.
+- Client type: the byte `0x0A`, then 32 flag bits. The reference client sets
+  one bit for each step up to the number its expansion bits make, and the
+  shift wraps at 32 bits: 2.0.0 sends `0x00000001`, and every version from
+  Age of Shadows up sends `0xFFFFFFFF`. Both server families ignore it.
+- View range: the largest, 24 tiles, until the shard names one with its own
+  `0xC8`; the range goes out inside 5 to 24 tiles.
+
+UOTerm never claims to be the Enhanced or the Kingdom Reborn client: it refuses
+a version with a major of 66 or more, and the expansion bits of `0x5D` keep the
+3D bits clear.
+
 ## Inbound packets the decoder handles
 
 | Id | Name | Notes |
@@ -85,6 +122,7 @@ The character is in the world when the server has sent `0x1B`.
 | `0x4E` / `0x4F` / `0x65` / `0xBC` / `0x5B` | Light, weather, season and time | |
 | `0xD8` / `0xB2` / `0xB8` / `0x88` / `0xA5` / `0xA6` / `0x95` / `0x38` | Custom house, chat, profile, paperdoll, web link, tip, dye, pathfind | |
 | `0x73` / `0xBD` / `0xBE` | Ping, version request, assistant version | The echo of the last ping gives the round trip: `latency_ms` in `observe` and `watch` |
+| `0xC8` | View range | The range the shard keeps; the next login complete asks for it |
 | `0xF0` | Assistant and tracking | `0xFE` forbidden features. `0x00` tracking accepted. `0x01` party places and `0x02` guild places: serial, x, y, map (and a hits share for the guild), up to a zero serial. The guild list opens with a byte that says whether places follow. The world keeps them as `tracked_members` |
 | `0x3F` | UltimaLive | Block at byte 3, a count of seven-byte units at 7, the command at 13, the map at 14, the body from 15. `0xFF` hash query, `0x00` statics of one block, `0x01` map definitions (nine bytes each), `0x02` login with the shard name. Nothing is answered or changed before the login. See UltimaLive below |
 | `0x40` | UltimaLive land | Block, the 192 bytes of land in the layout of the map file, and the map at byte 200 |
@@ -96,8 +134,8 @@ Packet lengths live in era tables in `uoterm-protocol`. Unknown ids with a plaus
 ## Outbound packets on request
 
 Each of these goes out only when a tool asks for it, or as the answer to a
-shard. UOTerm never sends `0xBF` `0x05`, `0x0B` or `0x0F`, or `0xC8`, on its
-own: a shard that hears none of them reads the session as a Classic Client.
+shard. What goes out as the character enters the world is in
+[Entering the world](#entering-the-world).
 
 | Id | Name | Sent by | Layout |
 | --- | --- | --- | --- |
@@ -113,6 +151,8 @@ own: a shard that hears none of them reads the session as a Classic Client.
 | `0xBF` `0x2A` | Race change answer | `race_change` | Skin hue, hair, hair hue, beard, beard hue, one word each. Nothing after the sub-command says no |
 | `0xB3` `0x43` | Chat leave | `chat` action `leave` | Language and the command alone |
 | `0xB3` `0x63` | Chat create | `chat` action `create` | The channel name, then the password between `{` and `}` |
+| `0xB5` | Chat open | `chat` action `open`, and login complete | Fixed 64 bytes: a zero, the name in UTF-16 (30 units at most), zeros to the end |
+| `0xBF` `0x05` | Game view size | login confirm, and `game_view` | Width and height, 32 bits each |
 | `0xD7` `0x0E` | House design sync | `house_edit` action `sync` | Player serial, command, `0x0A` |
 | `0xD7` `0x1E` | Equip last weapon | `equip` with `who=last` when no weapon went to the pack here | Player serial, command, `0x0A` |
 | `0xF0` `0x00` / `0x01` | Party / guild places | `track_members` | The command; the guild query adds 1 to ask for the places |

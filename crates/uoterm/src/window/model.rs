@@ -20,6 +20,7 @@ pub mod dolls;
 pub mod dps;
 pub mod durability;
 pub mod fonts;
+pub mod game_view;
 pub mod grid;
 pub mod health_bars;
 pub mod highlight;

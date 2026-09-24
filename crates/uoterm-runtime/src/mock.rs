@@ -1,6 +1,7 @@
 //! Local unencrypted shard for tests and `uoterm mock-shard`.
 
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -144,11 +145,42 @@ impl SessionCrypt {
     }
 }
 
+/// One client connection as the shard reads it: the cipher, when the link
+/// is encrypted, and the bytes of the packet being read.
+#[derive(Default)]
+struct Wire {
+    crypt: Option<SessionCrypt>,
+    packet: Vec<u8>,
+}
+
+/// Every packet the shard heard in the world loop of its clients, from the
+/// play request on, oldest first. It keeps the newest [`HEARD_KEPT`], so a
+/// shard that runs for long does not grow.
+#[derive(Clone, Default)]
+struct Heard(Arc<Mutex<VecDeque<Vec<u8>>>>);
+
+const HEARD_KEPT: usize = 4096;
+
+impl Heard {
+    /// Files the packet the wire has read, once it has one.
+    fn file(&self, wire: &mut Wire) {
+        if wire.packet.is_empty() {
+            return;
+        }
+        let mut heard = self.0.lock();
+        if heard.len() == HEARD_KEPT {
+            heard.pop_front();
+        }
+        heard.push_back(std::mem::take(&mut wire.packet));
+    }
+}
+
 /// Test-owned mock shard. Abort the accept loop when the last handle drops.
 pub struct MockServer {
     pub addr: SocketAddr,
     abort: Option<AbortHandle>,
     shutdown: broadcast::Sender<()>,
+    heard: Heard,
 }
 
 impl MockServer {
@@ -167,6 +199,12 @@ impl MockServer {
     pub async fn start_osi(version: ClientVersion) -> std::io::Result<Self> {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         spawn_listener(addr, true, Some(version), MOCK_ERA).await
+    }
+
+    /// Every packet the clients sent in the world loop so far, from the play
+    /// request on, oldest first.
+    pub fn heard(&self) -> Vec<Vec<u8>> {
+        self.heard.0.lock().iter().cloned().collect()
     }
 }
 
@@ -197,6 +235,8 @@ async fn spawn_listener(
     let (shutdown, _) = broadcast::channel::<()>(1);
     let shutdown_tx = shutdown.clone();
     let client_era = ClientEra::new(era);
+    let heard = Heard::default();
+    let heard_by_clients = heard.clone();
     let task = tokio::spawn(async move {
         if with_shutdown {
             let mut sd = shutdown.subscribe();
@@ -207,9 +247,10 @@ async fn spawn_listener(
                             Ok((stream, _)) => {
                                 let mut client_sd = sd.resubscribe();
                                 let era = client_era.clone();
+                                let heard = heard_by_clients.clone();
                                 tokio::spawn(async move {
                                     tokio::select! {
-                                        _ = handle_client(stream, osi, &era) => {}
+                                        _ = handle_client(stream, osi, &era, &heard) => {}
                                         _ = client_sd.recv() => {}
                                     }
                                 });
@@ -223,8 +264,9 @@ async fn spawn_listener(
         } else {
             while let Ok((stream, _)) = listener.accept().await {
                 let era = client_era.clone();
+                let heard = heard_by_clients.clone();
                 tokio::spawn(async move {
-                    let _ = handle_client(stream, osi, &era).await;
+                    let _ = handle_client(stream, osi, &era, &heard).await;
                 });
             }
         }
@@ -233,6 +275,7 @@ async fn spawn_listener(
         addr: local,
         abort: Some(task.abort_handle()),
         shutdown: shutdown_tx,
+        heard,
     })
 }
 
@@ -294,13 +337,13 @@ fn send_plain(
 fn send_h(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     h: &Huffman,
-    crypt: &mut Option<SessionCrypt>,
+    wire: &mut Wire,
     table: &PacketTable,
     pkt: &[u8],
 ) -> std::io::Result<()> {
     debug_assert_shape(table, pkt);
     let mut bytes = compress_packet(h, pkt);
-    if let Some(c) = crypt {
+    if let Some(c) = &mut wire.crypt {
         c.wrap_out(&mut bytes);
     }
     send_raw(tx, bytes)
@@ -308,13 +351,14 @@ fn send_h(
 
 async fn read_unwrapped(
     reader: &mut OwnedReadHalf,
-    crypt: &mut Option<SessionCrypt>,
+    wire: &mut Wire,
     buf: &mut [u8],
 ) -> std::io::Result<()> {
     reader.read_exact(buf).await?;
-    if let Some(c) = crypt {
+    if let Some(c) = &mut wire.crypt {
         c.unwrap_in(buf);
     }
+    wire.packet.extend_from_slice(buf);
     Ok(())
 }
 
@@ -322,6 +366,7 @@ async fn handle_client(
     stream: TcpStream,
     osi: Option<ClientVersion>,
     client_era: &ClientEra,
+    heard: &Heard,
 ) -> std::io::Result<()> {
     let huff = Huffman::new();
     let port = stream.local_addr()?.port();
@@ -334,7 +379,7 @@ async fn handle_client(
             }
         }
     });
-    let result = handle_client_io(&mut reader, &tx, &huff, port, osi, client_era).await;
+    let result = handle_client_io(&mut reader, &tx, &huff, port, osi, client_era, heard).await;
     drop(tx);
     let _ = write_task.await;
     result
@@ -347,6 +392,7 @@ async fn handle_client_io(
     port: u16,
     osi: Option<ClientVersion>,
     client_era: &ClientEra,
+    heard: &Heard,
 ) -> std::io::Result<()> {
     let mut first = [0u8; 1];
     reader.read_exact(&mut first).await?;
@@ -362,14 +408,14 @@ async fn handle_client_io(
     };
     let mut peek = [0u8; 1];
     reader.read_exact(&mut peek).await?;
-    let mut crypt = None;
+    let mut wire = Wire::default();
     if let Some(version) = osi {
         let mut login = SessionCrypt::login(seed, version);
         let mut trial = peek;
         login.unwrap_in(&mut trial);
         if trial[0] == PKT_LOGIN_REQUEST {
             peek = trial;
-            crypt = Some(login);
+            wire.crypt = Some(login);
         } else {
             let mut game = SessionCrypt::game(seed, version);
             let mut trial = peek;
@@ -378,7 +424,7 @@ async fn handle_client_io(
                 return Ok(());
             }
             peek = trial;
-            crypt = Some(game);
+            wire.crypt = Some(game);
         }
     }
     let era = if peek[0] == PKT_LOGIN_REQUEST {
@@ -390,50 +436,53 @@ async fn handle_client_io(
     match peek[0] {
         PKT_LOGIN_REQUEST => {
             let mut rest = [0u8; LOGIN_REQUEST_LEN - 1];
-            read_unwrapped(reader, &mut crypt, &mut rest).await?;
+            read_unwrapped(reader, &mut wire, &mut rest).await?;
             send_plain(tx, &table, server_list())?;
             let mut sel = [0u8; SELECT_SERVER_LEN];
-            read_unwrapped(reader, &mut crypt, &mut sel).await?;
+            read_unwrapped(reader, &mut wire, &mut sel).await?;
             send_plain(tx, &table, relay(port))?;
             let mut seedb = [0u8; GAME_SEED_LEN];
             if reader.read_exact(&mut seedb).await.is_err() {
                 return Ok(());
             }
             let auth = u32::from_be_bytes(seedb);
-            if let Some(c) = crypt.as_mut() {
+            if let Some(c) = wire.crypt.as_mut() {
                 c.enter_game(auth);
             }
             let mut game = [0u8; GAME_LOGIN_LEN];
-            read_unwrapped(reader, &mut crypt, &mut game).await?;
+            read_unwrapped(reader, &mut wire, &mut game).await?;
             if game[0] != PKT_GAME_LOGIN {
                 return Ok(());
             }
         }
         PKT_GAME_LOGIN => {
             let mut rest = [0u8; GAME_LOGIN_LEN - 1];
-            read_unwrapped(reader, &mut crypt, &mut rest).await?;
+            read_unwrapped(reader, &mut wire, &mut rest).await?;
         }
         _ => return Ok(()),
     }
-    send_h(tx, huff, &mut crypt, &table, &features(era))?;
+    send_h(tx, huff, &mut wire, &table, &features(era))?;
     // The characters of the account, each in its slot. A delete empties its
     // slot and a new one takes the first empty slot.
     let mut characters: Vec<String> = std::iter::once(MOCK_CHAR.to_string())
         .chain(std::iter::repeat_n(String::new(), MOCK_SLOTS - 1))
         .collect();
-    send_h(tx, huff, &mut crypt, &table, &character_list(&characters))?;
+    send_h(tx, huff, &mut wire, &table, &character_list(&characters))?;
+    wire.packet.clear();
     loop {
+        // The packet before this one has been read and answered.
+        heard.file(&mut wire);
         let mut id = [0u8; 1];
-        if read_unwrapped(reader, &mut crypt, &mut id).await.is_err() {
+        if read_unwrapped(reader, &mut wire, &mut id).await.is_err() {
             break;
         }
         match id[0] {
             PKT_PLAY_CHARACTER => {
                 let mut rest = [0u8; PLAY_CHAR_REST];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
                 let name = name_at(&rest, PLAY_NAME_AT);
                 for packet in enter_world(era, &name) {
-                    send_h(tx, huff, &mut crypt, &table, &packet)?;
+                    send_h(tx, huff, &mut wire, &table, &packet)?;
                 }
             }
             PKT_CREATE_CHARACTER | PKT_CREATE_CHARACTER_NEW => {
@@ -442,7 +491,7 @@ async fn handle_client_io(
                     PacketLen::Variable | PacketLen::Unknown => return Ok(()),
                 };
                 let mut rest = vec![0u8; len.saturating_sub(1)];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
                 let name = name_at(&rest, CREATE_NAME_AT);
                 let taken = characters
                     .iter()
@@ -452,14 +501,14 @@ async fn handle_client_io(
                     send_h(
                         tx,
                         huff,
-                        &mut crypt,
+                        &mut wire,
                         &table,
                         &[PKT_CHARACTER_REJECTED, REFUSED_NAME_TAKEN],
                     )?;
                     send_h(
                         tx,
                         huff,
-                        &mut crypt,
+                        &mut wire,
                         &table,
                         &character_list_update(&characters),
                     )?;
@@ -468,12 +517,12 @@ async fn handle_client_io(
                 characters[slot] = name.clone();
                 // A shard puts a new character straight into the world.
                 for packet in enter_world(era, &name) {
-                    send_h(tx, huff, &mut crypt, &table, &packet)?;
+                    send_h(tx, huff, &mut wire, &table, &packet)?;
                 }
             }
             PKT_DELETE_CHARACTER => {
                 let mut rest = [0u8; DELETE_REST];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
                 let slot = u32::from_be_bytes([
                     rest[DELETE_SLOT_AT],
                     rest[DELETE_SLOT_AT + 1],
@@ -486,82 +535,82 @@ async fn handle_client_io(
                 send_h(
                     tx,
                     huff,
-                    &mut crypt,
+                    &mut wire,
                     &table,
                     &character_list_update(&characters),
                 )?;
             }
             PKT_CLIENT_VERSION => {
-                eat_var(reader, &mut crypt).await?;
+                eat_var(reader, &mut wire).await?;
             }
             PKT_MOVE => {
                 let mut rest = [0u8; MOVE_REST];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
                 send_h(
                     tx,
                     huff,
-                    &mut crypt,
+                    &mut wire,
                     &table,
                     &[PKT_MOVE_ACK, rest[1], NOTO_INNOCENT],
                 )?;
             }
             PKT_ASCII_SPEECH => {
-                let text = read_speech(reader, &mut crypt).await?;
-                send_h(tx, huff, &mut crypt, &table, &echo(&text))?;
+                let text = read_speech(reader, &mut wire).await?;
+                send_h(tx, huff, &mut wire, &table, &echo(&text))?;
             }
             PKT_UNICODE_SPEECH => {
-                eat_var(reader, &mut crypt).await?;
-                send_h(tx, huff, &mut crypt, &table, &echo("ok"))?;
+                eat_var(reader, &mut wire).await?;
+                send_h(tx, huff, &mut wire, &table, &echo("ok"))?;
             }
             PKT_DOUBLE_CLICK => {
                 let mut ser = [0u8; SERIAL_LEN];
-                read_unwrapped(reader, &mut crypt, &mut ser).await?;
+                read_unwrapped(reader, &mut wire, &mut ser).await?;
                 let serial = u32::from_be_bytes(ser);
                 if serial == MOCK_PLAYER | PAPERDOLL_REQUEST_BIT {
-                    send_h(tx, huff, &mut crypt, &table, &paperdoll())?;
+                    send_h(tx, huff, &mut wire, &table, &paperdoll())?;
                 } else if serial == MOCK_HATCHET || serial == MOCK_PLAYER {
-                    send_h(tx, huff, &mut crypt, &table, &target_cursor())?;
+                    send_h(tx, huff, &mut wire, &table, &target_cursor())?;
                 }
             }
             PKT_TARGET => {
                 let mut rest = [0u8; TARGET_REST];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
-                send_h(tx, huff, &mut crypt, &table, &chop_msg())?;
-                send_h(tx, huff, &mut crypt, &table, &add_logs(era))?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
+                send_h(tx, huff, &mut wire, &table, &chop_msg())?;
+                send_h(tx, huff, &mut wire, &table, &add_logs(era))?;
             }
             PKT_PING => {
                 let mut v = [0u8; PING_REST];
-                read_unwrapped(reader, &mut crypt, &mut v).await?;
-                send_h(tx, huff, &mut crypt, &table, &[PKT_PING, v[0]])?;
+                read_unwrapped(reader, &mut wire, &mut v).await?;
+                send_h(tx, huff, &mut wire, &table, &[PKT_PING, v[0]])?;
             }
             PKT_WAR_MODE => {
                 let mut rest = [0u8; WAR_MODE_REST];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
                 send_h(
                     tx,
                     huff,
-                    &mut crypt,
+                    &mut wire,
                     &table,
                     &[PKT_WAR_MODE, rest[0], 0, WAR_MODE_UNKNOWN, 0],
                 )?;
             }
             PKT_TEXT_COMMAND => {
-                eat_var(reader, &mut crypt).await?;
+                eat_var(reader, &mut wire).await?;
             }
             PKT_QUERY => {
                 let mut rest = [0u8; QUERY_REST];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
             }
             // A logout is granted at once, as a shard grants it; the client
             // closes the link.
             PKT_LOGOUT => {
                 let mut rest = [0u8; LOGOUT_REST];
-                read_unwrapped(reader, &mut crypt, &mut rest).await?;
-                send_h(tx, huff, &mut crypt, &table, &[PKT_LOGOUT, LOGOUT_GRANTED])?;
+                read_unwrapped(reader, &mut wire, &mut rest).await?;
+                send_h(tx, huff, &mut wire, &table, &[PKT_LOGOUT, LOGOUT_GRANTED])?;
             }
             DISCONNECT => break,
             other => {
-                skip_known(reader, &mut crypt, other, &table).await?;
+                skip_known(reader, &mut wire, other, &table).await?;
             }
         }
     }
@@ -572,14 +621,14 @@ async fn handle_client_io(
 /// table. Framing it with the wrong era desynchronizes the whole stream.
 async fn skip_known(
     reader: &mut OwnedReadHalf,
-    crypt: &mut Option<SessionCrypt>,
+    wire: &mut Wire,
     id: u8,
     table: &PacketTable,
 ) -> std::io::Result<()> {
     match PacketLen::from_table(table.get(id)) {
-        PacketLen::Fixed(len) => skip_rest(reader, crypt, (len as usize).saturating_sub(1)).await,
-        PacketLen::Variable => eat_var(reader, crypt).await,
-        PacketLen::Unknown => eat_unknown(reader, crypt).await,
+        PacketLen::Fixed(len) => skip_rest(reader, wire, (len as usize).saturating_sub(1)).await,
+        PacketLen::Variable => eat_var(reader, wire).await,
+        PacketLen::Unknown => eat_unknown(reader, wire).await,
     }
 }
 
@@ -595,52 +644,36 @@ fn unknown_body_len(declared: usize) -> Option<usize> {
     }
 }
 
-async fn eat_unknown(
-    reader: &mut OwnedReadHalf,
-    crypt: &mut Option<SessionCrypt>,
-) -> std::io::Result<()> {
-    match unknown_body_len(read_var_len(reader, crypt).await?) {
-        Some(body) => skip_rest(reader, crypt, body).await,
+async fn eat_unknown(reader: &mut OwnedReadHalf, wire: &mut Wire) -> std::io::Result<()> {
+    match unknown_body_len(read_var_len(reader, wire).await?) {
+        Some(body) => skip_rest(reader, wire, body).await,
         None => Ok(()),
     }
 }
 
-async fn eat_var(
-    reader: &mut OwnedReadHalf,
-    crypt: &mut Option<SessionCrypt>,
-) -> std::io::Result<()> {
-    let len = read_var_len(reader, crypt).await?;
-    skip_rest(reader, crypt, len.saturating_sub(VAR_LEN_HEADER)).await
+async fn eat_var(reader: &mut OwnedReadHalf, wire: &mut Wire) -> std::io::Result<()> {
+    let len = read_var_len(reader, wire).await?;
+    skip_rest(reader, wire, len.saturating_sub(VAR_LEN_HEADER)).await
 }
 
-async fn read_var_len(
-    reader: &mut OwnedReadHalf,
-    crypt: &mut Option<SessionCrypt>,
-) -> std::io::Result<usize> {
+async fn read_var_len(reader: &mut OwnedReadHalf, wire: &mut Wire) -> std::io::Result<usize> {
     let mut lenb = [0u8; 2];
-    read_unwrapped(reader, crypt, &mut lenb).await?;
+    read_unwrapped(reader, wire, &mut lenb).await?;
     Ok(u16::from_be_bytes(lenb) as usize)
 }
 
-async fn skip_rest(
-    reader: &mut OwnedReadHalf,
-    crypt: &mut Option<SessionCrypt>,
-    len: usize,
-) -> std::io::Result<()> {
+async fn skip_rest(reader: &mut OwnedReadHalf, wire: &mut Wire, len: usize) -> std::io::Result<()> {
     if len > 0 {
         let mut rest = vec![0u8; len];
-        read_unwrapped(reader, crypt, &mut rest).await?;
+        read_unwrapped(reader, wire, &mut rest).await?;
     }
     Ok(())
 }
 
-async fn read_speech(
-    reader: &mut OwnedReadHalf,
-    crypt: &mut Option<SessionCrypt>,
-) -> std::io::Result<String> {
-    let len = read_var_len(reader, crypt).await?;
+async fn read_speech(reader: &mut OwnedReadHalf, wire: &mut Wire) -> std::io::Result<String> {
+    let len = read_var_len(reader, wire).await?;
     let mut rest = vec![0u8; len.saturating_sub(VAR_LEN_HEADER)];
-    read_unwrapped(reader, crypt, &mut rest).await?;
+    read_unwrapped(reader, wire, &mut rest).await?;
     if rest.len() > SPEECH_HEADER_SKIP {
         let t = &rest[SPEECH_HEADER_SKIP..];
         let end = t.iter().position(|&b| b == 0).unwrap_or(t.len());
@@ -894,6 +927,7 @@ mod tests {
     use crate::manager::Runtime;
     use crate::persona::Persona;
     use std::time::Duration;
+    use uoterm_protocol::encode;
     use uoterm_protocol::lengths::PacketTable;
     use uoterm_protocol::types::{
         ClientVersion, Era, PKT_ADD_ITEM, PKT_DOUBLE_CLICK, PKT_MOVE, PKT_PING, PKT_PLAY_CHARACTER,
@@ -1255,5 +1289,90 @@ mod tests {
         let opts = connect_opts(&server, crate::config::EncryptionMode::Osi);
         let handle = Runtime::new(2).connect(opts).await.unwrap();
         assert_character_list(&handle).await;
+    }
+
+    /// How often and how long a test looks for the double click on the
+    /// character, which comes a second after login complete.
+    const HEARD_POLLS: usize = 40;
+    const HEARD_POLL_GAP: Duration = Duration::from_millis(100);
+
+    /// What a client of this version said from its play request on, up to
+    /// and with the double click that opens the character's paperdoll.
+    async fn heard_at_login(version: ClientVersion, era: Era) -> Vec<Vec<u8>> {
+        let server = MockServer::start_era(era).await.unwrap();
+        let mut opts = connect_opts(&server, crate::config::EncryptionMode::None);
+        opts.version = version;
+        opts.era = era;
+        let handle = Runtime::new(2).connect(opts).await.unwrap();
+        let open_self = encode::double_click(Serial(MOCK_PLAYER | PAPERDOLL_REQUEST_BIT));
+        for _ in 0..HEARD_POLLS {
+            let heard = server.heard();
+            if let Some(at) = heard.iter().position(|pkt| *pkt == open_self) {
+                handle.shutdown().await;
+                return heard[..=at].to_vec();
+            }
+            tokio::time::sleep(HEARD_POLL_GAP).await;
+        }
+        panic!(
+            "the character was never double clicked; heard ids {:02X?}",
+            server.heard().iter().map(|pkt| pkt[0]).collect::<Vec<_>>()
+        );
+    }
+
+    /// Checks the play request, then the talk of login confirm and login
+    /// complete in order, and the double click that ends it.
+    fn assert_login_talk(heard: &[Vec<u8>], talk: &[Vec<u8>]) {
+        let ids: Vec<u8> = heard.iter().map(|pkt| pkt[0]).collect();
+        assert_eq!(heard[0][0], PKT_PLAY_CHARACTER, "ids {ids:02X?}");
+        assert_eq!(&heard[1..=talk.len()], talk, "ids {ids:02X?}");
+        assert_eq!(
+            heard.last(),
+            Some(&encode::double_click(Serial(
+                MOCK_PLAYER | PAPERDOLL_REQUEST_BIT
+            )))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_modern_client_enters_the_world_as_the_reference_client_does() {
+        let me = Serial(MOCK_PLAYER);
+        let view = uoterm_world::GameView::default();
+        let heard = heard_at_login(ClientVersion::MODERN, Era::Modern).await;
+        assert_login_talk(
+            &heard,
+            &[
+                encode::game_window_size(view.width, view.height),
+                encode::language(LANGUAGE_ENU),
+                encode::client_version(ClientVersion::MODERN),
+                encode::single_click(me),
+                encode::query_skills(me),
+                encode::public_house_content(false),
+                encode::query_status(me),
+                encode::chat_open(""),
+                encode::query_skills(me),
+                encode::client_type(ClientVersion::MODERN),
+                encode::view_range(CLIENT_VIEW_RANGE_MAX),
+            ],
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_t2a_client_enters_the_world_as_the_reference_client_does() {
+        let me = Serial(MOCK_PLAYER);
+        let view = uoterm_world::GameView::default();
+        let heard = heard_at_login(ClientVersion::T2A, Era::T2a).await;
+        assert_login_talk(
+            &heard,
+            &[
+                encode::game_window_size(view.width, view.height),
+                encode::language(LANGUAGE_ENU),
+                encode::client_version(ClientVersion::T2A),
+                encode::single_click(me),
+                encode::query_skills(me),
+                encode::query_status(me),
+                encode::chat_open(""),
+                encode::query_skills(me),
+            ],
+        );
     }
 }

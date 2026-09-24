@@ -35,7 +35,7 @@ use uoterm_runtime::tools::{
 use uoterm_runtime::tools::{
     TOOL_AGENT_ON, TOOL_AGENT_RUN, TOOL_AGENT_SET, TOOL_AGENT_STOP, TOOL_DAMAGE_METER, TOOL_PARTY,
 };
-use uoterm_runtime::tools::{TOOL_DYE, TOOL_OPEN_SPELLBOOK};
+use uoterm_runtime::tools::{TOOL_DYE, TOOL_GAME_VIEW, TOOL_OPEN_SPELLBOOK};
 use uoterm_runtime::tools::{TOOL_HOTKEY, TOOL_QUEST_ARROW, TOOL_TIP, TOOL_WHISPER};
 use uoterm_runtime::tools::{TOOL_MOBILE_STATUS, TOOL_VIRTUE_GUMP};
 
@@ -145,6 +145,11 @@ pub enum Act {
     Deposit,
     /// Ask the shard to show what stands inside public houses, or not.
     HouseContent(bool),
+    /// Tell the shard the size of the game view the window draws.
+    GameView {
+        width: u32,
+        height: u32,
+    },
     /// One step while a key or the right mouse button is down.
     Step {
         direction: &'static str,
@@ -497,6 +502,9 @@ impl Act {
             Self::Stop => vec![(TOOL_STOP, json!({}))],
             Self::Deposit => vec![(TOOL_DEPOSIT, json!({}))],
             Self::HouseContent(show) => vec![(TOOL_HOUSE_CONTENT, json!({ "show": show }))],
+            Self::GameView { width, height } => {
+                vec![(TOOL_GAME_VIEW, json!({ "width": width, "height": height }))]
+            }
             Self::Step {
                 direction,
                 run,
@@ -740,8 +748,8 @@ impl Act {
             Self::Hotkey(name) => format!("Hotkey: {name}"),
             Self::Stop => "Stop.".into(),
             Self::Deposit => "Put the pack in the bank.".into(),
-            // The window asks it by itself, so it says nothing.
-            Self::HouseContent(_) => String::new(),
+            // The window asks these by itself, so they say nothing.
+            Self::HouseContent(_) | Self::GameView { .. } => String::new(),
             // A step comes many times each second, so it says nothing.
             Self::Step { .. } => String::new(),
             Self::Move { .. } => "Item moved.".into(),
@@ -1453,6 +1461,10 @@ mod tests {
             Act::Stop,
             Act::Deposit,
             Act::HouseContent(true),
+            Act::GameView {
+                width: 800,
+                height: 600,
+            },
             Act::Step {
                 direction: "n",
                 run: false,
