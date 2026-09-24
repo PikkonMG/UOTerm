@@ -97,10 +97,10 @@ fn hex(serial: Serial) -> String {
 
 /// Text a script line cannot hold: a script has no escapes, so a quote
 /// cannot hold both quote marks, and a line cannot hold a line break.
-struct Unquotable;
+pub(super) struct Unquotable;
 
 /// Text in the quotes a script needs.
-fn quoted(text: &str) -> std::result::Result<String, Unquotable> {
+pub(super) fn quoted(text: &str) -> std::result::Result<String, Unquotable> {
     if text.contains(['\n', '\r']) {
         return Err(Unquotable);
     }
@@ -223,9 +223,15 @@ fn script_line(
             }
         }
         TOOL_MOVE_TO => {
-            let x = args.get("x").and_then(|v| v.as_u64()).unwrap_or(0);
-            let y = args.get("y").and_then(|v| v.as_u64()).unwrap_or(0);
-            format!("pathfindto {x} {y}")
+            // A walk to a landmark names no tile; the tile it heads to is
+            // in the answer.
+            let spot = |key: &str| {
+                args.get(key)
+                    .or_else(|| result.result.get("heading_to").and_then(|to| to.get(key)))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+            };
+            format!("pathfindto {} {}", spot("x"), spot("y"))
         }
         TOOL_WALK => {
             let dir = args
@@ -286,11 +292,12 @@ fn script_line(
                 .trim_end()
                 .to_string()
         }
-        TOOL_HOTKEY => match result.result.get("lines").and_then(|v| v.as_str()) {
+        // A hotkey, and each tool a script command does, names the lines
+        // it ran.
+        _ => match result.result.get("lines").and_then(|v| v.as_str()) {
             Some(lines) => lines.to_string(),
             None => return Ok(None),
         },
-        _ => return Ok(None),
     };
     Ok(Some(line))
 }

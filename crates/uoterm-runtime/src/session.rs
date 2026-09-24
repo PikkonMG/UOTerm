@@ -34,12 +34,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{interval, interval_at, MissedTickBehavior};
 use uoterm_nav::{
-    pathfind, pathfind_flat, BlockedMove, ClilocData, MapError, MapVariant, MockMap, MulMap,
-    MultiData, Obstacles, Overlay, SpeechData, TileQuery,
+    pathfind, BlockedMove, ClilocData, MapError, MapVariant, MockMap, MulMap, MultiData, Obstacles,
+    Overlay, SpeechData, TileQuery,
 };
 use uoterm_protocol::crypto::{for_mode, IdentityCipher, StreamCipher};
 use uoterm_protocol::encode;
@@ -49,15 +48,22 @@ use uoterm_protocol::types::*;
 use uoterm_protocol::{parse_with_version, GroundItem, Inbound};
 use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World, RADAR_DEFAULT};
 
+mod actions;
 mod agents;
 mod awareness;
 mod control;
 mod gather;
 mod hotkeys;
+pub use hotkeys::fixed_names as fixed_hotkey_names;
+mod latency;
 mod play;
 mod recorder;
+mod requests;
 mod ress;
 mod scripting;
+mod terrain;
+mod travel;
+mod ultima_live;
 use agents::Agents;
 use scripting::Scripting;
 
@@ -99,6 +105,8 @@ const LOGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_WORLD_DRAIN: Duration = Duration::from_millis(100);
 const LOGIN_CHAR_IN_WORLD: &str = "character already in world";
 const LOGIN_INCOMPLETE: &str = "login did not complete";
+/// Why a login that was asked to play no character ended.
+pub(crate) const LEFT_AT_CHARACTER_LIST: &str = "the login stopped at the character list";
 /// One shared budget covering the double-click, the lift, the drop and the
 /// bandage command. The server adds this much to a single delay of its own on
 /// each of them, and answers anything sent inside it with the line
@@ -136,6 +144,9 @@ const DOOR_LOCKED: &str = "door will not open";
 const DOOR_STILL_BLOCKS: &str = "open door still blocks the way";
 /// What the log says when a shut door is in the way and the shard forbids
 /// opening doors by themselves. The agent opens it with the door tool.
+/// What the log says when a shut door is in the way of a walk that was told
+/// to open no door.
+const DOOR_NOT_OPENED_THIS_WALK: &str = "shut door in the way; this walk opens no doors";
 const DOOR_NOT_OPENED_BY_ITSELF: &str =
     "shut door in the way; this shard does not let doors open by themselves, use open_door beside it";
 /// The name the client gives when the shard asks which assistant runs. It has
@@ -148,6 +159,8 @@ const NEEDS_SKILL: &str = "use_skill needs skill: a skill number or name";
 const SKILL_NOT_USED_ALONE: &str = "that skill is not used by itself";
 /// The argument that names what a cast aims at as the spell's cursor comes.
 const ARG_TARGET: &str = "target";
+const ARG_BOOK: &str = "book";
+const ARG_CLOSE: &str = "close";
 const ASSISTANT_NAME: &str = concat!("UOTerm ", env!("CARGO_PKG_VERSION"));
 /// Why a refused tile is forgotten: it has been remembered its full
 /// [`movement::REFUSED_TILE_MEMORY`].
@@ -346,13 +359,19 @@ pub async fn start(
             .await;
             // The first login answers its caller, who decides; only a session
             // that was in the world once logs in again by itself.
-            let again = opts.reconnect
-                && login_tx.is_none()
-                && match &ended {
-                    Ok(SessionEnd::LostLink) => true,
-                    Err(RuntimeError::Network(_)) => true,
-                    Ok(SessionEnd::Shutdown | SessionEnd::LoggedOut) | Err(_) => false,
-                };
+            let relog = match &ended {
+                Ok(SessionEnd::Relog(name)) => Some(name.clone()),
+                _ => None,
+            };
+            let again = relog.is_some()
+                || opts.reconnect
+                    && login_tx.is_none()
+                    && match &ended {
+                        Ok(SessionEnd::LostLink) => true,
+                        Err(RuntimeError::Network(_)) => true,
+                        Ok(SessionEnd::Shutdown | SessionEnd::LoggedOut | SessionEnd::Relog(_))
+                        | Err(_) => false,
+                    };
             match &ended {
                 Ok(end) => tracing::info!(?end, "session ended"),
                 Err(e) => tracing::error!(error = %e, "session ended"),
@@ -361,13 +380,27 @@ pub async fn start(
                 break;
             }
             // A person whose link broke logs in to the character he played,
-            // with no screen to ask.
+            // with no screen to ask; one who logged out to play another
+            // logs in to that one.
             let played = world.read().self_state.name.clone();
-            if !played.is_empty() {
-                opts.character = played;
-            }
+            let why = match relog {
+                Some(name) => {
+                    opts.character = name;
+                    format!(
+                        "logged out; logging in as {} in {} s",
+                        opts.character,
+                        wait.as_secs()
+                    )
+                }
+                None => {
+                    if !played.is_empty() {
+                        opts.character = played;
+                    }
+                    format!("the link dropped; logging in again in {} s", wait.as_secs())
+                }
+            };
             opts.picker = None;
-            begin_again(&world, &opts, wait);
+            begin_again(&world, &opts, &why);
             if !wait_to_reconnect(&mut rx, wait).await {
                 break;
             }
@@ -388,6 +421,9 @@ enum SessionEnd {
     Shutdown,
     /// The character logged out, and the shard closed the link.
     LoggedOut,
+    /// The character logged out to play another character of the account,
+    /// by this name, in the same session.
+    Relog(String),
     /// The link dropped with the character still in the world.
     LostLink,
 }
@@ -410,10 +446,10 @@ fn fresh_world(opts: &ConnectOptions) -> World {
     }
 }
 
-/// Clears the world for a new login and tells the agent the link dropped.
+/// Clears the world for a new login and tells the agent why the link ended.
 /// The event count goes on from where it was, so an agent that waits on
 /// events hears of this and of each event after it once.
-fn begin_again(world: &RwLock<World>, opts: &ConnectOptions, wait: Duration) {
+fn begin_again(world: &RwLock<World>, opts: &ConnectOptions, why: &str) {
     let mut w = world.write();
     let seq = w.event_seq;
     *w = fresh_world(opts);
@@ -421,7 +457,7 @@ fn begin_again(world: &RwLock<World>, opts: &ConnectOptions, wait: Duration) {
     w.push_event(uoterm_world::Event::new(
         uoterm_world::EventKind::Disconnected,
         None,
-        format!("the link dropped; logging in again in {} s", wait.as_secs()),
+        why,
     ));
 }
 
@@ -554,6 +590,16 @@ struct Inner {
     /// The character asked to log out, so a link the shard closes after it
     /// is no link lost.
     logged_out: bool,
+    /// The character to log in as once the shard closes the link after a
+    /// logout.
+    relog_as: Option<String>,
+    /// The last ping and the round trip it measured.
+    latency: latency::Latency,
+    /// The map changes of an UltimaLive shard.
+    ultima_live: ultima_live::UltimaLive,
+    /// The groups of the skill list, from the client files. Empty without
+    /// them.
+    skill_groups: Vec<uoterm_nav::SkillGroup>,
     last_path_fail: Option<(Point3, Instant)>,
     /// Why the last route could not be planned, kept so the move_to tool can
     /// tell the agent the reason instead of a bare "path failed".
@@ -571,6 +617,12 @@ struct Inner {
     /// refusal that close behind it is about his stamina and about nothing in
     /// the way.
     last_fatigued: Option<Instant>,
+    /// What the map questions keep: the whole tiledata, once read.
+    terrain: terrain::Terrain,
+    /// The choices of the walk under way.
+    trip: travel::Trip,
+    /// The skills the character gained this session.
+    gains: actions::SkillGains,
 }
 
 /// An object waiting for the next target cursor. It runs out, so a cursor
@@ -797,15 +849,27 @@ impl Inner {
 
     fn ensure_facet(&mut self) {
         let idx = self.map_index();
+        self.facet_of(idx);
+    }
+
+    /// The client files of one map, opened when no session holds them yet.
+    /// None without client files, or when they would not open.
+    fn facet_of(&mut self, idx: u8) -> Option<Arc<MulMap>> {
         let variant = self.map_variant(idx);
         let opened = self.map_variants.get(&idx).copied().unwrap_or_default();
-        if self.maps.contains_key(&idx) && opened == variant {
-            return;
+        if opened == variant {
+            if let Some(open) = self.maps.get(&idx) {
+                return Some(open.clone());
+            }
         }
-        let Some(path) = self.uopath.clone() else {
-            return;
+        let path = self.uopath.clone()?;
+        // A map the shard changed live is this session's own copy.
+        let opened = if self.ultima_live.has_edits(idx) {
+            self.ultima_live.open_map(&path, idx, variant)
+        } else {
+            shared_facet(&self.facets, &path, idx, variant)
         };
-        match shared_facet(&self.facets, &path, idx, variant) {
+        match opened {
             Ok(m) => {
                 tracing::info!(
                     map = idx,
@@ -814,10 +878,14 @@ impl Inner {
                     live = self.facets.live(),
                     "map facet ready"
                 );
-                self.maps.insert(idx, m);
+                self.maps.insert(idx, m.clone());
                 self.map_variants.insert(idx, variant);
+                Some(m)
             }
-            Err(e) => tracing::warn!(map = idx, error = %e, "failed to open map facet"),
+            Err(e) => {
+                tracing::warn!(map = idx, error = %e, "failed to open map facet");
+                None
+            }
         }
     }
 
@@ -963,6 +1031,20 @@ async fn run_session(
                 None
             }
         });
+    let skill_groups = opts
+        .uopath
+        .as_deref()
+        .map(|path| match uoterm_nav::read_skill_groups(path) {
+            Ok(groups) => {
+                tracing::info!(groups = groups.len(), "skill groups ready");
+                groups
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read the client skill groups");
+                Vec::new()
+            }
+        })
+        .unwrap_or_default();
     let landmarks = opts.markers.as_deref().and_then(|path| {
         match Landmarks::load(path) {
             Ok(marks) => {
@@ -1049,6 +1131,13 @@ async fn run_session(
         gathering: gather::Gathering::default(),
         reviving: ress::Reviving::default(),
         logged_out: false,
+        relog_as: None,
+        latency: latency::Latency::default(),
+        ultima_live: ultima_live::UltimaLive::default(),
+        skill_groups,
+        terrain: terrain::Terrain::default(),
+        trip: travel::Trip::default(),
+        gains: actions::SkillGains::default(),
     };
     let (mut reader, mut writer) = match login(&opts, &mut inner).await {
         Ok(pair) => {
@@ -1082,6 +1171,7 @@ async fn run_session(
     ping.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
+        let step_due = inner.movement.step_wake(Instant::now());
         tokio::select! {
             cmd = rx.recv() => {
                 match cmd {
@@ -1094,7 +1184,7 @@ async fn run_session(
                         } else if call.name == TOOL_NEXT_EVENT {
                             awareness::wait_for_event(&mut inner, &call.args, reply, Instant::now());
                         } else {
-                            let _ = reply.send(answer_agent(&mut inner, call));
+                            let _ = reply.send(answer_now(&mut inner, call));
                         }
                     }
                 }
@@ -1108,22 +1198,28 @@ async fn run_session(
                     }
                 };
                 if n == 0 {
-                    return Ok(if inner.logged_out {
-                        SessionEnd::LoggedOut
-                    } else {
-                        SessionEnd::LostLink
-                    });
+                    return Ok(link_ended(&mut inner));
                 }
-                read_from_the_wire(&mut inner, &mut buf[..n]);
+                inner.latency.traffic.received(n);
+                let msgs = read_from_the_wire(&mut inner, &mut buf[..n]);
+                // The shard let the character go: the client closes the link,
+                // as the reference client does.
+                if inner.logged_out && msgs.iter().any(logout_granted) {
+                    return Ok(link_ended(&mut inner));
+                }
             }
-            _ = ping.tick() => { inner.outbound.push_back(encode::ping(1)); }
+            _ = ping.tick() => { latency::send_ping(&mut inner); }
+            () = wake_at(step_due) => { pump_movement(&mut inner, Instant::now()); }
             _ = tick.tick() => {
+                inner.latency.traffic.tick(Instant::now());
                 reflex_tick(&mut inner);
                 pump_doors(&mut inner);
                 pump_door_macro(&mut inner);
                 pump_movement(&mut inner, Instant::now());
                 pump_names(&mut inner);
                 harvest_new_events(&mut inner);
+                actions::note_skills(&mut inner);
+                actions::share_listen_range(&inner);
                 expire_target_waiters(&mut inner, Instant::now());
                 expire_target_intent(&mut inner, Instant::now());
                 agents::pump_agents(&mut inner, Instant::now());
@@ -1138,7 +1234,17 @@ async fn run_session(
     }
 }
 
+/// Sleeps until `at`, or for ever when nothing is due.
+async fn wake_at(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+        None => std::future::pending().await,
+    }
+}
+
 fn flush_out(inner: &mut Inner, out_tx: &mpsc::Sender<Vec<u8>>) {
+    let bytes = inner.outbound.iter().map(Vec::len).sum();
+    inner.latency.traffic.sent(bytes);
     flush_sealed(&mut inner.outbound, inner.cipher.as_mut(), out_tx);
 }
 
@@ -1209,6 +1315,29 @@ fn ingest_wire(inner: &mut Inner, data: &mut [u8]) -> Vec<Inbound> {
 /// what frees the wire for the next one, so a walk pumped only on the tick
 /// leaves every step waiting up to one whole tick after its answer landed, and
 /// a character loses that much ground on every step of a run.
+/// How the link ended once it is closed: after a logout, with the character
+/// to log in as next if one was named, or with the character still in the
+/// world.
+fn link_ended(inner: &mut Inner) -> SessionEnd {
+    match (inner.logged_out, inner.relog_as.take()) {
+        (true, Some(name)) => SessionEnd::Relog(name),
+        (true, None) => SessionEnd::LoggedOut,
+        (false, _) => SessionEnd::LostLink,
+    }
+}
+
+/// True for the shard's answer to a logout that lets the character go.
+fn logout_granted(msg: &Inbound) -> bool {
+    matches!(
+        msg,
+        Inbound::Unknown { id: PKT_LOGOUT, payload }
+            if payload.get(LOGOUT_ANSWER_AT).is_some_and(|granted| *granted != 0)
+    )
+}
+
+/// Where the answer of a logout reply sits, after its id.
+const LOGOUT_ANSWER_AT: usize = 1;
+
 fn read_from_the_wire(inner: &mut Inner, data: &mut [u8]) -> Vec<Inbound> {
     let msgs = ingest_wire(inner, data);
     pump_movement(inner, Instant::now());
@@ -1256,8 +1385,7 @@ async fn login(
     tokio::net::tcp::OwnedReadHalf,
     tokio::net::tcp::OwnedWriteHalf,
 )> {
-    let addr = format!("{}:{}", opts.host, opts.port);
-    let stream = TcpStream::connect(&addr)
+    let stream = crate::proxy::connect(opts.proxy.as_ref(), &opts.host, opts.port)
         .await
         .map_err(|e| RuntimeError::Network(e.to_string()))?;
     let _ = stream.set_nodelay(true);
@@ -1279,6 +1407,9 @@ async fn login(
     let mut seen_confirm = false;
     // The words of the last refusal of the shard, for the screen.
     let mut refused: Option<String> = None;
+    // What a new character may be. A list sent again after a character is
+    // made or deleted keeps the towns of the first list.
+    let mut choices = crate::config::CharacterChoices::default();
     while tokio::time::Instant::now() < deadline {
         let n = tokio::time::timeout(LOGIN_READ_TIMEOUT, reader.read(&mut buf))
             .await
@@ -1305,16 +1436,16 @@ async fn login(
                 // with the relay key, and logs in there; that works on both.
                 Inbound::Relay { ip, port, auth_id } => {
                     seen_relay = true;
-                    let dest = relay_addr(opts, *ip, *port);
+                    let host = relay_host(opts, *ip);
                     tracing::info!(
                         relay_ip = ?ip,
                         relay_port = port,
-                        dest = dest.as_str(),
+                        host = host.as_str(),
                         "login relay 0x8C"
                     );
                     drop(reader);
                     drop(writer);
-                    let stream = TcpStream::connect(&dest)
+                    let stream = crate::proxy::connect(opts.proxy.as_ref(), &host, *port)
                         .await
                         .map_err(|e| RuntimeError::Network(e.to_string()))?;
                     let _ = stream.set_nodelay(true);
@@ -1339,22 +1470,31 @@ async fn login(
                     refused = Some(uoterm_protocol::character_refusal(*reason).to_string());
                     tracing::warn!(reason, words = refused.as_deref(), "character refused");
                 }
+                Inbound::Features { flags } => choices.features = *flags,
                 Inbound::CharacterListUpdate { characters }
                 | Inbound::CharacterList { characters, .. } => {
                     seen_chars = true;
                     if let Inbound::CharacterList {
-                        account_flags: Some(flags),
+                        towns,
+                        account_flags,
                         ..
                     } = &msg
                     {
-                        inner.world.write().account_flags = Some(*flags);
-                        inner.ensure_facet();
+                        choices.towns = towns.clone();
+                        if let Some(flags) = account_flags {
+                            choices.list_flags = *flags;
+                            inner.world.write().account_flags = Some(*flags);
+                            inner.ensure_facet();
+                        }
                     }
                     // A screen may make or delete a character before it
                     // plays one. Each of those brings a new list.
-                    if character_request(inner, &mut writer, opts, characters, refused.take())
-                        .await?
-                    {
+                    let asked = CharacterAsk {
+                        characters,
+                        refused: refused.take(),
+                        choices: &choices,
+                    };
+                    if character_request(inner, &mut writer, opts, asked).await? {
                         tcp_flush(&mut writer).await?;
                         continue;
                     }
@@ -1534,6 +1674,14 @@ fn ensure_house_parts(inner: &mut Inner) {
     inner.house_parts = Some(Arc::new(catalog));
 }
 
+/// What the login asks the screen about the characters of the account.
+struct CharacterAsk<'a> {
+    characters: &'a [uoterm_protocol::CharacterSlot],
+    /// The words of the last refusal of the shard.
+    refused: Option<String>,
+    choices: &'a crate::config::CharacterChoices,
+}
+
 /// Asks the screen what to do with the characters of the account. True
 /// when it asked the shard to make or delete one, so the login waits for
 /// the new list. A login with no screen never asks.
@@ -1541,12 +1689,16 @@ async fn character_request(
     inner: &mut Inner,
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
     opts: &ConnectOptions,
-    characters: &[uoterm_protocol::CharacterSlot],
-    refused: Option<String>,
+    asked: CharacterAsk<'_>,
 ) -> Result<bool> {
     let Some(picker) = opts.picker.as_ref() else {
         return Ok(false);
     };
+    let CharacterAsk {
+        characters,
+        refused,
+        choices,
+    } = asked;
     let names: Vec<String> = characters.iter().map(|slot| slot.name.clone()).collect();
     // A named character of the list needs no screen at all.
     let named = characters
@@ -1555,11 +1707,14 @@ async fn character_request(
     if named && refused.is_none() {
         return Ok(false);
     }
-    let Some(request) = picker.characters(names, refused).await else {
+    let Some(request) = picker.characters(names, refused, choices.clone()).await else {
         return Ok(false);
     };
     let packet = match request {
         crate::config::CharacterRequest::Play(_) => return Ok(false),
+        crate::config::CharacterRequest::Leave => {
+            return Err(RuntimeError::Usage(LEFT_AT_CHARACTER_LIST.into()))
+        }
         crate::config::CharacterRequest::Delete(slot) => encode::delete_character(slot as u32),
         crate::config::CharacterRequest::Make(wish) => {
             let new = uoterm_protocol::NewCharacter {
@@ -1573,6 +1728,11 @@ async fn character_request(
                 skin_hue: wish.skin_hue,
                 hair: wish.hair,
                 hair_hue: wish.hair_hue,
+                beard: wish.beard,
+                beard_hue: wish.beard_hue,
+                shirt_hue: wish.shirt_hue,
+                pants_hue: wish.pants_hue,
+                profession: wish.profession,
                 start_city: wish.start_city,
                 slot: wish.slot,
             };
@@ -1620,12 +1780,12 @@ fn select_shard(servers: &[uoterm_protocol::ServerEntry], wanted: Option<&str>) 
 }
 
 /// Where the game server is. A relay to `0.0.0.0` means the login host.
-fn relay_addr(opts: &ConnectOptions, ip: [u8; 4], port: u16) -> String {
+fn relay_host(opts: &ConnectOptions, ip: [u8; 4]) -> String {
     let addr = Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]);
     if addr.is_unspecified() {
-        format!("{}:{port}", opts.host)
+        opts.host.clone()
     } else {
-        format!("{addr}:{port}")
+        addr.to_string()
     }
 }
 
@@ -2036,6 +2196,13 @@ mod relay_tests {
             gathering: gather::Gathering::default(),
             reviving: ress::Reviving::default(),
             logged_out: false,
+            relog_as: None,
+            latency: latency::Latency::default(),
+            ultima_live: ultima_live::UltimaLive::default(),
+            skill_groups: Vec::new(),
+            terrain: terrain::Terrain::default(),
+            trip: travel::Trip::default(),
+            gains: actions::SkillGains::default(),
         }
     }
 
@@ -2265,6 +2432,102 @@ mod relay_tests {
             "facing east, the way that step took him"
         );
         assert!(!inner.movement.walking(), "and the walk is over");
+    }
+
+    /// The window shows the character on the tile his sent steps lead to,
+    /// and on the tile the server put him on once nothing is on the wire. A
+    /// human who lets go of the key sends nothing more, so the window never
+    /// shows a step that is not going to happen, and never takes one back.
+    #[test]
+    fn the_watch_shows_the_tile_the_sent_steps_lead_to() {
+        let stepping_to =
+            |inner: &Inner| play::watch_value(inner, RADAR_DEFAULT)["stepping_to"].clone();
+        let mut inner = test_session();
+        walks_from(&mut inner, MEASURED_START, route_east(MEASURED_START, 2));
+        assert!(stepping_to(&inner).is_null(), "nothing is sent yet");
+        let now = Instant::now();
+        pump_movement(&mut inner, now);
+        assert_eq!(
+            stepping_to(&inner),
+            json!(MEASURED_EAST),
+            "the step sent shows"
+        );
+        assert!(handle_tool(&mut inner, call(TOOL_STOP, json!({}))).ok);
+        pump_movement(&mut inner, now + STEP_PACE);
+        assert_eq!(steps_sent(&inner).len(), 1, "the stop sends nothing more");
+        assert_eq!(
+            stepping_to(&inner),
+            json!(MEASURED_EAST),
+            "the step out still lands"
+        );
+        accept_move_ack(&mut inner, movement::SEQ_FIRST);
+        assert!(stepping_to(&inner).is_null(), "the shard took it");
+        assert_eq!(reported_at(&inner), MEASURED_EAST);
+    }
+
+    /// A walk the window asks for goes on the wire with the answer to the
+    /// call, as the reference client sends a step the moment the key goes
+    /// down. It does not wait for the next tick of the walk.
+    #[test]
+    fn a_walk_asked_for_goes_on_the_wire_at_once() {
+        let mut inner = test_session();
+        let asked = answer_now(&mut inner, call(TOOL_WALK, json!({ "direction": "east" })));
+        assert!(asked.ok, "{:?}", asked.error);
+        assert_eq!(steps_sent(&inner).len(), 1, "the first request is out");
+        assert!(inner.movement.stepping_to().is_some());
+    }
+
+    /// The session wakes on its tick, on each steer call of the window, and
+    /// at the moment the next step falls due, and a local shard answers each
+    /// step at once. A human's steps then leave exactly one pace apart, and
+    /// the watch tells a window how long each lasts. Without the wake at the
+    /// slot a step left on whichever came first after it fell due, the tick
+    /// or a steer call, and walking steps left 303 to 498 ms apart.
+    #[test]
+    fn a_step_leaves_at_its_slot_and_not_on_the_tick_after_it() {
+        const STEPS: usize = 12;
+        /// Where the tick falls between two slots: anywhere but on one.
+        const TICK_PHASE: Duration = Duration::from_millis(37);
+        /// How often the window sends a held way again.
+        const STEER_EVERY: Duration = Duration::from_millis(250);
+        let walk = Duration::from_millis(STEP_WALK_MS);
+        let tick = Duration::from_millis(REFLEX_TICK_MS);
+        let mut inner = test_session();
+        inner.movement.steady_pace = true;
+        walks_from(
+            &mut inner,
+            MEASURED_START,
+            route_east(MEASURED_START, STEPS),
+        );
+        let mut now = Instant::now();
+        let mut next_tick = now + TICK_PHASE;
+        let mut next_steer = now + STEER_EVERY;
+        let mut sent_at = Vec::new();
+        while sent_at.len() < STEPS {
+            pump_movement(&mut inner, now);
+            if steps_sent(&inner).len() > sent_at.len() {
+                sent_at.push(now);
+            }
+            while let Some(step) = inner.movement.in_flight.front().cloned() {
+                accept_move_ack(&mut inner, step.sequence);
+            }
+            let wakes = [
+                Some(next_tick),
+                Some(next_steer),
+                inner.movement.step_wake(now),
+            ];
+            now = wakes.into_iter().flatten().min().unwrap_or(next_tick);
+            if now == next_tick {
+                next_tick += tick;
+            }
+            if now == next_steer {
+                next_steer += STEER_EVERY;
+            }
+        }
+        let gaps: Vec<Duration> = sent_at.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.iter().all(|gap| *gap == walk), "{gaps:?}");
+        let stride = &play::watch_value(&inner, RADAR_DEFAULT)["stride"];
+        assert_eq!(stride["ms"], json!(STEP_WALK_MS));
     }
 
     /// The measured fault itself. From 3505,2525 the character sends one step
@@ -3341,8 +3604,23 @@ mod relay_tests {
             flags: BLANK,
             hits: None,
             hits_max: None,
+            pools: Default::default(),
             equipment: Vec::new(),
         }
+    }
+
+    /// A find marks the followers of the character, as their status told.
+    #[test]
+    fn a_found_mobile_says_whether_it_follows_the_character() {
+        let pet = standing_at(Point3::new(1, 1, 0));
+        let mut world = World::default();
+        let found = |world: &World| {
+            mobile_found(world, &pet, Point3::new(0, 0, 0), String::new(), true)["follower"]
+                .as_bool()
+        };
+        assert_eq!(found(&world), Some(false));
+        world.renamable.insert(pet.serial);
+        assert_eq!(found(&world), Some(true));
     }
 
     /// The measured failure, from the move down. A character inside the New
@@ -4935,6 +5213,26 @@ mod relay_tests {
         );
     }
 
+    /// A walk with auto open doors asks for the door on the tile ahead, as
+    /// the reference client does; one without it does not.
+    #[test]
+    fn a_walk_toward_a_shut_door_opens_it_when_asked() {
+        let walk = |open_doors: bool| {
+            let mut inner = door_beside_her(Direction::North);
+            // The shut door may block the step itself; the ask comes first.
+            handle_tool(
+                &mut inner,
+                ToolCall {
+                    name: TOOL_WALK.into(),
+                    args: json!({ "direction": "n", "open_doors": open_doors }),
+                },
+            );
+            inner.door_macro.map(|asked| asked.tile)
+        };
+        assert_eq!(walk(true), Some(DOOR_TO_THE_NORTH));
+        assert_eq!(walk(false), None);
+    }
+
     /// A macro asked for at one door must never be sent at another. She walks
     /// away before the turn is answered, and the ask is dropped.
     #[test]
@@ -5094,6 +5392,7 @@ mod relay_tests {
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
             reconnect: false,
+            proxy: None,
         }
     }
 
@@ -5254,18 +5553,12 @@ mod relay_tests {
 
     #[test]
     fn an_unspecified_relay_means_the_login_host() {
-        assert_eq!(
-            relay_addr(&opts(), UNSPECIFIED, TEST_PORT),
-            format!("{TEST_HOST}:{TEST_PORT}")
-        );
+        assert_eq!(relay_host(&opts(), UNSPECIFIED), TEST_HOST);
     }
 
     #[test]
     fn a_named_relay_is_where_the_game_server_is() {
-        assert_eq!(
-            relay_addr(&opts(), LAN_IP, TEST_PORT),
-            "192.168.150.103:2593"
-        );
+        assert_eq!(relay_host(&opts(), LAN_IP), "192.168.150.103");
     }
 
     /// A walk held in one direction is planned by no route, so every tile it
@@ -5687,13 +5980,14 @@ mod relay_tests {
         let world = RwLock::new(fresh_world(&opts));
         world.write().self_state.name = "Mara".into();
         let before = world.read().event_seq;
-        begin_again(&world, &opts, RECONNECT_FIRST_WAIT);
+        const WHY: &str = "the link dropped";
+        begin_again(&world, &opts, WHY);
         let w = world.read();
         assert!(w.self_state.name.is_empty(), "the world starts again");
         assert_eq!(w.event_seq, before + 1);
         assert_eq!(
-            w.events.last().map(|e| e.kind),
-            Some(uoterm_world::EventKind::Disconnected)
+            w.events.last().map(|e| (e.kind, e.text.as_str())),
+            Some((uoterm_world::EventKind::Disconnected, WHY))
         );
     }
 
@@ -5712,7 +6006,9 @@ mod relay_tests {
             ),
         );
         assert!(cast.ok, "{:?}", cast.error);
-        assert!(inner.outbound.contains(&encode::cast_spell(GREATER_HEAL)));
+        assert!(inner
+            .outbound
+            .contains(&encode::cast(GREATER_HEAL, inner.version)));
         ingest(&mut inner, &target_cursor(A_CURSOR));
         assert!(
             inner
@@ -5806,6 +6102,13 @@ mod relay_tests {
         assert!(inner.outbound.contains(&encode::party_accept(LEADER)));
         assert!(answer_agent(&mut inner, call(TOOL_PARTY, json!({ "action": "leave" }))).ok);
         assert!(inner.outbound.contains(&encode::party_remove(me)));
+        let loot = json!({ "action": "loot", "on": true });
+        assert!(answer_agent(&mut inner, call(TOOL_PARTY, loot)).ok);
+        assert!(inner.outbound.contains(&encode::party_can_loot(true)));
+        assert!(
+            inner.world.read().party_can_loot,
+            "the world keeps the choice"
+        );
         assert!(
             answer_agent(
                 &mut inner,
@@ -5941,6 +6244,24 @@ mod relay_tests {
         assert_eq!(items[0]["serial"], NEAR.0);
         assert_eq!(items[0]["dist"], 2);
         assert_eq!(items[0]["location"]["x"], here.x + 2);
+    }
+
+    /// The death screen asks for peace, as the reference client does, and
+    /// the echo of a ping gives the round trip in observe.
+    #[test]
+    fn the_death_screen_asks_for_peace_and_a_ping_echo_is_timed() {
+        const DEAD: u8 = 2;
+        let mut inner = test_session();
+        inner.world.write().self_state.war = true;
+        ingest(&mut inner, &[PKT_DEATH_MENU, DEAD]);
+        assert!(inner.world.read().self_state.dead);
+        assert_eq!(inner.outbound.pop_back(), Some(encode::war_mode(false)));
+        ingest(&mut inner, &[PKT_DEATH_MENU, DEATH_SCREEN_ALIVE]);
+        assert!(inner.outbound.is_empty(), "the alive screen asks nothing");
+        latency::send_ping(&mut inner);
+        let sequence = inner.outbound.pop_back().unwrap()[1];
+        ingest(&mut inner, &[PKT_PING, sequence]);
+        assert!(observe_value(&inner, RADAR_DEFAULT)["latency_ms"].is_u64());
     }
 
     /// A trade window opens, the agent sees it and ticks accept for the
@@ -6745,31 +7066,53 @@ mod relay_tests {
         );
     }
 
-    /// A shard with no property lists names an object only when it is
-    /// clicked, so the names go out as single clicks, one at a time, and
-    /// never as a property list request.
+    /// A shard with no property lists names an item only when it is
+    /// clicked, and a mobile when its name is asked for, as the reference
+    /// client asks for the name over a head. The asks go out one at a time,
+    /// and never as a property list request.
     #[test]
-    fn names_are_read_by_click_on_a_shard_with_no_property_lists() {
+    fn names_are_asked_one_at_a_time_on_a_shard_with_no_property_lists() {
         const COW: Serial = Serial(0x0000_0C01);
-        const HORSE: Serial = Serial(0x0000_0C02);
+        const BARREL: Serial = Serial(0x4000_0C02);
         let mut inner = test_session();
         {
             let mut world = inner.world.write();
             world.account_flags = Some(uoterm_protocol::ACCOUNT_FLAG_CONTEXT_MENUS);
             world.names.want(COW);
-            world.names.want(HORSE);
+            world.names.want(BARREL);
         }
         inner.last_name_click = Instant::now() - NAME_CLICK_GAP;
         pump_names(&mut inner);
         pump_names(&mut inner);
         let sent: Vec<Vec<u8>> = inner.outbound.drain(..).collect();
-        assert_eq!(sent, vec![encode::single_click(COW)], "one click per gap");
+        assert_eq!(sent, vec![encode::name_request(COW)], "one ask per gap");
         inner.last_name_click = Instant::now() - NAME_CLICK_GAP;
         pump_names(&mut inner);
         assert_eq!(
             inner.outbound.pop_front(),
-            Some(encode::single_click(HORSE))
+            Some(encode::single_click(BARREL))
         );
+    }
+
+    /// A client older than the batch request asks for each property list
+    /// on its own.
+    #[test]
+    fn an_old_client_asks_for_each_property_list_on_its_own() {
+        const BARREL: Serial = Serial(0x4000_0C02);
+        const CHEST: Serial = Serial(0x4000_0C03);
+        let serials = [BARREL, CHEST];
+        assert_eq!(
+            property_requests(&serials, ClientVersion::new(5, 0, 8, 0)),
+            vec![
+                encode::query_properties_old(BARREL),
+                encode::query_properties_old(CHEST)
+            ]
+        );
+        assert_eq!(
+            property_requests(&serials, ClientVersion::MODERN),
+            vec![encode::batch_query_properties(&serials)]
+        );
+        assert!(property_requests(&[], ClientVersion::MODERN).is_empty());
     }
 
     /// On a shard with no property lists, the tooltip of an object is what
@@ -7271,13 +7614,34 @@ mod relay_tests {
         assert!(inner.outbound.is_empty(), "nothing is cast");
     }
 
+    /// An older client casts with the text command, and a cast may name the
+    /// book it comes from.
+    #[test]
+    fn a_cast_takes_the_form_of_the_version_and_may_name_its_book() {
+        const GREATER_HEAL: u16 = 29;
+        const BOOK: Serial = Serial(0x4000_0B0B);
+        let mut inner = test_session();
+        inner.version = ClientVersion::T2A;
+        assert!(tool(&mut inner, TOOL_CAST, json!({ "spell": GREATER_HEAL })).ok);
+        assert_eq!(
+            inner.outbound.pop_back(),
+            Some(encode::cast_spell(GREATER_HEAL))
+        );
+        let from_book = json!({ "spell": GREATER_HEAL, "book": BOOK.0 });
+        assert!(tool(&mut inner, TOOL_CAST, from_book).ok);
+        assert_eq!(
+            inner.outbound.pop_back(),
+            Some(encode::cast_from_book(GREATER_HEAL, BOOK))
+        );
+    }
+
     #[test]
     fn a_cast_names_its_spell_as_a_number_or_as_text() {
         const GREATER_HEAL: u16 = 29;
         let mut inner = test_session();
         assert!(tool(&mut inner, TOOL_CAST, json!({ "spell": GREATER_HEAL })).ok);
         assert!(tool(&mut inner, TOOL_CAST, json!({ "spell": "29" })).ok);
-        let cast = encode::cast_spell(GREATER_HEAL);
+        let cast = encode::cast(GREATER_HEAL, inner.version);
         assert_eq!(inner.outbound.iter().filter(|p| **p == cast).count(), 2);
     }
 
@@ -7337,9 +7701,15 @@ mod relay_tests {
     }
 
     #[test]
-    fn equip_last_with_no_weapon_put_away_is_refused() {
+    fn equip_last_with_no_weapon_put_away_asks_the_shard() {
         let mut inner = armed_session();
-        assert!(!tool(&mut inner, TOOL_EQUIP, json!({"who": "last"})).ok);
+        let me = inner.world.read().self_state.serial;
+        assert!(tool(&mut inner, TOOL_EQUIP, json!({"who": "last"})).ok);
+        assert_eq!(
+            inner.outbound.pop_back(),
+            Some(encode::equip_last_weapon(me)),
+            "the shard wears the last weapon it remembers"
+        );
     }
 
     /// Equipping is an action and waits for the action budget like any other.
@@ -7905,14 +8275,25 @@ mod relay_tests {
     #[test]
     fn a_chat_line_said_again_is_refused() {
         let mut inner = test_session();
-        queue_speech(&mut inner, SAID_CHATTER, SPEECH_WHISPER).expect("the first line is allowed");
+        queue_speech(&mut inner, SAID_CHATTER, SPEECH_WHISPER, DEFAULT_SPEECH_HUE)
+            .expect("the first line is allowed");
         assert_eq!(
-            queue_speech(&mut inner, SAID_CHATTER_AGAIN, SPEECH_WHISPER),
+            queue_speech(
+                &mut inner,
+                SAID_CHATTER_AGAIN,
+                SPEECH_WHISPER,
+                DEFAULT_SPEECH_HUE
+            ),
             Err(SPEECH_REPEATED),
             "case, spacing and punctuation do not make a line new"
         );
-        queue_speech(&mut inner, SAID_OTHER_CHATTER, SPEECH_WHISPER)
-            .expect("new words are allowed");
+        queue_speech(
+            &mut inner,
+            SAID_OTHER_CHATTER,
+            SPEECH_WHISPER,
+            DEFAULT_SPEECH_HUE,
+        )
+        .expect("new words are allowed");
     }
 
     /// Commands repeat by nature: a character says "bank" every visit.
@@ -7920,8 +8301,10 @@ mod relay_tests {
     fn a_command_may_be_said_again() {
         let mut inner = test_session();
         with_speech_table(&mut inner);
-        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("the first bank");
-        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("the second bank");
+        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
+            .expect("the first bank");
+        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
+            .expect("the second bank");
     }
     const VENDOR_NAME: &str = "Shopkeeper";
     const GRAPHIC_FOR_SALE: u64 = 0x1408;
@@ -8115,7 +8498,8 @@ mod relay_tests {
     fn a_command_phrase_goes_out_with_the_keyword_the_shard_obeys() {
         let mut inner = test_session();
         with_speech_table(&mut inner);
-        queue_speech(&mut inner, SAID_BALANCE, SPEECH_REGULAR).expect("a command is sent");
+        queue_speech(&mut inner, SAID_BALANCE, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
+            .expect("a command is sent");
         let expected = encode::keyword_speech(
             SPEECH_REGULAR,
             DEFAULT_SPEECH_HUE,
@@ -8137,7 +8521,8 @@ mod relay_tests {
         let mut inner = test_session();
         with_speech_table(&mut inner);
         for _ in 0..COMMANDS_IN_A_ROW {
-            queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR).expect("every command goes out");
+            queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
+                .expect("every command goes out");
         }
         assert_eq!(inner.outbound.len(), COMMANDS_IN_A_ROW);
     }
@@ -8147,9 +8532,15 @@ mod relay_tests {
     fn plain_chatter_still_waits_on_the_chat_budget() {
         let mut inner = test_session();
         with_speech_table(&mut inner);
-        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR).expect("the first line is allowed");
+        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
+            .expect("the first line is allowed");
         assert_eq!(
-            queue_speech(&mut inner, SAID_OTHER_CHATTER, SPEECH_REGULAR),
+            queue_speech(
+                &mut inner,
+                SAID_OTHER_CHATTER,
+                SPEECH_REGULAR,
+                DEFAULT_SPEECH_HUE
+            ),
             Err(SPEECH_RATE_LIMITED),
             "a second line straight after the first waits"
         );
@@ -8160,7 +8551,8 @@ mod relay_tests {
     #[test]
     fn a_vendor_sell_goes_out_after_the_character_has_chatted() {
         let mut inner = test_session();
-        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR).expect("the first line is allowed");
+        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
+            .expect("the first line is allowed");
         let result = handle_tool(
             &mut inner,
             ToolCall {
@@ -8274,10 +8666,24 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         Inbound::AssistantFeatures { disallowed } => {
                             take_assistant_rules(inner, *disallowed);
                         }
-                        Inbound::DyeRequest { serial, .. } => {
-                            if let Some(hue) = inner.scripting.dye_hue.take() {
-                                inner.outbound.push_back(encode::dye_response(*serial, hue));
+                        Inbound::DyeRequest { serial, graphic } => {
+                            match inner.scripting.dye_hue.take() {
+                                Some(hue) => {
+                                    inner.outbound.push_back(encode::dye_response(*serial, hue));
+                                }
+                                None => play::on_dye_request(inner, *serial, *graphic),
                             }
+                        }
+                        Inbound::Ping(sequence) => {
+                            inner.latency.echo(*sequence, Instant::now());
+                        }
+                        // The reference client asks for peace as the death
+                        // screen shows.
+                        Inbound::DeathScreen { action } if *action != DEATH_SCREEN_ALIVE => {
+                            inner.outbound.push_back(encode::war_mode(false));
+                        }
+                        Inbound::UltimaLive(_) | Inbound::LiveTerrain { .. } => {
+                            ultima_live::on_packet(inner, &msg);
                         }
                         _ => {}
                     }
@@ -8482,6 +8888,7 @@ fn arrive(inner: &mut Inner, at: Point3) {
     ));
     inner.movement.goal = None;
     inner.movement.run_override = None;
+    inner.trip = travel::Trip::default();
     if goal_is_a_place(&inner.goal) {
         inner.goal = Goal::Idle;
         inner.world.write().goal = Goal::Idle.name().into();
@@ -8877,7 +9284,7 @@ fn refuse_step(
             // once he faces that tile and nothing is left on the wire. A
             // shard that forbids doors opening by themselves gets no macro:
             // the step is tried once more, and a second refusal shuts it.
-            if doors_open_by_themselves(inner) {
+            if doors_open_by_themselves(inner) && inner.trip.open_doors {
                 want_door_macro(inner, at, cell, now);
             }
             // The same step goes out again once the leaf has had time to
@@ -8985,6 +9392,21 @@ fn nearest_door_tile(inner: &Inner) -> Option<Point3> {
         .min_by_key(|tile| at.chebyshev(*tile))
 }
 
+/// A closed door on the tile one step from `from` toward `dir`, at a height
+/// the character reaches, as the reference client's auto open doors looks
+/// for one.
+fn door_ahead(inner: &Inner, from: Point3, dir: Direction) -> Option<Point3> {
+    /// A door this far above or below the character still counts.
+    const DOOR_REACH_Z: i32 = 15;
+
+    let ahead = from.neighbour(dir)?;
+    inner.world.read().door_tiles().into_iter().find(|door| {
+        door.x == ahead.x
+            && door.y == ahead.y
+            && (i32::from(door.z) - i32::from(from.z)).abs() <= DOOR_REACH_Z
+    })
+}
+
 /// Ends a trip that is going nowhere, and tells the caller why so it can
 /// choose somewhere else.
 fn stop_the_trip(inner: &mut Inner, at: Point3, reason: String) {
@@ -8998,7 +9420,10 @@ fn stop_the_trip(inner: &mut Inner, at: Point3, reason: String) {
 /// trip planned again [`movement::REPLANS_MAX`] times is one nothing is going
 /// to solve, and it ends instead of looping.
 fn replan_the_route(inner: &mut Inner) {
-    inner.movement.path.clear();
+    let patched = inner.follow.is_none() && travel::patch_ahead(inner);
+    if !patched {
+        inner.movement.path.clear();
+    }
     inner.follow_state = FollowState::default();
     if !inner.movement.count_replan() {
         let at = inner.world.read().self_state.location;
@@ -9035,7 +9460,13 @@ fn pump_names(inner: &mut Inner) {
         let click = inner.world.write().names.take_batch(NAME_CLICKS_AT_ONCE);
         for serial in click {
             inner.last_name_click = Instant::now();
-            inner.outbound.push_back(encode::single_click(serial));
+            // A mobile's name is asked for as the reference client asks for
+            // the name it draws over a head; an item is clicked.
+            inner.outbound.push_back(if serial.is_mobile() {
+                encode::name_request(serial)
+            } else {
+                encode::single_click(serial)
+            });
         }
         return;
     }
@@ -9048,10 +9479,22 @@ fn pump_names(inner: &mut Inner) {
         .write()
         .names
         .take_batch(BATCH_QUERY_PROPERTIES_MAX);
-    if !batch.is_empty() {
-        inner
-            .outbound
-            .push_back(encode::batch_query_properties(&batch));
+    let asks = property_requests(&batch, inner.version);
+    inner.outbound.extend(asks);
+}
+
+/// The requests for the property lists of some objects: one `0xD6` batch,
+/// or one `0xBF` `0x10` each for a client older than the batch.
+fn property_requests(serials: &[Serial], version: ClientVersion) -> Vec<Vec<u8>> {
+    if serials.is_empty() {
+        Vec::new()
+    } else if version.has_batch_property_request() {
+        vec![encode::batch_query_properties(serials)]
+    } else {
+        serials
+            .iter()
+            .map(|serial| encode::query_properties_old(*serial))
+            .collect()
     }
 }
 
@@ -9275,6 +9718,14 @@ fn door_route(inner: &mut Inner, from: Point3, dest: Point3) -> DoorRoute {
     let Some(way) = door_in_the_way(&inner.tiles(), from, dest, &avoid.obstacles(), &doors) else {
         return DoorRoute::None;
     };
+    if !inner.trip.open_doors {
+        note_path_failure(
+            inner,
+            dest,
+            format!("{DOOR_NOT_OPENED_THIS_WALK} at {}", way.door.location),
+        );
+        return DoorRoute::Blocked;
+    }
     if !doors_open_by_themselves(inner) {
         note_path_failure(
             inner,
@@ -9558,12 +10009,12 @@ fn property_lines(inner: &Inner, serial: Serial) -> Vec<String> {
 /// Asks the shard what an object is: for its property list, or with a click
 /// on a shard that has none, which answers with a label and the click info.
 fn ask_what_it_is(inner: &mut Inner, serial: Serial) {
-    let packet = if inner.world.read().has_property_lists() {
-        encode::batch_query_properties(&[serial])
+    if inner.world.read().has_property_lists() {
+        let asks = property_requests(&[serial], inner.version);
+        inner.outbound.extend(asks);
     } else {
-        encode::single_click(serial)
-    };
-    inner.outbound.push_back(packet);
+        inner.outbound.push_back(encode::single_click(serial));
+    }
 }
 
 /// True when the shard has said what an object is, in either form.
@@ -9754,6 +10205,7 @@ fn answer_journal_waiters(inner: &mut Inner, now: Instant) {
         let heard = world
             .journal
             .after(waiter.after)
+            .filter(|line| !actions::line_ignored(inner, &line.name, &line.text))
             .find(|line| line.mentions(&waiter.needle));
         if let Some(line) = heard {
             let _ = waiter.reply.send(ToolResult::ok(json!({
@@ -10333,6 +10785,9 @@ fn job_start(inner: &mut Inner, args: &Value) -> ToolResult {
         .get("replace")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    // A job walks the way the session plans it, not with the choices of an
+    // earlier move_to.
+    inner.trip = travel::Trip::default();
     match name {
         n if n == JOB_HUNT => {
             let lists = match lists_from_args(args) {
@@ -10530,9 +10985,7 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     // and one would only arrive again on every tick. A goal that is this
     // place is reached.
     let here = inner.world.read().self_state.location;
-    if uoterm_nav::same_spot(here, dest)
-        && !inner.movement.walking()
-        && inner.movement.goal.is_none()
+    if inner.trip.reached(here, dest) && !inner.movement.walking() && inner.movement.goal.is_none()
     {
         if goal_is_a_place(&inner.goal) {
             arrive(inner, here);
@@ -10563,35 +11016,41 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
     let from = inner
         .movement
         .stepping_from(inner.world.read().self_state.location);
-    let in_the_way = inner.blockers();
-    let obstacles = in_the_way.obstacles();
-    inner.ensure_facet();
-    match pathfind(&inner.tiles(), from, dest, &obstacles) {
-        Ok(p) => {
-            let points: Vec<Point3> = p.steps.iter().map(|s| Point3::new(s.x, s.y, s.z)).collect();
-            apply_path(inner, points, dest)
-        }
-        Err(e) => match pathfind_flat(&inner.tiles(), from, dest, &obstacles) {
-            Ok(p) => {
-                let points: Vec<Point3> =
-                    p.steps.iter().map(|s| Point3::new(s.x, s.y, s.z)).collect();
-                tracing::warn!(
-                    error = %e,
-                    steps = points.len(),
-                    "z-path failed; using walkable tiles"
-                );
-                apply_path(inner, points, dest)
+    let planned = travel::plan(inner, from, dest);
+    inner.trip.last = Some(planned.stats);
+    match planned.route {
+        Ok(points) => {
+            if planned.stats.flat {
+                tracing::warn!(steps = points.len(), "z-path failed; using walkable tiles");
             }
-            // Both searches go around the doors, so a way that is shut only by
-            // a door leaves the character in front of it, not lost.
-            Err(flat_err) => match door_route(inner, from, dest) {
-                DoorRoute::Underway => true,
-                DoorRoute::Blocked => false,
-                DoorRoute::None => {
-                    note_path_failure(inner, dest, format!("{e}; flat: {flat_err}"));
-                    false
+            // A walk that may stop short ends where its route ends, and that
+            // tile is the goal it arrives at.
+            let end = if inner.trip.arrive_within == 0 {
+                dest
+            } else {
+                points.last().copied().unwrap_or(from)
+            };
+            if end != dest {
+                if let Goal::Travel {
+                    dest: travelling_to,
+                } = &mut inner.goal
+                {
+                    if *travelling_to == dest {
+                        *travelling_to = end;
+                    }
                 }
-            },
+            }
+            apply_path(inner, points, end)
+        }
+        // Both searches go around the doors, so a way that is shut only by
+        // a door leaves the character in front of it, not lost.
+        Err((e, flat_err)) => match door_route(inner, from, dest) {
+            DoorRoute::Underway => true,
+            DoorRoute::Blocked => false,
+            DoorRoute::None => {
+                note_path_failure(inner, dest, format!("{e}; flat: {flat_err}"));
+                false
+            }
         },
     }
 }
@@ -10714,6 +11173,17 @@ fn walk_hold(inner: &mut Inner, args: &Value) -> ToolResult {
         Some(Some(way)) => way,
         _ => dir,
     };
+    // A player's client with auto open doors opens a closed door on the
+    // tile he walks toward, as the reference client does.
+    let open_doors = args
+        .get("open_doors")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if open_doors && !inner.world.read().self_state.dead {
+        if let Some(door) = door_ahead(inner, from, dir) {
+            want_door_macro(inner, from, door, Instant::now());
+        }
+    }
     let mut points = hold_path(&inner.tiles(), from, dir, asked_for);
     // A shard may place the character on a boat, teleporter landing, or other
     // server-supported surface absent from the static client map. Permit an
@@ -10879,6 +11349,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .and_then(Value::as_str)
                 .map(str::to_lowercase);
             let sight_only = args.get(ARG_IN_SIGHT).and_then(Value::as_bool) == Some(true);
+            let sight_mode = inner.agents.config.options.sight_mode;
+            let houses = terrain::multi_tiles(inner);
             let tiles = inner.tiles();
             let world = inner.world.read();
             let here = world.self_state.location;
@@ -10886,6 +11358,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .find_mobiles(name, graphic, dist)
                 .iter()
                 .filter(|m| ranks.is_none_or(|ranks| ranks.contains(&m.notoriety)))
+                .filter(|m| terrain::in_z_range(args, m.location.z))
                 .filter_map(|m| {
                     let kind = crate::jobs::mobile_species(m);
                     if species
@@ -10894,15 +11367,24 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     {
                         return None;
                     }
-                    let in_sight = uoterm_nav::line_of_sight(
+                    let in_sight = uoterm_nav::sight_trace(
                         &tiles,
                         uoterm_nav::eyes_at(here),
                         uoterm_nav::eyes_at(m.location),
-                    );
+                        sight_mode,
+                    )
+                    .in_sight;
                     if sight_only && !in_sight {
                         return None;
                     }
-                    Some(mobile_found(&world, m, here, kind, in_sight))
+                    let mut found = mobile_found(&world, m, here, kind, in_sight);
+                    found["npc"] = json!(terrain::looks_like_npc(m));
+                    if let Some(house) =
+                        houses.get(&(i32::from(m.location.x), i32::from(m.location.y)))
+                    {
+                        found["multi"] = json!(house);
+                    }
+                    Some(found)
                 })
                 .collect();
             ToolResult::ok(json!(found))
@@ -10910,7 +11392,12 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_PARTY => party_tool(inner, args),
         TOOL_MOBILE_STATUS => match named_serial(args, TOOL_MOBILE_STATUS) {
             Ok(mobile) => {
-                inner.outbound.push_back(encode::query_status(mobile));
+                let close = args.get(ARG_CLOSE).and_then(Value::as_bool) == Some(true);
+                inner.outbound.push_back(if close {
+                    encode::close_status_bar(mobile)
+                } else {
+                    encode::query_status(mobile)
+                });
                 ToolResult::action(TOOL_MOBILE_STATUS)
             }
             Err(refused) => *refused,
@@ -10927,31 +11414,10 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 Err(too_long) => ToolResult::err(too_long),
             }
         }
-        TOOL_LINE_OF_SIGHT => {
-            let here = inner.world.read().self_state.location;
-            let aim = match arg_serial_opt(args, ARG_SERIAL).filter(|s| s.is_valid()) {
-                Some(serial) => match sight_point(inner, serial) {
-                    Some(at) => at,
-                    None => {
-                        return ToolResult::err(format!(
-                            "{TOOL_LINE_OF_SIGHT}: {serial} is not in view"
-                        ))
-                    }
-                },
-                None => {
-                    let (Some(x), Some(y)) = (arg_number(args, "x"), arg_number(args, "y")) else {
-                        return ToolResult::err(format!(
-                            "{TOOL_LINE_OF_SIGHT} needs serial, or x and y"
-                        ));
-                    };
-                    let z = asked_z(args, here.z);
-                    Point3::new(x as u16, y as u16, z)
-                }
-            };
-            let in_sight =
-                uoterm_nav::line_of_sight(&inner.tiles(), uoterm_nav::eyes_at(here), aim);
-            ToolResult::ok(json!({ "in_sight": in_sight, "aim": aim }))
-        }
+        TOOL_LINE_OF_SIGHT => terrain::line_of_sight(inner, args),
+        TOOL_FIND_TILES => terrain::find_tiles(inner, args),
+        TOOL_MULTI_PARTS => terrain::multi_parts(inner, args),
+        TOOL_FIND_ENTRANCES => terrain::find_entrances(inner, args),
         TOOL_FIND_ITEMS => {
             let graphic = args
                 .get("graphic")
@@ -10977,6 +11443,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 (Some(x), Some(y)) => Some((x as u16, y as u16)),
                 _ => None,
             };
+            let tiledata = terrain::tiledata(inner);
+            let houses = terrain::multi_tiles(inner);
             let files = inner.map_files();
             let world = inner.world.read();
             let here = world.self_state.location;
@@ -10996,12 +11464,17 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     if within.is_some_and(|w| dist.is_none_or(|d| d > w)) {
                         return None;
                     }
+                    if at.is_some_and(|at| !terrain::in_z_range(args, at.z)) {
+                        return None;
+                    }
                     let name = if i.name.is_empty() {
                         files.item_name(i.graphic)
                     } else {
                         i.name.clone()
                     };
-                    Some(json!({
+                    let (movable, is_container) =
+                        terrain::item_kind(tiledata.as_deref(), &world, i);
+                    let mut found = json!({
                         "serial": i.serial,
                         "graphic": i.graphic,
                         "hue": i.hue,
@@ -11010,51 +11483,28 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                         "container": i.parent,
                         "location": at,
                         "dist": dist,
-                    }))
+                        "movable": movable,
+                        "is_container": is_container,
+                    });
+                    let house = world
+                        .multis
+                        .contains_key(&i.serial)
+                        .then_some(i.serial)
+                        .or_else(|| {
+                            at.and_then(|at| {
+                                houses.get(&(i32::from(at.x), i32::from(at.y))).copied()
+                            })
+                        });
+                    if let Some(house) = house {
+                        found["multi"] = json!(house);
+                    }
+                    Some(found)
                 })
                 .collect();
             ToolResult::ok(json!(found))
         }
-        TOOL_FIND_LANDMARKS => {
-            let Some(marks) = inner.landmarks.clone() else {
-                return ToolResult::err(NO_MARKERS_LOADED);
-            };
-            let name = args.get("name").and_then(|v| v.as_str());
-            let within = arg_number(args, "distance");
-            let world = inner.world.read();
-            let here = world.self_state.location;
-            let here_map = world.self_state.map;
-            // Search the map asked for, or the one underfoot when none is given.
-            let map = args
-                .get("map")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u8)
-                .unwrap_or(here_map);
-            // A distance only means something on the map the character stands
-            // on; a landmark on another map has none, so a distance filter
-            // drops it, the same way find_items drops an item it cannot place.
-            let mut found: Vec<(&crate::landmarks::Landmark, Option<u32>)> = marks
-                .find(name, Some(map))
-                .into_iter()
-                .map(|m| (m, (m.map == here_map).then(|| here.chebyshev(m.at))))
-                .filter(|(_, dist)| !within.is_some_and(|w| dist.is_none_or(|d| d > w)))
-                .collect();
-            // Nearest first, then the ones off this map that have no distance.
-            found.sort_by_key(|(_, dist)| dist.unwrap_or(u32::MAX));
-            let out: Vec<_> = found
-                .iter()
-                .map(|(m, dist)| {
-                    json!({
-                        "name": m.name,
-                        "map": m.map,
-                        "location": m.at,
-                        "dist": dist,
-                        "kind": m.kind,
-                    })
-                })
-                .collect();
-            ToolResult::ok(json!(out))
-        }
+        TOOL_FIND_LANDMARKS => travel::find_landmarks(inner, args),
+        TOOL_LANDMARKS_INFO => travel::landmarks_info(inner),
         TOOL_JOURNAL_SEARCH => {
             let q = args
                 .get("q")
@@ -11068,6 +11518,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                     .journal
                     .after(since)
                     .filter(|line| line.mentions(&needle))
+                    .filter(|line| !actions::line_ignored(inner, &line.name, &line.text))
                     .map(|line| json!({"seq": line.seq, "name": line.name, "text": line.text}))
                     .collect();
                 return ToolResult::ok(json!({
@@ -11081,17 +11532,11 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 .journal
                 .search(q)
                 .iter()
+                .filter(|e| !actions::line_ignored(inner, &e.name, &e.text))
                 .map(|e| &e.text)
                 .collect::<Vec<_>>()))
         }
-        TOOL_MAP_TILE => {
-            let x = args.get("x").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-            let y = args.get("y").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-            let z = asked_z(args, inner.world.read().self_state.location.z);
-            inner.ensure_facet();
-            let t = inner.tiles().tile_from(z, x, y);
-            ToolResult::ok(json!({"walkable": t.walkable(), "door": t.door, "z": t.z}))
-        }
+        TOOL_MAP_TILE => terrain::map_tile(inner, args),
         TOOL_CAN_WALK => {
             let x = args.get("x").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
             let y = args.get("y").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
@@ -11113,35 +11558,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let why = why_not_walkable(inner, x, y, asked.unwrap_or(standing));
             ToolResult::ok(json!({ "walkable": false, "why": why }))
         }
-        TOOL_ROUTE => {
-            let (Some(x), Some(y)) = (arg_number(args, "x"), arg_number(args, "y")) else {
-                return ToolResult::err(format!("{TOOL_ROUTE} needs x and y"));
-            };
-            let (x, y) = (x as u16, y as u16);
-            let from = inner
-                .movement
-                .stepping_from(inner.world.read().self_state.location);
-            let z = match args.get("z").and_then(Value::as_i64) {
-                Some(_) => asked_z(args, from.z),
-                None => surface_z(inner, from.z, x, y),
-            };
-            let dest = Point3::new(x, y, z);
-            let in_the_way = inner.blockers();
-            let planned = pathfind(&inner.tiles(), from, dest, &in_the_way.obstacles());
-            match planned {
-                Ok(path) => {
-                    let steps: Vec<Point3> = path
-                        .steps
-                        .iter()
-                        .map(|s| Point3::new(s.x, s.y, s.z))
-                        .collect();
-                    ToolResult::ok(
-                        json!({ "reachable": true, "steps": steps.len(), "route": steps }),
-                    )
-                }
-                Err(why) => ToolResult::ok(json!({ "reachable": false, "why": why.to_string() })),
-            }
-        }
+        TOOL_ROUTE => travel::route(inner, args),
         TOOL_SAY => say_in_channel(inner, args),
         TOOL_REPLY => reply(inner, args),
         TOOL_WHISPER => speak(inner, args, SPEECH_WHISPER),
@@ -11151,62 +11568,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             }
             speak(inner, args, SPEECH_EMOTE)
         }
-        TOOL_MOVE_TO => {
-            let Some(x) = args.get("x").and_then(|v| v.as_u64()) else {
-                return ToolResult::err("move_to needs x");
-            };
-            let Some(y) = args.get("y").and_then(|v| v.as_u64()) else {
-                return ToolResult::err("move_to needs y");
-            };
-            // A person clicks a spot and names no height: the walk goes to the
-            // surface there nearest the height asked, or her own.
-            let z = asked_z(args, inner.world.read().self_state.location.z);
-            let here = inner.world.read().self_state.location;
-            let dest = Point3::new(x as u16, y as u16, surface_z(inner, z, x as u16, y as u16));
-            inner.goal = Goal::Travel { dest };
-            inner.world.write().goal = Goal::Travel { dest }.name().into();
-            if queue_move(inner, dest) {
-                return ToolResult::action(TOOL_MOVE_TO);
-            }
-            // The goal could not be reached in one route: a wall or an up-high
-            // spot with no way to it, a gap only a gate or teleporter crosses,
-            // or ground too far past what one search covers. Rather than a bare
-            // failure, walk to the nearest spot on the way and tell the agent
-            // the reason, so it can call move_to again from there or pick
-            // another goal.
-            let reason = inner
-                .last_path_fail_reason
-                .clone()
-                .unwrap_or_else(|| "path failed".into());
-            // A learned teleporter pad whose far side reaches the goal beats a
-            // blind partial walk: stepping on it puts her where a plan works.
-            if let Some(pad) = leg_route_through_pad(inner, here, dest) {
-                inner.goal = Goal::Travel { dest: pad };
-                inner.world.write().goal = Goal::Travel { dest: pad }.name().into();
-                return ToolResult::ok(json!({
-                    "partial": true,
-                    "goal": dest,
-                    "heading_to": pad,
-                    "via": "teleporter",
-                    "reason": reason,
-                    "hint": "walking to a known teleporter pad toward the goal; step on it, then call move_to again",
-                }));
-            }
-            match walk_partway(inner, here, dest) {
-                Some(waypoint) => {
-                    inner.goal = Goal::Travel { dest: waypoint };
-                    inner.world.write().goal = Goal::Travel { dest: waypoint }.name().into();
-                    ToolResult::ok(json!({
-                        "partial": true,
-                        "goal": dest,
-                        "heading_to": waypoint,
-                        "reason": reason,
-                        "hint": "could not reach the goal; walking to the nearest reachable spot, then call move_to again from there",
-                    }))
-                }
-                None => ToolResult::err(reason),
-            }
-        }
+        TOOL_MOVE_TO => travel::move_to(inner, args),
         TOOL_WALK => walk_hold(inner, args),
         TOOL_OPEN_DOOR => {
             let Some(tile) = nearest_door_tile(inner) else {
@@ -11236,13 +11598,24 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             inner.doors.give_up();
             inner.door_macro = None;
             inner.movement.clear();
+            inner.trip = travel::Trip::default();
             inner.world.write().goal = Goal::Idle.name().into();
             ToolResult::ok(json!(Goal::Idle.name()))
         }
         TOOL_LOGOUT => {
             inner.logged_out = true;
+            // With another character named, the session logs in as that
+            // one once the shard lets this one go.
+            inner.relog_as = args
+                .get(ARG_THEN_PLAY)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(String::from);
             inner.outbound.push_back(encode::logout());
-            ToolResult::action(TOOL_LOGOUT)
+            let mut asked = ToolResult::action(TOOL_LOGOUT);
+            asked.result["then_play"] = json!(inner.relog_as);
+            asked
         }
         TOOL_USE | TOOL_OPEN_CONTAINER => {
             let serial = if args.get("who").and_then(|v| v.as_str()) == Some(WHO_LAST) {
@@ -11273,7 +11646,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let Some(pack) = backpack_serial(&inner.world.read()) else {
                 return ToolResult::err("no backpack");
             };
-            inner.loot = Some(LootJob::new(serial, pack, Instant::now()));
+            let into = actions::catch_bag_or(inner, pack);
+            inner.loot = Some(LootJob::new(serial, into, Instant::now()));
             inner.sent_drop = None;
             pump_loot(inner);
             ToolResult::action(TOOL_LOOT)
@@ -11366,7 +11740,13 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             let item = if args.get("who").and_then(|v| v.as_str()) == Some(WHO_LAST) {
                 match inner.last_weapon {
                     Some(serial) => serial,
-                    None => return ToolResult::err("no weapon put away yet"),
+                    // No weapon went to the pack here: the shard remembers
+                    // the last one the character held.
+                    None => {
+                        let me = inner.world.read().self_state.serial;
+                        inner.outbound.push_back(encode::equip_last_weapon(me));
+                        return ToolResult::action(TOOL_EQUIP);
+                    }
                 }
             } else {
                 match named_serial(args, TOOL_EQUIP) {
@@ -11394,13 +11774,17 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 Some(WHO_SELF) => Some(inner.world.read().self_state.serial),
                 _ => arg_serial_opt(args, ARG_TARGET).filter(|s| s.is_valid()),
             };
+            let book = arg_serial_opt(args, ARG_BOOK).filter(|s| s.is_valid());
             if !action_ready(inner) {
                 return ToolResult::err(MUST_WAIT);
             }
             if !clear_hands_for_cast(inner, spell) {
                 return ToolResult::err(HAND_PUT_AWAY);
             }
-            inner.outbound.push_back(encode::cast_spell(spell));
+            inner.outbound.push_back(match book {
+                Some(book) => encode::cast_from_book(spell, book),
+                None => encode::cast(spell, inner.version),
+            });
             note_cast(inner, spell);
             // The spell's cursor comes once the words are said, and it is
             // answered then with what the call named.
@@ -11578,6 +11962,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 }
             }
             inner.goal = g.clone();
+            inner.trip = travel::Trip::default();
             inner.world.write().goal = g.name().into();
             if let Goal::Travel { dest } = g {
                 let _ = queue_move(inner, dest);
@@ -11593,6 +11978,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
                 return ToolResult::err(why);
             }
             inner.follow = Some(serial);
+            inner.trip = travel::Trip::default();
             start_play_along(inner, serial);
             inner.follow_state = FollowState::default();
             // The followed mobile leads, so the session holds no travel
@@ -11643,7 +12029,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
             ToolResult::action(TOOL_UNEQUIP)
         }
         TOOL_TRADE_ACCEPT | TOOL_TRADE_CANCEL => {
-            let Some(mine) = inner.world.read().trade.as_ref().map(|t| t.mine) else {
+            let Some(mine) = play::trade_box(inner, args) else {
                 return ToolResult::err("no trade window is open");
             };
             let accept = args.get("accept").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -11740,6 +12126,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_CLOSE_MENU => play::close_menu(inner),
         TOOL_SHOP_CHECKOUT => play::shop_checkout(inner, args),
         TOOL_SHOP_CLOSE => play::shop_close(inner),
+        TOOL_DYE => play::dye(inner, args),
         TOOL_MENU_PICK => play::menu_pick(inner, args),
         TOOL_BOOK_CLOSE => play::book_close(inner),
         TOOL_BOARD_READ => play::board_read(inner, args),
@@ -11761,8 +12148,8 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_DAMAGE_METER => agents::damage_meter(inner, args),
         TOOL_TARGET_FILTER => agents::target_filter(inner, args),
         TOOL_RUN_SCRIPT => scripting::run_script(inner, args),
-        TOOL_STOP_SCRIPT => scripting::stop_script(inner),
-        TOOL_SCRIPT_STATUS => scripting::script_status(inner),
+        TOOL_STOP_SCRIPT => scripting::stop_script(inner, args),
+        TOOL_SCRIPT_STATUS => scripting::script_status(inner, args),
         TOOL_LIST_SCRIPTS => scripting::list_scripts(),
         TOOL_SCRIPT_READ => scripting::script_read(args),
         TOOL_SCRIPT_SAVE => scripting::script_save(args),
@@ -11773,6 +12160,32 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_HELP => play::help(inner),
         TOOL_CHAT => play::chat(inner, args),
         TOOL_BOOK_WRITE => play::book_write(inner, args),
+        TOOL_BOOK_READ => play::book_read(inner, args),
+        TOOL_OPEN_SPELLBOOK => requests::open_spellbook(inner, args),
+        TOOL_TIP => requests::tip(inner, args),
+        TOOL_QUEST_ARROW => requests::quest_arrow(inner, args),
+        TOOL_BOAT_MOVE => requests::boat_move(inner, args),
+        TOOL_TRACK_MEMBERS => requests::track_members(inner, args),
+        TOOL_HOUSE_CONTENT => requests::house_content(inner, args),
+        TOOL_VIRTUE => actions::virtue(inner, args),
+        TOOL_VIRTUE_GUMP => actions::virtue_gump(inner, args),
+        TOOL_SKILL_LOCK => actions::skill_lock(inner, args),
+        TOOL_STAT_LOCK => actions::stat_lock(inner, args),
+        TOOL_RENAME => actions::rename(inner, args),
+        TOOL_SET_ABILITY => actions::set_ability(inner, args),
+        TOOL_EMOTE_ACTION => actions::emote_action(inner, args),
+        TOOL_FLY => actions::fly(inner, args),
+        TOOL_MENU_BUTTON => actions::menu_button(inner, args),
+        TOOL_TARGET_RESOURCE => actions::target_resource(inner, args),
+        TOOL_USE_TYPE => actions::use_type(inner, args),
+        TOOL_USE_ON => actions::use_on(inner, args),
+        TOOL_CATCH_BAG => actions::catch_bag(inner, args),
+        TOOL_MOUNT => actions::mount(inner, args),
+        TOOL_DISMOUNT => actions::dismount(inner),
+        TOOL_ATTACK_NEAREST => actions::attack_nearest(inner, args),
+        TOOL_IGNORE_LIST => actions::ignore_list(inner, args),
+        TOOL_SKILL_GAINS => actions::skill_gains(inner, args),
+        TOOL_RACE_CHANGE => requests::race_change(inner, args),
         TOOL_SET_PERSONA => match serde_json::from_value::<Persona>(args.clone()) {
             Ok(mut p) => {
                 p.clamp_rates();
@@ -11830,7 +12243,12 @@ fn observe_value(inner: &Inner, size: u16) -> Value {
         }
     }
     obs.buffs = scripting::buff_names(inner);
-    obs.gumps = gump_views(inner);
+    obs.gumps = gump_views(inner)
+        .into_iter()
+        .filter(|g| !actions::gump_ignored(inner, g.gump))
+        .collect();
+    obs.journal
+        .retain(|line| !actions::line_ignored(inner, "", line));
     obs.nearest_bank = crate::banks::nearest_bank(idx, loc).map(|bank| uoterm_world::BankView {
         town: bank.town.to_string(),
         location: bank.at,
@@ -11978,6 +12396,20 @@ fn answer_agent(inner: &mut Inner, call: ToolCall) -> ToolResult {
     result
 }
 
+/// Answers one call, and puts a step it asked for on the wire at once. The
+/// reference client sends a step the moment its key goes down, and a window
+/// shows the character on the steps he has sent: a step held back to the next
+/// tick of the walk is a step the human sees late. A call that only reads
+/// asks for no step, and the window reads many times a second.
+fn answer_now(inner: &mut Inner, call: ToolCall) -> ToolResult {
+    let acts = !crate::tools::is_read_only(&call.name);
+    let answer = answer_agent(inner, call);
+    if acts {
+        pump_movement(inner, Instant::now());
+    }
+    answer
+}
+
 /// The persona's words on how the character talks, when it gives any.
 fn reply_style(inner: &Inner) -> Option<String> {
     let style = inner.persona.play_along.reply_style.trim();
@@ -12060,10 +12492,26 @@ const PLAY_ALONG_HURT: &str = "hurt past the persona's play-along risk";
 /// Sends a line of speech to everyone who hears it. It answers the lines
 /// said to the character by name in that channel group, whichever way the
 /// line goes out.
-fn queue_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
-    send_speech(inner, text, kind)?;
+fn queue_speech(
+    inner: &mut Inner,
+    text: &str,
+    kind: u8,
+    hue: u16,
+) -> std::result::Result<(), &'static str> {
+    send_speech_hued(inner, text, kind, hue)?;
     answer_group(inner, speech_group(kind));
     Ok(())
+}
+
+/// The colour the character speaks in: the `speech_hue` option, or the
+/// client's own.
+fn speech_hue(inner: &Inner) -> u16 {
+    inner
+        .agents
+        .config
+        .options
+        .speech_hue
+        .unwrap_or(DEFAULT_SPEECH_HUE)
 }
 
 /// The channel group a line of this speech kind reaches.
@@ -12085,6 +12533,16 @@ fn answer_group(inner: &Inner, group: uoterm_world::ChannelGroup) {
 }
 
 fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
+    let hue = speech_hue(inner);
+    send_speech_hued(inner, text, kind, hue)
+}
+
+fn send_speech_hued(
+    inner: &mut Inner,
+    text: &str,
+    kind: u8,
+    hue: u16,
+) -> std::result::Result<(), &'static str> {
     if kind == SPEECH_REGULAR {
         let keywords = inner
             .speech_data
@@ -12092,7 +12550,7 @@ fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(
             .map(|table| table.keywords(inner.version, text))
             .unwrap_or_default();
         if !keywords.is_empty() {
-            return queue_command_speech(inner, text, &keywords);
+            return queue_command_speech_hued(inner, text, &keywords, hue);
         }
     }
     let reply = !inner
@@ -12106,10 +12564,9 @@ fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(
     let t = inner.persona.maybe_typo(&t, &mut rng);
     let unicode = inner.era == Era::Modern;
     let pkt = match kind {
-        SPEECH_WHISPER => encode::whisper(&t, unicode),
-        SPEECH_EMOTE => encode::emote(&t, unicode),
-        SPEECH_GUILD | SPEECH_ALLIANCE => encode::keyword_speech(kind, DEFAULT_SPEECH_HUE, &[], &t),
-        _ => encode::say(&t, false),
+        SPEECH_GUILD | SPEECH_ALLIANCE => encode::keyword_speech(kind, hue, &[], &t),
+        SPEECH_WHISPER | SPEECH_EMOTE if unicode => encode::unicode_speech(kind, hue, &t),
+        _ => encode::ascii_speech(kind, hue, &t),
     };
     inner.outbound.push_back(pkt);
     Ok(())
@@ -12126,13 +12583,20 @@ fn queue_command_speech(
     text: &str,
     keywords: &[u16],
 ) -> std::result::Result<(), &'static str> {
+    let hue = speech_hue(inner);
+    queue_command_speech_hued(inner, text, keywords, hue)
+}
+
+fn queue_command_speech_hued(
+    inner: &mut Inner,
+    text: &str,
+    keywords: &[u16],
+    hue: u16,
+) -> std::result::Result<(), &'static str> {
     let text = inner.persona.filter_speech(text).ok_or(SPEECH_REJECTED)?;
-    inner.outbound.push_back(encode::keyword_speech(
-        SPEECH_REGULAR,
-        DEFAULT_SPEECH_HUE,
-        keywords,
-        &text,
-    ));
+    inner
+        .outbound
+        .push_back(encode::keyword_speech(SPEECH_REGULAR, hue, keywords, &text));
     Ok(())
 }
 
@@ -12291,7 +12755,9 @@ fn party_tool(inner: &mut Inner, args: &Value) -> ToolResult {
             None => return ToolResult::err(format!("{TOOL_PARTY} kick {NEEDS_SERIAL}")),
         },
         PARTY_LOOT_WORD => {
-            encode::party_can_loot(args.get(ARG_ON).and_then(Value::as_bool).unwrap_or(true))
+            let allow = args.get(ARG_ON).and_then(Value::as_bool).unwrap_or(true);
+            inner.world.write().party_can_loot = allow;
+            encode::party_can_loot(allow)
         }
         _ => return ToolResult::err(BAD_PARTY_ACTION),
     };
@@ -12301,7 +12767,10 @@ fn party_tool(inner: &mut Inner, args: &Value) -> ToolResult {
 
 fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    match queue_speech(inner, text, kind) {
+    let hue = arg_number(args, ARG_HUE)
+        .and_then(|h| u16::try_from(h).ok())
+        .unwrap_or_else(|| speech_hue(inner));
+    match queue_speech(inner, text, kind, hue) {
         Ok(()) => ToolResult::action(TOOL_SAY),
         Err(e) => ToolResult::err(e),
     }
@@ -12472,6 +12941,10 @@ const ARG_NOTORIETY: &str = "notoriety";
 const ARG_SPECIES: &str = "species";
 const ARG_IN_SIGHT: &str = "in_sight";
 const ARG_HUE: &str = "hue";
+/// The argument that names the character a logout logs in as next.
+const ARG_THEN_PLAY: &str = "then_play";
+/// The argument that names one of the open trades.
+const ARG_TRADE: &str = "trade";
 const ARG_GRAPHICS: &str = "graphics";
 
 /// One mobile a find gives back: who and what it is, where, how it stands,
@@ -12494,6 +12967,7 @@ fn mobile_found(
         "war": m.flags & FLAG_WAR != 0,
         "hidden": m.flags & FLAG_HIDDEN != 0,
         "poisoned": world.is_poisoned(m.serial),
+        "follower": world.is_renamable(m.serial),
         "dead": uoterm_world::is_ghost_body(m.body) || world.dead_pets.contains(&m.serial),
         "in_sight": in_sight,
         "worn": m.equipment.iter().map(|e| json!({"layer": e.layer, "graphic": e.graphic, "hue": e.hue})).collect::<Vec<_>>(),

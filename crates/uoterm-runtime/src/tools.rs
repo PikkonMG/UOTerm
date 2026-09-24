@@ -91,6 +91,7 @@ pub const TOOL_PROPERTIES: &str = "properties";
 pub const TOOL_CLOSE_MENU: &str = "close_menu";
 pub const TOOL_SHOP_CHECKOUT: &str = "shop_checkout";
 pub const TOOL_SHOP_CLOSE: &str = "shop_close";
+pub const TOOL_DYE: &str = "dye";
 pub const TOOL_MENU_PICK: &str = "menu_pick";
 pub const TOOL_BOOK_CLOSE: &str = "book_close";
 pub const TOOL_BOARD_READ: &str = "board_read";
@@ -101,6 +102,36 @@ pub const TOOL_TRADE_GOLD: &str = "trade_gold";
 pub const TOOL_COMMAND: &str = "command";
 pub const TOOL_TAKE_CONTROL: &str = "take_control";
 pub const TOOL_RELEASE_CONTROL: &str = "release_control";
+pub const TOOL_OPEN_SPELLBOOK: &str = "open_spellbook";
+pub const TOOL_TIP: &str = "tip";
+pub const TOOL_QUEST_ARROW: &str = "quest_arrow";
+pub const TOOL_BOAT_MOVE: &str = "boat_move";
+pub const TOOL_TRACK_MEMBERS: &str = "track_members";
+pub const TOOL_HOUSE_CONTENT: &str = "house_content";
+pub const TOOL_RACE_CHANGE: &str = "race_change";
+pub const TOOL_BOOK_READ: &str = "book_read";
+pub const TOOL_FIND_TILES: &str = "find_tiles";
+pub const TOOL_MULTI_PARTS: &str = "multi_parts";
+pub const TOOL_FIND_ENTRANCES: &str = "find_entrances";
+pub const TOOL_VIRTUE: &str = "virtue";
+pub const TOOL_VIRTUE_GUMP: &str = "virtue_gump";
+pub const TOOL_SKILL_LOCK: &str = "skill_lock";
+pub const TOOL_STAT_LOCK: &str = "stat_lock";
+pub const TOOL_RENAME: &str = "rename";
+pub const TOOL_SET_ABILITY: &str = "set_ability";
+pub const TOOL_EMOTE_ACTION: &str = "emote_action";
+pub const TOOL_FLY: &str = "fly";
+pub const TOOL_MENU_BUTTON: &str = "menu_button";
+pub const TOOL_TARGET_RESOURCE: &str = "target_resource";
+pub const TOOL_USE_TYPE: &str = "use_type";
+pub const TOOL_USE_ON: &str = "use_on";
+pub const TOOL_CATCH_BAG: &str = "catch_bag";
+pub const TOOL_MOUNT: &str = "mount";
+pub const TOOL_DISMOUNT: &str = "dismount";
+pub const TOOL_ATTACK_NEAREST: &str = "attack_nearest";
+pub const TOOL_IGNORE_LIST: &str = "ignore_list";
+pub const TOOL_SKILL_GAINS: &str = "skill_gains";
+pub const TOOL_LANDMARKS_INFO: &str = "landmarks_info";
 
 pub const NO_BANK_KNOWN: &str =
     "no bank is known near here; find a banker in observe and walk to it";
@@ -246,7 +277,7 @@ impl Goal {
 const TOOLS: &[(&str, &str, &str)] = &[
     (
         TOOL_OBSERVE,
-        "Compact world snapshot, ASCII radar, recent journal, and the assistant features the shard forbids. Optional size (odd tiles, 5-41, default 21) sets the radar width.",
+        "Compact world snapshot, ASCII radar, recent journal, and the assistant features the shard forbids. It also holds the spells of each spellbook, the armed weapon move and the stances on (abilities), party and guild members out of sight (tracked_members), the character's own pets and summons by serial (followers), the round trip to the shard (latency_ms) and the bytes from it and to it in the last half second (traffic). Optional size (odd tiles, 5-41, default 21) sets the radar width.",
         "session exists",
     ),
     (
@@ -254,10 +285,10 @@ const TOOLS: &[(&str, &str, &str)] = &[
         "Describe the surroundings in words: the surface underfoot, named furniture and walls from the map files, loose items, and people. Takes an optional radius in tiles.",
         "in world",
     ),
-    (TOOL_FIND_MOBILES, "Filter nearby mobiles. Args: name (part of the name or of the title, so \"banker\" finds a banker), graphic, distance, notoriety (innocent, friend, gray, criminal, enemy, murderer, invulnerable or any), species (read from the body, so a named orc is an orc), in_sight (only those a shot or a spell can reach). Each mobile has its location, dist, title, species, notoriety, hits_percent when known, war, hidden, poisoned, dead, in_sight and what it wears.", "in world"),
+    (TOOL_FIND_MOBILES, "Filter nearby mobiles. Args: name (part of the name or of the title, so \"banker\" finds a banker), graphic, distance, notoriety (innocent, friend, gray, criminal, enemy, murderer, invulnerable or any), species (read from the body, so a named orc is an orc), in_sight (only those a shot or a spell can reach), z_min and z_max. Each mobile has its location, dist, title, species, notoriety, hits_percent when known, war, hidden, poisoned, follower (one of yours), dead, in_sight, npc (a guess: no human body, or nobody can harm it), multi (the house or boat it stands on) and what it wears.", "in world"),
     (
         TOOL_ROUTE,
-        "Plans a walk to the tile x, y and says whether the character can get there, how many steps it takes, and the tiles on the way, without taking a step.",
+        "Plans the walk move_to would take, with the same choices (x, y or name, accuracy, avoid, open_doors, roads), and says whether the character can get there, where the route ends, how many steps it takes, the tiles on the way, and the search (nodes opened, ms, flat when the heights had to be ignored), without taking a step.",
         "in world",
     ),
     (
@@ -267,7 +298,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_MOBILE_STATUS,
-        "Asks the shard for a mobile's status, as a click on its health bar does: its hits come back into find_mobiles and observe, and every stat for the character or a pet he owns.",
+        "Asks the shard for a mobile's status, as a click on its health bar does: its hits come back into find_mobiles and observe, and every stat for the character or a pet he owns. close=true instead tells the shard the status bar of that mobile is shut.",
         "in world",
     ),
     (
@@ -282,18 +313,38 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_LINE_OF_SIGHT,
-        "Says whether the character sees an object or a spot, as the shard judges a shot or a spell: serial, or x, y and z.",
+        "Says whether one point sees another, as the shard judges a shot or a spell: to serial, or x, y and z; from the character's eyes, or from (a serial) or from_x, from_y and from_z. mode picks the rules (runuo, modernuo, servuo, pol or sphere; default the sight_mode option). trace=true gives every point of the line with what stops it; without it, blocked_at names the first stop.",
         "in world",
     ),
     (
+        TOOL_FIND_TILES,
+        "Finds map tiles in an area of any map, nearest first, a page at a time: group (water, trees, ore, forge, anvil, loom, oven, mill), graphics (land ids or static graphics), flags (tiledata flag names, all needed: wet, impassable, surface, wall, door and the rest), name (a word of the tiledata name). The area is x, y and radius (default the character, 12, most 64) or the rectangle x1, y1, x2, y2 (at most 129 on a side). layer land, statics or both; z_min and z_max; map; page and page_size (default 50, most 200). Each tile has x, y, z, layer, graphic, name, flags and dist.",
+        "map files loaded, or the mock grid for the map underfoot",
+    ),
+    (
+        TOOL_MULTI_PARTS,
+        "The parts of the houses and boats in view: serial for every part of one, or x and y for the parts of any on that tile. A house a player designed gives the parts the shard sent. Each part has multi, graphic, name, x, y, z, height, flags and designed; a page at a time (page, page_size).",
+        "a house or boat in view",
+    ),
+    (
+        TOOL_FIND_ENTRANCES,
+        "Scans the map round a spot for ways into a dungeon: runs of stair and ladder statics (each run once, with its tile count), the teleporter pads the character learned, and dungeon or cave landmarks. x, y, radius (default the character and 32), map. Nearest first, a page at a time.",
+        "map files loaded",
+    ),
+    (
         TOOL_FIND_ITEMS,
-        "Filter items on the ground and inside containers. Args: graphic, graphics (a list; any of them), hue, name (part of the display name), container (a container serial, to search only that one), distance (tiles), x and y (only the items on that tile). Each item has its map location, dist and hue.",
+        "Filter items on the ground and inside containers. Args: graphic, graphics (a list; any of them), hue, name (part of the display name), container (a container serial, to search only that one), distance (tiles), x and y (only the items on that tile), z_min and z_max. Each item has its map location, dist, hue, movable (a player may lift it), is_container, and multi (the house or boat it is, or stands on).",
         "in world",
     ),
     (
         TOOL_FIND_LANDMARKS,
-        "Named places from the marker file: gates, banks, towns. Args: name (part of the place name, e.g. \"new haven moongate\"), map (a map index; the one underfoot by default), distance (tiles). Each place has its map, location, dist (only on the current map) and kind. Walk to the place, then find_items to lock the live thing that stands there.",
+        "Named places from the marker file: gates, banks, towns. Args: name (part of the place name, e.g. \"new haven moongate\"), kind (the marker word, such as bank or moongate; for a file with no words, part of the name), closest (a kind: only the nearest one), map (a map index; the one underfoot by default), distance (tiles). Each place has its map, location, dist (only on the current map) and kind. When the map underfoot has none and no map was named, the answer is {places, note, elsewhere} with the matches on other maps. Walk to the place, then find_items to lock the live thing that stands there.",
         "in world",
+    ),
+    (
+        TOOL_LANDMARKS_INFO,
+        "What marker data the session read: loaded, count, and how many places on each map and of each kind.",
+        "session exists",
     ),
     (
         TOOL_JOURNAL_SEARCH,
@@ -302,7 +353,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_MAP_TILE,
-        "Tile kind and Z at x,y.",
+        "Everything on the tile x, y of any map (map): the land with its id, name, z and flags, each static with graphic, name, z, height, hue and flags, and on the map underfoot the items and the house or boat parts on it; with walkable, door and the standing z (from z, default the character's height).",
         "map loaded or mock grid",
     ),
     (
@@ -312,7 +363,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_SAY,
-        "Speak. channel: say (default), party, guild or alliance. Persona blocks *emotes* and rate-limits.",
+        "Speak. channel: say (default), yell, party, guild or alliance; hue (a colour; default the speech_hue option). Persona blocks *emotes* and rate-limits.",
         "in world",
     ),
     (TOOL_WHISPER, "Whisper.", "in world"),
@@ -328,7 +379,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_MOVE_TO,
-        "Walk to the tile x, y: plans a route and steps it at a person's pace. A goal no route reaches is walked toward as far as it goes, and the answer says partial.",
+        "Walk to the tile x, y, or to the nearest landmark called name: plans a route and steps it at a person's pace. run (true runs, false walks; default by stamina and danger), accuracy (stop within that many tiles, up to 18; the goal may be a tree or an anvil), open_doors (default true; the shard's rules still apply), avoid (a list of {x, y, radius} areas and {serial, radius} creatures to keep away from), roads (default true: grass and forest cost a little more), exact (fail instead of walking as near as a route goes). A goal no route reaches is walked toward as far as it goes, and the answer says partial. The answer names heading_to and the route search (nodes, ms, steps, flat).",
         "in world",
     ),
     (
@@ -343,18 +394,18 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (TOOL_FOLLOW, "Follow a mobile serial.", "mobile in range"),
     (TOOL_STOP, "Clear path and set idle.", "session exists"),
-    (TOOL_LOGOUT, "Ask the shard to log the character out. A shard may hold the request until she is somewhere it allows it, such as an inn or a house.", "in world"),
+    (TOOL_LOGOUT, "Ask the shard to log the character out. A shard may hold the request until she is somewhere it allows it, such as an inn or a house. then_play (a character name of the account) logs in as that character in the same session once the shard lets this one go; without it the session ends, and characters and connect go on from the character list.", "in world"),
     (TOOL_USE, "Double-click serial.", "serial exists"),
     (TOOL_SINGLE_CLICK, "Single-click for name.", "serial exists"),
     (TOOL_ATTACK, "Attack mobile.", "mobile serial"),
     (TOOL_WAR_MODE, "Set war/peace.", "in world"),
     (TOOL_LIFT, "Pick up item.", "item serial"),
     (TOOL_DROP, "Drop the lifted item: dest for a container or a mobile, none for the ground. x, y (and z on the ground) give an exact place.", "serial"),
-    (TOOL_EQUIP, "Lift and wear an item: serial, or who=last for the last weapon put away.", "item serial"),
+    (TOOL_EQUIP, "Lift and wear an item: serial, or who=last for the last weapon put away. With no weapon put away here, who=last asks the shard to wear the last weapon it remembers.", "item serial"),
     (TOOL_UNEQUIP, "Lift a worn item into the backpack; a weapon is remembered.", "layer occupied"),
     (
         TOOL_CAST,
-        "Cast a spell, named by its number or its name (\"greater heal\"). target (a serial, or self) answers the spell's cursor as it comes.",
+        "Cast a spell, named by its number or its name (\"greater heal\"). target (a serial, or self) answers the spell's cursor as it comes. book (a spellbook serial) casts from that book, as a click in an open book does.",
         "enough mana",
     ),
     (
@@ -364,7 +415,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_NEXT_EVENT,
-        "Wait for the next important event: named in chat, hurt or low health, an enemy near, a target cursor, gump, prompt or trade, an item in the pack, a party invite, death. Returns the events and the state (health, enemies near, unanswered lines, pack). Call it in a loop; events wait for you. timeout_ms (default 5000, max 7000).",
+        "Wait for the next important event: named in chat, hurt or low health, an enemy near, a target cursor, gump, prompt or trade, an item in the pack, a party invite, death, a skill or stat change, a quest arrow, a map opened, a weapon move or stance on or off. Returns the events and the state (health, enemies near, unanswered lines, pack). Call it in a loop; events wait for you. timeout_ms (default 5000, max 7000). ambient lists the busy kinds to get too: sound, effect, animation, item_deleted, member_positions, or all.",
         "session exists",
     ),
     (
@@ -396,10 +447,10 @@ const TOOLS: &[(&str, &str, &str)] = &[
     (TOOL_TRADE_OFFER, "Secure trade offer.", "mobile serial"),
     (
         TOOL_TRADE_ACCEPT,
-        "Tick the accept box of the open trade (accept: true, the default), or untick it (accept: false). Read observe.trade first: what they offer, and who has accepted.",
+        "Tick the accept box of an open trade (accept: true, the default), or untick it (accept: false). Several trades may be open at once: trade (the other player, or a box of the trade) picks one; the newest by default. Read observe.trades first: what they offer, and who has accepted.",
         "a trade window open",
     ),
-    (TOOL_TRADE_CANCEL, "Close the open trade.", "a trade window open"),
+    (TOOL_TRADE_CANCEL, "Close an open trade: trade (the other player, or a box of the trade); the newest by default.", "a trade window open"),
     (
         TOOL_VENDOR_SELL,
         "Ask a named nearby NPC vendor for its sell list and sell every listed backpack item matching the required graphic.",
@@ -433,13 +484,13 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_RUN_SCRIPT,
-        "Run a script: name (a file in the scripts folder) or text (the script itself); loop true runs it again each time it ends. One script runs at a time.",
-        "no script running",
+        "Run a script: name (a file in the scripts folder) or text (the script itself), in a slot of its own (slot; default the script name, or text). Up to 8 run side by side, a healer beside a task, and share the character's pace fairly. loop true runs it again each time it ends; for (seconds) and iterations (runs from the top; more than 1 loops) end it by themselves.",
+        "no script in that slot",
     ),
-    (TOOL_STOP_SCRIPT, "Stop the running script.", "a script is running"),
+    (TOOL_STOP_SCRIPT, "Stop the script of one slot (slot), or every script.", "a script is running"),
     (
         TOOL_SCRIPT_STATUS,
-        "The running or last script: status (running, done, stopped, failed), line, error, and its output lines.",
+        "A script by its slot (slot): status (running, suspended, done, stopped, failed), line, iterations, error, ended_by (time up, iterations done) and its output lines. With no slot: the first running or last ended, with slots (every running one), ended (the last 16 that ended) and shown (lines of hotkeys and commands).",
         "session exists",
     ),
     (TOOL_LIST_SCRIPTS, "The scripts in the scripts folder.", "session exists"),
@@ -460,7 +511,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_AGENT_SET,
-        "Replace an agent's settings (agent, settings), or one named list (agent, list, settings). Agents: autoloot, scavenger, organizer, restock, dress, buy, sell, bandage, friends, remount, bone_cutter, carver, open_corpses, targets. Saved per character.",
+        "Replace an agent's settings (agent, settings), or one named list (agent, list, settings). Agents: autoloot, scavenger, organizer, restock, dress, buy, sell, bandage, self_heal, friends, remount, bone_cutter, carver, open_corpses, targets. Saved per character.",
         "session exists",
     ),
     (
@@ -521,7 +572,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_PROPERTIES,
-        "The words of the tooltip of one object: serial. When the session has none yet, it asks the shard, and the next call has them.",
+        "The words of the tooltip of one object: serial. lines are the words; entries are the same lines as the shard sent them, each a cliloc text number with its arguments (on shards with property lists). When the session has none yet, it asks the shard, and the next call has them.",
         "in world",
     ),
     (
@@ -538,6 +589,11 @@ const TOOLS: &[(&str, &str, &str)] = &[
         TOOL_SHOP_CLOSE,
         "Forgets the open shop list with no trade.",
         "session exists",
+    ),
+    (
+        TOOL_DYE,
+        "Answers the dye tub that asks for a colour (watch shows it under dye) with a hue.",
+        "a dye tub asks for a colour",
     ),
     (
         TOOL_MENU_PICK,
@@ -571,7 +627,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_MAP_PIN,
-        "Works on the map item that is open (watch shows it under maps): x and y in pixels of its picture put a pin there; action clear takes every pin off; action edit asks the shard to let the map be drawn on.",
+        "Works on the map item that is open (watch shows it under maps): x and y in pixels of its picture put a pin there; action move with pin (its place in the list, from 0) and x, y moves one pin; action remove with pin takes one pin off; action clear takes every pin off; action edit asks the shard to let the map be drawn on.",
         "a map is open",
     ),
     (
@@ -586,7 +642,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_HOUSE_EDIT,
-        "One step of the house designer, while it is open (watch shows it under designing): action add, remove, stair, roof, remove_roof with graphic, x and y (and z to remove); floor with level from 1; and clear, revert, commit, exit, backup, restore. The parts to build with are in watch under house_parts.",
+        "One step of the house designer, while it is open (watch shows it under designing): action add, remove, stair, roof, remove_roof with graphic, x and y (and z to remove); floor with level from 1; and clear, revert, commit, exit, backup, restore, sync (the shard sends the design again). The parts to build with are in watch under house_parts.",
         "the house designer is open",
     ),
     (
@@ -596,7 +652,7 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_CHAT,
-        "The chat of the shard: action open (with name) turns it on, join (with channel and password), say (with text), leave. watch shows the channels and the lines under chat.",
+        "The chat of the shard: action open (with name) turns it on, join (with channel and password), create (a new channel, with channel and password), say (with text), leave. watch shows the channels and the lines under chat.",
         "in world",
     ),
     (
@@ -606,8 +662,126 @@ const TOOLS: &[(&str, &str, &str)] = &[
     ),
     (
         TOOL_TRADE_GOLD,
-        "Sets the gold and platinum offered in the open trade: gold, platinum.",
+        "Sets the gold and platinum offered in an open trade: gold, platinum, and trade (the other player, or a box of the trade; the newest by default).",
         "a trade is open",
+    ),
+    (
+        TOOL_OPEN_SPELLBOOK,
+        "Opens the character's spellbook of one school: kind magery, necromancy, chivalry, bushido, ninjitsu, spellweaving or mysticism. Its spells come back in observe spellbooks.",
+        "in world, the book in the pack",
+    ),
+    (
+        TOOL_TIP,
+        "Asks the shard for the next tip of the day, or the one before (next=false). The words come back in watch shard_notice.",
+        "a tip was shown",
+    ),
+    (
+        TOOL_QUEST_ARROW,
+        "Clicks the quest arrow the shard shows (observe quest_arrow), with the left button, or the right one with right=true.",
+        "a quest arrow is shown",
+    ),
+    (
+        TOOL_BOAT_MOVE,
+        "Steers the boat the character pilots: direction n, ne, e, se, s, sw, w or nw, and speed stop, slow or fast (default fast).",
+        "piloting a boat",
+    ),
+    (
+        TOOL_TRACK_MEMBERS,
+        "Asks the shard where the party or the guild members out of sight stand: who party or guild. The places come back in observe tracked_members and a member_positions event.",
+        "in a party or a guild",
+    ),
+    (
+        TOOL_HOUSE_CONTENT,
+        "Tells the shard whether to show what stands inside public houses: show true or false.",
+        "in world",
+    ),
+    (
+        TOOL_RACE_CHANGE,
+        "Answers the race change the shard asks for (a race_change_opened event; observe race_change lists the looks): hair and beard are item graphics from hair_styles and beard_styles (0 for none), skin_hue comes from skin_hues, hair_hue and beard_hue from hair_hues. Each one left out takes the first choice. cancel=true says no.",
+        "a race change is open",
+    ),
+    (
+        TOOL_BOOK_READ,
+        "One page of the open book (watch shows it under book): its lines when the shard sent them, or else the shard is asked for that page and the next call has it.",
+        "a book is open",
+    ),
+    (
+        TOOL_VIRTUE,
+        "Invokes a virtue: name humility, sacrifice, compassion, spirituality, valor, honor, justice or honesty. Honor, sacrifice and valor go as the virtue macro; the rest as a press in the virtue gump. The shard says when one is not active.",
+        "in world",
+    ),
+    (
+        TOOL_VIRTUE_GUMP,
+        "Asks the shard for the virtue gump of a mobile: serial, or the character.",
+        "in world",
+    ),
+    (
+        TOOL_SKILL_LOCK,
+        "Sets the lock of a skill: skill (number or name), lock up, down or locked.",
+        "in world",
+    ),
+    (
+        TOOL_STAT_LOCK,
+        "Sets the lock of a stat: stat str, dex or int, lock up, down or locked.",
+        "in world",
+    ),
+    (TOOL_RENAME, "Gives a pet of the character a new name: serial and name.", "a pet in view"),
+    (
+        TOOL_SET_ABILITY,
+        "Arms a weapon move: ability primary, secondary, stun or disarm; on false clears it. observe abilities shows what is armed.",
+        "in world, a weapon for primary and secondary",
+    ),
+    (
+        TOOL_EMOTE_ACTION,
+        "Plays a body action, as the emote gestures do: action such as bow or salute.",
+        "in world",
+    ),
+    (TOOL_FLY, "A gargoyle takes off; on false lands.", "a gargoyle character"),
+    (
+        TOOL_MENU_BUTTON,
+        "Presses a button of the paperdoll: which quests or guild. The shard answers with a gump.",
+        "in world",
+    ),
+    (
+        TOOL_TARGET_RESOURCE,
+        "Aims a harvest tool at a resource with no cursor: tool (serial), resource ore, sand, wood, graves or red mushrooms.",
+        "a harvest tool in the pack",
+    ),
+    (
+        TOOL_USE_TYPE,
+        "Double-clicks the first item of a graphic: graphic, hue (default any), source backpack, ground, world or a container serial (default backpack), range for the ground.",
+        "in world",
+    ),
+    (
+        TOOL_USE_ON,
+        "Uses an item on a mobile with no cursor, as a bandage is: item and target (serials). Takes an action's time.",
+        "in world",
+    ),
+    (
+        TOOL_CATCH_BAG,
+        "The container loot goes into in place of the backpack: serial sets it, clear=true clears it; with neither it says which. Saved per character.",
+        "in world",
+    ),
+    (
+        TOOL_MOUNT,
+        "Rides a mount: serial, or the remount agent's mount, or the nearest pet of the character's that can be ridden. War mode goes off first, so the double-click is no attack.",
+        "not riding",
+    ),
+    (TOOL_DISMOUNT, "Gets off the mount, with war mode off first.", "riding"),
+    (
+        TOOL_ATTACK_NEAREST,
+        "Attacks the nearest mobile in sight that may be harmed without a crime: never an innocent, a friend, a pet or a party member, or one nobody can harm. notoriety (gray, criminal, enemy, murderer), species, name and distance narrow it. Obeys the shard's rule on closest targets.",
+        "in world",
+    ),
+    (
+        TOOL_IGNORE_LIST,
+        "The gumps and the journal lines an agent does not hear of: list gumps or journal, action add, remove, clear or show (default), value a gump id or words (a speaker or words of a line). Saved per character.",
+        "session exists",
+    ),
+    (
+        TOOL_SKILL_GAINS,
+        "The skills gained this session: for each, the points gained, the changes and the rate an hour, and the newest changes. skill narrows it to one; clear=true starts the record again.",
+        "session exists",
     ),
     (
         TOOL_SET_PERSONA,
@@ -633,8 +807,13 @@ const TOOLS: &[(&str, &str, &str)] = &[
 
 /// The tools that only look. An agent may call them while a human has the
 /// character.
-const READ_ONLY_TOOLS: [&str; 23] = [
+const READ_ONLY_TOOLS: [&str; 28] = [
     TOOL_OBSERVE,
+    TOOL_LANDMARKS_INFO,
+    TOOL_SKILL_GAINS,
+    TOOL_FIND_TILES,
+    TOOL_MULTI_PARTS,
+    TOOL_FIND_ENTRANCES,
     TOOL_WATCH,
     TOOL_PROPERTIES,
     TOOL_LOOK_AROUND,
@@ -680,37 +859,48 @@ pub fn tool_names() -> Vec<&'static str> {
 /// The tools an agent may call, each with the arguments it reads, which of
 /// them it cannot do without, and when it needs one of several.
 pub fn mcp_tool_list() -> Value {
-    let tools: Vec<Value> = TOOLS
+    let session_tools = TOOLS
         .iter()
         .filter(|(name, _, _)| !HUMAN_ONLY_TOOLS.contains(name))
-        .map(|(name, desc, pre)| {
-            let reads = tool_args(name);
-            let mut properties = serde_json::Map::new();
-            properties.insert(
-                ARG_SESSION_ID.into(),
-                json!({"type": "string", "description": ABOUT_SESSION_ID}),
-            );
-            for a in reads {
-                properties.insert(a.key.into(), arg_schema(a));
-            }
-            let required: Vec<&str> = reads.iter().filter(|a| a.required).map(|a| a.key).collect();
-            let one_of = ONE_OF
-                .iter()
-                .find(|(tool, _)| tool == name)
-                .map(|(_, keys)| format!(" Needs one of: {}.", keys.join(", ")))
-                .unwrap_or_default();
-            json!({
-                "name": name,
-                "description": format!("{desc}{one_of} Precondition: {pre}"),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                }
-            })
-        })
-        .collect();
+        .map(|tool| tool_entry(tool, true));
+    // The runtime's own tools come before any session, so they name none.
+    let runtime_tools = crate::characters::RUNTIME_TOOLS
+        .iter()
+        .map(|tool| tool_entry(tool, false));
+    let tools: Vec<Value> = runtime_tools.chain(session_tools).collect();
     json!({ "tools": tools })
+}
+
+/// One tool as the list gives it: its words, the arguments it reads, which
+/// it cannot do without, and, for a tool of a session, the session to act
+/// in.
+fn tool_entry((name, desc, pre): &(&str, &str, &str), in_a_session: bool) -> Value {
+    let reads = tool_args(name);
+    let mut properties = serde_json::Map::new();
+    if in_a_session {
+        properties.insert(
+            ARG_SESSION_ID.into(),
+            json!({"type": "string", "description": ABOUT_SESSION_ID}),
+        );
+    }
+    for a in reads {
+        properties.insert(a.key.into(), arg_schema(a));
+    }
+    let required: Vec<&str> = reads.iter().filter(|a| a.required).map(|a| a.key).collect();
+    let one_of = ONE_OF
+        .iter()
+        .find(|(tool, _)| tool == name)
+        .map(|(_, keys)| format!(" Needs one of: {}.", keys.join(", ")))
+        .unwrap_or_default();
+    json!({
+        "name": name,
+        "description": format!("{desc}{one_of} Precondition: {pre}"),
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }
+    })
 }
 
 /// The arguments one tool reads.
@@ -753,7 +943,14 @@ mod tests {
     /// with no arguments at all, and one it could not call would be offered.
     #[test]
     fn each_agent_tool_lists_its_own_arguments() {
-        let names = tool_names();
+        let runtime_tools: Vec<&str> = crate::characters::RUNTIME_TOOLS
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect();
+        let names: Vec<&str> = tool_names()
+            .into_iter()
+            .chain(runtime_tools.clone())
+            .collect();
         for name in names.iter().filter(|name| !HUMAN_ONLY_TOOLS.contains(name)) {
             assert!(
                 TOOL_ARGS.iter().any(|(tool, _)| tool == name),
@@ -774,9 +971,28 @@ mod tests {
             );
         }
         let move_to = tools.iter().find(|t| t["name"] == TOOL_MOVE_TO).unwrap();
-        assert_eq!(move_to["inputSchema"]["required"], json!(["x", "y"]));
+        assert_eq!(move_to["inputSchema"]["required"], json!([]));
+        assert!(move_to["inputSchema"]["properties"]["avoid"].is_object());
+        assert!(move_to["description"]
+            .as_str()
+            .unwrap()
+            .contains("Needs one of: x, name."));
         let persona = tools.iter().find(|t| t["name"] == TOOL_SET_PERSONA);
         assert!(persona.is_some(), "set_persona is offered");
+        let connect = tools
+            .iter()
+            .find(|t| t["name"] == crate::characters::TOOL_CONNECT)
+            .unwrap();
+        let reads = &connect["inputSchema"]["properties"];
+        assert!(reads["password_env"].is_object());
+        assert!(
+            reads["password"].is_null(),
+            "a password is never an argument"
+        );
+        assert!(
+            reads["session_id"].is_null(),
+            "connect comes before a session"
+        );
         let use_tool = tools.iter().find(|t| t["name"] == TOOL_USE).unwrap();
         assert!(use_tool["description"]
             .as_str()

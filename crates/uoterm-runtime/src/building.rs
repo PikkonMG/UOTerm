@@ -325,6 +325,7 @@ mod tests {
             hue: 0,
             multi,
             flags: 0,
+            direction: 0,
         }
     }
 

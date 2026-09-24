@@ -181,6 +181,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         w
     }

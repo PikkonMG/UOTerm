@@ -35,8 +35,11 @@ endwhile
    you the line number and the reason.
 5. **Safety comes first.** The character still heals and fights back while a
    script runs. The agents act before the script on each tick.
-6. **One script at a time.** Stop the running script before you start
-   another.
+6. **Scripts run side by side.** Each runs in a slot of its own, such as a
+   healer beside a task, up to 8 at once. They share one pace: each tick
+   they take turns, and once one has sent something the others wait for the
+   gap after it. One slot holds one script: stop it before you start another
+   in that slot.
 7. **Death stops a script.** So does a lost connection.
 
 ## How to write a line
@@ -180,7 +183,7 @@ endif
 | `togglemounted` | Mounts or dismounts. Set the `mount` alias first. |
 | `useskill 'Hiding'` | Uses a skill. `useskill 'last'` uses the last one again. |
 | `setskill 'Magery' 'locked'` | Sets a skill lock: up, down or locked. |
-| `virtue 'honor'` | Invokes a virtue: honor, sacrifice or valor. |
+| `virtue 'honor'` | Invokes a virtue: humility, sacrifice, compassion, spirituality, valor, honor, justice or honesty. Honor, sacrifice and valor go as the virtue macro; the others as a press in the virtue gump. The shard says when one is not active. |
 | `setstatlock 'str' 'locked'` | Sets a stat lock: str, dex or int; up, down or locked. |
 | `emoteaction 'bow'` | Plays an emote animation, such as bow or salute. |
 
@@ -188,12 +191,12 @@ endif
 
 | Line | What it does |
 | --- | --- |
-| `msg 'bank'` | Says the words. Town and pet commands work: `msg 'all kill'`. `chatmsg` is the same. |
-| `yellmsg`, `whispermsg`, `emotemsg`, `guildmsg`, `allymsg` | Other ways to speak. |
+| `msg 'bank'` | Says the words. Town and pet commands work: `msg 'all kill'`. A colour after the words speaks in it: `msg 'hail' 0x0035`. `chatmsg` is the same. |
+| `yellmsg`, `whispermsg`, `emotemsg`, `guildmsg`, `allymsg` | Other ways to speak, with the same colour. |
 | `partymsg 'heal me'` | Says it to your party. For one member only, add a colour and the serial: `partymsg 'heal me' 0 0x1234`. |
 | `partyaccept`, `partydecline` | Answers a party invite. |
 | `partyinvite 'friend'` | Asks someone into your party. With no one named, the shard gives a target cursor. |
-| `partyremove 'friend'` | Removes someone from your party. |
+| `partyremove 'friend'` | Removes someone from your party. With no one named, the shard gives a target cursor. |
 | `partyloot 'on'` | Lets your party loot your corpses, or not. |
 | `partyleave` | Leaves your party. |
 | `promptmsg 'my rune'` | Answers a text prompt. 128 characters at most. |
@@ -260,10 +263,11 @@ See the agents guide for the lists these use.
 
 | Line | What it does |
 | --- | --- |
-| `playmacro 'heal'` | Stops this script and runs another in its place. |
+| `playmacro 'heal'` | Stops this script and runs another in its place, in the same slot. |
 | `script 'run' 'heal'` | The same. |
-| `script 'stop'` | Stops this script. |
-| `script 'isrunning' 'heal' 'on'` | Sets the alias `on` to 1 when that script runs, else 0. `script 'issuspended'` sets it to 0, since a script here is never held. |
+| `script 'stop'` | Stops this script. `script 'stop' 'healer'` stops the script of another slot. |
+| `script 'suspend' 'gather'`, `script 'resume' 'gather'` | Holds the script of another slot where it is, and lets it go on. |
+| `script 'isrunning' 'healer' 'on'` | Sets the alias `on` to 1 when a script runs in that slot, else 0. `script 'issuspended' 'gather' 'on'` sets it to 1 when that slot is held. |
 | `where` | Writes your tile in the script's output. `location 'friend'` writes someone else's. |
 | `resync`, `ping` | Asks the shard to send your place again; pings the shard. |
 | `paperdoll ['friend']` | Opens a paperdoll. |
@@ -320,9 +324,9 @@ are not scripts.
 
 | Tool | What it does |
 | --- | --- |
-| `run_script` | `name` runs a saved script; `text` runs the text you give. `loop: true` runs it again each time it ends. |
-| `stop_script` | Stops it. |
-| `script_status` | The status (running, done, stopped or failed), the line, the reason for a failure, and the script's output. |
+| `run_script` | `name` runs a saved script; `text` runs the text you give. `slot` names its slot (default the script name, or `text`). `loop: true` runs it again each time it ends. `for` (seconds) and `iterations` (runs from the top; more than 1 loops) end it by themselves, and its status then says `ended_by`: `time up` or `iterations done`. |
+| `stop_script` | Stops the script of one `slot`, or every script. |
+| `script_status` | One `slot`: the status (running, suspended, done, stopped or failed), the line, the runs from the top, the reason for a failure, and the script's own output. With no slot: the first running script, every slot under `slots`, the last 16 that ended under `ended`, and the lines of hotkeys and commands under `shown`. |
 | `list_scripts` | The saved scripts. |
 | `record_macro` | Records what you do as a script: `action: start` with a `name`, then `stop` to save it. |
 

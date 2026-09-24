@@ -1,6 +1,7 @@
 pub use crate::persona::Persona;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 pub use uoterm_protocol::crypto::EncryptionMode;
 use uoterm_protocol::crypto::{for_mode, StreamCipher};
 use uoterm_protocol::types::{ClientVersion, Era, LOGIN_NEXT_KEY_DEFAULT};
@@ -97,6 +98,11 @@ pub struct AppConfig {
     /// Log in again when the link to the shard drops.
     #[serde(default = "reconnect_default")]
     pub reconnect: bool,
+    /// Reach the shard through this proxy: `socks5://host:port` or
+    /// `http://host:port`, with `user:password@` before the host when the
+    /// proxy asks for one.
+    #[serde(default)]
+    pub proxy: Option<crate::proxy::Proxy>,
 }
 
 impl Default for AppConfig {
@@ -115,6 +121,7 @@ impl Default for AppConfig {
             play_along: PLAY_ALONG_DEFAULT,
             view: false,
             reconnect: RECONNECT_DEFAULT,
+            proxy: None,
         }
     }
 }
@@ -143,6 +150,8 @@ pub enum LoginQuestion {
         names: Vec<String>,
         /// The words of the last refusal of the shard, when there was one.
         refused: Option<String>,
+        /// What a new character may be: the start towns and the flags.
+        choices: CharacterChoices,
         reply: tokio::sync::oneshot::Sender<CharacterRequest>,
     },
     Character {
@@ -159,6 +168,17 @@ pub enum CharacterRequest {
     Play(usize),
     Delete(usize),
     Make(Box<NewCharacterWish>),
+    /// Play none: the login ends at the character list.
+    Leave,
+}
+
+/// What the shard lets a new character be: the towns he may start in, the
+/// features of the account (`0xB9`) and the flags of the character list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CharacterChoices {
+    pub towns: Vec<uoterm_protocol::StartTown>,
+    pub features: u32,
+    pub list_flags: u32,
 }
 
 /// What a player picked for a new character, in the words of a screen.
@@ -174,6 +194,11 @@ pub struct NewCharacterWish {
     pub skin_hue: u16,
     pub hair: u16,
     pub hair_hue: u16,
+    pub beard: u16,
+    pub beard_hue: u16,
+    pub shirt_hue: u16,
+    pub pants_hue: u16,
+    pub profession: u8,
     pub start_city: u16,
     pub slot: u16,
 }
@@ -190,12 +215,14 @@ impl LoginPicker {
         &self,
         names: Vec<String>,
         refused: Option<String>,
+        choices: CharacterChoices,
     ) -> Option<CharacterRequest> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.0
             .send(LoginQuestion::Characters {
                 names,
                 refused,
+                choices,
                 reply,
             })
             .ok()?;
@@ -243,6 +270,9 @@ pub struct ConnectOptions {
     pub picker: Option<LoginPicker>,
     /// Log in again when the link to the shard drops.
     pub reconnect: bool,
+    /// The proxy the session reaches the shard through. See
+    /// [`AppConfig::proxy`].
+    pub proxy: Option<crate::proxy::Proxy>,
 }
 
 impl Default for ConnectOptions {
@@ -266,6 +296,7 @@ impl Default for ConnectOptions {
             play_along: PLAY_ALONG_DEFAULT,
             picker: None,
             reconnect: RECONNECT_DEFAULT,
+            proxy: None,
         }
     }
 }
@@ -284,16 +315,61 @@ impl ConnectOptions {
     }
 }
 
+/// The folders a process keeps its files in: settings and data.
+struct Folders {
+    config: PathBuf,
+    data: PathBuf,
+}
+
+/// The folders of this process, set on first use. Only a program run by a
+/// person claims the person's own folders, with [`use_user_folders`]. Any
+/// other process, such as a test, gets folders of its own under the temp
+/// folder, so it can never change the person's settings or data.
+static FOLDERS: OnceLock<Folders> = OnceLock::new();
+
+/// The name of the folder a process without the person's folders uses.
+const SCRATCH_FOLDER_PREFIX: &str = "uoterm-scratch-";
+const SCRATCH_CONFIG_FOLDER: &str = "config";
+const SCRATCH_DATA_FOLDER: &str = "data";
+
+impl Folders {
+    fn user() -> Self {
+        let under =
+            |base: Option<PathBuf>| base.unwrap_or_else(|| PathBuf::from(".")).join(APP_NAME);
+        Self {
+            config: under(dirs::config_dir()),
+            data: under(dirs::data_local_dir()),
+        }
+    }
+
+    fn scratch() -> Self {
+        let root =
+            std::env::temp_dir().join(format!("{SCRATCH_FOLDER_PREFIX}{}", std::process::id()));
+        Self {
+            config: root.join(SCRATCH_CONFIG_FOLDER),
+            data: root.join(SCRATCH_DATA_FOLDER),
+        }
+    }
+}
+
+/// Makes this process keep its files in the person's own folders. The
+/// program calls it first, before anything reads a folder; a test never
+/// does.
+pub fn use_user_folders() {
+    // A second call finds the folders set already, and keeps them.
+    let _ = FOLDERS.set(Folders::user());
+}
+
+fn folders() -> &'static Folders {
+    FOLDERS.get_or_init(Folders::scratch)
+}
+
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(APP_NAME)
+    folders().config.clone()
 }
 
 pub fn data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(APP_NAME)
+    folders().data.clone()
 }
 
 pub fn load_app_config(path: Option<&PathBuf>) -> AppConfig {
@@ -323,9 +399,29 @@ pub fn era_from_str(s: Option<&str>) -> Era {
     s.and_then(|name| name.parse().ok()).unwrap_or(Era::Modern)
 }
 
-pub fn version_from_str(s: Option<&str>, era: Era) -> ClientVersion {
-    s.and_then(|v| v.parse().ok())
+/// The version a session says it is: the one named; else, in the modern
+/// era, the version of the client program in the client folder, which a
+/// shard that checks versions compares with its own copy; else the default
+/// of the era.
+pub fn client_version(named: Option<&str>, era: Era, uopath: Option<&Path>) -> ClientVersion {
+    named
+        .and_then(|v| v.parse().ok())
+        .or_else(|| {
+            uopath
+                .filter(|_| era == Era::Modern)
+                .and_then(uoterm_nav::client_program_version)
+        })
         .unwrap_or_else(|| era.default_version())
+}
+
+/// The folder the saved logins are kept in, below the working directory,
+/// and the extension of each file.
+pub const PROFILES_DIR: &str = "profiles";
+pub const PROFILE_EXT: &str = "toml";
+
+/// The file of the saved login of this name.
+pub fn profile_path(name: &str) -> PathBuf {
+    PathBuf::from(PROFILES_DIR).join(format!("{name}.{PROFILE_EXT}"))
 }
 
 pub fn load_profile(path: &std::path::Path) -> crate::error::Result<Profile> {
@@ -344,6 +440,44 @@ pub fn password_from_env(var: &str) -> crate::error::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_named_version_is_said_as_it_is() {
+        let folder = uoterm_nav::client_data_dir_from_env();
+        let named = client_version(Some("7.0.50.0"), Era::Modern, folder.as_deref());
+        assert_eq!(named, ClientVersion::new(7, 0, 50, 0));
+    }
+
+    #[test]
+    fn with_no_client_program_the_era_names_the_version() {
+        let empty = std::env::temp_dir().join("uoterm-no-client-program");
+        assert_eq!(
+            client_version(None, Era::Modern, Some(&empty)),
+            Era::Modern.default_version()
+        );
+        assert_eq!(
+            client_version(None, Era::Modern, None),
+            Era::Modern.default_version()
+        );
+    }
+
+    #[test]
+    fn a_modern_session_says_the_version_of_its_client_program() {
+        let Some(folder) = uoterm_nav::client_data_dir_from_env() else {
+            eprintln!("skipped: UOTERM_TEST_UOPATH is not set");
+            return;
+        };
+        let Some(program) = uoterm_nav::client_program_version(&folder) else {
+            eprintln!("skipped: the client folder has no client program");
+            return;
+        };
+        assert_eq!(client_version(None, Era::Modern, Some(&folder)), program);
+        // An old-era session keeps the version of its era.
+        assert_eq!(
+            client_version(None, Era::T2a, Some(&folder)),
+            Era::T2a.default_version()
+        );
+    }
 
     #[test]
     fn the_demo_shard_listens_on_the_default_host_and_port() {
@@ -437,6 +571,26 @@ view = true
     /// Telling the agent when someone says the character's name is on
     /// unless the file switches it off.
     #[test]
+    fn a_proxy_is_read_from_the_config_file() {
+        const WITH_PROXY: &str = r#"
+host = "127.0.0.1"
+port = 2593
+era = "t2a"
+log_level = "info"
+api_bind = "127.0.0.1:7733"
+max_sessions = 32
+proxy = "socks5://10.0.0.2:1080"
+"#;
+        assert!(AppConfig::default().proxy.is_none());
+        let cfg: AppConfig = toml::from_str(WITH_PROXY).expect("the config loads");
+        let proxy = cfg.proxy.expect("the proxy is read");
+        assert_eq!(proxy.kind, crate::proxy::ProxyKind::Socks5);
+        assert_eq!(proxy.port, 1080);
+        let bad = WITH_PROXY.replace("socks5", "gopher");
+        assert!(toml::from_str::<AppConfig>(&bad).is_err());
+    }
+
+    #[test]
     fn answer_when_named_is_on_until_switched_off() {
         const OFF: &str = r#"
 host = "127.0.0.1"
@@ -502,5 +656,21 @@ answer_when_named = false
             Some(std::path::Path::new("/path/to/Waypoints.lua"))
         );
         assert!(!EXAMPLE.contains("stay_on_socket"), "old key must not ship");
+    }
+
+    #[test]
+    fn a_process_that_does_not_claim_the_user_folders_keeps_files_in_temp() {
+        let user = Folders::user();
+        let temp = std::env::temp_dir();
+        for folder in [config_dir(), data_dir()] {
+            assert!(
+                folder.starts_with(&temp),
+                "{} is not a temp folder",
+                folder.display()
+            );
+            assert_ne!(folder, user.config);
+            assert_ne!(folder, user.data);
+        }
+        assert_ne!(config_dir(), data_dir());
     }
 }

@@ -5,6 +5,7 @@
 pub mod api;
 pub mod banks;
 pub mod building;
+pub mod characters;
 pub mod config;
 pub mod deposit;
 pub mod error;
@@ -19,15 +20,17 @@ pub mod movement;
 pub mod persona;
 pub mod playbooks;
 pub mod populate;
+pub mod proxy;
 pub mod reflex;
 pub mod scene;
 pub mod session;
 pub mod teleporters;
+pub mod tile_groups;
 pub mod tools;
 
 pub use config::{
-    parse_encryption_mode, AppConfig, CharacterRequest, ConnectOptions, EncryptionMode,
-    LoginPicker, LoginQuestion, NewCharacterWish, Profile,
+    parse_encryption_mode, AppConfig, CharacterChoices, CharacterRequest, ConnectOptions,
+    EncryptionMode, LoginPicker, LoginQuestion, NewCharacterWish, Profile,
 };
 pub use error::{Result, RuntimeError};
 pub use manager::{FacetCache, Runtime};
@@ -67,6 +70,7 @@ mod tests {
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
             reconnect: false,
+            proxy: None,
         };
         let handle = rt.connect(opts).await.unwrap();
         for _ in 0..25 {
@@ -114,6 +118,41 @@ mod tests {
             lines.contains("vendor buy"),
             "journal missing speech: {lines}"
         );
+    }
+
+    /// A logout that names another character ends the link and logs in as
+    /// that one in the same session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_logout_to_another_character_keeps_the_session() {
+        const TRIES: usize = 100;
+        const WAIT_MS: u64 = 100;
+        let (handle, _server) = connect_mock().await;
+        let asked = handle
+            .call(ToolCall {
+                name: crate::tools::TOOL_LOGOUT.into(),
+                args: serde_json::json!({ "then_play": mock::MOCK_CHAR }),
+            })
+            .await;
+        assert!(asked.ok, "{asked:?}");
+        assert_eq!(
+            asked.result["then_play"],
+            serde_json::json!(mock::MOCK_CHAR)
+        );
+        let mut relogged = false;
+        for _ in 0..TRIES {
+            let saw_logout = handle
+                .world
+                .read()
+                .events
+                .iter()
+                .any(|e| e.text.starts_with("logged out; logging in as"));
+            if saw_logout && handle.logged_in() {
+                relogged = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(WAIT_MS)).await;
+        }
+        assert!(relogged, "the session logs in again as the character named");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

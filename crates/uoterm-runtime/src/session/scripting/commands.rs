@@ -19,10 +19,11 @@ const WAIT_DEFAULT: Duration = Duration::from_secs(5);
 const WALK_LIMIT: Duration = Duration::from_secs(60);
 /// A paperdoll is asked for by double-clicking the mobile with this bit set.
 const PAPERDOLL_REQUEST_BIT: u32 = 0x8000_0000;
+/// The member a party remove names when the shard is to ask for one with a
+/// target cursor.
+const ASKS_FOR_TARGET: Serial = Serial(0);
 /// The resources a tool can be aimed at with no cursor, by number.
 const RESOURCES: [&str; 5] = ["ore", "sand", "wood", "graves", "red mushrooms"];
-/// The virtues a player can invoke, by number.
-const VIRTUES: [(&str, u8); 3] = [("honor", 1), ("sacrifice", 2), ("valor", 3)];
 /// Spell numbers the heal commands cast.
 const SPELL_HEAL: u16 = 4;
 const SPELL_CURE: u16 = 11;
@@ -149,7 +150,7 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
         "waitforjournal" => wait_for_journal_line(game, call, ctx),
         // Main.
         "ping" => {
-            game.inner.outbound.push_back(encode::ping(1));
+            super::super::latency::send_ping(game.inner);
             Ok(Step::Acted)
         }
         "playmacro" => play_macro(game, call),
@@ -348,13 +349,17 @@ fn dispatch(game: &mut Game, call: &Call, ctx: &mut Ctx) -> std::result::Result<
             game.inner.outbound.push_back(encode::party_invite(member));
             Ok(Step::Acted)
         }
+        // With no one named, the shard gives a target cursor, as for an
+        // invite.
         "partyremove" => {
-            let member = game.serial(need(call, 0, "a member")?, ctx)?;
+            let member = call.args.first().map(|a| game.serial(a, ctx)).transpose()?;
+            let member = member.unwrap_or(ASKS_FOR_TARGET);
             game.inner.outbound.push_back(encode::party_remove(member));
             Ok(Step::Acted)
         }
         "partyloot" => {
             let allow = on_off(call, 0)?;
+            game.inner.world.write().party_can_loot = allow;
             game.inner.outbound.push_back(encode::party_can_loot(allow));
             Ok(Step::Acted)
         }
@@ -475,8 +480,10 @@ fn set_ability(game: &mut Game, call: &Call) -> std::result::Result<Step, String
         None => true,
     };
     let me = game.me();
-    let packet = if !on {
-        encode::set_ability(me, encode::NO_ABILITY)
+    // The weapon move armed now, which the world keeps until the shard
+    // clears it. The older stun and disarm are no weapon move.
+    let (packet, armed) = if !on {
+        (encode::set_ability(me, encode::NO_ABILITY), Some(None))
     } else if which.is("primary") || which.is("secondary") {
         let slot = if which.is("primary") {
             MoveSlot::Primary
@@ -484,15 +491,19 @@ fn set_ability(game: &mut Game, call: &Call) -> std::result::Result<Step, String
             MoveSlot::Secondary
         };
         let weapon = game.world().equipped_weapon_graphic();
-        encode::set_ability(me, move_for(weapon, slot))
+        let ability = move_for(weapon, slot);
+        (encode::set_ability(me, ability), Some(Some(ability)))
     } else if which.is("stun") {
-        encode::stun_request()
+        (encode::stun_request(), None)
     } else if which.is("disarm") {
-        encode::disarm_request()
+        (encode::disarm_request(), None)
     } else {
         return Err(format!("'{}' is not an ability", which.text));
     };
     game.inner.outbound.push_back(packet);
+    if let Some(armed) = armed {
+        game.inner.world.write().self_state.armed_ability = armed;
+    }
     Ok(Step::Acted)
 }
 
@@ -1525,43 +1536,73 @@ fn play_macro(game: &mut Game, call: &Call) -> std::result::Result<Step, String>
     Ok(Step::Wait)
 }
 
-/// `script 'run'|'stop'|'isrunning' [name] [alias]`. One script runs at a
-/// time, so "suspend" and "resume" have nothing to hold.
+/// `script 'run'|'stop'|'isrunning'|'issuspended'|'suspend'|'resume'
+/// [slot] [alias]`. Scripts run side by side, each in a slot of its own, and
+/// a script works on its own slot unless it names another.
 fn script_control(
     game: &mut Game,
     call: &Call,
     ctx: &mut Ctx,
 ) -> std::result::Result<Step, String> {
-    let action = need(call, 0, "run, stop or isrunning")?
-        .text
-        .to_ascii_lowercase();
+    let action = need(
+        call,
+        0,
+        "run, stop, isrunning, issuspended, suspend or resume",
+    )?
+    .text
+    .to_ascii_lowercase();
     let name = call.args.get(1).map(|a| a.text.clone());
+    let this = game.inner.scripting.current.clone().unwrap_or_default();
+    let other = name
+        .as_deref()
+        .filter(|slot| !slot.eq_ignore_ascii_case(&this));
     match action.as_str() {
         "run" => {
             let name = name.ok_or("script run needs a script name")?;
             game.inner.scripting.next = Some(Next::Run(name));
             Ok(Step::Wait)
         }
-        "stop" => {
-            game.inner.scripting.next = Some(Next::Stop);
-            Ok(Step::Wait)
+        "stop" => match other {
+            None => {
+                game.inner.scripting.next = Some(Next::Stop);
+                Ok(Step::Wait)
+            }
+            Some(slot) => {
+                stop_script(game.inner, &json!({ ARG_SLOT: slot }));
+                Ok(Step::Done)
+            }
+        },
+        "suspend" | "resume" => {
+            let slot = other.ok_or("a script suspends or resumes another slot, by name")?;
+            let at = game
+                .inner
+                .scripting
+                .slot_at(slot)
+                .ok_or_else(|| format!("no script runs in slot '{slot}'"))?;
+            game.inner.scripting.slots[at].suspended = action == "suspend";
+            Ok(Step::Done)
         }
         "isrunning" | "issuspended" => {
-            let this = game.inner.scripting.current.clone().unwrap_or_default();
             let asked = name.clone().unwrap_or_else(|| this.clone());
-            let running = action == "isrunning" && asked.eq_ignore_ascii_case(&this);
+            let slots = &game.inner.scripting.slots;
+            let held = |running: &Running| running.suspended;
+            let state = asked.eq_ignore_ascii_case(&this) && action == "isrunning"
+                || game
+                    .inner
+                    .scripting
+                    .slot_at(&asked)
+                    .is_some_and(|at| (action == "issuspended") == held(&slots[at]));
             let alias = call
                 .args
                 .get(2)
                 .map(|a| a.text.clone())
                 .unwrap_or_else(|| format!("{asked}_{}", &action[2..]));
-            ctx.vars.set_alias(&alias, u32::from(running));
+            ctx.vars.set_alias(&alias, u32::from(state));
             Ok(Step::Done)
         }
-        "suspend" | "resume" => {
-            Err("one script runs at a time; there is nothing to suspend".into())
-        }
-        other => Err(format!("'{other}' is not run, stop or isrunning")),
+        other => Err(format!(
+            "'{other}' is not run, stop, isrunning, issuspended, suspend or resume"
+        )),
     }
 }
 
@@ -1590,20 +1631,22 @@ fn paperdoll(game: &mut Game, call: &Call, ctx: &Ctx) -> std::result::Result<Ste
 
 fn virtue(game: &mut Game, call: &Call) -> std::result::Result<Step, String> {
     let word = need(call, 0, "a virtue")?;
-    let id = VIRTUES
-        .iter()
-        .find(|(name, _)| word.is(name))
-        .map(|&(_, id)| id)
-        .ok_or_else(|| format!("'{}' is not honor, sacrifice or valor", word.text))?;
-    game.inner.outbound.push_back(encode::invoke_virtue(id));
+    super::super::actions::invoke_virtue(game.inner, &word.text)?;
     Ok(Step::Acted)
 }
 
 /// Says a line. A script's words are the player's own commands, so they go
 /// as written: with the keyword numbers a shard listens for, and without the
 /// chat budget or the no-repeat rule that guards an agent's small talk.
+/// `msg text [color]`: the words, in the colour when one is given.
 fn say(game: &mut Game, call: &Call, kind: u8) -> std::result::Result<Step, String> {
     let text = text_arg(call, 0, TEXT_MAX)?;
+    let hue = call
+        .args
+        .get(1)
+        .and_then(|a| a.number())
+        .and_then(|n| u16::try_from(n).ok())
+        .unwrap_or(DEFAULT_SPEECH_HUE);
     let keywords = if kind == SPEECH_REGULAR {
         game.inner
             .speech_data
@@ -1618,12 +1661,9 @@ fn say(game: &mut Game, call: &Call, kind: u8) -> std::result::Result<Step, Stri
         .persona
         .filter_speech(text)
         .ok_or(SPEECH_REJECTED)?;
-    game.inner.outbound.push_back(encode::keyword_speech(
-        kind,
-        DEFAULT_SPEECH_HUE,
-        &keywords,
-        &text,
-    ));
+    game.inner
+        .outbound
+        .push_back(encode::keyword_speech(kind, hue, &keywords, &text));
     Ok(Step::Acted)
 }
 
@@ -1839,7 +1879,9 @@ fn send_cast(game: &mut Game, spell: u16, target: Option<Serial>, now: Instant) 
         // The other hand goes at the next action; the cast waits for it.
         return Step::Wait;
     }
-    game.inner.outbound.push_back(encode::cast_spell(spell));
+    game.inner
+        .outbound
+        .push_back(encode::cast(spell, game.inner.version));
     note_cast(game.inner, spell);
     game.inner.scripting.last_spell = Some(spell);
     if let Some(target) = target {

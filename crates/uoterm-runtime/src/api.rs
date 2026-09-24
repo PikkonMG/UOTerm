@@ -1,4 +1,4 @@
-use crate::config::{era_from_str, version_from_str, ConnectOptions, BEARER_PREFIX, ENV_API_TOKEN};
+use crate::config::{client_version, era_from_str, ConnectOptions, BEARER_PREFIX, ENV_API_TOKEN};
 use crate::manager::Runtime;
 use crate::tools::{ToolCall, ToolResult, TOOL_OBSERVE};
 use axum::extract::{Path, Request, State};
@@ -81,6 +81,7 @@ fn router_with_token(runtime: Runtime, token: Option<String>, local_only: bool) 
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}/state", get(session_state))
         .route("/v1/sessions/{id}/tools/{name}", post(call_tool))
+        .route("/v1/tools/{name}", post(call_runtime_tool))
         .route(HEALTH_PATH, get(|| async { "ok" }))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -168,6 +169,9 @@ struct CreateBody {
     play_along: bool,
     #[serde(default = "crate::config::reconnect_default")]
     reconnect: bool,
+    /// `socks5://` or `http://` proxy to reach the shard through.
+    #[serde(default)]
+    proxy: Option<crate::proxy::Proxy>,
 }
 
 async fn create_session(
@@ -175,7 +179,7 @@ async fn create_session(
     Json(body): Json<CreateBody>,
 ) -> impl IntoResponse {
     let era: Era = era_from_str(body.era.as_deref());
-    let version = version_from_str(body.version.as_deref(), era);
+    let version = client_version(body.version.as_deref(), era, None);
     let opts = ConnectOptions {
         host: body.host,
         port: body.port,
@@ -195,6 +199,7 @@ async fn create_session(
         play_along: body.play_along,
         picker: None,
         reconnect: body.reconnect,
+        proxy: body.proxy,
     };
     match st.runtime.connect(opts).await {
         Ok(h) => (StatusCode::CREATED, Json(json!({ "id": h.id }))).into_response(),
@@ -244,9 +249,51 @@ async fn call_tool(
     }
 }
 
+/// A tool of the runtime itself, which needs no session: the character list
+/// of an account, a new character, a login. See [`crate::characters`].
+async fn call_runtime_tool(
+    State(st): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    Json(args): Json<Value>,
+) -> axum::response::Response {
+    if !crate::characters::is_runtime_tool(&name) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ToolResult::err(format!("{name} is no tool of the runtime"))),
+        )
+            .into_response();
+    }
+    let answer = crate::characters::call(&st.runtime, &name, &args).await;
+    let status = if answer.ok {
+        StatusCode::OK
+    } else {
+        StatusCode::CONFLICT
+    };
+    (status, Json(answer)).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_runtime_tool_is_answered_without_a_session() {
+        let st = Arc::new(ApiState {
+            runtime: Runtime::new(1),
+            token: None,
+            local_only: true,
+        });
+        let unknown =
+            call_runtime_tool(State(st.clone()), Path("observe".into()), Json(json!({}))).await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        let refused = call_runtime_tool(
+            State(st),
+            Path(crate::characters::TOOL_CHARACTERS.into()),
+            Json(json!({})),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+    }
 
     #[test]
     fn loopback_binds_are_detected() {

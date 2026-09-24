@@ -243,6 +243,58 @@ pub(super) fn bandage(inner: &mut Inner, now: Instant) -> bool {
     true
 }
 
+// ---------- self heal ----------
+
+/// The mana each Magery circle costs, the first circle first (ServUO
+/// `MagerySpell.m_ManaTable`).
+const MAGERY_MANA: [u16; 8] = [4, 6, 9, 11, 14, 20, 40, 50];
+
+/// The spell the self-heal agent casts now: the cure on poison, when it
+/// cures, else the heal when the character is hurt. A poisoned character
+/// takes no heal, so he gets none.
+fn self_heal_spell(inner: &Inner, hp_pct: u8) -> Option<u16> {
+    let h = &inner.agents.config.self_heal;
+    let world = inner.world.read();
+    let me = &world.self_state;
+    let poisoned = world.is_poisoned(me.serial);
+    let hurt = me.hits_max > 0
+        && u32::from(me.hits) * PERCENT < u32::from(me.hits_max) * u32::from(hp_pct);
+    let spell = match (poisoned, hurt) {
+        (true, _) if h.cure_poison => h.cure_spell,
+        (false, true) => h.heal_spell,
+        _ => return None,
+    };
+    let mana = inner
+        .scripting
+        .spells
+        .by_id(spell)
+        .and_then(|s| s.circle())
+        .map_or(0, |circle| MAGERY_MANA[usize::from(circle - 1)]);
+    (me.mana >= mana).then_some(spell)
+}
+
+/// Casts a heal or a cure on the character, and aims it at him.
+pub(super) fn self_heal(inner: &mut Inner, now: Instant) -> bool {
+    let h = inner.agents.config.self_heal.clone();
+    if !h.enabled || now < inner.agents.next_self_heal_at || (h.skip_when_hidden && hidden(inner)) {
+        return false;
+    }
+    let Some(spell) = self_heal_spell(inner, h.hp_pct) else {
+        return false;
+    };
+    if !clear_hands_for_cast(inner, spell) {
+        mark_action(inner);
+        return true;
+    }
+    let me = inner.world.read().self_state.serial;
+    inner.outbound.push_back(encode::cast(spell, inner.version));
+    note_cast(inner, spell);
+    queue_target(inner, me, now);
+    mark_action(inner);
+    inner.agents.next_self_heal_at = now + delay(h.delay_ms);
+    true
+}
+
 // ---------- jobs ----------
 
 pub(super) fn job(inner: &mut Inner, now: Instant) -> bool {

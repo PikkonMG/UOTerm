@@ -18,3 +18,7 @@ Wait until `observe` shows `self_state` in the world (`logged_in` / a real locat
 Password is `UO_PASS`. Never put it in a file.
 
 If connect is already up, use `uoterm session list` and talk to that API, or attach `uoterm mcp`. Do not open another game socket. HTTP default is `http://127.0.0.1:7733`.
+
+## Over MCP, with no session yet
+
+`characters` lists the slots and start towns of an account; `character_create` makes a character and logs in as it; `character_delete` deletes one; `connect` logs in as one. Give `profile`, or `account` and `password_env` (the name of the variable that holds the password). Never put a password in a call. `logout` with `then_play` switches to another character in the same session.

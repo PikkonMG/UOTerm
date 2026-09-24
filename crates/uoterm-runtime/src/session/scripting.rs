@@ -38,8 +38,23 @@ const SCRIPT_SEND_GAP_MS: u64 = 250;
 const ARG_NAME: &str = "name";
 const ARG_TEXT: &str = "text";
 const ARG_LOOP: &str = "loop";
+const ARG_SLOT: &str = "slot";
+const ARG_FOR: &str = "for";
+const ARG_ITERATIONS: &str = "iterations";
+/// The slot a script from text runs in when the call names none.
+const TEXT_SLOT: &str = "text";
+/// How many scripts may run at once, each in a slot of its own.
+const SLOTS_MAX: usize = 8;
+/// How many ended scripts the status remembers, the newest last.
+const REPORTS_KEPT: usize = 16;
+/// Why a bounded script ended.
+const ENDED_TIME_UP: &str = "time up";
+const ENDED_ITERATIONS: &str = "iterations done";
 
-const A_SCRIPT_RUNS: &str = "a script is running; stop it first";
+const A_SCRIPT_RUNS: &str = "a script runs in that slot; stop it first";
+const TOO_MANY_SCRIPTS: &str = "8 scripts run already; stop one first";
+const NO_SLOT_NAMED: &str = "no script runs in that slot";
+const NO_SCRIPT_RUNS: &str = "no script is running";
 const NO_SCRIPT_NAMED: &str = "no script by that name in the scripts folder";
 const RUN_NEEDS_SCRIPT: &str = "run_script needs name or text";
 const COMMAND_NEEDS_TEXT: &str = "command needs text: one script command";
@@ -50,10 +65,17 @@ const COMMAND_IS_FOR_A_HUMAN: &str =
 pub(super) struct Scripting {
     /// Aliases, lists and timers every script of the character shares.
     vars: Vars,
-    running: Option<Running>,
-    /// How the last script ended, for `script_status` after it is gone.
-    last: Option<Report>,
-    /// Lines scripts showed their user, newest last.
+    /// The scripts running, each in its named slot, in the order they
+    /// started.
+    slots: Vec<Running>,
+    /// The slot that goes first on the next tick, so no script keeps the
+    /// shared action budget from the others.
+    turn: usize,
+    /// How the scripts that ended ended, the newest last, for
+    /// `script_status` after they are gone.
+    reports: VecDeque<Report>,
+    /// Lines shown outside any slot: hotkeys, commands and timed lines,
+    /// newest last.
     output: VecDeque<String>,
     /// The script sends nothing before this.
     pub(super) resume_at: Instant,
@@ -80,10 +102,10 @@ pub(super) struct Scripting {
     pub(super) gump_texts: Vec<(u16, String)>,
     /// Lines to show later, each with the time it is due.
     later: Vec<(Instant, String)>,
-    /// What the running script asked for after this tick: another script in
-    /// its place, or to stop.
+    /// What the script ticking now asked for after its tick: another script
+    /// in its place, or to stop.
     next: Option<Next>,
-    /// The name of the script running now.
+    /// The slot of the script ticking now.
     current: Option<String>,
 }
 
@@ -94,18 +116,90 @@ enum Next {
 }
 
 struct Running {
+    /// The slot it runs in, which names it to the tools.
+    slot: String,
     name: String,
     script: Script,
     /// The script as read, to start it again when it loops.
     program: Program,
     /// Start again from the top each time it reaches its end.
     looping: bool,
+    /// The lines this script showed its user, newest last.
+    output: VecDeque<String>,
+    /// It ends when this time comes.
+    until: Option<Instant>,
+    /// It ends after this many runs from the top.
+    iterations_max: Option<u32>,
+    /// The runs from the top it finished.
+    iterations: u32,
+    /// Held by another script: it keeps its place and does not tick.
+    suspended: bool,
+}
+
+impl Running {
+    fn keep_output(&mut self, lines: Vec<String>) {
+        keep_lines(&mut self.output, &self.slot, lines);
+    }
+
+    /// Why a bounded script is over, when it is.
+    fn bound_reached(&self, now: Instant) -> Option<&'static str> {
+        if self.until.is_some_and(|until| now >= until) {
+            return Some(ENDED_TIME_UP);
+        }
+        if self
+            .iterations_max
+            .is_some_and(|most| self.iterations >= most)
+        {
+            return Some(ENDED_ITERATIONS);
+        }
+        None
+    }
+
+    fn status_json(&self) -> Value {
+        json!({
+            "slot": self.slot,
+            "script": self.name,
+            "status": if self.suspended { "suspended" } else { "running" },
+            "loop": self.looping,
+            "line": self.script.line(),
+            "iterations": self.iterations,
+            "output": self.output,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
 struct Report {
+    slot: String,
     name: String,
     status: Status,
+    /// Why a bounded script stopped, when a bound stopped it.
+    bound: Option<&'static str>,
+    output: VecDeque<String>,
+}
+
+impl Report {
+    fn json(&self) -> Value {
+        let mut body = status_json(&self.status);
+        body["slot"] = json!(self.slot);
+        body["script"] = json!(self.name);
+        body["output"] = json!(self.output);
+        if let Some(bound) = self.bound {
+            body["ended_by"] = json!(bound);
+        }
+        body
+    }
+}
+
+/// Keeps the newest [`OUTPUT_KEPT`] lines of a script's user.
+fn keep_lines(kept: &mut VecDeque<String>, from: &str, lines: Vec<String>) {
+    for line in lines {
+        tracing::info!(from = %from, line = %line, "script says");
+        kept.push_back(line);
+    }
+    while kept.len() > OUTPUT_KEPT {
+        kept.pop_front();
+    }
 }
 
 impl Scripting {
@@ -126,8 +220,9 @@ impl Scripting {
             .unwrap_or_default();
         Self {
             vars: Vars::default(),
-            running: None,
-            last: None,
+            slots: Vec::new(),
+            turn: 0,
+            reports: VecDeque::new(),
             output: VecDeque::new(),
             resume_at: Instant::now(),
             spells: SpellBook::standard(),
@@ -148,12 +243,20 @@ impl Scripting {
     }
 
     fn keep_output(&mut self, lines: Vec<String>) {
-        for line in lines {
-            tracing::info!(line = %line, "script says");
-            self.output.push_back(line);
-        }
-        while self.output.len() > OUTPUT_KEPT {
-            self.output.pop_front();
+        keep_lines(&mut self.output, TOOL_COMMAND, lines);
+    }
+
+    /// The place of the script in a slot, in any case.
+    fn slot_at(&self, slot: &str) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|running| running.slot.eq_ignore_ascii_case(slot))
+    }
+
+    fn remember(&mut self, report: Report) {
+        self.reports.push_back(report);
+        while self.reports.len() > REPORTS_KEPT {
+            self.reports.pop_front();
         }
     }
 }
@@ -210,34 +313,60 @@ pub(super) fn script_names() -> Vec<String> {
     names
 }
 
-/// Starts a script by name or from text. One script runs at a time.
+/// Starts a script by name or from text in a slot of its own: the `slot`
+/// named, or the script's name. Several run at once, each in its slot, and
+/// share the character's pace. `for` (seconds) and `iterations` bound a run.
 pub(super) fn run_script(inner: &mut Inner, args: &Value) -> ToolResult {
-    if inner.scripting.running.is_some() {
-        return ToolResult::err(A_SCRIPT_RUNS);
-    }
     if !shard_allows(inner, AssistFeature::ScriptMacros) {
         return ToolResult::err(forbidden(AssistFeature::ScriptMacros));
     }
     let name = args.get(ARG_NAME).and_then(|v| v.as_str()).map(str::trim);
     let text = args.get(ARG_TEXT).and_then(|v| v.as_str());
     let (name, source) = match (name, text) {
-        (_, Some(text)) => (name.unwrap_or("text").to_string(), text.to_string()),
+        (_, Some(text)) => (name.unwrap_or(TEXT_SLOT).to_string(), text.to_string()),
         (Some(name), None) if !name.is_empty() => match find_script(name) {
             Some(source) => (name.to_string(), source),
             None => return ToolResult::err(NO_SCRIPT_NAMED),
         },
         _ => return ToolResult::err(RUN_NEEDS_SCRIPT),
     };
+    let slot = args
+        .get(ARG_SLOT)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|slot| !slot.is_empty())
+        .unwrap_or(&name)
+        .to_string();
+    if inner.scripting.slot_at(&slot).is_some() {
+        return ToolResult::err(A_SCRIPT_RUNS);
+    }
+    if inner.scripting.slots.len() >= SLOTS_MAX {
+        return ToolResult::err(TOO_MANY_SCRIPTS);
+    }
+    let iterations_max = arg_number(args, ARG_ITERATIONS).filter(|n| *n > 0);
+    // More than one run from the top is a loop.
     let looping = args
         .get(ARG_LOOP)
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let started = start_script(inner, name, &source, looping);
-    if started.ok {
-        // The status reports this script's lines, not those of the last one.
-        inner.scripting.output.clear();
-    }
-    started
+        .unwrap_or(false)
+        || iterations_max.is_some_and(|n| n > 1);
+    let bounds = Bounds {
+        until: args
+            .get(ARG_FOR)
+            .and_then(Value::as_f64)
+            .filter(|seconds| *seconds > 0.0)
+            .map(|seconds| Instant::now() + Duration::from_secs_f64(seconds)),
+        iterations_max,
+    };
+    start_script(inner, slot, name, &source, looping, bounds)
+}
+
+/// How long a script may run: until a time, and for a number of runs from
+/// the top. Either may be left open.
+#[derive(Clone, Copy, Default)]
+struct Bounds {
+    until: Option<Instant>,
+    iterations_max: Option<u32>,
 }
 
 /// Runs one script command at once, for a human at the watch window: a
@@ -254,7 +383,14 @@ pub(super) fn command(inner: &mut Inner, args: &Value) -> ToolResult {
     run_now(inner, TOOL_COMMAND, text)
 }
 
-fn start_script(inner: &mut Inner, name: String, source: &str, looping: bool) -> ToolResult {
+fn start_script(
+    inner: &mut Inner,
+    slot: String,
+    name: String,
+    source: &str,
+    looping: bool,
+    bounds: Bounds,
+) -> ToolResult {
     let program = match Program::parse(source) {
         Ok(program) => program,
         Err(e) => return ToolResult::err(e.to_string()),
@@ -264,19 +400,35 @@ fn start_script(inner: &mut Inner, name: String, source: &str, looping: bool) ->
     if loops && !shard_allows(inner, AssistFeature::LoopedMacros) {
         return ToolResult::err(forbidden(AssistFeature::LoopedMacros));
     }
-    tracing::info!(script = %name, looping, "script starts");
-    inner.scripting.running = Some(Running {
+    tracing::info!(script = %name, slot = %slot, looping, "script starts");
+    inner.scripting.slots.push(Running {
         script: Script::new(program.clone()),
         program,
+        slot: slot.clone(),
         name: name.clone(),
         looping,
+        output: VecDeque::new(),
+        until: bounds.until,
+        iterations_max: bounds.iterations_max,
+        iterations: 0,
+        suspended: false,
     });
-    ToolResult::ok(json!({ "script": name, "loop": looping }))
+    ToolResult::ok(json!({
+        "script": name,
+        "slot": slot,
+        "loop": looping,
+        "iterations": bounds.iterations_max,
+    }))
 }
 
-/// The name of the script running now.
-pub(super) fn running_name(inner: &Inner) -> Option<&str> {
-    inner.scripting.running.as_ref().map(|r| r.name.as_str())
+/// The slots of the scripts running now.
+pub(super) fn running_slots(inner: &Inner) -> Vec<&str> {
+    inner
+        .scripting
+        .slots
+        .iter()
+        .map(|r| r.slot.as_str())
+        .collect()
 }
 
 /// Runs script lines at once, outside the one running script: a hotkey.
@@ -302,34 +454,51 @@ pub(super) fn run_now(inner: &mut Inner, name: &str, text: &str) -> ToolResult {
     }
 }
 
-pub(super) fn stop_script(inner: &mut Inner) -> ToolResult {
-    let Some(mut running) = inner.scripting.running.take() else {
-        return ToolResult::err("no script is running");
+/// Stops the script of one slot, or every script when the call names no
+/// slot.
+pub(super) fn stop_script(inner: &mut Inner, args: &Value) -> ToolResult {
+    let slot = args.get(ARG_SLOT).and_then(Value::as_str).map(str::trim);
+    let stopped: Vec<Running> = match slot {
+        Some(slot) => match inner.scripting.slot_at(slot) {
+            Some(at) => vec![inner.scripting.slots.remove(at)],
+            None => return ToolResult::err(NO_SLOT_NAMED),
+        },
+        None if inner.scripting.slots.is_empty() => return ToolResult::err(NO_SCRIPT_RUNS),
+        None => std::mem::take(&mut inner.scripting.slots),
     };
-    running.script.stop();
-    finish(inner, running);
-    ToolResult::ok(json!({ "stopped": true }))
+    let slots: Vec<String> = stopped.iter().map(|r| r.slot.clone()).collect();
+    for mut running in stopped {
+        running.script.stop();
+        finish(inner, running, None);
+    }
+    ToolResult::ok(json!({ "stopped": true, "slots": slots }))
 }
 
-pub(super) fn script_status(inner: &Inner) -> ToolResult {
+/// The script of one slot, running or ended; with no slot, the first one
+/// running or else the last that ended, and every slot besides.
+pub(super) fn script_status(inner: &Inner, args: &Value) -> ToolResult {
     let s = &inner.scripting;
-    let output: Vec<&String> = s.output.iter().collect();
-    let body = match (&s.running, &s.last) {
-        (Some(running), _) => json!({
-            "script": running.name,
-            "status": "running",
-            "loop": running.looping,
-            "line": running.script.line(),
-            "output": output,
-        }),
-        (None, Some(report)) => {
-            let mut body = status_json(&report.status);
-            body["script"] = json!(report.name);
-            body["output"] = json!(output);
-            body
-        }
-        (None, None) => json!({ "status": "none", "output": output }),
+    let ended = |slot: Option<&str>| {
+        s.reports
+            .iter()
+            .rev()
+            .find(|r| slot.is_none_or(|slot| r.slot.eq_ignore_ascii_case(slot)))
     };
+    if let Some(slot) = args.get(ARG_SLOT).and_then(Value::as_str).map(str::trim) {
+        return match (s.slot_at(slot), ended(Some(slot))) {
+            (Some(at), _) => ToolResult::ok(s.slots[at].status_json()),
+            (None, Some(report)) => ToolResult::ok(report.json()),
+            (None, None) => ToolResult::err(NO_SLOT_NAMED),
+        };
+    }
+    let mut body = match (s.slots.first(), ended(None)) {
+        (Some(running), _) => running.status_json(),
+        (None, Some(report)) => report.json(),
+        (None, None) => json!({ "status": "none", "output": s.output }),
+    };
+    body["slots"] = json!(s.slots.iter().map(Running::status_json).collect::<Vec<_>>());
+    body["ended"] = json!(s.reports.iter().map(Report::json).collect::<Vec<_>>());
+    body["shown"] = json!(s.output);
     ToolResult::ok(body)
 }
 
@@ -396,97 +565,142 @@ fn status_json(status: &Status) -> Value {
     }
 }
 
-fn finish(inner: &mut Inner, mut running: Running) {
+fn finish(inner: &mut Inner, mut running: Running, bound: Option<&'static str>) {
     let lines = running.script.take_output();
-    inner.scripting.keep_output(lines);
+    running.keep_output(lines);
     let status = running.script.status().clone();
-    tracing::info!(script = %running.name, status = ?status, "script ends");
-    let how = match &status {
-        Status::Done => crate::jobs::REASON_DONE.to_string(),
-        Status::Stopped => crate::jobs::REASON_STOPPED.to_string(),
-        Status::Running => String::new(),
-        Status::Failed { message, .. } => format!("failed: {message}"),
+    tracing::info!(script = %running.name, slot = %running.slot, status = ?status, ?bound, "script ends");
+    let how = match (&status, bound) {
+        (_, Some(bound)) => format!("{} {bound}", crate::jobs::REASON_DONE),
+        (Status::Done, None) => crate::jobs::REASON_DONE.to_string(),
+        (Status::Stopped, None) => crate::jobs::REASON_STOPPED.to_string(),
+        (Status::Running, None) => String::new(),
+        (Status::Failed { message, .. }, None) => format!("failed: {message}"),
     };
     job_ended(
         inner,
         crate::jobs::JOB_SCRIPT,
-        &format!("{} {how}", running.name),
+        &format!("{} {how}", running.slot),
     );
-    inner.scripting.last = Some(Report {
+    inner.scripting.remember(Report {
+        slot: running.slot,
         name: running.name,
         status,
+        bound,
+        output: running.output,
     });
 }
 
-/// Runs the script a tick's worth. Death and a lost login end it.
+/// Runs the scripts a tick's worth, each in turn. They share one pace: once
+/// one has sent something, the rest wait for the gap after it, and the next
+/// tick starts with the slot after it. Death and a lost login end them all.
 pub(super) fn pump_script(inner: &mut Inner, now: Instant) {
     show_due_lines(inner, now);
-    if now < inner.scripting.resume_at {
+    if inner.scripting.slots.is_empty() {
         return;
     }
-    let Some(mut running) = inner.scripting.running.take() else {
-        return;
-    };
     let dead = {
         let world = inner.world.read();
         !world.logged_in || world.self_state.dead
     };
     if dead {
-        running.script.stop();
-        finish(inner, running);
+        for mut running in std::mem::take(&mut inner.scripting.slots) {
+            running.script.stop();
+            finish(inner, running, None);
+        }
         return;
     }
+    let count = inner.scripting.slots.len();
+    let first = inner.scripting.turn % count;
+    let order: Vec<String> = (0..count)
+        .map(|k| inner.scripting.slots[(first + k) % count].slot.clone())
+        .collect();
+    for slot in order {
+        if now < inner.scripting.resume_at {
+            break;
+        }
+        let Some(at) = inner.scripting.slot_at(&slot) else {
+            continue;
+        };
+        if tick_slot(inner, at, now) {
+            // It spent the pace: the next tick starts with the one after.
+            inner.scripting.turn = inner.scripting.slot_at(&slot).map_or(at, |still| still + 1);
+        }
+    }
+}
+
+/// Runs one slot's script a tick's worth. True when it sent something.
+fn tick_slot(inner: &mut Inner, at: usize, now: Instant) -> bool {
+    let mut running = inner.scripting.slots.remove(at);
+    if let Some(bound) = running.bound_reached(now) {
+        running.script.stop();
+        finish(inner, running, Some(bound));
+        return false;
+    }
+    if running.suspended {
+        inner.scripting.slots.insert(at, running);
+        return false;
+    }
     let mut vars = std::mem::take(&mut inner.scripting.vars);
-    inner.scripting.current = Some(running.name.clone());
+    inner.scripting.current = Some(running.slot.clone());
     let sent_before = inner.outbound.len();
     running.script.tick(&mut Game { inner }, &mut vars, now);
     inner.scripting.vars = vars;
-    if inner.outbound.len() > sent_before {
+    inner.scripting.current = None;
+    let sent = inner.outbound.len() > sent_before;
+    if sent {
         inner.scripting.resume_at = now + SCRIPT_SEND_GAP;
     }
     let lines = running.script.take_output();
-    inner.scripting.keep_output(lines);
+    running.keep_output(lines);
     match inner.scripting.next.take() {
         // Starting itself again is a looping macro.
         Some(Next::Run(name))
             if name.eq_ignore_ascii_case(&running.name)
                 && !shard_allows(inner, AssistFeature::LoopedMacros) =>
         {
+            running.keep_output(vec![forbidden(AssistFeature::LoopedMacros)]);
             running.script.stop();
-            finish(inner, running);
-            inner
-                .scripting
-                .keep_output(vec![forbidden(AssistFeature::LoopedMacros)]);
+            finish(inner, running, None);
         }
         Some(Next::Run(name)) => {
+            let slot = running.slot.clone();
             running.script.stop();
-            finish(inner, running);
-            match find_script(&name) {
-                Some(source) => {
-                    let result = start_script(inner, name, &source, false);
-                    if let Some(error) = result.error {
-                        inner.scripting.keep_output(vec![error]);
-                    }
-                }
-                None => inner
-                    .scripting
-                    .keep_output(vec![format!("{name}: {NO_SCRIPT_NAMED}")]),
+            finish(inner, running, None);
+            let result = match find_script(&name) {
+                Some(source) => start_script(inner, slot, name, &source, false, Bounds::default()),
+                None => ToolResult::err(format!("{name}: {NO_SCRIPT_NAMED}")),
+            };
+            if let Some(error) = result.error {
+                inner.scripting.keep_output(vec![error]);
             }
         }
         Some(Next::Stop) => {
             running.script.stop();
-            finish(inner, running);
+            finish(inner, running, None);
         }
         None if *running.script.status() == Status::Running => {
-            inner.scripting.running = Some(running);
+            inner.scripting.slots.insert(at, running);
         }
         // A looping script starts again from the top at the next tick.
         None if running.looping && *running.script.status() == Status::Done => {
-            running.script = Script::new(running.program.clone());
-            inner.scripting.running = Some(running);
+            running.iterations += 1;
+            match running.bound_reached(now) {
+                Some(bound) => finish(inner, running, Some(bound)),
+                None => {
+                    running.script = Script::new(running.program.clone());
+                    inner.scripting.slots.insert(at, running);
+                }
+            }
         }
-        None => finish(inner, running),
+        None => {
+            if *running.script.status() == Status::Done {
+                running.iterations += 1;
+            }
+            finish(inner, running, None);
+        }
     }
+    sent
 }
 
 /// Shows the `timermsg` lines whose time has come.
@@ -766,7 +980,7 @@ mod tests {
     }
 
     fn status(inner: &Inner) -> Value {
-        script_status(inner).result
+        script_status(inner, &json!({})).result
     }
 
     #[test]
@@ -798,7 +1012,7 @@ mod tests {
         let mut inner = player();
         start(&mut inner, "cast 'Greater Heal' 'self'");
         tick(&mut inner, 1);
-        assert!(sent(&inner, &encode::cast_spell(GREATER_HEAL)));
+        assert!(sent(&inner, &encode::cast(GREATER_HEAL, inner.version)));
         inner.outbound.clear();
         ingest(&mut inner, &target_cursor(A_CURSOR));
         assert!(
@@ -813,7 +1027,7 @@ mod tests {
         inner.world.write().self_state.poisoned = true;
         start(&mut inner, "miniheal");
         tick(&mut inner, 1);
-        assert!(sent(&inner, &encode::cast_spell(CURE)));
+        assert!(sent(&inner, &encode::cast(CURE, inner.version)));
     }
 
     #[test]
@@ -896,6 +1110,24 @@ mod tests {
             .filter(|p| p.first() == Some(&PKT_UNICODE_SPEECH))
             .count();
         assert_eq!(said, 2);
+    }
+
+    #[test]
+    fn a_colour_after_the_words_speaks_in_it() {
+        const HUE: u16 = 0x0035;
+        let mut inner = player();
+        start(&mut inner, "yellmsg 'guards' 0x0035");
+        tick(&mut inner, 1);
+        let hued = encode::keyword_speech(SPEECH_YELL, HUE, &[], "guards");
+        assert!(inner.outbound.contains(&hued));
+    }
+
+    #[test]
+    fn a_party_remove_with_no_one_named_asks_for_a_target() {
+        let mut inner = player();
+        start(&mut inner, "partyremove");
+        tick(&mut inner, 1);
+        assert!(inner.outbound.contains(&encode::party_remove(Serial(0))));
     }
 
     #[test]
@@ -1134,9 +1366,89 @@ mod tests {
         let mut inner = player();
         start(&mut inner, "pause 60000");
         assert!(!run_script(&mut inner, &json!({ "text": "pause 1" })).ok);
-        assert!(stop_script(&mut inner).ok);
+        assert!(stop_script(&mut inner, &json!({})).ok);
         assert_eq!(status(&inner)["status"], "stopped");
         assert!(run_script(&mut inner, &json!({ "text": "pause 1" })).ok);
+    }
+
+    #[test]
+    fn scripts_in_named_slots_run_side_by_side_and_take_turns() {
+        let mut inner = player();
+        let healer = json!({ "text": "msg 'heal'", "loop": true, "slot": "healer" });
+        assert!(run_script(&mut inner, &healer).ok);
+        assert!(
+            run_script(
+                &mut inner,
+                &json!({ "text": "msg 'work'", "loop": true, "slot": "task" })
+            )
+            .ok
+        );
+        assert!(!run_script(&mut inner, &healer).ok, "one script a slot");
+        assert_eq!(running_slots(&inner), vec!["healer", "task"]);
+        let mut spoken = Vec::new();
+        for _ in 0..4 {
+            ready_to_act(&mut inner);
+            inner.scripting.resume_at = Instant::now();
+            pump_script(&mut inner, Instant::now());
+            spoken.push(inner.outbound.len());
+        }
+        let said = |words: &str| {
+            let wide: Vec<u8> = words.encode_utf16().flat_map(u16::to_be_bytes).collect();
+            inner
+                .outbound
+                .iter()
+                .filter(|p| p.windows(wide.len()).any(|w| w == wide.as_slice()))
+                .count()
+        };
+        assert_eq!(said("heal"), 2, "{spoken:?}");
+        assert_eq!(said("work"), 2, "each tick the other goes first");
+        let one = script_status(&inner, &json!({ "slot": "task" })).result;
+        assert_eq!(one["status"], "running");
+        assert!(stop_script(&mut inner, &json!({ "slot": "task" })).ok);
+        assert_eq!(running_slots(&inner), vec!["healer"]);
+        assert!(!stop_script(&mut inner, &json!({ "slot": "task" })).ok);
+        let ended = script_status(&inner, &json!({ "slot": "task" })).result;
+        assert_eq!(ended["status"], "stopped");
+    }
+
+    #[test]
+    fn a_bounded_run_ends_after_its_iterations_or_its_time() {
+        let mut inner = player();
+        assert!(
+            run_script(
+                &mut inner,
+                &json!({ "text": "msg 'once more'", "iterations": 2 })
+            )
+            .ok
+        );
+        tick(&mut inner, 4);
+        let ended = status(&inner);
+        assert_eq!(ended["status"], "done");
+        assert_eq!(ended["ended_by"], ENDED_ITERATIONS);
+        assert!(run_script(&mut inner, &json!({ "text": "pause 60000", "for": 0.001 })).ok);
+        std::thread::sleep(Duration::from_millis(5));
+        tick(&mut inner, 1);
+        assert_eq!(status(&inner)["ended_by"], ENDED_TIME_UP);
+    }
+
+    #[test]
+    fn one_script_holds_another_and_lets_it_go() {
+        let mut inner = player();
+        assert!(
+            run_script(
+                &mut inner,
+                &json!({ "text": "pause 60000", "slot": "gather" })
+            )
+            .ok
+        );
+        start(&mut inner, "script 'suspend' 'gather'");
+        tick(&mut inner, 1);
+        let held = script_status(&inner, &json!({ "slot": "gather" })).result;
+        assert_eq!(held["status"], "suspended");
+        start(&mut inner, "script 'resume' 'gather'");
+        tick(&mut inner, 1);
+        let going = script_status(&inner, &json!({ "slot": "gather" })).result;
+        assert_eq!(going["status"], "running");
     }
 
     #[test]

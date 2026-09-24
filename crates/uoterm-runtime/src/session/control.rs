@@ -54,7 +54,7 @@ pub(super) fn take(inner: &mut Inner, now: Instant) -> ToolResult {
         };
         handle_tool(inner, stop);
         // Each of these answers with an error when nothing runs. That is fine.
-        scripting::stop_script(inner);
+        scripting::stop_script(inner, &json!({}));
         agents::agent_stop(inner);
         let event = Event::new(EventKind::ControlTaken, None, REFUSED);
         inner.world.write().push_event(event);

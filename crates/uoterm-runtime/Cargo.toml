@@ -28,3 +28,4 @@ parking_lot.workspace = true
 indexmap.workspace = true
 hex.workspace = true
 axum.workspace = true
+base64 = "0.22"

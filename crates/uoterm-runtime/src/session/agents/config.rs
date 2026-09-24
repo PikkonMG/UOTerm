@@ -262,6 +262,42 @@ impl Default for BandageAgent {
     }
 }
 
+/// The spell a mage heals himself with when none is set: Greater Heal.
+pub const DEFAULT_HEAL_SPELL: u16 = 29;
+/// The spell a mage cures his poison with when none is set: Cure.
+pub const DEFAULT_CURE_SPELL: u16 = 11;
+/// How long the self-heal agent waits after a cast when its settings name
+/// no time: the longest Magery cast of the two spells, and a little more.
+pub const DEFAULT_SELF_HEAL_DELAY_MS: u64 = 2000;
+
+/// Casting a heal or a cure on the character when he is hurt or poisoned.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SelfHealAgent {
+    pub enabled: bool,
+    /// The health share, in percent, under which he heals.
+    pub hp_pct: u8,
+    pub heal_spell: u16,
+    pub cure_spell: u16,
+    pub cure_poison: bool,
+    pub delay_ms: u64,
+    pub skip_when_hidden: bool,
+}
+
+impl Default for SelfHealAgent {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hp_pct: DEFAULT_HEAL_PCT,
+            heal_spell: DEFAULT_HEAL_SPELL,
+            cure_spell: DEFAULT_CURE_SPELL,
+            cure_poison: true,
+            delay_ms: DEFAULT_SELF_HEAL_DELAY_MS,
+            skip_when_hidden: true,
+        }
+    }
+}
+
 /// The people the character counts as friends.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -382,6 +418,21 @@ pub struct Options {
     pub no_doors_hidden: bool,
     /// Do not double-click yourself while mounted in war mode: that dismounts.
     pub block_dismount_in_war: bool,
+    /// The rules line of sight is judged by: those of the shard's family.
+    pub sight_mode: uoterm_nav::SightMode,
+    /// Speech from anyone this many tiles away or nearer counts as said to
+    /// the character, as if it named him. None counts only his name.
+    pub listen_range: Option<u16>,
+    /// The container the loot and the moves that name no container go
+    /// into, in place of the backpack.
+    pub catch_bag: Option<Serial>,
+    /// The gumps an agent does not hear of, by gump id.
+    pub ignore_gumps: Vec<u32>,
+    /// Journal lines an agent does not hear of: any line whose speaker or
+    /// words hold one of these, in any case.
+    pub ignore_journal: Vec<String>,
+    /// The colour the character speaks in. None is the client's own.
+    pub speech_hue: Option<u16>,
 }
 
 /// Every agent's settings.
@@ -396,6 +447,7 @@ pub struct AgentsConfig {
     pub buy: BuyAgent,
     pub sell: SellAgent,
     pub bandage: BandageAgent,
+    pub self_heal: SelfHealAgent,
     pub friends: FriendsAgent,
     pub remount: RemountAgent,
     pub bone_cutter: BladeAgent,

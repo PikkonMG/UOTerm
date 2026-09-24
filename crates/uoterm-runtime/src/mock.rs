@@ -37,6 +37,22 @@ const SELECT_SERVER_LEN: usize = 3;
 const GAME_SEED_LEN: usize = 4;
 const GAME_LOGIN_LEN: usize = 65;
 const PLAY_CHAR_REST: usize = 72;
+/// Where the character name starts in a play request after its id, and in a
+/// create request after its id.
+const PLAY_NAME_AT: usize = 4;
+const CREATE_NAME_AT: usize = 9;
+const CHARACTER_NAME_LEN: usize = 30;
+/// A delete request after its id: the password field, the slot, the address.
+const DELETE_REST: usize = 38;
+const DELETE_SLOT_AT: usize = 30;
+/// The refusal the mock gives a new character whose name is taken:
+/// "the shard could not carry out the request".
+const REFUSED_NAME_TAKEN: u8 = 5;
+/// A logout request after its id, and the answer that grants it.
+const LOGOUT_REST: usize = 1;
+const LOGOUT_GRANTED: u8 = 1;
+/// How many character slots the mock account has.
+const MOCK_SLOTS: usize = 5;
 const MOVE_REST: usize = 6;
 const SERIAL_LEN: usize = 4;
 const TARGET_REST: usize = 18;
@@ -398,7 +414,12 @@ async fn handle_client_io(
         _ => return Ok(()),
     }
     send_h(tx, huff, &mut crypt, &table, &features(era))?;
-    send_h(tx, huff, &mut crypt, &table, &character_list())?;
+    // The characters of the account, each in its slot. A delete empties its
+    // slot and a new one takes the first empty slot.
+    let mut characters: Vec<String> = std::iter::once(MOCK_CHAR.to_string())
+        .chain(std::iter::repeat_n(String::new(), MOCK_SLOTS - 1))
+        .collect();
+    send_h(tx, huff, &mut crypt, &table, &character_list(&characters))?;
     loop {
         let mut id = [0u8; 1];
         if read_unwrapped(reader, &mut crypt, &mut id).await.is_err() {
@@ -408,14 +429,65 @@ async fn handle_client_io(
             PKT_PLAY_CHARACTER => {
                 let mut rest = [0u8; PLAY_CHAR_REST];
                 read_unwrapped(reader, &mut crypt, &mut rest).await?;
-                send_h(tx, huff, &mut crypt, &table, &login_confirm())?;
-                send_h(tx, huff, &mut crypt, &table, &draw_player())?;
-                send_h(tx, huff, &mut crypt, &table, &status())?;
-                send_h(tx, huff, &mut crypt, &table, &welcome())?;
-                send_h(tx, huff, &mut crypt, &table, &backpack())?;
-                send_h(tx, huff, &mut crypt, &table, &hatchet(era))?;
-                send_h(tx, huff, &mut crypt, &table, &tree())?;
-                send_h(tx, huff, &mut crypt, &table, &[PKT_LOGIN_COMPLETE])?;
+                let name = name_at(&rest, PLAY_NAME_AT);
+                for packet in enter_world(era, &name) {
+                    send_h(tx, huff, &mut crypt, &table, &packet)?;
+                }
+            }
+            PKT_CREATE_CHARACTER | PKT_CREATE_CHARACTER_NEW => {
+                let len = match PacketLen::from_table(table.get(id[0])) {
+                    PacketLen::Fixed(len) => usize::from(len),
+                    PacketLen::Variable | PacketLen::Unknown => return Ok(()),
+                };
+                let mut rest = vec![0u8; len.saturating_sub(1)];
+                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                let name = name_at(&rest, CREATE_NAME_AT);
+                let taken = characters
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(&name));
+                let empty = characters.iter().position(String::is_empty);
+                let Some(slot) = empty.filter(|_| !taken) else {
+                    send_h(
+                        tx,
+                        huff,
+                        &mut crypt,
+                        &table,
+                        &[PKT_CHARACTER_REJECTED, REFUSED_NAME_TAKEN],
+                    )?;
+                    send_h(
+                        tx,
+                        huff,
+                        &mut crypt,
+                        &table,
+                        &character_list_update(&characters),
+                    )?;
+                    continue;
+                };
+                characters[slot] = name.clone();
+                // A shard puts a new character straight into the world.
+                for packet in enter_world(era, &name) {
+                    send_h(tx, huff, &mut crypt, &table, &packet)?;
+                }
+            }
+            PKT_DELETE_CHARACTER => {
+                let mut rest = [0u8; DELETE_REST];
+                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                let slot = u32::from_be_bytes([
+                    rest[DELETE_SLOT_AT],
+                    rest[DELETE_SLOT_AT + 1],
+                    rest[DELETE_SLOT_AT + 2],
+                    rest[DELETE_SLOT_AT + 3],
+                ]) as usize;
+                if let Some(gone) = characters.get_mut(slot) {
+                    gone.clear();
+                }
+                send_h(
+                    tx,
+                    huff,
+                    &mut crypt,
+                    &table,
+                    &character_list_update(&characters),
+                )?;
             }
             PKT_CLIENT_VERSION => {
                 eat_var(reader, &mut crypt).await?;
@@ -475,6 +547,13 @@ async fn handle_client_io(
             PKT_QUERY => {
                 let mut rest = [0u8; QUERY_REST];
                 read_unwrapped(reader, &mut crypt, &mut rest).await?;
+            }
+            // A logout is granted at once, as a shard grants it; the client
+            // closes the link.
+            PKT_LOGOUT => {
+                let mut rest = [0u8; LOGOUT_REST];
+                read_unwrapped(reader, &mut crypt, &mut rest).await?;
+                send_h(tx, huff, &mut crypt, &table, &[PKT_LOGOUT, LOGOUT_GRANTED])?;
             }
             DISCONNECT => break,
             other => {
@@ -597,14 +676,49 @@ fn features(era: Era) -> Vec<u8> {
     w.finish()
 }
 
-fn character_list() -> Vec<u8> {
+/// The name that starts at `at` of a request, up to its first zero.
+fn name_at(rest: &[u8], at: usize) -> String {
+    let field = rest.get(at..at + CHARACTER_NAME_LEN).unwrap_or_default();
+    let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..end]).into_owned()
+}
+
+/// What the shard sends as a character enters the world.
+fn enter_world(era: Era, name: &str) -> Vec<Vec<u8>> {
+    vec![
+        login_confirm(),
+        draw_player(),
+        status(name),
+        welcome(),
+        backpack(),
+        hatchet(era),
+        tree(),
+        vec![PKT_LOGIN_COMPLETE],
+    ]
+}
+
+/// Each character's slot: its name, and the password field no shard fills.
+fn write_slots(w: &mut PacketWriter, characters: &[String]) {
+    w.u8(characters.len() as u8);
+    for name in characters {
+        w.ascii_fixed(name, CHARACTER_NAME_LEN)
+            .ascii_fixed("", CHARACTER_NAME_LEN);
+    }
+}
+
+fn character_list(characters: &[String]) -> Vec<u8> {
     const NO_START_TOWNS: u8 = 0;
     let mut w = PacketWriter::with_variable(PKT_CHARACTER_LIST);
-    w.u8(1)
-        .ascii_fixed(MOCK_CHAR, 30)
-        .ascii_fixed("", 30)
-        .u8(NO_START_TOWNS)
+    write_slots(&mut w, characters);
+    w.u8(NO_START_TOWNS)
         .u32(ACCOUNT_FLAG_CONTEXT_MENUS | ACCOUNT_FLAG_PROPERTY_LISTS);
+    w.finish_variable().expect("mock packet length fits in u16")
+}
+
+/// The list again after a character is made or deleted.
+fn character_list_update(characters: &[String]) -> Vec<u8> {
+    let mut w = PacketWriter::with_variable(PKT_CHARACTER_LIST_UPDATE);
+    write_slots(&mut w, characters);
     w.finish_variable().expect("mock packet length fits in u16")
 }
 
@@ -637,10 +751,10 @@ fn draw_player() -> Vec<u8> {
     w.finish()
 }
 
-fn status() -> Vec<u8> {
+fn status(name: &str) -> Vec<u8> {
     let mut w = PacketWriter::with_variable(PKT_STATUS);
     w.u32(MOCK_PLAYER)
-        .ascii_fixed(MOCK_CHAR, 30)
+        .ascii_fixed(name, CHARACTER_NAME_LEN)
         .u16(60)
         .u16(60)
         .u8(0)
@@ -838,10 +952,12 @@ mod tests {
             server_list(),
             relay(SAMPLE_PORT),
             features(era),
-            character_list(),
+            character_list(&[MOCK_CHAR.into()]),
+            character_list_update(&[MOCK_CHAR.into()]),
+            vec![PKT_CHARACTER_REJECTED, REFUSED_NAME_TAKEN],
             login_confirm(),
             draw_player(),
-            status(),
+            status(MOCK_CHAR),
             welcome(),
             backpack(),
             hatchet(era),
@@ -950,7 +1066,7 @@ mod tests {
         assert!(check_packet_shape(&modern, &features(Era::T2a)).is_err());
         let t2a = PacketTable::for_era(Era::T2a);
         assert!(check_packet_shape(&t2a, &features(Era::Modern)).is_err());
-        let mut short = status();
+        let mut short = status(MOCK_CHAR);
         short.pop();
         assert!(check_packet_shape(&t2a, &short).is_err());
     }
@@ -977,6 +1093,7 @@ mod tests {
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
             reconnect: false,
+            proxy: None,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1033,6 +1150,7 @@ mod tests {
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
             reconnect: false,
+            proxy: None,
         };
         let rt = Runtime::new(2);
         let handle = rt.connect(opts).await.unwrap();
@@ -1070,6 +1188,7 @@ mod tests {
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
             reconnect: false,
+            proxy: None,
         }
     }
 

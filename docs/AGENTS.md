@@ -76,6 +76,12 @@ and `"agent": "options"`.
 | `no_run_hidden` | Walks, never runs, while hidden. |
 | `no_doors_hidden` | Opens no door on the way while hidden. |
 | `block_dismount_in_war` | Refuses a double-click on yourself while mounted in war mode. |
+| `sight_mode` | The rules line of sight is judged by: `runuo` (default; also for ModernUO and ServUO), `pol` or `sphere`. |
+| `listen_range` | A line said aloud this many tiles away or nearer counts as said to the character, name or no name. None is off. |
+| `catch_bag` | The container `loot` fills in place of the backpack. The `catch_bag` tool sets it. |
+| `ignore_gumps` | Gump ids an agent does not hear of. The `ignore_list` tool sets them. |
+| `ignore_journal` | Speakers or words of journal lines an agent does not hear of. The `ignore_list` tool sets them. |
+| `speech_hue` | The colour the character speaks in. None is the client's own. |
 
 `observe` also shows `stealth_steps`: the steps taken since you hid.
 
@@ -105,6 +111,7 @@ item rules. A field you leave out matches anything.
 | `buy` | Answers a vendor's buy list with its list. With `complete_amount`, it buys only what you are short of. |
 | `sell` | Answers a vendor's sell list with its list, up to each amount. |
 | `bandage` | Bandages you, your most hurt friend, or one target, when their health is under `hp_pct`. |
+| `self_heal` | Casts `heal_spell` (Greater Heal) on you when your health is under `hp_pct`, and `cure_spell` (Cure) when you are poisoned and `cure_poison` is on. It waits `delay_ms` after each cast and skips a spell you lack the mana for. |
 | `friends` | Your friends list. It can keep you from attacking a friend and accept a friend's party invite. |
 | `remount` | Mounts again after you are knocked off. Set `mount` to the pet or ethereal. |
 | `bone_cutter` | Uses `blade` on bone piles next to you. |

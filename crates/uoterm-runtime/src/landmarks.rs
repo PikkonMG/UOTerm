@@ -14,6 +14,7 @@
 //! live item. So the agent walks to the marker, then finds the gate item and
 //! steps on it.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use uoterm_protocol::Point3;
@@ -94,6 +95,50 @@ impl Landmarks {
                     .is_none_or(|n| n.is_empty() || m.name.to_ascii_lowercase().contains(n))
             })
             .collect()
+    }
+
+    /// [`Landmarks::find`], narrowed to a kind: a landmark whose marker word
+    /// holds `kind`, or, for one the file gave no word, whose name holds it.
+    pub fn find_of_kind(
+        &self,
+        name: Option<&str>,
+        kind: Option<&str>,
+        map: Option<u8>,
+    ) -> Vec<&Landmark> {
+        let wanted = kind
+            .map(|k| k.trim().to_ascii_lowercase())
+            .filter(|k| !k.is_empty());
+        self.find(name, map)
+            .into_iter()
+            .filter(|m| {
+                wanted.as_deref().is_none_or(|k| {
+                    if m.kind.is_empty() {
+                        m.name.to_ascii_lowercase().contains(k)
+                    } else {
+                        m.kind.to_ascii_lowercase().contains(k)
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// How many landmarks of each marker word were read, the blank word
+    /// among them.
+    pub fn kinds(&self) -> BTreeMap<String, usize> {
+        let mut kinds = BTreeMap::new();
+        for mark in &self.list {
+            *kinds.entry(mark.kind.to_ascii_lowercase()).or_insert(0) += 1;
+        }
+        kinds
+    }
+
+    /// How many landmarks were read on each map.
+    pub fn per_map(&self) -> BTreeMap<u8, usize> {
+        let mut maps = BTreeMap::new();
+        for mark in &self.list {
+            *maps.entry(mark.map).or_insert(0) += 1;
+        }
+        maps
     }
 
     /// How many landmarks were read.
@@ -208,6 +253,29 @@ mod tests {
             }
         );
         assert_eq!(gate[0].kind, "MOONGATE");
+    }
+
+    #[test]
+    fn a_kind_is_the_marker_word_or_else_part_of_the_name() {
+        let text = "3\n\
+            +MOONGATE: 3450 2677 1 New Haven Moongate \n\
+            -BANK: 3486 2571 1 New Haven Bank \n\
+            -BANK: 1434 1699 0 Britain Bank \n";
+        let marks = Landmarks::parse_uoam_map(text);
+        assert_eq!(marks.find_of_kind(None, Some("bank"), None).len(), 2);
+        assert_eq!(marks.find_of_kind(None, Some("Bank"), Some(1)).len(), 1);
+        assert_eq!(
+            marks
+                .find_of_kind(Some("haven"), Some("moongate"), None)
+                .len(),
+            1
+        );
+        assert_eq!(marks.kinds().get("bank"), Some(&2));
+        assert_eq!(marks.per_map().get(&1), Some(&2));
+        let lua = Landmarks::parse_waypoints_lua(
+            "Waypoints.Facet[0] = {\n{x=\"1434\", y=\"1699\", z=\"0\", Name=\"Britain Bank\"},\n}",
+        );
+        assert_eq!(lua.find_of_kind(None, Some("bank"), None).len(), 1);
     }
 
     #[test]

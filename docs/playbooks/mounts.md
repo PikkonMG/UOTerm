@@ -1,6 +1,6 @@
 # Mounts playbook
 
-`use` on a mobile while war mode is on is an attack. Turn war off and wait until `observe` shows `war` false, then `use` the animal.
+`use` on a mobile while war mode is on is an attack. The `mount` and `dismount` tools turn war off first and then double-click, so use them. By hand: turn war off and wait until `observe` shows `war` false, then `use` the animal.
 
 1. Your animal: a mobile the shard marks as yours, or the mount layer while you ride.
 2. Mount: war off, cancel a stale target, `use` the animal. Confirm by the mount layer or by the animal vanishing as a mobile.

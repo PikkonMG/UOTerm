@@ -1,5 +1,5 @@
 use crate::config::{
-    era_from_str, load_persona, load_profile, password_from_env, version_from_str, ConnectOptions,
+    client_version, era_from_str, load_persona, load_profile, password_from_env, ConnectOptions,
 };
 use crate::error::Result;
 use crate::manager::Runtime;
@@ -46,7 +46,7 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
         }
         let profile = load_profile(&agent.profile)?;
         let password = password_from_env(&profile.password_env)?;
-        let version = version_from_str(profile.version.as_deref(), era);
+        let version = client_version(profile.version.as_deref(), era, man.uopath.as_deref());
         let goal = Goal::for_class(&persona.class).name();
         let opts = ConnectOptions {
             host: man.host.clone(),
@@ -67,6 +67,7 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
             play_along: crate::config::PLAY_ALONG_DEFAULT,
             picker: None,
             reconnect: crate::config::RECONNECT_DEFAULT,
+            proxy: None,
         };
         let handle = runtime.connect(opts).await?;
         let _ = handle

@@ -30,12 +30,13 @@ const REARM_DELAY: Duration = Duration::from_millis(1500);
 const HOLD_LIMIT: Duration = Duration::from_secs(10);
 
 /// The agents that switch on and off.
-const SWITCHED: [&str; 9] = [
+const SWITCHED: [&str; 10] = [
     "autoloot",
     "scavenger",
     "buy",
     "sell",
     "bandage",
+    "self_heal",
     "remount",
     "bone_cutter",
     "carver",
@@ -101,6 +102,8 @@ pub(super) struct Agents {
     asked_properties: HashSet<Serial>,
     /// No agent moves an item before this.
     next_move_at: Instant,
+    /// The self-heal agent casts nothing before this.
+    next_self_heal_at: Instant,
     /// When the character was seen without a mount, for the remount delay.
     unmounted_since: Option<Instant>,
     meter: DamageMeter,
@@ -145,6 +148,7 @@ impl Agents {
             job_moves: HashMap::new(),
             asked_properties: HashSet::new(),
             next_move_at: Instant::now(),
+            next_self_heal_at: Instant::now(),
             unmounted_since: None,
             meter: DamageMeter::default(),
             last_pick: HashMap::new(),
@@ -179,6 +183,7 @@ impl Agents {
             "buy" => &mut c.buy.enabled,
             "sell" => &mut c.sell.enabled,
             "bandage" => &mut c.bandage.enabled,
+            "self_heal" => &mut c.self_heal.enabled,
             "remount" => &mut c.remount.enabled,
             "bone_cutter" => &mut c.bone_cutter.enabled,
             "carver" => &mut c.carver.enabled,
@@ -202,6 +207,7 @@ impl Agents {
             "buy" => c.buy.enabled,
             "sell" => c.sell.enabled,
             "bandage" => c.bandage.enabled,
+            "self_heal" => c.self_heal.enabled,
             "remount" => c.remount.enabled,
             "bone_cutter" => c.bone_cutter.enabled,
             "carver" => c.carver.enabled,
@@ -314,6 +320,7 @@ pub(super) fn pump_agents(inner: &mut Inner, now: Instant) {
     let acted = work::rearm(inner, now)
         || work::remount(inner, now)
         || work::bandage(inner, now)
+        || work::self_heal(inner, now)
         || work::job(inner, now)
         || work::autoloot(inner, now, false)
         || work::scavenge(inner, now)
@@ -442,6 +449,7 @@ pub(super) fn agent_set(inner: &mut Inner, args: &Value) -> ToolResult {
         ("buy", None) => from(settings).map(|v| c.buy = v),
         ("sell", None) => from(settings).map(|v| c.sell = v),
         ("bandage", _) => from(settings).map(|v| c.bandage = v),
+        ("self_heal", _) => from(settings).map(|v| c.self_heal = v),
         ("friends", _) => from(settings).map(|v| c.friends = v),
         ("remount", _) => from(settings).map(|v| c.remount = v),
         ("bone_cutter", _) => from(settings).map(|v| c.bone_cutter = v),
@@ -983,6 +991,41 @@ mod tests {
     }
 
     #[test]
+    fn the_self_heal_agent_cures_poison_first_and_heals_with_mana() {
+        const GREATER_HEAL: u16 = 29;
+        const CURE: u16 = 11;
+        let mut inner = player();
+        inner.agents.config.self_heal.enabled = true;
+        {
+            let mut w = inner.world.write();
+            w.self_state.hits = 40;
+            w.self_state.mana = 5;
+        }
+        tick(&mut inner);
+        assert!(inner.outbound.is_empty(), "no mana for a greater heal");
+        inner.world.write().self_state.mana = 50;
+        tick(&mut inner);
+        assert!(sent(&inner, &encode::cast(GREATER_HEAL, inner.version)));
+        assert_eq!(
+            inner.target_intent.as_ref().map(|intent| intent.aim),
+            Some(Aim::Object(ME)),
+            "the heal is aimed at the character"
+        );
+        inner.outbound.clear();
+        tick(&mut inner);
+        assert!(inner.outbound.is_empty(), "it waits its delay");
+        inner.world.write().self_state.poisoned = true;
+        inner.agents.next_self_heal_at = Instant::now();
+        tick(&mut inner);
+        assert!(sent(&inner, &encode::cast(CURE, inner.version)));
+        inner.outbound.clear();
+        inner.agents.config.self_heal.cure_poison = false;
+        inner.agents.next_self_heal_at = Instant::now();
+        tick(&mut inner);
+        assert!(inner.outbound.is_empty(), "no heal for the poisoned");
+    }
+
+    #[test]
     fn a_character_knocked_off_mounts_again_after_the_delay() {
         const MOUNT: Serial = Serial(0x0000_0300);
         let mut inner = player();
@@ -1215,7 +1258,7 @@ mod tests {
         let cast_at = inner
             .outbound
             .iter()
-            .position(|p| *p == encode::cast_spell(LIGHTNING));
+            .position(|p| *p == encode::cast(LIGHTNING, inner.version));
         assert!(
             lift_at.is_some() && lift_at < cast_at,
             "the sword goes first"
@@ -1260,7 +1303,7 @@ mod tests {
         let first = cast(&mut inner);
         assert!(!first.ok, "the cast waits for the other hand");
         assert_eq!(lifts(&inner), 1);
-        assert!(!sent(&inner, &encode::cast_spell(LIGHTNING)));
+        assert!(!sent(&inner, &encode::cast(LIGHTNING, inner.version)));
         let lifted = inner
             .world
             .read()
@@ -1274,7 +1317,7 @@ mod tests {
         let second = cast(&mut inner);
         assert!(second.ok);
         assert_eq!(lifts(&inner), 1);
-        assert!(sent(&inner, &encode::cast_spell(LIGHTNING)));
+        assert!(sent(&inner, &encode::cast(LIGHTNING, inner.version)));
     }
 
     #[test]

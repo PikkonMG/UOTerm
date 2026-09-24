@@ -319,6 +319,16 @@ pub fn ability_name(id: u8) -> Option<&'static str> {
     ABILITIES.iter().find(|(i, _)| *i == id).map(|&(_, n)| n)
 }
 
+/// The graphics of the weapons that have a move as one of their two, in
+/// the order of the weapon table.
+pub fn weapons_with(ability: u8) -> Vec<u16> {
+    WEAPONS
+        .iter()
+        .filter(|&&(_, primary, secondary)| primary == ability || secondary == ability)
+        .map(|&(graphic, _, _)| graphic)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +348,14 @@ mod tests {
         const NOT_A_WEAPON: u16 = 0x0001;
         assert_eq!(weapon_moves(None), BARE_HANDS);
         assert_eq!(weapon_moves(Some(NOT_A_WEAPON)), BARE_HANDS);
+    }
+
+    #[test]
+    fn the_weapons_of_a_move_hold_the_katana_for_double_strike() {
+        let weapons = weapons_with(DOUBLE_STRIKE);
+        assert!(weapons.contains(&KATANA));
+        assert!(weapons.windows(2).all(|w| w[0] < w[1]));
+        assert!(weapons_with(0).is_empty());
     }
 
     #[test]

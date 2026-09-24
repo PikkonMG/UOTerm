@@ -576,6 +576,7 @@ pub(crate) mod tests {
                 flags: 0,
                 hits: None,
                 hits_max: None,
+                pools: Default::default(),
                 equipment: Vec::new(),
             },
         );
@@ -608,6 +609,7 @@ pub(crate) mod tests {
                 flags: 0,
                 hits: None,
                 hits_max: None,
+                pools: Default::default(),
                 equipment: Vec::new(),
             },
         );

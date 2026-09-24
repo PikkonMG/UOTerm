@@ -808,6 +808,7 @@ mod tests {
                 flags,
                 hits: Some(FULL),
                 hits_max: Some(FULL),
+                pools: Default::default(),
                 equipment: Vec::new(),
             },
         );
@@ -1018,6 +1019,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         let now = Instant::now();
         let _ = job.tick(&w, READY, now);
@@ -1038,6 +1040,7 @@ mod tests {
             hue: 0,
             multi: false,
             flags: 0,
+            direction: 0,
         }));
         w.apply(&Inbound::OpenContainer {
             serial: CORPSE,

@@ -359,6 +359,7 @@ mod tests {
                 flags,
                 hits: None,
                 hits_max: None,
+                pools: Default::default(),
                 equipment: Vec::new(),
             },
         );
@@ -701,6 +702,7 @@ mod tests {
                 flags: 0,
                 hits: None,
                 hits_max: None,
+                pools: Default::default(),
                 equipment: Vec::new(),
             },
         );

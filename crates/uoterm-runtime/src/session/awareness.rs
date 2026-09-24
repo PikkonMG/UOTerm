@@ -27,6 +27,12 @@ const ENEMY_NEAR_COOLDOWN: Duration = Duration::from_secs(10);
 const NEXT_EVENT_BATCH: usize = 50;
 /// The most near enemies the state block lists, nearest first.
 const STATE_ENEMIES: usize = 5;
+/// The argument that names the ambient kinds a caller wants too, and the
+/// word for all of them.
+const ARG_AMBIENT: &str = "ambient";
+const AMBIENT_ALL: &str = "all";
+const BAD_AMBIENT: &str =
+    "ambient lists sound, effect, animation, item_deleted, member_positions or all";
 
 /// What the awareness check saw at the last tick, to tell what is new.
 #[derive(Default)]
@@ -44,7 +50,29 @@ pub(super) struct Awareness {
 /// A caller waiting for the next important event.
 pub(super) struct EventWaiter {
     gives_up_at: Instant,
+    /// The ambient kinds this caller wants besides the important events.
+    ambient: Vec<EventKind>,
     reply: oneshot::Sender<ToolResult>,
+}
+
+/// The ambient kinds a call asks for: none, some by name, or all.
+fn ambient_kinds(args: &Value) -> std::result::Result<Vec<EventKind>, &'static str> {
+    let Some(names) = args.get(ARG_AMBIENT) else {
+        return Ok(Vec::new());
+    };
+    let names = names.as_array().ok_or(BAD_AMBIENT)?;
+    let mut kinds = Vec::new();
+    for name in names {
+        if name.as_str() == Some(AMBIENT_ALL) {
+            return Ok(uoterm_world::AMBIENT_EVENT_KINDS.to_vec());
+        }
+        let kind: EventKind = serde_json::from_value(name.clone()).map_err(|_| BAD_AMBIENT)?;
+        if !kind.is_ambient() {
+            return Err(BAD_AMBIENT);
+        }
+        kinds.push(kind);
+    }
+    Ok(kinds)
 }
 
 /// Notes the changes no packet names by itself: health falling under the
@@ -115,9 +143,25 @@ fn enemies_near<'w>(inner: &Inner, world: &'w World) -> Vec<(&'w uoterm_world::M
     near
 }
 
-/// True for an event an agent must act on or know of.
-fn important(event: &Event, world: &World) -> bool {
+/// True for an event an agent must act on or know of. An ambient event
+/// counts only when the caller asked for its kind.
+fn important(inner: &Inner, event: &Event, world: &World, ambient: &[EventKind]) -> bool {
+    if event.kind.is_ambient() {
+        return ambient.contains(&event.kind);
+    }
     match event.kind {
+        // A gump of the ignore list: every gump open from that object is
+        // one the agent does not hear of.
+        EventKind::GumpOpened => {
+            let mut from_it = world
+                .gumps
+                .iter()
+                .filter(|g| Some(g.serial) == event.serial)
+                .peekable();
+            from_it.peek().is_none()
+                || !from_it.all(|g| super::actions::gump_ignored(inner, g.gump_id))
+        }
+        EventKind::SpokenTo => !super::actions::line_ignored(inner, "", &event.text),
         EventKind::Damaged => event.serial == Some(world.self_state.serial),
         EventKind::ItemAdded => event.serial.is_some_and(|item| {
             backpack_serial(world).is_some_and(|pack| world.is_inside(item, pack))
@@ -135,12 +179,20 @@ pub(super) fn wait_for_event(
     reply: oneshot::Sender<ToolResult>,
     now: Instant,
 ) {
-    match take_events(inner) {
+    let ambient = match ambient_kinds(args) {
+        Ok(kinds) => kinds,
+        Err(why) => {
+            let _ = reply.send(ToolResult::err(why));
+            return;
+        }
+    };
+    match take_events(inner, &ambient) {
         Some(answer) => {
             let _ = reply.send(answer);
         }
         None => inner.event_waiters.push(EventWaiter {
             gives_up_at: wait_deadline(args, now),
+            ambient,
             reply,
         }),
     }
@@ -153,9 +205,15 @@ pub(super) fn answer_event_waiters(inner: &mut Inner, now: Instant) {
         return;
     }
     let waiters = std::mem::take(&mut inner.event_waiters);
-    let mut answer = take_events(inner);
+    let mut answered = false;
     for waiter in waiters {
-        if let Some(ready) = answer.take() {
+        let ready = if answered {
+            None
+        } else {
+            take_events(inner, &waiter.ambient)
+        };
+        if let Some(ready) = ready {
+            answered = true;
             let _ = waiter.reply.send(ready);
         } else if waiter.gives_up_at <= now {
             let _ = waiter.reply.send(event_answer(inner, Vec::new(), 0));
@@ -167,7 +225,7 @@ pub(super) fn answer_event_waiters(inner: &mut Inner, now: Instant) {
 
 /// The important events not yet given to the agent, with the state, or None
 /// when there are none.
-fn take_events(inner: &mut Inner) -> Option<ToolResult> {
+fn take_events(inner: &mut Inner, ambient: &[EventKind]) -> Option<ToolResult> {
     let (events, last, missed) = {
         let world = inner.world.read();
         let after = inner.aware.delivered;
@@ -180,7 +238,7 @@ fn take_events(inner: &mut Inner) -> Option<ToolResult> {
         let newer: Vec<&Event> = world.events.iter().filter(|e| e.seq > after).collect();
         let events: Vec<Event> = newer
             .iter()
-            .filter(|e| important(e, &world))
+            .filter(|e| important(inner, e, &world, ambient))
             .take(NEXT_EVENT_BATCH)
             .map(|e| (*e).clone())
             .collect();
@@ -215,7 +273,8 @@ pub(super) fn doing(inner: &Inner, world: &World) -> Value {
         "playing_along_with": inner.play_along.map(|run| world.name_of(run.with)),
         "looting": inner.loot.as_ref().map(|job| job.corpse),
         "banking": inner.deposit.is_some(),
-        "script": scripting::running_name(inner),
+        "script": scripting::running_slots(inner).first(),
+        "scripts": scripting::running_slots(inner),
         "job": inner.hunt.as_ref().map(|job| json!({
             "name": crate::jobs::JOB_HUNT,
             "phase": job.phase_name(),
@@ -418,5 +477,41 @@ mod tests {
         let answer = next_event(&mut inner).expect("the pack item");
         assert_eq!(kinds(&answer), vec!["item_added"]);
         assert_eq!(answer.result["events"][0]["serial"], KEPT.0);
+    }
+
+    /// A sound is ambient: a plain call skips it, and a call that asks for
+    /// sounds gets it. A skill change always comes.
+    #[test]
+    fn ambient_events_come_only_to_a_caller_who_asks() {
+        let mut inner = player();
+        let sound = || Inbound::SoundEffect {
+            sound: 0x2A,
+            volume: 0,
+            x: 1,
+            y: 2,
+            z: 0,
+        };
+        inner.world.write().apply(&sound());
+        assert!(
+            next_event(&mut inner).is_none(),
+            "a plain call skips a sound"
+        );
+        inner.world.write().apply(&sound());
+        let (tx, mut rx) = oneshot::channel();
+        let asks = json!({ "timeout_ms": 0, "ambient": ["sound"] });
+        wait_for_event(&mut inner, &asks, tx, Instant::now());
+        let answer = rx.try_recv().expect("the sound comes");
+        assert_eq!(kinds(&answer), vec!["sound"]);
+        let (tx, mut rx) = oneshot::channel();
+        let wrong = json!({ "ambient": ["died"] });
+        wait_for_event(&mut inner, &wrong, tx, Instant::now());
+        assert!(
+            !rx.try_recv().expect("an answer").ok,
+            "died is no ambient kind"
+        );
+        assert_eq!(
+            ambient_kinds(&json!({ "ambient": ["all"] })).unwrap(),
+            uoterm_world::AMBIENT_EVENT_KINDS.to_vec()
+        );
     }
 }

@@ -157,6 +157,20 @@ const METER: [(&str, &str); 4] = [
     ("Damage Meter Stop", "stop"),
 ];
 
+const STOP_ALL_SCRIPTS: &str = "Stop All Scripts";
+
+/// The names of the hotkeys every character has, whatever he knows, so a
+/// window can offer them for a key.
+pub fn fixed_names() -> Vec<&'static str> {
+    FIXED
+        .iter()
+        .map(|&(_, name, _)| name)
+        .chain(AGENT_TOGGLES.iter().map(|&(name, _)| name))
+        .chain(METER.iter().map(|&(name, _)| name))
+        .chain([STOP_ALL_SCRIPTS])
+        .collect()
+}
+
 /// Every hotkey the character has now.
 fn all(inner: &Inner) -> Vec<Hotkey> {
     let mut keys: Vec<Hotkey> = FIXED
@@ -241,7 +255,7 @@ fn all(inner: &Inner) -> Vec<Hotkey> {
         action: Action::ToggleScript(name),
     }));
     keys.push(Hotkey {
-        name: "Stop All Scripts".into(),
+        name: STOP_ALL_SCRIPTS.into(),
         group: SCRIPTS,
         action: Action::StopScripts,
     });
@@ -337,16 +351,22 @@ pub(super) fn press(inner: &mut Inner, args: &Value) -> ToolResult {
             }
         }
         Action::ToggleScript(script) => {
-            if scripting::running_name(inner).is_some_and(|n| n.eq_ignore_ascii_case(&script)) {
-                scripting::stop_script(inner)
+            if scripting::running_slots(inner)
+                .iter()
+                .any(|slot| slot.eq_ignore_ascii_case(&script))
+            {
+                scripting::stop_script(inner, &json!({ "slot": script }))
             } else {
                 scripting::run_script(inner, &json!({ "name": script }))
             }
         }
-        Action::StopScripts => match scripting::running_name(inner) {
-            Some(_) => scripting::stop_script(inner),
-            None => ToolResult::ok(json!({ "stopped": false })),
-        },
+        Action::StopScripts => {
+            if scripting::running_slots(inner).is_empty() {
+                ToolResult::ok(json!({ "stopped": false }))
+            } else {
+                scripting::stop_script(inner, &json!({}))
+            }
+        }
         Action::DamageMeter(action) => agents::damage_meter(inner, &json!({ "action": action })),
     }
 }
@@ -366,6 +386,15 @@ mod tests {
             w.self_state.serial = ME;
         }
         inner
+    }
+
+    #[test]
+    fn every_fixed_name_is_a_hotkey_of_any_character() {
+        let inner = player();
+        let names: Vec<String> = all(&inner).iter().map(|k| name_key(&k.name)).collect();
+        for fixed in fixed_names() {
+            assert!(names.contains(&name_key(fixed)), "{fixed}");
+        }
     }
 
     #[test]
@@ -400,7 +429,9 @@ mod tests {
         ready_to_act(&mut inner);
         let result = press(&mut inner, &json!({ "name": "cast greater heal" }));
         assert!(result.ok, "{:?}", result.error);
-        assert!(inner.outbound.contains(&encode::cast_spell(GREATER_HEAL)));
+        assert!(inner
+            .outbound
+            .contains(&encode::cast(GREATER_HEAL, inner.version)));
     }
 
     #[test]
@@ -442,6 +473,26 @@ mod tests {
         assert!(inner.agents.config.autoloot.enabled);
         assert!(press(&mut inner, &json!({ "name": "autoloot on/off" })).ok);
         assert!(!inner.agents.config.autoloot.enabled);
+    }
+
+    /// The weapon move a hotkey arms is kept in the world until the shard
+    /// clears it, and the cancel hotkey clears it at once.
+    #[test]
+    fn an_ability_hotkey_arms_the_weapon_move_in_the_world() {
+        let mut inner = player();
+        ready_to_act(&mut inner);
+        assert!(press(&mut inner, &json!({ "name": "Primary Ability" })).ok);
+        let weapon = inner.world.read().equipped_weapon_graphic();
+        let primary =
+            uoterm_assist::abilities::move_for(weapon, uoterm_assist::abilities::MoveSlot::Primary);
+        assert_eq!(
+            inner.world.read().self_state.armed_ability,
+            Some(primary),
+            "the weapon in hand arms its first move"
+        );
+        ready_to_act(&mut inner);
+        assert!(press(&mut inner, &json!({ "name": "Cancel Ability" })).ok);
+        assert_eq!(inner.world.read().self_state.armed_ability, None);
     }
 
     #[test]

@@ -22,16 +22,20 @@ const NO_MENU_SHOWN: &str = "no context menu is shown for this object; ask for i
 const NO_CONTEXT_MENUS: &str = "this shard has no context menus; say the words instead";
 const NO_SHOP_OPEN: &str = "no shop list is open";
 const NO_TRADE_OPEN: &str = "no trade is open";
+const NO_DYE_ASKED: &str = "no dye tub asks for a colour";
+const NEEDS_HUE: &str = "needs hue: a colour number";
+const ARG_HUE: &str = "hue";
 const NO_MENU_OPEN: &str = "no menu is open";
 const NO_DESIGNER: &str = "the house designer is not open; use the house sign and start it";
 const NEEDS_GRAPHIC: &str = "needs graphic: one of the parts in watch house_parts";
 const NEEDS_ACTION: &str = "needs action";
-const BAD_ACTION: &str = "action must be add, remove, stair, roof, remove_roof, floor, clear, revert, commit, exit, backup or restore";
-const BAD_CHAT_ACTION: &str = "action must be open, join, say or leave";
+const BAD_ACTION: &str = "action must be add, remove, stair, roof, remove_roof, floor, clear, revert, commit, exit, backup, restore or sync";
+const BAD_CHAT_ACTION: &str = "action must be open, join, create, say or leave";
 const NEEDS_CHANNEL: &str = "needs channel";
 const NEEDS_WORDS: &str = "needs text";
 const NO_BOOK_OPEN: &str = "no book is open; use a book first";
 const NEEDS_PAGE: &str = "needs page, from 1";
+const NO_SUCH_PAGE: &str = "the book has no page with that number";
 const ARG_PAGE: &str = "page";
 const ARG_TITLE: &str = "title";
 const ARG_AUTHOR: &str = "author";
@@ -50,6 +54,10 @@ const ARG_X: &str = "x";
 const ARG_Y: &str = "y";
 const ACTION_CLEAR: &str = "clear";
 const ACTION_EDIT: &str = "edit";
+const ACTION_MOVE: &str = "move";
+const ACTION_REMOVE: &str = "remove";
+const ARG_PIN: &str = "pin";
+const NO_SUCH_PIN: &str = "needs pin: the place of a pin in the list of the map, from 0";
 /// How many profiles the session keeps. A window shows one at a time.
 const PROFILES_KEPT: usize = 8;
 const NO_BOARD_OPEN: &str = "no bulletin board is open; use one first";
@@ -96,6 +104,11 @@ struct Book {
     page_count: u16,
     /// The lines of each page that came, by the number of the page.
     pages: std::collections::BTreeMap<u16, Vec<String>>,
+    /// The shard opened the book with the fixed-width `0x93` cover, and a
+    /// changed cover goes back in that form.
+    old_form: bool,
+    /// The player may write in the book.
+    writable: bool,
 }
 
 /// One message of a bulletin board. The lines come when it is read.
@@ -172,6 +185,8 @@ pub(super) struct Play {
     /// The house the designer works on, and the level it works on.
     designing: Option<(Serial, u8)>,
     chat: Chat,
+    /// The dye tub that waits for a colour, and its graphic.
+    dye: Option<(Serial, u16)>,
     /// When the window last asked the shard what each object is.
     asked_what: std::collections::HashMap<Serial, Instant>,
 }
@@ -288,10 +303,11 @@ pub(super) fn on_book_or_menu(inner: &mut Inner, msg: &Inbound) {
         }
         Inbound::BookHeader {
             serial,
+            writable,
             page_count,
             title,
             author,
-            ..
+            old_form,
         } => {
             inner.play.book = Some(Book {
                 serial: *serial,
@@ -299,6 +315,8 @@ pub(super) fn on_book_or_menu(inner: &mut Inner, msg: &Inbound) {
                 author: author.clone(),
                 page_count: *page_count,
                 pages: std::collections::BTreeMap::new(),
+                old_form: *old_form,
+                writable: *writable,
             });
         }
         Inbound::Bulletin(BulletinEvent::Opened { board, name }) => {
@@ -447,6 +465,12 @@ pub(super) fn chat(inner: &mut Inner, args: &Value) -> ToolResult {
             };
             encode::chat_say(text)
         }
+        "create" => {
+            let Some(channel) = words(ARG_CHANNEL).filter(|channel| !channel.is_empty()) else {
+                return ToolResult::err(NEEDS_CHANNEL);
+            };
+            encode::chat_create(channel, words(ARG_PASSWORD).filter(|p| !p.is_empty()))
+        }
         "leave" => encode::chat_leave(),
         "" => return ToolResult::err(NEEDS_ACTION),
         _ => return ToolResult::err(BAD_CHAT_ACTION),
@@ -524,6 +548,7 @@ fn house_step(args: &Value) -> std::result::Result<HouseEdit, &'static str> {
         "exit" => Ok(HouseEdit::Exit),
         "backup" => Ok(HouseEdit::Backup),
         "restore" => Ok(HouseEdit::Restore),
+        "sync" => Ok(HouseEdit::Sync),
         "" => Err(NEEDS_ACTION),
         _ => Err(BAD_ACTION),
     }
@@ -670,25 +695,62 @@ fn open_map(inner: &Inner, args: &Value) -> std::result::Result<Serial, &'static
     }
 }
 
-/// `map_pin`: puts a pin on the open map, clears its pins, or asks the
-/// shard to let it be drawn on.
+/// `map_pin`: puts a pin on the open map, moves or takes off one pin,
+/// clears its pins, or asks the shard to let it be drawn on. The shard
+/// does not send the pins back, so the session keeps them as it sends
+/// them, as the official client does.
 pub(super) fn map_pin(inner: &mut Inner, args: &Value) -> ToolResult {
     let serial = match open_map(inner, args) {
         Ok(serial) => serial,
         Err(words) => return ToolResult::err(words),
     };
+    let Some(map) = inner
+        .play
+        .maps
+        .iter_mut()
+        .find(|map| map.what.serial == serial)
+    else {
+        return ToolResult::err(NO_MAP_OPEN);
+    };
+    let place = args
+        .get(ARG_X)
+        .and_then(Value::as_u64)
+        .zip(args.get(ARG_Y).and_then(Value::as_u64))
+        .map(|(x, y)| (x as u16, y as u16));
+    let pin = args
+        .get(ARG_PIN)
+        .and_then(Value::as_u64)
+        .and_then(|pin| u8::try_from(pin).ok())
+        .filter(|pin| usize::from(*pin) < map.pins.len());
     let packet = match args.get(ARG_ACTION).and_then(Value::as_str) {
-        Some(ACTION_CLEAR) => encode::map_clear_pins(serial),
+        Some(ACTION_CLEAR) => {
+            map.pins.clear();
+            encode::map_clear_pins(serial)
+        }
         Some(ACTION_EDIT) => encode::map_toggle_edit(serial),
-        _ => {
-            let place = args
-                .get(ARG_X)
-                .and_then(Value::as_u64)
-                .zip(args.get(ARG_Y).and_then(Value::as_u64));
+        Some(ACTION_MOVE) => {
+            let Some(pin) = pin else {
+                return ToolResult::err(NO_SUCH_PIN);
+            };
             let Some((x, y)) = place else {
                 return ToolResult::err(NEEDS_PLACE);
             };
-            encode::map_add_pin(serial, x as u16, y as u16)
+            map.pins[usize::from(pin)] = (x, y);
+            encode::map_move_pin(serial, pin, x, y)
+        }
+        Some(ACTION_REMOVE) => {
+            let Some(pin) = pin else {
+                return ToolResult::err(NO_SUCH_PIN);
+            };
+            map.pins.remove(usize::from(pin));
+            encode::map_remove_pin(serial, pin)
+        }
+        _ => {
+            let Some((x, y)) = place else {
+                return ToolResult::err(NEEDS_PLACE);
+            };
+            map.pins.push((x, y));
+            encode::map_add_pin(serial, x, y)
         }
     };
     inner.outbound.push_back(packet);
@@ -891,17 +953,20 @@ pub(super) fn book_write(inner: &mut Inner, args: &Value) -> ToolResult {
     let title = words(ARG_TITLE);
     let author = words(ARG_AUTHOR);
     if title.is_some() || author.is_some() {
-        let (kept_title, kept_author) = inner
+        let (kept_title, kept_author, old_form) = inner
             .play
             .book
             .as_ref()
-            .map(|open| (open.title.clone(), open.author.clone()))
+            .map(|open| (open.title.clone(), open.author.clone(), open.old_form))
             .unwrap_or_default();
         let title = title.unwrap_or(&kept_title).to_string();
         let author = author.unwrap_or(&kept_author).to_string();
-        inner
-            .outbound
-            .push_back(encode::book_header(book, &title, &author));
+        // The cover goes back in the form the shard opened the book with.
+        inner.outbound.push_back(if old_form {
+            encode::book_header_old(book, &title, &author)
+        } else {
+            encode::book_header(book, &title, &author)
+        });
         if let Some(open) = inner.play.book.as_mut() {
             open.title = title;
             open.author = author;
@@ -926,6 +991,35 @@ pub(super) fn book_write(inner: &mut Inner, args: &Value) -> ToolResult {
             .insert(page, lines.iter().map(|line| (*line).to_string()).collect());
     }
     ToolResult::action(TOOL_BOOK_WRITE)
+}
+
+/// `book_read`: one page of the open book. A page the shard has not sent
+/// yet is asked for, and the next call has it.
+pub(super) fn book_read(inner: &mut Inner, args: &Value) -> ToolResult {
+    let Some(book) = inner.play.book.as_ref() else {
+        return ToolResult::err(NO_BOOK_OPEN);
+    };
+    let Some(page) = args
+        .get(ARG_PAGE)
+        .and_then(Value::as_u64)
+        .and_then(|page| u16::try_from(page).ok())
+        .filter(|page| *page > 0)
+    else {
+        return ToolResult::err(NEEDS_PAGE);
+    };
+    if page > book.page_count {
+        return ToolResult::err(NO_SUCH_PAGE);
+    }
+    let serial = book.serial;
+    match book.pages.get(&page) {
+        Some(lines) => ToolResult::ok(json!({ "page": page, "lines": lines })),
+        None => {
+            inner
+                .outbound
+                .push_back(encode::book_page_request(serial, page));
+            ToolResult::ok(json!({ "page": page, "lines": Value::Null, "asked": true }))
+        }
+    }
 }
 
 pub(super) fn book_close(inner: &mut Inner) -> ToolResult {
@@ -1007,6 +1101,23 @@ pub(super) fn shop_checkout(inner: &mut Inner, args: &Value) -> ToolResult {
     ToolResult::action(TOOL_SHOP_CHECKOUT)
 }
 
+/// A dye tub asks for a colour: it waits for the `dye` tool.
+pub(super) fn on_dye_request(inner: &mut Inner, tub: Serial, graphic: u16) {
+    inner.play.dye = Some((tub, graphic));
+}
+
+/// Answers the dye tub that asks for a colour.
+pub(super) fn dye(inner: &mut Inner, args: &Value) -> ToolResult {
+    let Some(hue) = arg_number(args, ARG_HUE).and_then(|hue| u16::try_from(hue).ok()) else {
+        return ToolResult::err(format!("{TOOL_DYE} {NEEDS_HUE}"));
+    };
+    let Some((tub, _)) = inner.play.dye.take() else {
+        return ToolResult::err(NO_DYE_ASKED);
+    };
+    inner.outbound.push_back(encode::dye_response(tub, hue));
+    ToolResult::action(TOOL_DYE)
+}
+
 pub(super) fn shop_close(inner: &mut Inner) -> ToolResult {
     on_shop_closed(inner);
     ToolResult::ok(json!({ "shop": Value::Null }))
@@ -1014,7 +1125,7 @@ pub(super) fn shop_close(inner: &mut Inner) -> ToolResult {
 
 /// Sets the gold and platinum the character offers in the open trade.
 pub(super) fn trade_gold(inner: &mut Inner, args: &Value) -> ToolResult {
-    let Some(mine) = inner.world.read().trade.as_ref().map(|trade| trade.mine) else {
+    let Some(mine) = trade_box(inner, args) else {
         return ToolResult::err(NO_TRADE_OPEN);
     };
     let gold = arg_u32(args, ARG_GOLD, 0);
@@ -1023,6 +1134,13 @@ pub(super) fn trade_gold(inner: &mut Inner, args: &Value) -> ToolResult {
         .outbound
         .push_back(encode::trade_gold(mine, gold, platinum));
     ToolResult::action(TOOL_TRADE_GOLD)
+}
+
+/// The character's own box of the trade a call names by `trade` (the other
+/// player, or a box of the trade), or of the newest trade.
+pub(super) fn trade_box(inner: &Inner, args: &Value) -> Option<Serial> {
+    let named = arg_serial_opt(args, ARG_TRADE).filter(|s| s.is_valid());
+    inner.world.read().trade_with(named).map(|trade| trade.mine)
 }
 
 /// The words of the tooltip of one object. The shard is asked for them when
@@ -1048,7 +1166,20 @@ pub(super) fn properties(inner: &mut Inner, args: &Value) -> ToolResult {
         asked.insert(serial, now);
         ask_what_it_is(inner, serial);
     }
-    ToolResult::ok(json!({ "serial": serial, "lines": lines }))
+    // The text numbers and their arguments, so a caller can read a property
+    // by its number whatever the language of the words.
+    let entries: Vec<Value> = inner
+        .world
+        .read()
+        .properties
+        .get(&serial)
+        .map(|list| {
+            list.iter()
+                .map(|p| json!({ "cliloc": p.cliloc, "arguments": p.arguments }))
+                .collect()
+        })
+        .unwrap_or_default();
+    ToolResult::ok(json!({ "serial": serial, "lines": lines, "entries": entries }))
 }
 
 fn contained(item: &uoterm_world::Item) -> Value {
@@ -1061,6 +1192,7 @@ fn contained(item: &uoterm_world::Item) -> Value {
         "x": item.location.x,
         "y": item.location.y,
         "grid": item.grid,
+        "layer": item.layer,
     })
 }
 
@@ -1104,8 +1236,19 @@ pub(super) fn open_panels(
             "title": book.title,
             "author": book.author,
             "page_count": book.page_count,
-            "pages": book.pages.values().collect::<Vec<_>>(),
+            "writable": book.writable,
+            // Each page in its place: one not sent yet is null.
+            "pages": (1..=book.pages.keys().max().copied().unwrap_or(0))
+                .map(|page| book.pages.get(&page))
+                .collect::<Vec<_>>(),
         }))),
+    );
+    into.insert(
+        "dye".into(),
+        json!(inner
+            .play
+            .dye
+            .map(|(tub, graphic)| json!({ "serial": tub, "graphic": graphic }))),
     );
     into.insert("paperdoll".into(), json!(world.paperdoll));
     into.insert(
@@ -1126,6 +1269,12 @@ pub(super) fn open_panels(
         })
         .collect();
     skills.sort_by_key(|(id, _)| **id);
+    let group_of = |id: u16| {
+        inner
+            .skill_groups
+            .iter()
+            .position(|group| group.skills.contains(&id))
+    };
     let skills: Vec<Value> = skills
         .into_iter()
         .map(|(id, value)| {
@@ -1138,10 +1287,13 @@ pub(super) fn open_panels(
                 "base": value.base,
                 "cap": value.cap,
                 "lock": value.lock,
+                "group": group_of(*id).map(|at| inner.skill_groups[at].name.clone()),
+                "group_index": group_of(*id),
             })
         })
         .collect();
     into.insert("skills".into(), json!(skills));
+    let spell_name = |number: u16| inner.scripting.spells.by_id(number).map(|s| s.name.clone());
     let spells: Vec<Value> = world
         .spellbooks
         .iter()
@@ -1149,15 +1301,90 @@ pub(super) fn open_panels(
             let spells: Vec<Value> = content
                 .spell_numbers()
                 .into_iter()
-                .map(|number| {
-                    let name = inner.scripting.spells.by_id(number).map(|s| s.name.clone());
-                    json!({ "number": number, "name": name })
-                })
+                .map(|number| json!({ "number": number, "name": spell_name(number) }))
                 .collect();
-            json!({ "book": book, "spells": spells })
+            json!({
+                "book": book,
+                "graphic": content.graphic,
+                "first_spell": content.first_spell,
+                "school": content.school().map(|school| school.name),
+                "spells": spells,
+            })
         })
         .collect();
     into.insert("spellbooks".into(), json!(spells));
+    let me = &world.self_state;
+    into.insert(
+        "abilities".into(),
+        json!({
+            "weapon": me.armed_ability.map(|number| json!({
+                "number": number,
+                "name": uoterm_assist::abilities::ability_name(number),
+            })),
+            "spells": me
+                .active_spells
+                .iter()
+                .map(|number| json!({ "number": number, "name": spell_name(*number) }))
+                .collect::<Vec<_>>(),
+        }),
+    );
+    let mut tracked: Vec<&uoterm_world::TrackedMember> = world.tracked_members.values().collect();
+    tracked.sort_by_key(|member| member.position.serial.0);
+    into.insert(
+        "tracked_members".into(),
+        json!(tracked
+            .into_iter()
+            .map(|member| {
+                let place = &member.position;
+                json!({
+                    "serial": place.serial,
+                    "name": world.name_of(place.serial),
+                    "x": place.x,
+                    "y": place.y,
+                    "map": place.map,
+                    "hits_percent": place.hits_percent,
+                    "guild": member.guild,
+                })
+            })
+            .collect::<Vec<_>>()),
+    );
+    into.insert("latency_ms".into(), json!(inner.latency.millis()));
+    let (bytes_in, bytes_out) = inner.latency.traffic.last();
+    into.insert(
+        "traffic".into(),
+        json!({ "bytes_in": bytes_in, "bytes_out": bytes_out }),
+    );
+}
+
+/// Each buff and debuff on the character, as its icon shows it: the icon,
+/// the title and the words under it, and the seconds it has left. A buff
+/// that lasts until something ends it has no time.
+fn buff_icons(inner: &Inner, world: &World) -> Vec<Value> {
+    let words = |number: u32, arguments: &str| {
+        inner
+            .cliloc
+            .as_ref()
+            .and_then(|table| table.render(number, arguments))
+    };
+    let mut buffs: Vec<&uoterm_world::Buff> = world.buffs.values().collect();
+    buffs.sort_by_key(|buff| buff.icon);
+    buffs
+        .into_iter()
+        .map(|buff| {
+            let lasts = u64::from(buff.duration_secs);
+            json!({
+                "icon": buff.icon,
+                "title_cliloc": buff.title_cliloc,
+                "description_cliloc": buff.description_cliloc,
+                "arguments": buff.arguments,
+                "title": words(buff.title_cliloc, ""),
+                "text": words(buff.description_cliloc, &buff.arguments),
+                "duration_secs": buff.duration_secs,
+                "remaining_secs": (lasts > 0)
+                    .then(|| lasts.saturating_sub(buff.since.elapsed().as_secs())),
+            })
+        })
+        .collect()
 }
 
 /// The whole screen in one picture: `observe`, with each list at its full
@@ -1167,6 +1394,15 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
     if let Some(sheet) = picture.as_object_mut() {
         open_panels(inner, sheet, EVERY_SKILL);
     }
+    // Read before the guard below: the world lock is not reentrant.
+    let live_map = super::ultima_live::watch_value(inner);
+    // The plot of the foundation sets how many storeys and parts a design
+    // takes.
+    let plot = inner
+        .play
+        .designing
+        .and_then(|(serial, _)| super::multi_bounds(inner, serial))
+        .map(|bounds| bounds.plot());
     let world = inner.world.read();
     // The newest first: the container the player just opened is the one
     // he wants to see, and a window shows only the first few.
@@ -1186,6 +1422,9 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
                 "serial": container.serial,
                 "name": record.map(|item| item.name.clone()).unwrap_or_default(),
                 "graphic": record.map(|item| item.graphic),
+                "hue": record.map(|item| item.hue),
+                "parent": record.and_then(|item| item.parent),
+                "opened": container.opened,
                 "gump": container.gump,
                 "total": contents.len(),
                 "contents": contents,
@@ -1217,33 +1456,78 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
                 "name": world.name_of(*member),
                 "hits": seen.and_then(|m| m.hits),
                 "hits_max": seen.and_then(|m| m.hits_max),
+                "mana": seen.and_then(|m| m.pools.mana),
+                "mana_max": seen.and_then(|m| m.pools.mana_max),
+                "stam": seen.and_then(|m| m.pools.stam),
+                "stam_max": seen.and_then(|m| m.pools.stam_max),
             })
         })
         .collect();
-    picture["mobiles"] = json!(world.mobiles.values().collect::<Vec<_>>());
+    // The poison and the yellow bar come on the flags or on the health bar
+    // packet, and a follower on his status, so the world says which each
+    // mobile shows.
+    picture["mobiles"] = json!(world
+        .mobiles
+        .values()
+        .map(|mobile| {
+            let mut shown = json!(mobile);
+            shown["poisoned"] = json!(world.is_poisoned(mobile.serial));
+            shown["yellow_hits"] = json!(world.has_yellow_bar(mobile.serial));
+            shown["follower"] = json!(world.is_renamable(mobile.serial));
+            shown
+        })
+        .collect::<Vec<_>>());
     // A building is drawn from its pieces, not as one item.
     picture["items"] = json!(world
         .items
         .values()
         .filter(|item| item.parent.is_none() && !world.multis.contains_key(&item.serial))
+        .map(|item| {
+            let mut shown = json!(item);
+            shown["direction"] = json!(world.item_directions.get(&item.serial).copied());
+            shown
+        })
         .collect::<Vec<_>>());
     picture["multis"] = json!(world.multis.values().collect::<Vec<_>>());
     picture["containers"] = json!(containers);
     picture["journal_lines"] = json!(journal);
     picture["party_members"] = json!(party);
     picture["cues"] = json!(world.cues.all());
-    if let Some(trade) = &world.trade {
-        let offered = |side: Serial| -> Vec<Value> {
-            world
-                .items_inside(side, false)
-                .into_iter()
-                .map(contained)
-                .collect()
-        };
+    picture["buff_icons"] = json!(buff_icons(inner, &world));
+    picture["live_map"] = live_map;
+    // The tile the steps on the wire leave him on, which a window shows him
+    // on before the shard has taken them.
+    picture["stepping_to"] = json!(inner.movement.stepping_to());
+    // The newest step sent: how long ago its slot came and how long it
+    // lasts. A window draws each step over that time, so the steps meet end
+    // to end at the pace the session sends them.
+    picture["stride"] = json!(inner.movement.last_stride().map(|stride| json!({
+        "ago_ms": Instant::now().saturating_duration_since(stride.slot).as_millis() as u64,
+        "ms": stride.lasts.as_millis() as u64,
+    })));
+    // Each side of each trade with the place of each item in its box, as
+    // the trade gump shows them.
+    let offered = |side: Serial| -> Vec<Value> {
+        world
+            .items_inside(side, false)
+            .into_iter()
+            .map(contained)
+            .collect()
+    };
+    if let Some(trade) = world.trade_with(None) {
         picture["trade"]["mine_items"] = json!(offered(trade.mine));
         picture["trade"]["their_items"] = json!(offered(trade.theirs));
     }
+    for (at, trade) in world.trades.iter().enumerate() {
+        if let Some(shown) = picture["trades"].get_mut(at) {
+            shown["mine_items"] = json!(offered(trade.mine));
+            shown["their_items"] = json!(offered(trade.theirs));
+        }
+    }
     picture["prompt"] = json!(world.prompt.is_some());
+    picture["party_invite"] = json!(world.party_invite);
+    picture["party_can_loot"] = json!(world.party_can_loot);
+    picture["property_lists"] = json!(world.has_property_lists());
     picture["running"] = json!(inner.movement.last_step_ran);
     picture["season"] = json!(world.season);
     picture["light"] = json!(world.light);
@@ -1257,10 +1541,12 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
     picture["waypoints"] = json!(world.waypoints.values().collect::<Vec<_>>());
     picture["shard_url"] = json!(world.shard_url);
     picture["shard_notice"] = json!(world.shard_notice);
+    picture["shard_tip"] = json!(world.tip);
     picture["weather"] = json!(world
         .weather
         .map(|(kind, count)| json!({ "kind": kind, "count": count })));
     picture["target_cursor"] = json!(world.pending_target);
+    picture["last_target"] = json!(inner.last_target);
     let words = |number: u32, arguments: &str| {
         inner
             .cliloc
@@ -1327,10 +1613,14 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
         .as_ref()
         .filter(|_| inner.play.designing.is_some())
         .map(|catalog| catalog.parts()));
-    picture["designing"] = json!(inner
-        .play
-        .designing
-        .map(|(serial, floor)| json!({ "serial": serial, "floor": floor })));
+    picture["designing"] = json!(inner.play.designing.map(|(serial, floor)| {
+        json!({
+            "serial": serial,
+            "floor": floor,
+            "plot_width": plot.map(|(width, _)| width),
+            "plot_depth": plot.map(|(_, depth)| depth),
+        })
+    }));
     picture["placing"] = json!(inner
         .play
         .placing
@@ -1354,10 +1644,13 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
             }))
             .collect::<Vec<_>>(),
     })));
-    picture["text_entry"] = json!(world
-        .text_entry
-        .as_ref()
-        .map(|dialog| json!({ "title": dialog.text, "description": dialog.description })));
+    picture["text_entry"] = json!(world.text_entry.as_ref().map(|dialog| json!({
+        "title": dialog.text,
+        "description": dialog.description,
+        "can_cancel": dialog.can_cancel,
+        "style": dialog.style,
+        "max_length": dialog.max_len,
+    })));
     picture
 }
 
@@ -1365,6 +1658,31 @@ pub(super) fn watch_value(inner: &Inner, size: u16) -> Value {
 mod tests {
     use super::super::relay_tests::test_session;
     use super::*;
+
+    #[test]
+    fn a_tooltip_gives_its_text_numbers_and_arguments() {
+        const SWORD: Serial = Serial(0x4000_0A99);
+        const NAME_LINE: u32 = 1_050_039;
+        const DAMAGE_LINE: u32 = 1_061_168;
+        let mut inner = test_session();
+        inner.world.write().properties.insert(
+            SWORD,
+            vec![
+                uoterm_protocol::ObjectProperty {
+                    cliloc: NAME_LINE,
+                    arguments: "1\ta longsword".into(),
+                },
+                uoterm_protocol::ObjectProperty {
+                    cliloc: DAMAGE_LINE,
+                    arguments: "15\t16".into(),
+                },
+            ],
+        );
+        let read = properties(&mut inner, &json!({ "serial": SWORD.0 }));
+        assert!(read.ok, "{read:?}");
+        assert_eq!(read.result["entries"][1]["cliloc"], json!(DAMAGE_LINE));
+        assert_eq!(read.result["entries"][1]["arguments"], json!("15\t16"));
+    }
 
     const GUARD: Serial = Serial(0x0000_0A01);
     const SHOPKEEPER: Serial = Serial(0x0000_0A02);
@@ -1405,11 +1723,46 @@ mod tests {
     }
 
     #[test]
+    fn a_dye_tub_waits_in_watch_until_the_dye_tool_answers_it() {
+        const TUB: Serial = Serial(0x4000_0D01);
+        const TUB_GRAPHIC: u16 = 0x0FAB;
+        const HUE: u16 = 35;
+        let mut inner = test_session();
+        assert!(!dye(&mut inner, &json!({ "hue": HUE })).ok, "no tub asks");
+        on_dye_request(&mut inner, TUB, TUB_GRAPHIC);
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["dye"]["graphic"], TUB_GRAPHIC);
+        assert!(!dye(&mut inner, &json!({})).ok, "a hue is needed");
+        assert!(dye(&mut inner, &json!({ "hue": HUE })).ok);
+        assert!(inner.outbound.contains(&encode::dye_response(TUB, HUE)));
+        assert!(watch_value(&inner, RADAR_DEFAULT)["dye"].is_null());
+    }
+
+    #[test]
     fn a_menu_nobody_asked_for_is_not_shown() {
         let mut inner = test_session();
         on_context_menu(&mut inner, GUARD, &[menu_line()]);
         assert!(watch_value(&inner, RADAR_DEFAULT)["context_menu"].is_null());
         assert!(!context_menu(&mut inner, &json!({ "serial": GUARD, "index": LINE_INDEX })).ok);
+    }
+
+    /// The window sees the race change the shard asks for, with its race
+    /// and the looks to pick, until it is answered.
+    #[test]
+    fn a_race_change_shows_in_watch_until_answered() {
+        const GARGOYLE: u8 = 3;
+        let mut inner = test_session();
+        assert!(watch_value(&inner, RADAR_DEFAULT)["race_change"].is_null());
+        inner.world.write().apply(&Inbound::RaceChange {
+            female: false,
+            race: GARGOYLE,
+        });
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["race_change"]["race"], "gargoyle");
+        assert_eq!(shown["race_change"]["female"], false);
+        assert_eq!(shown["race_change"]["beard_styles"][1]["graphic"], 0x42AD);
+        assert!(requests::race_change(&mut inner, &json!({ "cancel": true })).ok);
+        assert!(watch_value(&inner, RADAR_DEFAULT)["race_change"].is_null());
     }
 
     #[test]
@@ -1464,9 +1817,113 @@ mod tests {
             "weather",
             "prompt",
             "target_cursor",
+            "buff_icons",
+            "live_map",
+            "abilities",
+            "tracked_members",
+            "latency_ms",
+            "traffic",
+            "party_invite",
+            "party_can_loot",
+            "property_lists",
         ] {
             assert!(shown.get(key).is_some(), "watch has no {key}");
         }
+    }
+
+    /// What the Classic window draws beside the map: the spells of each book
+    /// with its school, the moves and stances on, where the party stands out
+    /// of sight, each buff with its time, the group of each skill and the
+    /// round trip to the shard.
+    #[test]
+    fn watch_holds_the_state_of_the_classic_window() {
+        const BOOK: Serial = Serial(0x4000_0D11);
+        const FRIEND: Serial = Serial(0x0000_0D12);
+        const BLESS_ICON: u16 = 1010;
+        const CONFIDENCE: u16 = 402;
+        const TACTICS: u16 = 27;
+        let mut inner = test_session();
+        inner.skill_groups = vec![uoterm_nav::SkillGroup {
+            name: "Combat".into(),
+            skills: vec![TACTICS],
+        }];
+        {
+            let mut world = inner.world.write();
+            world.apply(&Inbound::SpellbookContent {
+                book: BOOK,
+                graphic: 0x2253,
+                first_spell: 101,
+                spells: 0b101,
+            });
+            world.self_state.armed_ability = Some(1);
+            world.apply(&Inbound::SpecialAbility {
+                spell: CONFIDENCE,
+                active: true,
+            });
+            world.apply(&Inbound::MemberPositions {
+                guild: false,
+                members: vec![uoterm_protocol::MemberPosition {
+                    serial: FRIEND,
+                    x: 100,
+                    y: 200,
+                    map: 1,
+                    hits_percent: None,
+                }],
+            });
+            world.buffs.insert(
+                BLESS_ICON,
+                uoterm_world::Buff {
+                    icon: BLESS_ICON,
+                    title_cliloc: 1_075_847,
+                    description_cliloc: 1_075_848,
+                    arguments: "10".into(),
+                    duration_secs: 60,
+                    since: Instant::now(),
+                },
+            );
+            world.self_state.skills.insert(
+                TACTICS,
+                uoterm_world::SkillValue {
+                    value: 500,
+                    base: 500,
+                    cap: 1000,
+                    lock: 0,
+                },
+            );
+        }
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        let book = &shown["spellbooks"][0];
+        assert_eq!(book["school"], "necromancy");
+        assert_eq!(book["graphic"], 0x2253);
+        let spells: Vec<u64> = book["spells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|spell| spell["number"].as_u64().unwrap())
+            .collect();
+        assert_eq!(spells, vec![101, 103]);
+        assert_eq!(shown["abilities"]["weapon"]["name"], "Armor Ignore");
+        assert_eq!(shown["abilities"]["spells"][0]["number"], CONFIDENCE);
+        assert_eq!(shown["tracked_members"][0]["x"], 100);
+        assert_eq!(shown["tracked_members"][0]["guild"], false);
+        let buff = &shown["buff_icons"][0];
+        assert_eq!(buff["icon"], BLESS_ICON);
+        assert!(buff["remaining_secs"].as_u64().unwrap() <= 60);
+        let tactics = shown["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|skill| skill["id"] == TACTICS)
+            .cloned()
+            .unwrap();
+        assert_eq!(tactics["group"], "Combat");
+        assert!(shown["latency_ms"].is_null(), "no round trip yet");
+        assert_eq!(shown["live_map"]["blocks"], json!([]));
+        let seen = observe_value(&inner, RADAR_DEFAULT);
+        assert_eq!(
+            seen["abilities"], shown["abilities"],
+            "an agent sees them too"
+        );
     }
 
     /// A script picks an old-style menu entry by its words as well as its
@@ -1545,6 +2002,35 @@ mod tests {
     }
 
     #[test]
+    fn a_text_entry_dialog_shows_its_field_rules_in_watch() {
+        const NUMERIC_STYLE: u8 = 2;
+        const MOST_DIGITS: u32 = 5;
+        let inner = test_session();
+        assert!(watch_value(&inner, RADAR_DEFAULT)["text_entry"].is_null());
+        inner.world.write().text_entry = Some(uoterm_protocol::TextEntryDialog {
+            serial: Serial(0x0000_1234),
+            parent: 1,
+            button: 2,
+            text: "How many?".into(),
+            can_cancel: false,
+            style: NUMERIC_STYLE,
+            max_len: MOST_DIGITS,
+            description: "Up to 99999".into(),
+        });
+        let shown = watch_value(&inner, RADAR_DEFAULT)["text_entry"].clone();
+        assert_eq!(
+            shown,
+            json!({
+                "title": "How many?",
+                "description": "Up to 99999",
+                "can_cancel": false,
+                "style": NUMERIC_STYLE,
+                "max_length": MOST_DIGITS,
+            })
+        );
+    }
+
+    #[test]
     fn a_book_shows_its_cover_and_the_pages_that_came() {
         const BOOK: Serial = Serial(0x4000_0D01);
         let mut inner = test_session();
@@ -1556,6 +2042,7 @@ mod tests {
                 page_count: 2,
                 title: "Tales".into(),
                 author: "Ann".into(),
+                old_form: true,
             },
         );
         on_book_or_menu(
@@ -1563,14 +2050,32 @@ mod tests {
             &Inbound::BookContent {
                 serial: BOOK,
                 pages: vec![uoterm_protocol::BookPage {
-                    number: 1,
+                    number: 2,
                     lines: vec!["Once".into()],
                 }],
             },
         );
         let shown = watch_value(&inner, RADAR_DEFAULT);
         assert_eq!(shown["book"]["title"], "Tales");
-        assert_eq!(shown["book"]["pages"][0][0], "Once");
+        assert_eq!(shown["book"]["writable"], false);
+        assert!(shown["book"]["pages"][0].is_null(), "page 1 did not come");
+        assert_eq!(shown["book"]["pages"][1][0], "Once");
+        let read = book_read(&mut inner, &json!({ "page": 2 }));
+        assert_eq!(read.result["lines"][0], "Once");
+        assert!(inner.outbound.is_empty());
+        assert!(book_read(&mut inner, &json!({ "page": 1 })).ok);
+        assert_eq!(
+            inner.outbound.pop_front(),
+            Some(encode::book_page_request(BOOK, 1)),
+            "a page not sent yet is asked for"
+        );
+        assert!(!book_read(&mut inner, &json!({ "page": 3 })).ok);
+        assert!(book_write(&mut inner, &json!({ "title": "Tales Two" })).ok);
+        assert_eq!(
+            inner.outbound.pop_front(),
+            Some(encode::book_header_old(BOOK, "Tales Two", "Ann")),
+            "the cover goes back in the old form it came in"
+        );
         assert!(book_close(&mut inner).ok);
         assert!(watch_value(&inner, RADAR_DEFAULT)["book"].is_null());
     }
@@ -1665,6 +2170,25 @@ mod tests {
     }
 
     #[test]
+    fn a_tip_shows_its_number_and_a_notice_shows_none() {
+        let inner = test_session();
+        inner.world.write().apply(&Inbound::Tip {
+            id: 7,
+            is_tip: true,
+            words: "Hail".into(),
+        });
+        let shown = watch_value(&inner, RADAR_DEFAULT);
+        assert_eq!(shown["shard_notice"], "Hail");
+        assert_eq!(shown["shard_tip"], 7);
+        inner.world.write().apply(&Inbound::Tip {
+            id: 0,
+            is_tip: false,
+            words: "Save".into(),
+        });
+        assert!(watch_value(&inner, RADAR_DEFAULT)["shard_tip"].is_null());
+    }
+
+    #[test]
     fn a_map_item_keeps_its_pins_and_takes_a_new_one() {
         const MAP: Serial = Serial(0x4000_0F01);
         let mut inner = test_session();
@@ -1701,8 +2225,25 @@ mod tests {
         assert!(!map_pin(&mut inner, &json!({})).ok, "a pin needs a place");
         assert!(map_pin(&mut inner, &json!({ "x": 5, "y": 6 })).ok);
         assert!(inner.outbound.contains(&encode::map_add_pin(MAP, 5, 6)));
+        let pins = |inner: &Inner| watch_value(inner, RADAR_DEFAULT)["maps"][0]["pins"].clone();
+        assert_eq!(
+            pins(&inner),
+            json!([{ "x": 40, "y": 90 }, { "x": 5, "y": 6 }])
+        );
+        let moved = json!({ "action": "move", "pin": 1, "x": 7, "y": 8 });
+        assert!(map_pin(&mut inner, &moved).ok);
+        assert!(inner.outbound.contains(&encode::map_move_pin(MAP, 1, 7, 8)));
+        assert_eq!(pins(&inner)[1], json!({ "x": 7, "y": 8 }));
+        assert!(
+            !map_pin(&mut inner, &json!({ "action": "remove", "pin": 2 })).ok,
+            "the map has no third pin"
+        );
+        assert!(map_pin(&mut inner, &json!({ "action": "remove", "pin": 0 })).ok);
+        assert!(inner.outbound.contains(&encode::map_remove_pin(MAP, 0)));
+        assert_eq!(pins(&inner), json!([{ "x": 7, "y": 8 }]));
         assert!(map_pin(&mut inner, &json!({ "action": "clear" })).ok);
         assert!(inner.outbound.contains(&encode::map_clear_pins(MAP)));
+        assert_eq!(pins(&inner), json!([]));
         assert!(map_close(&mut inner, &json!({})).ok);
         assert!(watch_value(&inner, RADAR_DEFAULT)["maps"]
             .as_array()
@@ -1756,6 +2297,7 @@ mod tests {
         let bounds = uoterm_world::HouseBounds {
             min_x: -3,
             min_y: -3,
+            max_x: 3,
             max_y: 3,
         };
         on_custom_house(&mut inner, &house, Some(bounds));
@@ -1797,6 +2339,12 @@ mod tests {
         )));
         assert!(house_edit(&mut inner, &json!({ "action": "floor", "level": 3 })).ok);
         assert_eq!(watch_value(&inner, RADAR_DEFAULT)["designing"]["floor"], 3);
+        assert!(house_edit(&mut inner, &json!({ "action": "sync" })).ok);
+        let me = inner.world.read().self_state.serial;
+        assert_eq!(
+            inner.outbound.back(),
+            Some(&encode::house_edit(me, HouseEdit::Sync))
+        );
         assert!(house_edit(&mut inner, &json!({ "action": "commit" })).ok);
         assert!(watch_value(&inner, RADAR_DEFAULT)["designing"].is_null());
     }
@@ -1850,6 +2398,14 @@ mod tests {
         assert!(inner.outbound.contains(&encode::chat_say("hail")));
         assert!(chat(&mut inner, &json!({ "action": "join", "channel": "Trade" })).ok);
         assert!(inner.outbound.contains(&encode::chat_join("Trade", None)));
+        let create = json!({ "action": "create", "channel": "Guild", "password": "pw" });
+        assert!(chat(&mut inner, &create).ok);
+        assert!(inner
+            .outbound
+            .contains(&encode::chat_create("Guild", Some("pw"))));
+        assert!(!chat(&mut inner, &json!({ "action": "create" })).ok);
+        assert!(chat(&mut inner, &json!({ "action": "leave" })).ok);
+        assert_eq!(inner.outbound.back(), Some(&encode::chat_leave()));
         on_chat(&mut inner, &event(ChatEvent::Closed));
         assert!(watch_value(&inner, RADAR_DEFAULT)["chat"].is_null());
     }

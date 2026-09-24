@@ -173,6 +173,17 @@ pub struct NextStep {
     pub direction: Direction,
 }
 
+/// The newest step the character sent, as the walk timed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stride {
+    /// The moment the step fell due: its slot in the cadence of the walk,
+    /// which is when it left, give or take the wake of the session.
+    pub slot: Instant,
+    /// How long the step lasts: the time from its slot to the slot of the
+    /// step after it.
+    pub lasts: Duration,
+}
+
 /// A request the character has sent and the server has not answered yet: a
 /// step, or a turn on the spot.
 #[derive(Clone, Debug)]
@@ -380,6 +391,8 @@ pub struct Movement {
     pub in_flight: VecDeque<PendingStep>,
     /// When the next step falls due. See [`Movement::schedule_next`].
     next_step_due: Option<Instant>,
+    /// The newest step sent. See [`Movement::last_stride`].
+    last_stride: Option<Stride>,
     pub path: VecDeque<Point3>,
     pub goal: Option<Point3>,
     pub fastwalk: [u32; FASTWALK_SLOTS],
@@ -433,6 +446,7 @@ impl Default for Movement {
             sequence: SEQ_FIRST,
             in_flight: VecDeque::new(),
             next_step_due: None,
+            last_stride: None,
             path: VecDeque::new(),
             goal: None,
             fastwalk: [FASTWALK_KEY_EMPTY; FASTWALK_SLOTS],
@@ -535,14 +549,37 @@ impl Movement {
         }
     }
 
-    /// Sets when the step after this one falls due.
+    /// When the session must wake to send the next step of the route: the
+    /// moment it falls due, while a step waits and that moment is still to
+    /// come. None when nothing waits, or when the step is already due and
+    /// waits for something else, such as an answer.
+    ///
+    /// The session sleeps until then, so a step leaves at its slot. On the
+    /// [`crate::config::REFLEX_TICK_MS`] tick alone it left up to one tick
+    /// late, and a steer call or an answer off the wire sent some of them on
+    /// time: measured under human control, walking steps left 303 to 498 ms
+    /// apart where the pace is 400, and the window drew that unevenness.
+    pub fn step_wake(&self, now: Instant) -> Option<Instant> {
+        self.next_step_due
+            .filter(|due| *due > now && !self.path.is_empty())
+    }
+
+    /// The newest step sent: its slot in the cadence of the walk, and how
+    /// long it lasts. A window draws the step over exactly that time from its
+    /// slot, so the steps it draws meet end to end at the pace of the walk.
+    pub fn last_stride(&self) -> Option<Stride> {
+        self.last_stride
+    }
+
+    /// Sets when the step after this one falls due, and gives the slot of
+    /// this one: the moment it fell due in the cadence of the walk.
     ///
     /// A pace is a cadence and not a delay: the next step is due `pace` after
-    /// the moment this one was *due*, not after the moment it went out. The
-    /// walk runs on a [`crate::config::REFLEX_TICK_MS`] tick, so a step always
-    /// goes out a little after it falls due; measuring the next one from when
-    /// it went out adds that lateness to every step and to the one after it,
-    /// and the character walks slower than the pace he is walking at.
+    /// the moment this one was *due*, not after the moment it went out. A
+    /// step can go out a little after it falls due, when the session is busy;
+    /// measuring the next one from when it went out adds that lateness to
+    /// every step and to the one after it, and the character walks slower
+    /// than the pace he is walking at.
     ///
     /// This is the measured fault: a follower behind a running player kept a
     /// gap of 4.2 tiles on average and 18 at worst, because a 200 ms running
@@ -553,7 +590,7 @@ impl Movement {
     /// A walk that stopped for longer than one step has no cadence left to
     /// keep, and starts a new one from now. That is also what stops the
     /// character from firing off a burst of steps to make up a long wait.
-    fn schedule_next(&mut self, now: Instant, pace: Duration) {
+    fn schedule_next(&mut self, now: Instant, pace: Duration) -> Instant {
         let from = match self.next_step_due {
             Some(due) if now.saturating_duration_since(due) < pace => due,
             _ => {
@@ -563,6 +600,7 @@ impl Movement {
             }
         };
         self.next_step_due = Some(from + pace);
+        from
     }
 
     /// Reference client walk sequence: emit 0 first, then 1..=255, wrap to 1
@@ -633,10 +671,18 @@ impl Movement {
     /// here writes a position; the character is reported on `confirmed_at`
     /// until the server confirms each of those steps in turn.
     pub fn stepping_from(&self, confirmed_at: Point3) -> Point3 {
-        self.in_flight
-            .back()
-            .map(|step| step.arrives_at)
-            .unwrap_or(confirmed_at)
+        self.stepping_to().unwrap_or(confirmed_at)
+    }
+
+    /// The tile the requests on the wire leave the character on, and None
+    /// when the server owes him nothing.
+    ///
+    /// A window shows him here, as the reference client does: every step it
+    /// shows is one the server was asked for. A window that guessed the next
+    /// step by itself showed tiles never asked for, and put him back a second
+    /// later when the human stopped before the step went out.
+    pub fn stepping_to(&self) -> Option<Point3> {
+        self.in_flight.back().map(|step| step.arrives_at)
     }
 
     /// Builds the packet for one step and holds that step until the server
@@ -659,7 +705,11 @@ impl Movement {
             turn: false,
         });
         let interval = self.step_interval(running);
-        self.schedule_next(now, interval);
+        let slot = self.schedule_next(now, interval);
+        self.last_stride = Some(Stride {
+            slot,
+            lasts: interval,
+        });
         self.last_step_ran = running;
         self.last_dir = step.direction;
         encode::move_request(step.direction, running, sequence, key)
@@ -1637,6 +1687,35 @@ pub(crate) mod tests {
         );
     }
 
+    /// A step sent late keeps its slot in the cadence, so the steps a window
+    /// draws from their slots meet end to end. The session wakes at the next
+    /// slot while a step waits for it, and not for a slot already past.
+    #[test]
+    fn a_late_step_keeps_its_slot_and_the_walk_wakes_at_the_next() {
+        const LATE: Duration = Duration::from_millis(60);
+        let pace = Duration::from_millis(STEP_WALK_MS);
+        let mut m = Movement {
+            steady_pace: true,
+            ..Movement::default()
+        };
+        let start = Instant::now();
+        let first = step_across_level_ground(AT_THE_INN_DOOR_CORNER, Direction::East);
+        m.build_step(first, false, start);
+        assert_eq!(m.step_wake(start), None, "nothing waits on the route");
+        let second = step_across_level_ground(first.arrives_at, Direction::East);
+        m.set_path(vec![second.arrives_at], second.arrives_at);
+        assert_eq!(m.step_wake(start), Some(start + pace));
+        assert_eq!(m.step_wake(start + pace), None, "the slot is here");
+        m.build_step(second, false, start + pace + LATE);
+        assert_eq!(
+            m.last_stride(),
+            Some(Stride {
+                slot: start + pace,
+                lasts: pace
+            })
+        );
+    }
+
     /// The rule this client walks by: the character asks, and only the answer
     /// moves him. He may have [`IN_FLIGHT_MAX`] questions out at once, which
     /// is what keeps him level with a runner, and one more than that he will
@@ -1747,6 +1826,31 @@ pub(crate) mod tests {
             start,
             "so the next step is aimed from the tile the server says he is on"
         );
+    }
+
+    /// The tile the steps on the wire lead to is known from the moment the
+    /// first of them is sent until the server has answered or refused them
+    /// all, and not a moment longer.
+    #[test]
+    fn the_tile_the_sent_steps_lead_to_lasts_until_they_are_answered_or_refused() {
+        let mut m = Movement::default();
+        let now = Instant::now();
+        let start = AT_THE_INN_DOOR_CORNER;
+        assert_eq!(m.stepping_to(), None, "nothing sent, nothing to show");
+        let first = step_across_level_ground(start, Direction::East);
+        m.build_step(first, false, now);
+        let second = step_across_level_ground(first.arrives_at, Direction::East);
+        m.build_step(second, false, now);
+        assert_eq!(
+            m.stepping_to(),
+            Some(second.arrives_at),
+            "the last step sent is where the steps leave him"
+        );
+        let answered = in_flight(&m).sequence;
+        m.ack(answered);
+        assert_eq!(m.stepping_to(), Some(second.arrives_at));
+        m.refused();
+        assert_eq!(m.stepping_to(), None, "a refusal takes them all back");
     }
 
     /// A step the server never answers must not wedge the character, however
