@@ -5,7 +5,8 @@
 //!
 //! The screens are the same plain panel in each UI style. The login itself
 //! is one flow ([`LoginFlow`]), apart from its drawing. A new character is
-//! made in full on the model of `model::creation` (see `creation_ui`).
+//! made in full on the model of `model::creation`, on a screen of its own
+//! that fills the window (see `creation_ui`).
 //!
 //! The password is typed in a field that hides it. It stays in memory for
 //! the login and is written nowhere. A saved login can name an environment
@@ -16,8 +17,9 @@
 //! later the character, from the lists. Jev sees the words and the names of
 //! the lists. It never sees the password.
 
-use super::creation_ui::{self, Asked as CreationAsked};
+use super::creation_ui::{self, Art, Asked as CreationAsked};
 use super::link::Link;
+use super::map_view::MapPictures;
 use super::model::creation::{can_make, Creation, CreationFiles};
 use super::orders;
 use super::scene::Scene;
@@ -446,12 +448,15 @@ pub struct LoginUi {
     /// The client art the figure of a new character is drawn with. None
     /// with no client files.
     scene: Option<Scene>,
+    /// The land round the start town a new character picks.
+    town_map: MapPictures,
 }
 
 impl LoginUi {
     pub fn new(start: LoginStart<'_>) -> Self {
         Self {
             scene: start.uopath.map(|dir| Scene::new(Some(dir))),
+            town_map: MapPictures::default(),
             flow: LoginFlow::new(start),
         }
     }
@@ -478,6 +483,19 @@ impl LoginUi {
     }
 
     fn draw_panel(&mut self, ui: &mut egui::Ui, rect: Rect, ctx: &egui::Context) {
+        let flow = &mut self.flow;
+        if let (Stage::Characters { .. }, Some(creation)) = (&flow.stage, flow.creating.as_mut()) {
+            let art = Art {
+                scene: self.scene.as_mut(),
+                town_map: &mut self.town_map,
+            };
+            match creation_ui::draw(ui, rect, creation, &flow.files, art) {
+                Some(CreationAsked::Leave) => flow.creating = None,
+                Some(CreationAsked::Finish) => flow.finish_creation(),
+                None => {}
+            }
+            return;
+        }
         ui.painter().rect_filled(rect, 0.0, theme::VOID);
         let panel = Rect::from_center_size(rect.center(), PANEL_SIZE);
         theme::panel(ui.painter(), panel);
@@ -490,7 +508,6 @@ impl LoginUi {
             theme::TEXT,
         );
         let body = Rect::from_min_max(inner.left_top() + Vec2::new(0.0, TITLE_ROW), inner.max);
-        let flow = &mut self.flow;
         match flow.stage.shown() {
             Shown::Form => form_stage(flow, ui, body, ctx),
             Shown::Connecting => {
@@ -511,17 +528,7 @@ impl LoginUi {
                     flow.answer_pick(place);
                 }
             }
-            Shown::Characters(names) => {
-                if let Some(creation) = flow.creating.as_mut() {
-                    match creation_ui::draw(ui, body, creation, &flow.files, self.scene.as_mut()) {
-                        Some(CreationAsked::Leave) => flow.creating = None,
-                        Some(CreationAsked::Finish) => flow.finish_creation(),
-                        None => {}
-                    }
-                } else {
-                    character_stage(flow, ui, body, &names);
-                }
-            }
+            Shown::Characters(names) => character_stage(flow, ui, body, &names),
         }
         if let Some((words, failed)) = &flow.note {
             let color = if *failed {

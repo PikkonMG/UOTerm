@@ -15,6 +15,8 @@ pub const GLASS_EDGE: Color32 = Color32::from_rgba_premultiplied(44, 52, 66, 140
 pub const BUTTON: Color32 = Color32::from_rgba_premultiplied(40, 48, 62, 230);
 pub const BUTTON_HOVER: Color32 = Color32::from_rgba_premultiplied(62, 74, 94, 240);
 pub const TRACK: Color32 = Color32::from_rgba_premultiplied(2, 3, 5, 190);
+/// The fill of a choice the player picked: a dark tint of the goal color.
+pub const CHOSEN: Color32 = Color32::from_rgba_premultiplied(16, 56, 62, 240);
 /// The near-black glass of the journal in dark mode.
 pub const DARK_GLASS: Color32 = Color32::from_rgba_premultiplied(2, 2, 4, 240);
 
@@ -71,6 +73,8 @@ pub const BAR_RADIUS: u8 = 3;
 pub const PIP_HEIGHT: f32 = 4.0;
 
 pub const SIZE_TITLE: f32 = 22.0;
+/// The heading of one part of a screen.
+pub const SIZE_HEADING: f32 = 18.0;
 pub const SIZE_BODY: f32 = 14.0;
 pub const SIZE_SMALL: f32 = 12.0;
 pub const SIZE_PLATE: f32 = 15.0;

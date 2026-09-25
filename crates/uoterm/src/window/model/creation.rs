@@ -1,11 +1,12 @@
 //! A new character as the player makes him, with no drawing: the pages of
-//! the character creation of the classic client as one model, which the form
-//! of the login screens (`creation_ui`) changes.
+//! the character creation of the classic client as one model, which the
+//! screen of the login (`creation_ui`) changes.
 //!
-//! The pages: the look (name, sex, race, hair and beard, colors), the
-//! profession, the skills and stats of the Advanced choice, and the start
-//! town. The model checks each page as the classic client does and makes
-//! the wish the login sends to the shard.
+//! The pages: the look (sex, race, hair and beard, colors), the
+//! profession, the skills and stats of the Advanced choice, the start town,
+//! and last the name with all the choices to check. The model checks each
+//! page by the rules of the classic client. It tells why a page cannot go
+//! on ([`Blocker`]), and it makes the wish the login sends to the shard.
 //!
 //! The name is checked for its length, its letters and the titles it may
 //! not start with. The shard checks its own list of forbidden words and
@@ -72,19 +73,9 @@ const SKILL_SLOTS_OLD: usize = 3;
 /// Before 7.0.16.0 the third skill starts empty.
 const OLD_EMPTY_SKILL: usize = 2;
 
-// The words of the pages that can refuse to go on.
-pub const WORDS_NAME_SHORT: (u32, &str) = (3_000_612, "Your Character Name is Too Short");
-pub const WORDS_NAME_BAD: (u32, &str) = (3_000_611, "Unacceptable Name");
-pub const WORDS_UNIQUE_SKILLS: (u32, &str) =
-    (1_080_032, "You must have three unique skills chosen!");
-pub const WORDS_NEEDS_SAMURAI_EMPIRE: (u32, &str) = (
-    1_063_016,
-    "You must upgrade your account to Samurai Empire before you can choose that profession.",
-);
-
 // The name rules of the classic client.
-const NAME_MIN: usize = 2;
-const NAME_MAX: usize = 16;
+pub const NAME_MIN: usize = 2;
+pub const NAME_MAX: usize = 16;
 const NAME_MARKS: [char; 4] = [' ', '-', '.', '\''];
 const NAME_MARKS_IN_A_ROW: usize = 1;
 const NAME_TITLES: [&str; 6] = ["seer", "counselor", "gm", "admin", "lady", "lord"];
@@ -111,6 +102,8 @@ const CLOTH_FIRST_HUE: u16 = 3;
 const CLOTH_HUE_STEP: u16 = 5;
 /// A new character starts with the second hair style and no beard.
 const FIRST_HAIR: usize = 1;
+/// The ways a figure can face. The preview turns through them.
+pub const FACINGS: u8 = 8;
 
 /// The race of a new character, as the shard numbers it from zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -214,6 +207,136 @@ pub enum Step {
     /// The skills and stats of the Advanced choice.
     Trade,
     Town,
+    /// The name, and all the choices to check before the character is made.
+    Name,
+}
+
+impl Step {
+    /// The part of the creation the page is in.
+    pub fn stage(&self) -> Stage {
+        match self {
+            Step::Look => Stage::Look,
+            Step::Profession(_) | Step::Trade => Stage::Skills,
+            Step::Town => Stage::Town,
+            Step::Name => Stage::Name,
+        }
+    }
+}
+
+/// The parts of the creation, in the order the player goes through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Look,
+    Skills,
+    Town,
+    Name,
+}
+
+impl Stage {
+    pub const ALL: [Stage; 4] = [Stage::Look, Stage::Skills, Stage::Town, Stage::Name];
+
+    pub fn words(self) -> &'static str {
+        match self {
+            Stage::Look => "Look",
+            Stage::Skills => "Skills",
+            Stage::Town => "Town",
+            Stage::Name => "Name & confirm",
+        }
+    }
+}
+
+/// Why a name is not taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameFault {
+    Empty,
+    Short,
+    Long,
+    /// A space at the start or at the end.
+    Edges,
+    /// A character that is not a letter or one of the marks.
+    Letters,
+    /// A mark as the first character.
+    FirstMark,
+    /// Two marks with no letter between them.
+    MarksInARow,
+    /// It starts with a title, such as Lord.
+    Title,
+}
+
+impl NameFault {
+    pub fn words(self) -> String {
+        match self {
+            NameFault::Empty => "Pick a name.".into(),
+            NameFault::Short => format!("The name needs at least {NAME_MIN} letters."),
+            NameFault::Long => format!("The name has more than {NAME_MAX} characters."),
+            NameFault::Edges => "Remove the space at the start or at the end.".into(),
+            NameFault::Letters => "Use only letters, spaces and the marks - . '".into(),
+            NameFault::FirstMark => "Start the name with a letter.".into(),
+            NameFault::MarksInARow => "Put a letter between two marks or spaces.".into(),
+            NameFault::Title => "A name cannot start with a title, such as Lord or GM.".into(),
+        }
+    }
+}
+
+/// Why the page that shows cannot go on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocker {
+    /// The account has no such race.
+    RaceLocked,
+    NoProfession,
+    /// Not every skill row has a skill: the number of rows.
+    SkillsMissing(usize),
+    /// A skill is in two rows.
+    SkillTwice,
+    /// The stats do not add up to their total.
+    StatTotal(i32),
+    /// The skills do not add up to their total.
+    SkillTotal(i32),
+    NoTown,
+    Name(NameFault),
+}
+
+impl Blocker {
+    pub fn words(self) -> String {
+        match self {
+            Blocker::RaceLocked => "The account cannot make this race.".into(),
+            Blocker::NoProfession => "Pick a profession.".into(),
+            Blocker::SkillsMissing(rows) => format!("Pick a skill in each of the {rows} rows."),
+            Blocker::SkillTwice => "Pick a different skill in each row.".into(),
+            Blocker::StatTotal(total) => format!("Stats must add up to {total}."),
+            Blocker::SkillTotal(total) => format!("Skills must add up to {total}."),
+            Blocker::NoTown => "The shard lists no start town.".into(),
+            Blocker::Name(fault) => fault.words(),
+        }
+    }
+}
+
+/// Which end of its range a value is at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    Least,
+    Most,
+}
+
+/// The first value that is at an end of its range, and which end.
+pub fn at_limit(values: &[i32], (min, max): (i32, i32)) -> Option<(usize, Limit)> {
+    values.iter().enumerate().find_map(|(at, value)| {
+        if *value <= min {
+            Some((at, Limit::Least))
+        } else if *value >= max {
+            Some((at, Limit::Most))
+        } else {
+            None
+        }
+    })
+}
+
+/// The skills of a menu whose names hold the searched words, in any case.
+pub fn find_skills<'a>(menu: &'a [(u8, String)], search: &str) -> Vec<&'a (u8, String)> {
+    let search = search.trim().to_lowercase();
+    menu.iter()
+        .filter(|(_, name)| name.to_lowercase().contains(&search))
+        .collect()
 }
 
 /// One skill of the Advanced choice: the skill picked, and its points.
@@ -275,6 +398,72 @@ impl CreationFiles {
     }
 }
 
+#[cfg(test)]
+impl CreationFiles {
+    /// A few professions and skill names with no client files, for tests.
+    pub(crate) fn sample() -> Self {
+        let text = "Begin\nName Warrior\nTrueName \"warrior\"\nDesc 1\nTopLevel true\n\
+                    Type Profession\nSkill Tactics 30\nSkill Healing 30\nSkill Anatomy 30\n\
+                    Skill Swordsmanship 30\nStat Str 45\nStat Dex 35\nStat Int 10\nEnd\n\
+                    Begin\nName Ninja\nTrueName \"ninja\"\nDesc 7\nTopLevel true\n\
+                    Type Profession\nSkill Ninjitsu 30\nSkill Hiding 30\nEnd\n\
+                    Begin\nName Mage\nTrueName \"mage\"\nDesc 2\nTopLevel true\n\
+                    Type Profession\nSkill Magery 30\nSkill Meditation 30\nEnd\n";
+        let professions = uoterm_nav::parse_professions(text);
+        let mut skill_names: Vec<String> = (0..58).map(|at| format!("Skill {at}")).collect();
+        for (at, name) in [
+            (1, "Anatomy"),
+            (17, "Healing"),
+            (21, "Hiding"),
+            (25, "Magery"),
+            (27, "Tactics"),
+            (40, "Swordsmanship"),
+            (46, "Meditation"),
+            (53, "Ninjitsu"),
+        ] {
+            skill_names[at] = name.into();
+        }
+        Self {
+            professions,
+            skill_names,
+            town_texts: vec!["<b>Yew</b> is a town.".into()],
+            words: None,
+        }
+    }
+}
+
+/// The choices of an account that may make every race and profession,
+/// with three placed start towns, for tests.
+#[cfg(test)]
+pub(crate) fn sample_choices() -> CharacterChoices {
+    const BRITAIN: (u16, u16) = (1_496, 1_628);
+    const YEW: (u16, u16) = (633, 858);
+    const MINOC: (u16, u16) = (2_477, 407);
+    const TRAMMEL: u32 = 1;
+    const BRITAIN_WORDS: u32 = 1_075_074;
+    let town = |index: u8, name: &str, building: &str, (x, y): (u16, u16), description| StartTown {
+        index,
+        name: name.into(),
+        building: building.into(),
+        place: Some(uoterm_protocol::TownPlace {
+            x,
+            y,
+            z: 0,
+            map: TRAMMEL,
+            description,
+        }),
+    };
+    CharacterChoices {
+        towns: vec![
+            town(0, "Yew", "The Empath Abbey", YEW, 0),
+            town(1, "Minoc", "The Barnacle", MINOC, 0),
+            town(3, "Britain", "Sweet Dreams Inn", BRITAIN, BRITAIN_WORDS),
+        ],
+        features: FEATURE_AOS | FEATURE_SE | FEATURE_ML | FEATURE_SA,
+        list_flags: LIST_ELVEN_RACE | LIST_SAMURAI_NINJA,
+    }
+}
+
 /// How many characters the account may have, by the flags of the list.
 pub fn character_slots(list_flags: u32) -> usize {
     if list_flags & LIST_ONE_SLOT != 0 {
@@ -298,23 +487,32 @@ pub fn facet_name(map: u32) -> &'static str {
     FACET_NAMES[(map as usize).min(FACET_NAMES.len() - 1)]
 }
 
-/// The text number of the words about a name that the classic client does
-/// not take, or None when it takes it.
-pub fn check_name(name: &str) -> Option<(u32, &'static str)> {
+/// Why the classic client does not take a name, or None when it takes it.
+pub fn check_name(name: &str) -> Option<NameFault> {
     let count = name.chars().count();
-    if count < NAME_MIN {
-        return Some(WORDS_NAME_SHORT);
+    if count == 0 {
+        return Some(NameFault::Empty);
     }
-    if count > NAME_MAX || name.trim() != name {
-        return Some(WORDS_NAME_BAD);
+    if count < NAME_MIN {
+        return Some(NameFault::Short);
+    }
+    if count > NAME_MAX {
+        return Some(NameFault::Long);
+    }
+    if name.trim() != name {
+        return Some(NameFault::Edges);
     }
     let lower = name.to_lowercase();
     let mut marks_in_a_row = 0;
     for (at, c) in lower.chars().enumerate() {
         if c.is_ascii_lowercase() {
             marks_in_a_row = 0;
-        } else if !NAME_MARKS.contains(&c) || at == 0 || marks_in_a_row == NAME_MARKS_IN_A_ROW {
-            return Some(WORDS_NAME_BAD);
+        } else if !NAME_MARKS.contains(&c) {
+            return Some(NameFault::Letters);
+        } else if at == 0 {
+            return Some(NameFault::FirstMark);
+        } else if marks_in_a_row == NAME_MARKS_IN_A_ROW {
+            return Some(NameFault::MarksInARow);
         } else {
             marks_in_a_row += 1;
         }
@@ -322,7 +520,7 @@ pub fn check_name(name: &str) -> Option<(u32, &'static str)> {
     NAME_TITLES
         .iter()
         .any(|title| lower.starts_with(title))
-        .then_some(WORDS_NAME_BAD)
+        .then_some(NameFault::Title)
 }
 
 /// Moves one value of a group whose sum stays the same, as the paired
@@ -390,8 +588,9 @@ pub struct Creation {
     pub skills: Vec<SkillPick>,
     /// The start town, by place in the list of the shard.
     pub town: usize,
-    /// Words that stop the player going on, until he closes them.
-    pub message: Option<(u32, &'static str)>,
+    /// How many eighths of a turn the preview figure is turned to the
+    /// right, from facing the watcher.
+    pub turns: u8,
 }
 
 impl Creation {
@@ -415,7 +614,7 @@ impl Creation {
             stats: [0; 3],
             skills: Vec::new(),
             town,
-            message: None,
+            turns: 0,
         };
         creation.start_trade();
         creation
@@ -590,15 +789,6 @@ impl Creation {
         }
     }
 
-    /// Next on the look page: a good name and a race the account has.
-    pub fn look_done(&mut self) {
-        if let Some(words) = check_name(&self.name) {
-            self.message = Some(words);
-        } else if self.race_allowed(self.race) {
-            self.step = Step::Profession(None);
-        }
-    }
-
     /// The professions of the page: the top ones, or those of a category.
     pub fn professions<'a>(&self, files: &'a CreationFiles) -> Vec<&'a Profession> {
         match &self.step {
@@ -614,31 +804,44 @@ impl Creation {
         }
     }
 
+    /// True when the account may not take the profession: a Samurai or a
+    /// Ninja needs the Samurai Empire flag of the character list.
+    pub fn profession_locked(&self, profession: &Profession, files: &CreationFiles) -> bool {
+        let samurai_ninja = self.choices.list_flags & LIST_SAMURAI_NINJA != 0;
+        !samurai_ninja
+            && profession
+                .skill_numbers(&files.skill_names)
+                .iter()
+                .any(|(skill, _)| *skill == SKILL_BUSHIDO || *skill == SKILL_NINJITSU)
+    }
+
+    /// True when the profession picked is the Advanced choice.
+    pub fn is_advanced(&self) -> bool {
+        self.profession
+            .as_ref()
+            .is_some_and(Profession::is_advanced)
+    }
+
     /// The player picked a profession: a category opens its own list;
-    /// Advanced goes to the skills and stats; a profession takes its
-    /// template and goes to the towns.
+    /// Advanced starts the skills and stats of the player's own; a
+    /// profession takes its template. A locked profession is not taken.
     pub fn pick_profession(&mut self, profession: &Profession, files: &CreationFiles) {
         if profession.kind == ProfessionKind::Category {
             self.step = Step::Profession(Some(profession.true_name.clone()));
             return;
         }
         if profession.is_advanced() {
+            if !self.is_advanced() {
+                self.start_trade();
+            }
             self.profession = Some(profession.clone());
-            self.start_trade();
-            self.step = Step::Trade;
             return;
         }
-        let skills = profession.skill_numbers(&files.skill_names);
-        let samurai_ninja = self.choices.list_flags & LIST_SAMURAI_NINJA != 0;
-        if !samurai_ninja
-            && skills
-                .iter()
-                .any(|(skill, _)| *skill == SKILL_BUSHIDO || *skill == SKILL_NINJITSU)
-        {
-            self.message = Some(WORDS_NEEDS_SAMURAI_EMPIRE);
+        if self.profession_locked(profession, files) {
             return;
         }
-        self.skills = skills
+        self.skills = profession
+            .skill_numbers(&files.skill_names)
             .into_iter()
             .take(self.skill_slots())
             .map(|(skill, value)| SkillPick {
@@ -653,28 +856,48 @@ impl Creation {
             i32::from(dexterity),
         ];
         self.profession = Some(profession.clone());
-        self.step = Step::Town;
+    }
+
+    /// The skill and the other stats the Advanced page starts with.
+    fn trade_start(&self) -> (i32, i32) {
+        if self.version.has_three_starting_skills() {
+            (SKILL_START_NEW, OTHER_STATS_NEW)
+        } else {
+            (SKILL_START_OLD, OTHER_STATS_OLD)
+        }
+    }
+
+    /// The points of each skill row as the Advanced page starts them.
+    fn skill_start(&self, at: usize) -> i32 {
+        let old = !self.version.has_three_starting_skills();
+        if old && at == OLD_EMPTY_SKILL {
+            0
+        } else {
+            self.trade_start().0
+        }
     }
 
     /// The skills and the stats the Advanced page starts with.
     fn start_trade(&mut self) {
-        let new = self.version.has_three_starting_skills();
-        let (skill, other_stats) = if new {
-            (SKILL_START_NEW, OTHER_STATS_NEW)
-        } else {
-            (SKILL_START_OLD, OTHER_STATS_OLD)
-        };
+        let other_stats = self.trade_start().1;
         self.stats = [FIRST_STAT, other_stats, other_stats];
         self.skills = (0..self.skill_slots())
             .map(|at| SkillPick {
                 skill: None,
-                value: if !new && at == OLD_EMPTY_SKILL {
-                    0
-                } else {
-                    skill
-                },
+                value: self.skill_start(at),
             })
             .collect();
+    }
+
+    /// What the stats of the Advanced page add up to.
+    pub fn stat_total(&self) -> i32 {
+        let others = self.stats.len() as i32 - 1;
+        FIRST_STAT + self.trade_start().1 * others
+    }
+
+    /// What the skills of the Advanced page add up to.
+    pub fn skill_total(&self) -> i32 {
+        (0..self.skill_slots()).map(|at| self.skill_start(at)).sum()
     }
 
     pub fn set_stat(&mut self, at: usize, value: i32) {
@@ -693,6 +916,14 @@ impl Creation {
         if let Some(pick) = self.skills.get_mut(at) {
             pick.skill = Some(skill);
         }
+    }
+
+    /// True when a skill row other than `row` has the skill.
+    pub fn skill_taken(&self, skill: u8, row: usize) -> bool {
+        self.skills
+            .iter()
+            .enumerate()
+            .any(|(at, pick)| at != row && pick.skill == Some(skill))
     }
 
     /// The skills the Advanced page offers, by name: the account's
@@ -719,33 +950,72 @@ impl Creation {
         menu
     }
 
-    /// Next on the Advanced page: each skill picked, and no skill twice.
-    pub fn trade_done(&mut self) {
+    /// Why the Advanced page cannot go on: each skill picked, no skill
+    /// twice, and the totals whole.
+    fn trade_blocker(&self) -> Option<Blocker> {
         let picked: Vec<u8> = self.skills.iter().filter_map(|pick| pick.skill).collect();
         let mut unique = picked.clone();
         unique.sort_unstable();
         unique.dedup();
-        if picked.len() < self.skills.len() || unique.len() < picked.len() {
-            self.message = Some(WORDS_UNIQUE_SKILLS);
+        let stats: i32 = self.stats.iter().sum();
+        let skills: i32 = self.skills.iter().map(|pick| pick.value).sum();
+        if picked.len() < self.skills.len() {
+            Some(Blocker::SkillsMissing(self.skills.len()))
+        } else if unique.len() < picked.len() {
+            Some(Blocker::SkillTwice)
+        } else if stats != self.stat_total() {
+            Some(Blocker::StatTotal(self.stat_total()))
+        } else if skills != self.skill_total() {
+            Some(Blocker::SkillTotal(self.skill_total()))
         } else {
-            self.step = Step::Town;
+            None
         }
+    }
+
+    /// Why the page that shows cannot go on, or None when it can.
+    pub fn blocker(&self) -> Option<Blocker> {
+        match self.step {
+            Step::Look => (!self.race_allowed(self.race)).then_some(Blocker::RaceLocked),
+            Step::Profession(_) => self.profession.is_none().then_some(Blocker::NoProfession),
+            Step::Trade => self.trade_blocker(),
+            Step::Town => self.towns().is_empty().then_some(Blocker::NoTown),
+            Step::Name => check_name(&self.name).map(Blocker::Name),
+        }
+    }
+
+    /// One page on, when the page allows it. True when the last page is
+    /// done and the character is ready to send.
+    pub fn next(&mut self) -> bool {
+        if self.blocker().is_some() {
+            return false;
+        }
+        self.step = match self.step {
+            Step::Look => Step::Profession(None),
+            Step::Profession(_) if self.is_advanced() => Step::Trade,
+            Step::Profession(_) | Step::Trade => Step::Town,
+            Step::Town => Step::Name,
+            Step::Name => return true,
+        };
+        false
     }
 
     /// One page back. True when the player left the creation.
     pub fn back(&mut self) -> bool {
-        let advanced = self
-            .profession
-            .as_ref()
-            .is_some_and(Profession::is_advanced);
         self.step = match &self.step {
             Step::Look => return true,
             Step::Profession(Some(_)) | Step::Trade => Step::Profession(None),
             Step::Profession(None) => Step::Look,
-            Step::Town if advanced => Step::Trade,
+            Step::Town if self.is_advanced() => Step::Trade,
             Step::Town => Step::Profession(None),
+            Step::Name => Step::Town,
         };
         false
+    }
+
+    /// Turns the preview figure one eighth to the right, or to the left.
+    pub fn turn(&mut self, right: bool) {
+        let step = if right { 1 } else { FACINGS - 1 };
+        self.turns = (self.turns + step) % FACINGS;
     }
 
     pub fn towns(&self) -> &[StartTown] {
@@ -819,39 +1089,22 @@ mod tests {
         Creation::new(version, CharacterChoices::default())
     }
 
-    fn files() -> CreationFiles {
-        let text = "Begin\nName Warrior\nTrueName \"warrior\"\nDesc 1\nTopLevel true\n\
-                    Type Profession\nSkill Tactics 30\nSkill Healing 30\nSkill Anatomy 30\n\
-                    Skill Swordsmanship 30\nStat Str 45\nStat Dex 35\nStat Int 10\nEnd\n\
-                    Begin\nName Ninja\nTrueName \"ninja\"\nDesc 7\nTopLevel true\n\
-                    Type Profession\nSkill Ninjitsu 30\nSkill Hiding 30\nEnd\n";
-        let professions = uoterm_nav::parse_professions(text);
-        let mut skill_names: Vec<String> = (0..58).map(|at| format!("Skill {at}")).collect();
-        skill_names[1] = "Anatomy".into();
-        skill_names[17] = "Healing".into();
-        skill_names[21] = "Hiding".into();
-        skill_names[27] = "Tactics".into();
-        skill_names[40] = "Swordsmanship".into();
-        skill_names[53] = "Ninjitsu".into();
-        CreationFiles {
-            professions,
-            skill_names,
-            town_texts: vec!["<b>Yew</b> is a town.".into()],
-            words: None,
-        }
-    }
-
     #[test]
     fn names_follow_the_classic_rules() {
         assert_eq!(check_name("Mara"), None);
         assert_eq!(check_name("Mara O'Dell"), None);
-        assert_eq!(check_name("M"), Some(WORDS_NAME_SHORT));
-        assert_eq!(check_name("Mara  Dell"), Some(WORDS_NAME_BAD));
-        assert_eq!(check_name(" Mara"), Some(WORDS_NAME_BAD));
-        assert_eq!(check_name("-Mara"), Some(WORDS_NAME_BAD));
-        assert_eq!(check_name("Mara2"), Some(WORDS_NAME_BAD));
-        assert_eq!(check_name("Lord Mara"), Some(WORDS_NAME_BAD));
-        assert_eq!(check_name("Abcdefghijklmnopq"), Some(WORDS_NAME_BAD));
+        assert_eq!(check_name(""), Some(NameFault::Empty));
+        assert_eq!(check_name("M"), Some(NameFault::Short));
+        assert_eq!(check_name("Mara  Dell"), Some(NameFault::MarksInARow));
+        assert_eq!(check_name(" Mara"), Some(NameFault::Edges));
+        assert_eq!(check_name("-Mara"), Some(NameFault::FirstMark));
+        assert_eq!(check_name("Mara2"), Some(NameFault::Letters));
+        assert_eq!(check_name("Lord Mara"), Some(NameFault::Title));
+        assert_eq!(check_name("Abcdefghijklmnopq"), Some(NameFault::Long));
+        assert_eq!(
+            NameFault::Short.words(),
+            "The name needs at least 2 letters."
+        );
     }
 
     #[test]
@@ -920,42 +1173,120 @@ mod tests {
 
     #[test]
     fn a_profession_takes_its_template_and_a_samurai_skill_needs_the_flag() {
-        let files = files();
+        let files = CreationFiles::sample();
         let mut new = creation(NEW);
-        new.name = "Mara".into();
-        new.look_done();
+        assert!(!new.next());
         assert_eq!(new.step, Step::Profession(None));
+        assert_eq!(new.blocker(), Some(Blocker::NoProfession));
         let top = files.professions.top();
+        assert!(new.profession_locked(top[1], &files));
         new.pick_profession(top[1], &files);
-        assert_eq!(new.message, Some(WORDS_NEEDS_SAMURAI_EMPIRE));
+        assert!(new.profession.is_none(), "a locked profession is not taken");
         new.pick_profession(top[0], &files);
-        assert_eq!(new.step, Step::Town);
+        assert_eq!(new.step, Step::Profession(None), "a pick stays on the page");
         assert_eq!(new.stats, [45, 10, 35]);
         assert_eq!(new.skills.len(), 4);
+        new.next();
+        assert_eq!(new.step, Step::Town);
         assert!(!new.back());
         assert_eq!(new.step, Step::Profession(None));
         let advanced = top.last().unwrap();
         new.pick_profession(advanced, &files);
+        assert_eq!(new.stats, [60, 15, 15]);
+        new.next();
         assert_eq!(new.step, Step::Trade);
-        new.trade_done();
-        assert_eq!(new.message, Some(WORDS_UNIQUE_SKILLS));
+        assert_eq!(new.blocker(), Some(Blocker::SkillsMissing(4)));
+        new.next();
+        assert_eq!(new.step, Step::Trade, "a blocked page stays");
         for (at, skill) in [1, 17, 21, 27].into_iter().enumerate() {
             new.set_skill(at, skill);
         }
         new.set_skill(3, 1);
-        new.message = None;
-        new.trade_done();
-        assert_eq!(new.message, Some(WORDS_UNIQUE_SKILLS));
+        assert!(new.skill_taken(1, 3) && !new.skill_taken(17, 1));
+        assert_eq!(new.blocker(), Some(Blocker::SkillTwice));
         new.set_skill(3, 27);
-        new.trade_done();
+        new.skills[0].value = 0;
+        assert_eq!(new.blocker(), Some(Blocker::SkillTotal(120)));
+        new.skills[0].value = 30;
+        new.stats[0] = 50;
+        assert_eq!(new.blocker(), Some(Blocker::StatTotal(90)));
+        new.stats[0] = 60;
+        assert_eq!(new.blocker(), None);
+        new.pick_profession(advanced, &files);
+        assert_eq!(
+            new.skills[3].skill,
+            Some(27),
+            "Advanced again keeps the picks"
+        );
+        new.next();
         assert_eq!(new.step, Step::Town);
         assert!(!new.back());
         assert_eq!(new.step, Step::Trade);
     }
 
     #[test]
+    fn each_page_tells_why_it_cannot_go_on_and_the_last_one_finishes() {
+        let mut new = creation(NEW);
+        assert_eq!(new.step.stage(), Stage::Look);
+        new.race = Race::Elf;
+        assert_eq!(new.blocker(), Some(Blocker::RaceLocked));
+        assert!(!new.next());
+        assert_eq!(new.step, Step::Look);
+        new.set_race(Race::Human);
+        new.step = Step::Town;
+        assert_eq!(new.blocker(), Some(Blocker::NoTown));
+        new.choices.towns = vec![StartTown::default()];
+        assert!(!new.next());
+        assert_eq!(
+            (new.step.clone(), new.step.stage()),
+            (Step::Name, Stage::Name)
+        );
+        assert_eq!(new.blocker(), Some(Blocker::Name(NameFault::Empty)));
+        assert_eq!(new.blocker().unwrap().words(), "Pick a name.");
+        assert!(!new.next());
+        new.name = "Mara".into();
+        assert!(new.next(), "the last page sends the character");
+        assert!(!new.back());
+        assert_eq!(new.step, Step::Town);
+        assert_eq!(Step::Trade.stage(), Stage::Skills);
+        assert_eq!(Blocker::StatTotal(90).words(), "Stats must add up to 90.");
+    }
+
+    #[test]
+    fn the_totals_follow_the_version_and_the_limits_are_told() {
+        assert_eq!(
+            (creation(NEW).stat_total(), creation(NEW).skill_total()),
+            (90, 120)
+        );
+        assert_eq!(
+            (creation(OLD).stat_total(), creation(OLD).skill_total()),
+            (80, 100)
+        );
+        assert_eq!(at_limit(&[60, 15, 15], STAT_RANGE), Some((0, Limit::Most)));
+        assert_eq!(at_limit(&[40, 40, 10], STAT_RANGE), Some((2, Limit::Least)));
+        assert_eq!(at_limit(&[30, 30, 30], STAT_RANGE), None);
+    }
+
+    #[test]
+    fn the_skill_search_finds_parts_of_names_and_the_figure_turns_round() {
+        let menu = vec![(1, "Anatomy".to_string()), (27, "Tactics".to_string())];
+        let found: Vec<u8> = find_skills(&menu, " tAc ")
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(found, vec![27]);
+        assert_eq!(find_skills(&menu, "").len(), 2);
+        let mut look = creation(NEW);
+        look.turn(false);
+        assert_eq!(look.turns, FACINGS - 1);
+        look.turn(true);
+        look.turn(true);
+        assert_eq!(look.turns, 1);
+    }
+
+    #[test]
     fn the_skill_menu_follows_the_expansions_and_the_race() {
-        let files = files();
+        let files = CreationFiles::sample();
         let mut look = creation(NEW);
         let skills = |look: &Creation| -> Vec<u8> {
             look.skill_menu(&files)
@@ -983,7 +1314,7 @@ mod tests {
 
     #[test]
     fn the_wish_carries_the_look_the_template_the_town_and_the_free_slot() {
-        let files = files();
+        let files = CreationFiles::sample();
         let towns = vec![
             StartTown {
                 index: 0,

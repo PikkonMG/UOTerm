@@ -132,7 +132,7 @@ const ARROW_LENGTH: f32 = 22.0;
 const ARROW_WIDTH: f32 = 7.0;
 const ARROW_EDGE_WIDTH: f32 = 1.5;
 /// A paperdoll faces the watcher.
-const DOLL_FACING: u8 = 4;
+pub const DOLL_FACING: u8 = 4;
 
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 3.0;
@@ -1613,7 +1613,18 @@ impl Scene {
         map: u8,
         look: &crate::view::WatchLook,
     ) -> Option<(egui::TextureId, Sprite)> {
-        self.standing_picture(map, look, Paint::outlined(theme::SELF_FIGURE))
+        self.standing_picture(map, look, DOLL_FACING, Paint::outlined(theme::SELF_FIGURE))
+    }
+
+    /// The picture of a mobile as he stands turned to `direction`, with no
+    /// ring round it, as the figure of a new character shows.
+    pub fn turned_picture(
+        &mut self,
+        map: u8,
+        look: &crate::view::WatchLook,
+        direction: u8,
+    ) -> Option<(egui::TextureId, Sprite)> {
+        self.standing_picture(map, look, direction, Paint::outlined(Color32::TRANSPARENT))
     }
 
     /// The picture of a creature as a shopkeeper shows it for sale:
@@ -1629,17 +1640,18 @@ impl Scene {
             hue,
             ..crate::view::WatchLook::default()
         };
-        self.standing_picture(map, &look, Paint::outlined(Color32::TRANSPARENT))
+        self.turned_picture(map, &look, DOLL_FACING)
     }
 
     fn standing_picture(
         &mut self,
         map: u8,
         look: &crate::view::WatchLook,
+        direction: u8,
         paint: Paint,
     ) -> Option<(egui::TextureId, Sprite)> {
         let facing = crate::view::WatchLook {
-            direction: DOLL_FACING,
+            direction,
             ..look.clone()
         };
         let pose = Pose {
