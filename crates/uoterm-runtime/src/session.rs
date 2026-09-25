@@ -101,11 +101,16 @@ const BARE_LAND_GRAPHIC: u16 = 0;
 /// Client, and would then speak packets UOTerm does not read.
 const NOT_A_CLASSIC_VERSION: &str =
     "UOTerm is a Classic Client; this client version is not a Classic Client one";
-const LOGIN_DEADLINE: Duration = Duration::from_secs(15);
+/// How long a login waits for the shard to answer one request.
+pub(crate) const LOGIN_DEADLINE: Duration = Duration::from_secs(15);
 const LOGIN_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const LOGIN_WORLD_DRAIN: Duration = Duration::from_millis(100);
 const LOGIN_CHAR_IN_WORLD: &str = "character already in world";
 const LOGIN_INCOMPLETE: &str = "login did not complete";
+const LOGIN_TIMEOUT: &str = "login timeout";
+const LOGIN_CLOSED: &str = "login closed";
+/// How a session ends whose first login failed; its caller has the reason.
+const FIRST_LOGIN_FAILED: &str = "the first login failed";
 /// Why a login that was asked to play no character ended.
 pub(crate) const LEFT_AT_CHARACTER_LIST: &str = "the login stopped at the character list";
 /// One shared budget covering the double-click, the lift, the drop and the
@@ -1154,10 +1159,14 @@ async fn run_session(
             pair
         }
         Err(e) => {
-            if let Some(tx) = login_tx.take() {
-                let _ = tx.send(Err(RuntimeError::Network(e.to_string())));
-            }
-            return Err(e);
+            // The caller of the first login gets the error itself, so its
+            // words reach the screen once, with no second prefix.
+            let Some(tx) = login_tx.take() else {
+                return Err(e);
+            };
+            tracing::error!(error = %e, "login failed");
+            let _ = tx.send(Err(e));
+            return Err(RuntimeError::Network(FIRST_LOGIN_FAILED.into()));
         }
     };
 
@@ -1390,9 +1399,74 @@ async fn send_queued(
     tcp_flush(writer).await
 }
 
+/// How far a login got, and what it asked of the shard last.
+#[derive(Debug, Default)]
+struct LoginProgress {
+    server_list: bool,
+    relay: bool,
+    chars: bool,
+    confirm: bool,
+    /// The words of the last refusal of the shard, for the screen.
+    refused: Option<String>,
+    /// The name of the new character the screen asked for, until the
+    /// shard answers with a list or puts him in the world.
+    making: Option<String>,
+}
+
+impl LoginProgress {
+    /// The error of a login that ended before the world. After a request
+    /// for a new character it says in plain words what became of him.
+    fn failed(&self, cause: RuntimeError) -> RuntimeError {
+        let Some(name) = self.making.as_deref() else {
+            return cause;
+        };
+        let RuntimeError::Network(words) = &cause else {
+            return cause;
+        };
+        let plain = if let Some(refusal) = &self.refused {
+            format!("the shard refused the new character {name}: {refusal}")
+        } else if words == LOGIN_CLOSED {
+            format!("the shard closed the link on the new character {name} and gave no reason")
+        } else if words == LOGIN_TIMEOUT || words.starts_with(LOGIN_INCOMPLETE) {
+            format!("the shard gave no answer to the new character {name}")
+        } else {
+            format!("the new character {name} did not enter the world: {words}")
+        };
+        RuntimeError::Network(plain)
+    }
+
+    fn incomplete(&self) -> RuntimeError {
+        RuntimeError::Network(format!(
+            "{LOGIN_INCOMPLETE} (server_list={} relay={} chars={} confirm={})",
+            self.server_list, self.relay, self.chars, self.confirm
+        ))
+    }
+}
+
+/// When the shard must have answered a request sent now. Each request
+/// starts the wait again, so the time a person spends on a screen before
+/// he sends one is never the shard's.
+fn answer_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + LOGIN_DEADLINE
+}
+
 async fn login(
     opts: &ConnectOptions,
     inner: &mut Inner,
+) -> Result<(
+    tokio::net::tcp::OwnedReadHalf,
+    tokio::net::tcp::OwnedWriteHalf,
+)> {
+    let mut progress = LoginProgress::default();
+    login_steps(opts, inner, &mut progress)
+        .await
+        .map_err(|cause| progress.failed(cause))
+}
+
+async fn login_steps(
+    opts: &ConnectOptions,
+    inner: &mut Inner,
+    progress: &mut LoginProgress,
 ) -> Result<(
     tokio::net::tcp::OwnedReadHalf,
     tokio::net::tcp::OwnedWriteHalf,
@@ -1412,23 +1486,17 @@ async fn login(
     )
     .await?;
     let mut buf = vec![0u8; READ_BUF_LEN];
-    let deadline = tokio::time::Instant::now() + LOGIN_DEADLINE;
-    let mut seen_server_list = false;
-    let mut seen_relay = false;
-    let mut seen_chars = false;
-    let mut seen_confirm = false;
-    // The words of the last refusal of the shard, for the screen.
-    let mut refused: Option<String> = None;
+    let mut deadline = answer_deadline();
     // What a new character may be. A list sent again after a character is
     // made or deleted keeps the towns of the first list.
     let mut choices = crate::config::CharacterChoices::default();
     while tokio::time::Instant::now() < deadline {
         let n = tokio::time::timeout(LOGIN_READ_TIMEOUT, reader.read(&mut buf))
             .await
-            .map_err(|_| RuntimeError::Network("login timeout".into()))?
+            .map_err(|_| RuntimeError::Network(LOGIN_TIMEOUT.into()))?
             .map_err(|e| RuntimeError::Network(e.to_string()))?;
         if n == 0 {
-            return Err(RuntimeError::Network("login closed".into()));
+            return Err(RuntimeError::Network(LOGIN_CLOSED.into()));
         }
         let packets = ingest_wire(inner, &mut buf[..n]);
         send_queued(inner, &mut writer).await?;
@@ -1438,9 +1506,10 @@ async fn login(
             }
             match msg {
                 Inbound::ServerList { servers, .. } => {
-                    seen_server_list = true;
+                    progress.server_list = true;
                     let idx = pick_shard(opts, servers).await;
                     write_sealed(inner, &mut writer, encode::select_server(idx)).await?;
+                    deadline = answer_deadline();
                 }
                 // The relay ends the login socket: one server family
                 // closes it, the other keeps it but reads the next bytes as
@@ -1448,7 +1517,7 @@ async fn login(
                 // client opens a new socket to the game server, seeds it
                 // with the relay key, and logs in there; that works on both.
                 Inbound::Relay { ip, port, auth_id } => {
-                    seen_relay = true;
+                    progress.relay = true;
                     let host = relay_host(opts, *ip);
                     tracing::info!(
                         relay_ip = ?ip,
@@ -1476,17 +1545,21 @@ async fn login(
                     .await?;
                     tcp_flush(&mut writer).await?;
                     inner.compressed = true;
+                    deadline = answer_deadline();
                 }
                 Inbound::CharacterRejected { reason } => {
                     // The shard refused to play, make or delete. The next
                     // character list carries the words to the screen.
-                    refused = Some(uoterm_protocol::character_refusal(*reason).to_string());
-                    tracing::warn!(reason, words = refused.as_deref(), "character refused");
+                    let words = uoterm_protocol::character_refusal(*reason).to_string();
+                    tracing::warn!(reason, words = words.as_str(), "character refused");
+                    progress.refused = Some(words);
                 }
                 Inbound::Features { flags } => choices.features = *flags,
                 Inbound::CharacterListUpdate { characters }
                 | Inbound::CharacterList { characters, .. } => {
-                    seen_chars = true;
+                    progress.chars = true;
+                    // A list is the shard's answer to a new character.
+                    progress.making = None;
                     if let Inbound::CharacterList {
                         towns,
                         account_flags,
@@ -1501,14 +1574,20 @@ async fn login(
                         }
                     }
                     // A screen may make or delete a character before it
-                    // plays one. Each of those brings a new list.
+                    // plays one. Each of those brings a new list, or puts
+                    // the new character in the world.
                     let asked = CharacterAsk {
                         characters,
-                        refused: refused.take(),
+                        refused: progress.refused.take(),
                         choices: &choices,
                     };
-                    if character_request(inner, &mut writer, opts, asked).await? {
+                    if let Some(sent) = character_request(inner, &mut writer, opts, asked).await? {
                         tcp_flush(&mut writer).await?;
+                        deadline = answer_deadline();
+                        if let crate::config::CharacterRequest::Make(wish) = sent {
+                            tracing::info!(name = wish.name.as_str(), "login new character");
+                            progress.making = Some(wish.name);
+                        }
                         continue;
                     }
                     let slot = pick_character(opts, characters)
@@ -1528,13 +1607,14 @@ async fn login(
                     )
                     .await?;
                     tcp_flush(&mut writer).await?;
+                    deadline = answer_deadline();
                     inner.world.write().self_state.name = name;
                 }
                 Inbound::VersionRequest => tracing::info!("login version request 0xBD"),
                 Inbound::LoginConfirm {
                     serial, x, y, z, ..
                 } => {
-                    seen_confirm = true;
+                    progress.confirm = true;
                     tracing::info!(serial = serial.0, x, y, z, "login confirm 0x1B");
                 }
                 Inbound::LoginComplete => {
@@ -1549,9 +1629,7 @@ async fn login(
             return Ok((reader, writer));
         }
     }
-    Err(RuntimeError::Network(format!(
-        "{LOGIN_INCOMPLETE} (server_list={seen_server_list} relay={seen_relay} chars={seen_chars} confirm={seen_confirm})"
-    )))
+    Err(progress.incomplete())
 }
 
 fn inbound_enters_world(msg: &Inbound) -> bool {
@@ -1690,17 +1768,17 @@ struct CharacterAsk<'a> {
     choices: &'a crate::config::CharacterChoices,
 }
 
-/// Asks the screen what to do with the characters of the account. True
-/// when it asked the shard to make or delete one, so the login waits for
-/// the new list. A login with no screen never asks.
+/// Asks the screen what to do with the characters of the account. The
+/// request when it asked the shard to make or delete one, so the login
+/// waits for the answer. A login with no screen never asks.
 async fn character_request(
     inner: &mut Inner,
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
     opts: &ConnectOptions,
     asked: CharacterAsk<'_>,
-) -> Result<bool> {
+) -> Result<Option<crate::config::CharacterRequest>> {
     let Some(picker) = opts.picker.as_ref() else {
-        return Ok(false);
+        return Ok(None);
     };
     let CharacterAsk {
         characters,
@@ -1713,17 +1791,17 @@ async fn character_request(
         .iter()
         .any(|slot| !slot.name.is_empty() && slot.name.eq_ignore_ascii_case(&opts.character));
     if named && refused.is_none() {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(request) = picker.characters(names, refused, choices.clone()).await else {
-        return Ok(false);
+        return Ok(None);
     };
-    let packet = match request {
-        crate::config::CharacterRequest::Play(_) => return Ok(false),
+    let packet = match &request {
+        crate::config::CharacterRequest::Play(_) => return Ok(None),
         crate::config::CharacterRequest::Leave => {
             return Err(RuntimeError::Usage(LEFT_AT_CHARACTER_LIST.into()))
         }
-        crate::config::CharacterRequest::Delete(slot) => encode::delete_character(slot as u32),
+        crate::config::CharacterRequest::Delete(slot) => encode::delete_character(*slot as u32),
         crate::config::CharacterRequest::Make(wish) => {
             let new = uoterm_protocol::NewCharacter {
                 name: &wish.name,
@@ -1748,7 +1826,7 @@ async fn character_request(
         }
     };
     write_sealed(inner, writer, packet).await?;
-    Ok(true)
+    Ok(Some(request))
 }
 
 /// The shard told the character to take one step. It goes on the wire as
@@ -5743,6 +5821,51 @@ mod relay_tests {
         })
         .expect("popup must abort login");
         assert!(err.to_string().contains(LOGIN_CHAR_IN_WORLD), "{err}");
+    }
+
+    /// A login that fails after the screen asked for a new character says
+    /// what became of him; any other failed login keeps its own words.
+    #[test]
+    fn a_failed_new_character_is_told_in_plain_words() {
+        const NAME: &str = "Lyra";
+        const REFUSAL: &str = "the shard could not carry out the request";
+        let network = |words: &str| RuntimeError::Network(words.into());
+        let told = |progress: &LoginProgress, cause| progress.failed(cause).to_string();
+
+        let playing = LoginProgress::default();
+        assert_eq!(
+            told(&playing, network(LOGIN_TIMEOUT)),
+            format!("network: {LOGIN_TIMEOUT}")
+        );
+
+        let mut making = LoginProgress {
+            making: Some(NAME.into()),
+            ..LoginProgress::default()
+        };
+        let no_answer = format!("network: the shard gave no answer to the new character {NAME}");
+        assert_eq!(told(&making, network(LOGIN_TIMEOUT)), no_answer);
+        assert_eq!(told(&making, making.incomplete()), no_answer);
+        assert_eq!(
+            told(&making, network(LOGIN_CLOSED)),
+            format!(
+                "network: the shard closed the link on the new character {NAME} and gave no reason"
+            )
+        );
+        assert_eq!(
+            told(&making, network(LOGIN_CHAR_IN_WORLD)),
+            format!(
+                "network: the new character {NAME} did not enter the world: {LOGIN_CHAR_IN_WORLD}"
+            )
+        );
+        assert_eq!(
+            told(&making, RuntimeError::LoginDenied(POPUP_CHAR_IN_WORLD)),
+            RuntimeError::LoginDenied(POPUP_CHAR_IN_WORLD).to_string()
+        );
+        making.refused = Some(REFUSAL.into());
+        assert_eq!(
+            told(&making, network(LOGIN_TIMEOUT)),
+            format!("network: the shard refused the new character {NAME}: {REFUSAL}")
+        );
     }
 
     #[test]

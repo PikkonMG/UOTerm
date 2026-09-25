@@ -989,7 +989,7 @@ impl ClientVersion {
         }
     }
 
-    /// From 7.0.16.0 a new character starts with three skills, not two,
+    /// From 7.0.16.0 a new character starts with four skills, not three,
     /// and the request goes as `0xF8`.
     pub fn has_three_starting_skills(&self) -> bool {
         (self.major, self.minor, self.revision) >= (7, 0, 16)

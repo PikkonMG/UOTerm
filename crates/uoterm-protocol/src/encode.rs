@@ -1343,7 +1343,7 @@ const CREATE_PATTERN: u32 = 0xEDED_EDED;
 const CREATE_PATTERN_END: u32 = 0xFFFF_FFFF;
 /// The block of zeroes between the profession and the sex.
 const CREATE_SPARE: usize = 15;
-/// From 7.0.16.0 a new character starts with three skills; before it, two.
+/// From 7.0.16.0 a new character starts with four skills; before it, three.
 const CREATE_SKILLS_NEW: usize = 4;
 const CREATE_SKILLS_OLD: usize = 3;
 const CREATE_MARK: u32 = 0x01;
@@ -1644,6 +1644,183 @@ mod tests {
                 &version.expansion_flags().to_be_bytes(),
                 "{version}"
             );
+        }
+    }
+
+    /// The lengths a shard of the ModernUO family registers for `0x00` and
+    /// `0xF8`. It drops a request of any other length.
+    const SHARD_CREATE_LEN_OLD: usize = 104;
+    const SHARD_CREATE_LEN_NEW: usize = 106;
+    /// The client version of the user's client file.
+    const CLIENT_7_0_117: ClientVersion = ClientVersion::new(7, 0, 117, 0);
+
+    /// What such a shard reads from a create request, field by field in its
+    /// own order, and how many bytes it read.
+    #[derive(Debug, PartialEq, Eq)]
+    struct ShardRead {
+        name: String,
+        flags: u32,
+        profession: u8,
+        race_and_sex: u8,
+        stats: [u8; 3],
+        skills: Vec<(u8, u8)>,
+        hues_and_hair: [u16; 5],
+        city: u8,
+        shirt_hue: u16,
+        pants_hue: u16,
+        read: usize,
+    }
+
+    fn shard_reads(packet: &[u8], four_skills: bool) -> ShardRead {
+        const ID: usize = 1;
+        const PATTERNS_AND_ZERO: usize = 9;
+        const NAME_SPARE: usize = 2;
+        const LOGIN_COUNT_AND_UNKNOWN: usize = 8;
+        const PROFESSION_SPARE: usize = 15;
+        const CITY_SPARE: usize = 1;
+        const SLOT_AND_ADDRESS: usize = 8;
+        let mut r = crate::buf::PacketReader::new(packet);
+        r.skip(ID + PATTERNS_AND_ZERO).unwrap();
+        let name = r.ascii_fixed(CHARACTER_NAME_LEN).unwrap();
+        r.skip(NAME_SPARE).unwrap();
+        let flags = r.u32().unwrap();
+        r.skip(LOGIN_COUNT_AND_UNKNOWN).unwrap();
+        let profession = r.u8().unwrap();
+        r.skip(PROFESSION_SPARE).unwrap();
+        let race_and_sex = r.u8().unwrap();
+        let stats = [r.u8().unwrap(), r.u8().unwrap(), r.u8().unwrap()];
+        let count = if four_skills {
+            CREATE_SKILLS_NEW
+        } else {
+            CREATE_SKILLS_OLD
+        };
+        let skills = (0..count)
+            .map(|_| (r.u8().unwrap(), r.u8().unwrap()))
+            .collect();
+        let hues_and_hair = [
+            r.u16().unwrap(),
+            r.u16().unwrap(),
+            r.u16().unwrap(),
+            r.u16().unwrap(),
+            r.u16().unwrap(),
+        ];
+        r.skip(CITY_SPARE).unwrap();
+        let city = r.u8().unwrap();
+        r.skip(SLOT_AND_ADDRESS).unwrap();
+        let shirt_hue = r.u16().unwrap();
+        let pants_hue = r.u16().unwrap();
+        ShardRead {
+            name,
+            flags,
+            profession,
+            race_and_sex,
+            stats,
+            skills,
+            hues_and_hair,
+            city,
+            shirt_hue,
+            pants_hue,
+            read: packet.len() - r.remaining(),
+        }
+    }
+
+    /// The race such a shard makes of the byte: from 7.0.0.0 a human is
+    /// two or three and each later race one more pair; before it the races
+    /// count from zero.
+    fn shard_race(race_and_sex: u8, version: ClientVersion) -> u8 {
+        const FIRST_RACE_PAIR: u8 = 4;
+        const SEXES: u8 = 2;
+        if !version.at_least(CREATE_RACE_FROM_ONE) {
+            return race_and_sex / SEXES;
+        }
+        if race_and_sex < FIRST_RACE_PAIR {
+            0
+        } else {
+            race_and_sex / SEXES - 1
+        }
+    }
+
+    /// The request the user's client of 7.0.117 sends, and the older one,
+    /// read as the shard reads them: every field in its place, every byte
+    /// read, and each race and sex as it was picked.
+    #[test]
+    fn a_create_request_reads_back_as_the_shard_reads_it() {
+        let mut new = NewCharacter {
+            name: "Lyra",
+            female: true,
+            race: 0,
+            strength: 50,
+            dexterity: 30,
+            intelligence: 10,
+            skills: vec![(40, 30), (27, 30), (17, 30), (5, 30)],
+            skin_hue: 0x83EA,
+            hair: 0x203B,
+            hair_hue: 0x044E,
+            beard: 0x2040,
+            beard_hue: 0x0455,
+            shirt_hue: 0x0009,
+            pants_hue: 0x0010,
+            profession: 2,
+            start_city: 3,
+            slot: 1,
+        };
+        let old_client = ClientVersion::new(6, 0, 1, 7);
+        for (version, id, len, four_skills) in [
+            (
+                CLIENT_7_0_117,
+                PKT_CREATE_CHARACTER_NEW,
+                SHARD_CREATE_LEN_NEW,
+                true,
+            ),
+            (
+                old_client,
+                PKT_CREATE_CHARACTER,
+                SHARD_CREATE_LEN_OLD,
+                false,
+            ),
+        ] {
+            let made = create_character(&new, version);
+            assert_eq!(made[0], id, "{version}");
+            assert_eq!(made.len(), len, "{version}");
+            let read = shard_reads(&made, four_skills);
+            let count = if four_skills {
+                CREATE_SKILLS_NEW
+            } else {
+                CREATE_SKILLS_OLD
+            };
+            assert_eq!(
+                read,
+                ShardRead {
+                    name: new.name.into(),
+                    flags: version.expansion_flags(),
+                    profession: new.profession,
+                    race_and_sex: race_and_sex(&new, version),
+                    stats: [new.strength, new.dexterity, new.intelligence],
+                    skills: new.skills[..count].to_vec(),
+                    hues_and_hair: [
+                        new.skin_hue,
+                        new.hair,
+                        new.hair_hue,
+                        new.beard,
+                        new.beard_hue
+                    ],
+                    city: new.start_city as u8,
+                    shirt_hue: new.shirt_hue,
+                    pants_hue: new.pants_hue,
+                    read: len,
+                },
+                "{version}"
+            );
+            for race in [0, 1] {
+                for female in [false, true] {
+                    new.race = race;
+                    new.female = female;
+                    let byte =
+                        shard_reads(&create_character(&new, version), four_skills).race_and_sex;
+                    assert_eq!(shard_race(byte, version), race, "{version}");
+                    assert_eq!(byte % 2 == 1, female, "{version}");
+                }
+            }
         }
     }
 

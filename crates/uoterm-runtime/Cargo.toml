@@ -29,3 +29,8 @@ indexmap.workspace = true
 hex.workspace = true
 axum.workspace = true
 base64 = "0.22"
+
+[dev-dependencies]
+# A test may stop the clock and let it jump: a person on a login screen
+# takes minutes the test does not wait for.
+tokio = { workspace = true, features = ["test-util"] }

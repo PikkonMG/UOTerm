@@ -42,6 +42,9 @@ const PLAY_CHAR_REST: usize = 72;
 /// create request after its id.
 const PLAY_NAME_AT: usize = 4;
 const CREATE_NAME_AT: usize = 9;
+/// The start town of a create request sits this far from its end, before
+/// the slot, the address and the two hues.
+const CREATE_CITY_FROM_END: usize = 13;
 const CHARACTER_NAME_LEN: usize = 30;
 /// A delete request after its id: the password field, the slot, the address.
 const DELETE_REST: usize = 38;
@@ -52,6 +55,21 @@ const REFUSED_NAME_TAKEN: u8 = 5;
 /// A logout request after its id, and the answer that grants it.
 const LOGOUT_REST: usize = 1;
 const LOGOUT_GRANTED: u8 = 1;
+/// The one start town the mock lists, as a shard lists Britain.
+const MOCK_TOWN_COUNT: u8 = 1;
+const MOCK_TOWN_INDEX: u8 = 0;
+const MOCK_TOWN_NAME: &str = "Britain";
+const MOCK_TOWN_BUILDING: &str = "Sweet Dreams Inn";
+const MOCK_TOWN_X: u32 = 1496;
+const MOCK_TOWN_Y: u32 = 1628;
+const MOCK_TOWN_Z: u32 = 10;
+const MOCK_TOWN_MAP: u32 = 0;
+const MOCK_TOWN_WORDS: u32 = 1_075_074;
+/// The words of a start town: this long before 7.0.13.0 and from it, when
+/// a town also says where it is and ends in a spare word.
+const TOWN_WORDS_OLD: usize = 31;
+const TOWN_WORDS_PLACED: usize = 32;
+const TOWN_SPARE: u32 = 0;
 /// How many character slots the mock account has.
 const MOCK_SLOTS: usize = 5;
 const MOVE_REST: usize = 6;
@@ -467,8 +485,18 @@ async fn handle_client_io(
     let mut characters: Vec<String> = std::iter::once(MOCK_CHAR.to_string())
         .chain(std::iter::repeat_n(String::new(), MOCK_SLOTS - 1))
         .collect();
-    send_h(tx, huff, &mut wire, &table, &character_list(&characters))?;
+    let version = osi.unwrap_or(era.default_version());
+    send_h(
+        tx,
+        huff,
+        &mut wire,
+        &table,
+        &character_list(&characters, version),
+    )?;
     wire.packet.clear();
+    // The new character that enters the world once the client says its
+    // version.
+    let mut entering: Option<String> = None;
     loop {
         // The packet before this one has been read and answered.
         heard.file(&mut wire);
@@ -492,6 +520,12 @@ async fn handle_client_io(
                 };
                 let mut rest = vec![0u8; len.saturating_sub(1)];
                 read_unwrapped(reader, &mut wire, &mut rest).await?;
+                // A shard with no such start town closes the link and says
+                // nothing to the client.
+                let city = rest[rest.len() - CREATE_CITY_FROM_END];
+                if city >= MOCK_TOWN_COUNT {
+                    return Ok(());
+                }
                 let name = name_at(&rest, CREATE_NAME_AT);
                 let taken = characters
                     .iter()
@@ -515,10 +549,11 @@ async fn handle_client_io(
                     continue;
                 };
                 characters[slot] = name.clone();
-                // A shard puts a new character straight into the world.
-                for packet in enter_world(era, &name) {
-                    send_h(tx, huff, &mut wire, &table, &packet)?;
-                }
+                // A shard puts a new character straight into the world, and
+                // sends no list. It asks the client version first and holds
+                // every packet of the world until the client answers.
+                send_h(tx, huff, &mut wire, &table, &version_request())?;
+                entering = Some(name);
             }
             PKT_DELETE_CHARACTER => {
                 let mut rest = [0u8; DELETE_REST];
@@ -542,6 +577,11 @@ async fn handle_client_io(
             }
             PKT_CLIENT_VERSION => {
                 eat_var(reader, &mut wire).await?;
+                if let Some(name) = entering.take() {
+                    for packet in enter_world(era, &name) {
+                        send_h(tx, huff, &mut wire, &table, &packet)?;
+                    }
+                }
             }
             PKT_MOVE => {
                 let mut rest = [0u8; MOVE_REST];
@@ -734,6 +774,13 @@ fn enter_world(era: Era, name: &str) -> Vec<Vec<u8>> {
     ]
 }
 
+/// `0xBD` with no body: the shard asks the client version.
+fn version_request() -> Vec<u8> {
+    PacketWriter::with_variable(PKT_CLIENT_VERSION)
+        .finish_variable()
+        .expect("mock packet length fits in u16")
+}
+
 /// Each character's slot: its name, and the password field no shard fills.
 fn write_slots(w: &mut PacketWriter, characters: &[String]) {
     w.u8(characters.len() as u8);
@@ -743,12 +790,30 @@ fn write_slots(w: &mut PacketWriter, characters: &[String]) {
     }
 }
 
-fn character_list(characters: &[String]) -> Vec<u8> {
-    const NO_START_TOWNS: u8 = 0;
+/// The start town, in the form the client version reads.
+fn write_town(w: &mut PacketWriter, version: ClientVersion) {
+    w.u8(MOCK_TOWN_INDEX);
+    if !version.has_placed_start_towns() {
+        w.ascii_fixed(MOCK_TOWN_NAME, TOWN_WORDS_OLD)
+            .ascii_fixed(MOCK_TOWN_BUILDING, TOWN_WORDS_OLD);
+        return;
+    }
+    w.ascii_fixed(MOCK_TOWN_NAME, TOWN_WORDS_PLACED)
+        .ascii_fixed(MOCK_TOWN_BUILDING, TOWN_WORDS_PLACED)
+        .u32(MOCK_TOWN_X)
+        .u32(MOCK_TOWN_Y)
+        .u32(MOCK_TOWN_Z)
+        .u32(MOCK_TOWN_MAP)
+        .u32(MOCK_TOWN_WORDS)
+        .u32(TOWN_SPARE);
+}
+
+fn character_list(characters: &[String], version: ClientVersion) -> Vec<u8> {
     let mut w = PacketWriter::with_variable(PKT_CHARACTER_LIST);
     write_slots(&mut w, characters);
-    w.u8(NO_START_TOWNS)
-        .u32(ACCOUNT_FLAG_CONTEXT_MENUS | ACCOUNT_FLAG_PROPERTY_LISTS);
+    w.u8(MOCK_TOWN_COUNT);
+    write_town(&mut w, version);
+    w.u32(ACCOUNT_FLAG_CONTEXT_MENUS | ACCOUNT_FLAG_PROPERTY_LISTS);
     w.finish_variable().expect("mock packet length fits in u16")
 }
 
@@ -1011,9 +1076,10 @@ mod tests {
             server_list(),
             relay(SAMPLE_PORT),
             features(era),
-            character_list(&[MOCK_CHAR.into()]),
+            character_list(&[MOCK_CHAR.into()], era.default_version()),
             character_list_update(&[MOCK_CHAR.into()]),
             vec![PKT_CHARACTER_REJECTED, REFUSED_NAME_TAKEN],
+            version_request(),
             login_confirm(),
             draw_player(),
             status(MOCK_CHAR),
@@ -1373,6 +1439,135 @@ mod tests {
                 encode::chat_open(""),
                 encode::query_skills(me),
             ],
+        );
+    }
+
+    /// The client version the user's client file says.
+    const CLIENT_7_0_117: ClientVersion = ClientVersion::new(7, 0, 117, 0);
+    const NEWCOMER: &str = "Lyra";
+    /// A person on the character screens takes this many times as long as
+    /// a login waits for an answer of the shard.
+    const SCREEN_SLOWER: u32 = 4;
+    const SCREEN_TIME: Duration = crate::session::LOGIN_DEADLINE.saturating_mul(SCREEN_SLOWER);
+    const FIRST: usize = 0;
+
+    /// A new character to the rules of a client from 7.0.16: 90 in stats
+    /// and four skills.
+    fn newcomer() -> crate::config::NewCharacterWish {
+        crate::config::NewCharacterWish {
+            name: NEWCOMER.into(),
+            female: true,
+            race: 0,
+            strength: 50,
+            dexterity: 30,
+            intelligence: 10,
+            skills: vec![(40, 30), (27, 30), (17, 30), (5, 30)],
+            skin_hue: 0x83EA,
+            hair: 0x203B,
+            hair_hue: 0x044E,
+            beard: 0,
+            beard_hue: 0,
+            shirt_hue: 0x0009,
+            pants_hue: 0x0010,
+            profession: 0,
+            start_city: 0,
+            slot: 1,
+        }
+    }
+
+    /// A login screen whose person makes one new character, slowly, and
+    /// picks the first of every other list.
+    fn slow_maker(wish: crate::config::NewCharacterWish) -> crate::config::LoginPicker {
+        use crate::config::{CharacterRequest, LoginQuestion};
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut wish = Some(wish);
+            while let Some(question) = rx.recv().await {
+                match question {
+                    LoginQuestion::Characters { reply, .. } => {
+                        tokio::time::sleep(SCREEN_TIME).await;
+                        let request = match wish.take() {
+                            Some(wish) => CharacterRequest::Make(Box::new(wish)),
+                            None => CharacterRequest::Leave,
+                        };
+                        let _ = reply.send(request);
+                    }
+                    LoginQuestion::Shard { reply, .. } | LoginQuestion::Character { reply, .. } => {
+                        let _ = reply.send(FIRST);
+                    }
+                }
+            }
+        });
+        crate::config::LoginPicker(tx)
+    }
+
+    /// The user's login: an encrypted client of 7.0.117 makes a character
+    /// on the screens, which takes him far longer than the shard takes to
+    /// answer. The shard asks the version and logs the new character
+    /// straight in, and the client answers the question at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_character_made_slowly_on_the_screens_enters_the_world() {
+        let server = MockServer::start_osi(CLIENT_7_0_117).await.unwrap();
+        let mut opts = connect_opts(&server, crate::config::EncryptionMode::Osi);
+        opts.version = CLIENT_7_0_117;
+        opts.era = Era::Modern;
+        opts.character.clear();
+        opts.picker = Some(slow_maker(newcomer()));
+        let handle = Runtime::new(2)
+            .connect(opts)
+            .await
+            .expect("the new character enters the world");
+        assert!(handle.world.read().logged_in);
+        assert_eq!(handle.world.read().self_state.name, NEWCOMER);
+        let heard = server.heard();
+        assert_eq!(heard[0][0], PKT_CREATE_CHARACTER_NEW);
+        assert_eq!(
+            heard[1],
+            encode::client_version(CLIENT_7_0_117),
+            "the version question is answered first"
+        );
+        handle.shutdown().await;
+    }
+
+    /// The start town a client of each form reads back from the list.
+    #[test]
+    fn the_list_names_its_start_town_in_the_form_of_the_version() {
+        for version in [ClientVersion::T2A, CLIENT_7_0_117] {
+            let list = character_list(&[MOCK_CHAR.into()], version);
+            let parsed = uoterm_protocol::decode::parse_with_version(&list, version).unwrap();
+            let uoterm_protocol::Inbound::CharacterList { towns, .. } = parsed else {
+                panic!("{version}: no character list");
+            };
+            assert_eq!(towns.len(), usize::from(MOCK_TOWN_COUNT), "{version}");
+            assert_eq!(towns[0].name, MOCK_TOWN_NAME, "{version}");
+            assert_eq!(
+                towns[0].place.is_some(),
+                version.has_placed_start_towns(),
+                "{version}"
+            );
+        }
+    }
+
+    /// A shard with no such start town closes the link on a new character
+    /// and gives no reason. The screen says so in plain words, once.
+    #[tokio::test(start_paused = true)]
+    async fn a_new_character_the_shard_drops_is_told_in_plain_words() {
+        let server = MockServer::start_osi(CLIENT_7_0_117).await.unwrap();
+        let mut opts = connect_opts(&server, crate::config::EncryptionMode::Osi);
+        opts.version = CLIENT_7_0_117;
+        opts.era = Era::Modern;
+        opts.character.clear();
+        let mut wish = newcomer();
+        wish.start_city = u16::from(MOCK_TOWN_COUNT);
+        opts.picker = Some(slow_maker(wish));
+        let Err(refused) = Runtime::new(2).connect(opts).await else {
+            panic!("a character in no town entered the world");
+        };
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "network: the shard closed the link on the new character {NEWCOMER} and gave no reason"
+            )
         );
     }
 }
