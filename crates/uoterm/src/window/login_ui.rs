@@ -12,6 +12,10 @@
 //! the login and is written nowhere. A saved login can name an environment
 //! variable that holds the password; then the field can stay empty.
 //!
+//! "Save login" keeps the form, but never the password, as a saved login:
+//! the host, the port, the account, the shard, the character and the
+//! encryption. A click on a saved login puts it back in the form.
+//!
 //! With a TypeSafe key, one field takes plain words,
 //! such as "my miner on the test shard". Jev picks the saved login, and
 //! later the character, from the lists. Jev sees the words and the names of
@@ -30,22 +34,54 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use uoterm_protocol::ClientVersion;
-use uoterm_runtime::{CharacterChoices, CharacterRequest, LoginPicker, LoginQuestion};
+use uoterm_runtime::{
+    CharacterChoices, CharacterRequest, EncryptionMode, LoginPicker, LoginQuestion, Profile,
+};
 
-const PANEL_SIZE: Vec2 = Vec2::new(760.0, 470.0);
-const LIST_WIDTH: f32 = 230.0;
+const PANEL_SIZE: Vec2 = Vec2::new(880.0, 560.0);
+const LIST_WIDTH: f32 = 300.0;
 const ROW: f32 = 34.0;
+/// A saved login takes two lines: its name with its buttons, and the
+/// account and server under them.
+const SAVED_ROW: f32 = 58.0;
+const SAVED_NAME_TOP: f32 = 9.0;
+const SAVED_DETAIL_TOP: f32 = 35.0;
+const SMALL_BUTTON_TOP: f32 = 5.0;
+const SMALL_BUTTON: Vec2 = Vec2::new(54.0, 24.0);
 const FIELD_ROW: f32 = 32.0;
-const LABEL_WIDTH: f32 = 110.0;
+const LABEL_WIDTH: f32 = 130.0;
 const GAP: f32 = 10.0;
 const TITLE_ROW: f32 = 44.0;
 const FIELD_RADIUS: u8 = 6;
-const LIST_ROWS: usize = 9;
 const REPAINT_WHILE_WAITING_MS: u64 = 100;
+const SAVE_BUTTON_WIDTH: f32 = 76.0;
 
 const WORDS_TITLE: &str = "UOTerm";
 const WORDS_SAVED: &str = "Saved logins";
-const WORDS_NO_SAVED: &str = "No saved logins. Put one in the profiles folder.";
+const WORDS_NO_SAVED: &str = "No saved logins yet. Fill in the form and press Save login.";
+const WORDS_SAVE_LOGIN: &str = "Save login";
+const WORDS_SAVE: &str = "Save";
+const WORDS_CANCEL: &str = "Cancel";
+const WORDS_SAVE_AS: &str = "Save as";
+const WORDS_PASSWORD_VARIABLE: &str = "Password variable";
+const HINT_PASSWORD_VARIABLE: &str = "Optional: a variable that holds the password";
+const WORDS_NOT_SAVED: &str = "The password is not saved.";
+const WORDS_EDIT: &str = "Edit";
+const WORDS_YES: &str = "Yes";
+const WORDS_NO: &str = "No";
+const WORDS_DELETE_SAVED: &str = "Delete this saved login?";
+const WORDS_EDITING: &str = "Change the fields, then press Save.";
+const WORDS_SAVED_AS: &str = "Saved as";
+const WORDS_ENCRYPTION: &str = "Encryption";
+/// The encryption choices of the form, as `play --encryption` names them.
+const ENCRYPTIONS: [(EncryptionMode, &str); 2] = [
+    (EncryptionMode::None, "None (most free shards)"),
+    (EncryptionMode::Osi, "OSI (encrypted shards)"),
+];
+pub const NEEDS_ACCOUNT: &str = "Type the account.";
+pub const NEEDS_HOST: &str = "Type the host.";
+pub const BAD_PORT: &str = "The port must be a number from 1 to 65535.";
+const NEEDS_NAME: &str = "Type a name for the saved login.";
 const WORDS_CONNECT: &str = "Connect";
 const WORDS_CONNECTING: &str = "Connecting...";
 const WORDS_PICK_SHARD: &str = "Pick a shard";
@@ -64,6 +100,7 @@ const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_K
 const HINT_PASSWORD_ENV: &str = "From the environment when empty";
 const LABELS: [&str; 6] = ["Host", "Port", "Account", "Password", "Shard", "Character"];
 const PASSWORD_FIELD: usize = 3;
+const PASSWORD_ID: &str = "login-password";
 const FIND_WIDTH: f32 = 70.0;
 const DELETE_WIDTH: f32 = 70.0;
 
@@ -76,30 +113,141 @@ pub struct LoginForm {
     pub password: String,
     pub shard: String,
     pub character: String,
+    pub encryption: EncryptionMode,
     /// The saved login the form came from. It gives the era, the version
     /// and the environment variable of the password.
     pub profile: Option<String>,
+}
+
+impl LoginForm {
+    /// The account, trimmed, or words for the human when there is none.
+    pub fn account_name(&self) -> Result<&str, &'static str> {
+        Some(self.account.trim())
+            .filter(|account| !account.is_empty())
+            .ok_or(NEEDS_ACCOUNT)
+    }
+
+    pub fn host_name(&self) -> Result<&str, &'static str> {
+        Some(self.host.trim())
+            .filter(|host| !host.is_empty())
+            .ok_or(NEEDS_HOST)
+    }
+
+    pub fn port_number(&self) -> Result<u16, &'static str> {
+        self.port
+            .trim()
+            .parse()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or(BAD_PORT)
+    }
+
+    /// The form as a saved login. The password is never in it; a variable
+    /// that holds the password is, when `password_env` names one.
+    fn as_profile(&self, password_env: &str) -> Result<Profile, &'static str> {
+        let named = |words: &str| Some(words.trim().to_string()).filter(|w| !w.is_empty());
+        Ok(Profile {
+            account: self.account_name()?.to_string(),
+            host: Some(self.host_name()?.to_string()),
+            port: Some(self.port_number()?),
+            encryption: Some(self.encryption),
+            password_env: named(password_env),
+            character: self.character.trim().to_string(),
+            shard: named(&self.shard),
+            version: None,
+            era: None,
+        })
+    }
+
+    /// The form with a saved login put in. The password is typed again:
+    /// it belongs to the account.
+    pub fn filled_from(&self, saved: &SavedLogin) -> LoginForm {
+        LoginForm {
+            host: saved.host.clone(),
+            port: saved.port.to_string(),
+            account: saved.account.clone(),
+            password: String::new(),
+            shard: saved.shard.clone(),
+            character: saved.character.clone(),
+            encryption: saved.encryption,
+            profile: Some(saved.name.clone()),
+        }
+    }
 }
 
 /// One saved login: its name and what it puts in the form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedLogin {
     pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub encryption: EncryptionMode,
     pub account: String,
     pub character: String,
     pub shard: String,
+    /// The variable that holds the password, when the saved login names
+    /// one.
+    pub password_env: Option<String>,
     /// The client version the login speaks, which a new character follows.
     pub version: ClientVersion,
+    /// The screen wrote it, so the screen may delete it. An older one of
+    /// the profiles folder is only read.
+    pub deletable: bool,
 }
 
 impl SavedLogin {
     /// The words Jev reads to tell one saved login from another.
     fn words(&self) -> String {
-        format!(
-            "{}: character {}, shard {}",
-            self.name, self.character, self.shard
-        )
+        let mut words = self.name.clone();
+        for (what, value) in [("character", &self.character), ("shard", &self.shard)] {
+            if !value.is_empty() {
+                words.push_str(&format!(", {what} {value}"));
+            }
+        }
+        words.push_str(&format!(", server {}", self.server()));
+        words
     }
+
+    fn server(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+
+    /// The line under the name in the list.
+    fn detail(&self) -> String {
+        format!("{} @ {}", self.account, self.server())
+    }
+}
+
+/// What the login screen asks to change in the saved logins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeepLogin {
+    /// Save the login under this name, over one of the same name.
+    Save {
+        name: String,
+        profile: Profile,
+    },
+    Delete(String),
+}
+
+/// Changes the saved logins. Gives the list after, or words for the human.
+pub type KeepLogins = Arc<dyn Fn(KeepLogin) -> Result<Vec<SavedLogin>, String> + Send + Sync>;
+
+/// The question of "Save login": the name, and a variable that holds the
+/// password, which may stay empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SaveAsk {
+    name: String,
+    password_env: String,
+}
+
+/// What a click in the list of saved logins asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SavedAct {
+    Pick(usize),
+    Edit(usize),
+    Delete(usize),
+    /// The answer to "Delete this saved login?".
+    Sure(bool),
 }
 
 /// Logs in with the form. It blocks until the character is in the world, so
@@ -163,6 +311,15 @@ struct LoginFlow {
     form: LoginForm,
     saved: Vec<SavedLogin>,
     connect: Connect,
+    keep: KeepLogins,
+    /// The saved login the human edits: a save goes over it.
+    editing: Option<String>,
+    /// The question of "Save login", while it is asked.
+    saving: Option<SaveAsk>,
+    /// The saved login waiting to be deleted once the human says yes.
+    forget_asked: Option<String>,
+    /// The next frame puts the cursor in the password field.
+    focus_password: bool,
     stage: Stage,
     questions: Option<tokio::sync::mpsc::UnboundedReceiver<LoginQuestion>>,
     done: Option<Receiver<Result<Link, String>>>,
@@ -186,18 +343,6 @@ struct LoginFlow {
     version: ClientVersion,
 }
 
-/// The form with a saved login put in. The host, the port and the password
-/// stay as they are.
-fn with_saved(form: &LoginForm, saved: &SavedLogin) -> LoginForm {
-    LoginForm {
-        account: saved.account.clone(),
-        character: saved.character.clone(),
-        shard: saved.shard.clone(),
-        profile: Some(saved.name.clone()),
-        ..form.clone()
-    }
-}
-
 impl LoginFlow {
     fn new(start: LoginStart) -> Self {
         let (jev_asks, jev_answers) = mpsc::channel();
@@ -205,6 +350,11 @@ impl LoginFlow {
             form: start.form,
             saved: start.saved,
             connect: start.connect,
+            keep: start.keep,
+            editing: None,
+            saving: None,
+            forget_asked: None,
+            focus_password: false,
             stage: Stage::Form,
             questions: None,
             done: None,
@@ -229,6 +379,110 @@ impl LoginFlow {
             .as_deref()
             .and_then(|name| self.saved.iter().find(|saved| saved.name == name))
             .map_or(self.version, |saved| saved.version)
+    }
+
+    /// Puts a saved login in the form, and the cursor in the password
+    /// field.
+    fn pick_saved(&mut self, place: usize) {
+        if let Some(saved) = self.saved.get(place) {
+            self.form = self.form.filled_from(saved);
+            self.focus_password = true;
+            self.editing = None;
+            self.saving = None;
+            self.note = None;
+        }
+    }
+
+    /// Puts a saved login in the form, to change it and save it over.
+    fn edit_saved(&mut self, place: usize) {
+        self.pick_saved(place);
+        self.focus_password = false;
+        self.editing = self.saved.get(place).map(|saved| saved.name.clone());
+        self.begin_save();
+        self.note = Some((WORDS_EDITING.into(), false));
+    }
+
+    /// Asks the name to save the form under: the one edited, else
+    /// account@host.
+    fn begin_save(&mut self) {
+        let edited = self
+            .editing
+            .as_deref()
+            .and_then(|name| self.saved.iter().find(|saved| saved.name == name));
+        self.saving = Some(SaveAsk {
+            name: edited.map_or_else(
+                || format!("{}@{}", self.form.account.trim(), self.form.host.trim()),
+                |saved| saved.name.clone(),
+            ),
+            password_env: edited
+                .and_then(|saved| saved.password_env.clone())
+                .unwrap_or_default(),
+        });
+    }
+
+    /// Saves the form under the name asked. The password is not saved.
+    fn finish_save(&mut self) {
+        let Some(ask) = self.saving.as_ref() else {
+            return;
+        };
+        let name = ask.name.trim().to_string();
+        if name.is_empty() {
+            self.note = Some((NEEDS_NAME.into(), true));
+            return;
+        }
+        let profile = match self.form.as_profile(&ask.password_env) {
+            Ok(profile) => profile,
+            Err(words) => {
+                self.note = Some((words.into(), true));
+                return;
+            }
+        };
+        match (self.keep)(KeepLogin::Save {
+            name: name.clone(),
+            profile,
+        }) {
+            Ok(saved) => {
+                self.saved = saved;
+                self.saving = None;
+                self.editing = None;
+                self.note = Some((format!("{WORDS_SAVED_AS} {name}."), false));
+                self.form.profile = Some(name);
+            }
+            Err(words) => self.note = Some((words, true)),
+        }
+    }
+
+    /// Deletes the saved login asked about, when the answer is yes.
+    fn answer_forget(&mut self, sure: bool) {
+        let Some(name) = self.forget_asked.take().filter(|_| sure) else {
+            return;
+        };
+        match (self.keep)(KeepLogin::Delete(name.clone())) {
+            Ok(saved) => {
+                self.saved = saved;
+                let still_saved = self.saved.iter().any(|saved| saved.name == name);
+                if !still_saved && self.form.profile.as_deref() == Some(name.as_str()) {
+                    self.form.profile = None;
+                }
+                if self.editing.as_deref() == Some(name.as_str()) {
+                    self.editing = None;
+                    self.saving = None;
+                }
+                self.note = None;
+            }
+            Err(words) => self.note = Some((words, true)),
+        }
+    }
+
+    fn act_on_saved(&mut self, act: SavedAct) {
+        match act {
+            SavedAct::Pick(place) => self.pick_saved(place),
+            SavedAct::Edit(place) => self.edit_saved(place),
+            SavedAct::Delete(place) => {
+                self.forget_asked = self.saved.get(place).map(|saved| saved.name.clone());
+            }
+            SavedAct::Sure(sure) => self.answer_forget(sure),
+        }
     }
 
     /// Starts the login with the form.
@@ -284,12 +538,7 @@ impl LoginFlow {
             match (asked, answer) {
                 (_, Err(words)) => self.note = Some((words, true)),
                 (_, Ok(None)) => self.note = Some((WORDS_NOT_SURE.into(), true)),
-                (Asked::SavedLogin, Ok(Some(place))) => {
-                    if let Some(saved) = self.saved.get(place) {
-                        self.form = with_saved(&self.form, saved);
-                        self.note = None;
-                    }
-                }
+                (Asked::SavedLogin, Ok(Some(place))) => self.pick_saved(place),
                 (Asked::Pick, Ok(Some(place))) => {
                     self.note = None;
                     self.answer_pick(place);
@@ -436,6 +685,7 @@ pub struct LoginStart<'a> {
     pub form: LoginForm,
     pub saved: Vec<SavedLogin>,
     pub connect: Connect,
+    pub keep: KeepLogins,
     /// Log in with the form as it is, with no click on Connect.
     pub connect_at_once: bool,
     /// The client version of a login with no saved login.
@@ -606,42 +856,17 @@ fn character_stage(flow: &mut LoginFlow, ui: &mut egui::Ui, body: Rect, names: &
 
 fn form_stage(flow: &mut LoginFlow, ui: &mut egui::Ui, body: Rect, ctx: &egui::Context) {
     let list = Rect::from_min_size(body.min, Vec2::new(LIST_WIDTH, body.height()));
-    ui.painter().text(
-        list.left_top(),
-        Align2::LEFT_TOP,
-        WORDS_SAVED,
-        text_font(theme::SIZE_BODY),
-        theme::TEXT_DIM,
-    );
-    if flow.saved.is_empty() {
-        let mut job = egui::text::LayoutJob::single_section(
-            WORDS_NO_SAVED.into(),
-            egui::TextFormat::simple(text_font(theme::SIZE_SMALL), theme::TEXT_FAINT),
-        );
-        job.wrap.max_width = LIST_WIDTH;
-        let galley = ui.painter().layout_job(job);
-        ui.painter().galley(
-            list.left_top() + Vec2::new(0.0, ROW),
-            galley,
-            theme::TEXT_FAINT,
-        );
-    }
-    let mut picked = None;
-    for (i, saved) in flow.saved.iter().take(LIST_ROWS).enumerate() {
-        let row = Rect::from_min_size(
-            list.left_top() + Vec2::new(0.0, ROW * (i + 1) as f32),
-            Vec2::new(LIST_WIDTH, ROW - theme::ROW_GAP / 2.0),
-        );
-        let chosen = flow.form.profile.as_deref() == Some(saved.name.as_str());
-        if list_row(ui, row, ("saved-login", i), &saved.name, chosen) {
-            picked = Some(i);
-        }
-    }
-    if let Some(saved) = picked.and_then(|i| flow.saved.get(i)) {
-        flow.form = with_saved(&flow.form, saved);
+    if let Some(act) = saved_list(flow, ui, list) {
+        flow.act_on_saved(act);
     }
     let right = Rect::from_min_max(Pos2::new(list.right() + GAP * 2.0, body.top()), body.max);
     let margin = egui::Margin::symmetric(8, 6);
+    let row_at = |place: usize| {
+        Rect::from_min_size(
+            right.left_top() + Vec2::new(0.0, place as f32 * (FIELD_ROW + GAP)),
+            Vec2::new(right.width(), FIELD_ROW),
+        )
+    };
     let fields: [&mut String; 6] = [
         &mut flow.form.host,
         &mut flow.form.port,
@@ -652,36 +877,40 @@ fn form_stage(flow: &mut LoginFlow, ui: &mut egui::Ui, body: Rect, ctx: &egui::C
     ];
     let mut enter = false;
     for (i, (label, value)) in LABELS.into_iter().zip(fields).enumerate() {
-        let row = Rect::from_min_size(
-            right.left_top() + Vec2::new(0.0, i as f32 * (FIELD_ROW + GAP)),
-            Vec2::new(right.width(), FIELD_ROW),
-        );
-        ui.painter().text(
-            row.left_center(),
-            Align2::LEFT_CENTER,
-            label,
-            text_font(theme::SIZE_BODY),
-            theme::TEXT_DIM,
-        );
-        let field = Rect::from_min_max(
-            Pos2::new(row.left() + LABEL_WIDTH, row.top()),
-            row.right_bottom(),
-        );
-        ui.painter()
-            .rect_filled(field, CornerRadius::same(FIELD_RADIUS), theme::TRACK);
+        let field = labeled_field(ui, row_at(i), label);
         let secret = i == PASSWORD_FIELD;
-        let edit = egui::TextEdit::singleline(value)
-            .frame(false)
-            .margin(margin)
+        let mut edit = plain_edit(value, margin)
             .password(secret)
-            .hint_text(if secret { HINT_PASSWORD_ENV } else { "" })
-            .font(text_font(theme::SIZE_BODY))
-            .text_color(theme::TEXT);
+            .hint_text(if secret { HINT_PASSWORD_ENV } else { "" });
+        if secret {
+            edit = edit.id(Id::new(PASSWORD_ID));
+        }
         let response = ui.put(field, edit);
+        if secret && std::mem::take(&mut flow.focus_password) {
+            response.request_focus();
+        }
         enter |= response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
     }
+    let encryption_row = row_at(LABELS.len());
+    let choices = labeled_field(ui, encryption_row, WORDS_ENCRYPTION);
+    let choice_width = (choices.width() - GAP) / ENCRYPTIONS.len() as f32;
+    for (i, (mode, words)) in ENCRYPTIONS.into_iter().enumerate() {
+        let choice = Rect::from_min_size(
+            choices.left_top() + Vec2::new(i as f32 * (choice_width + GAP), 0.0),
+            Vec2::new(choice_width, choices.height()),
+        );
+        if list_row(
+            ui,
+            choice,
+            ("login-encryption", i),
+            words,
+            flow.form.encryption == mode,
+        ) {
+            flow.form.encryption = mode;
+        }
+    }
     let wish_row = Rect::from_min_size(
-        right.left_top() + Vec2::new(0.0, LABELS.len() as f32 * (FIELD_ROW + GAP) + GAP),
+        encryption_row.left_bottom() + Vec2::new(0.0, GAP * 2.0),
         Vec2::new(right.width(), FIELD_ROW),
     );
     let jev_on = flow.jev_key.is_some();
@@ -693,12 +922,11 @@ fn form_stage(flow: &mut LoginFlow, ui: &mut egui::Ui, body: Rect, ctx: &egui::C
         .rect_filled(wish_field, CornerRadius::same(FIELD_RADIUS), theme::TRACK);
     let wish = ui.put(
         wish_field,
-        egui::TextEdit::singleline(&mut flow.wish)
-            .frame(false)
-            .margin(margin)
-            .hint_text(if jev_on { HINT_WISH } else { HINT_WISH_OFF })
-            .font(text_font(theme::SIZE_BODY))
-            .text_color(theme::TEXT),
+        plain_edit(&mut flow.wish, margin).hint_text(if jev_on {
+            HINT_WISH
+        } else {
+            HINT_WISH_OFF
+        }),
     );
     let (_, find) = theme::button(
         ui,
@@ -715,15 +943,215 @@ fn form_stage(flow: &mut LoginFlow, ui: &mut egui::Ui, body: Rect, ctx: &egui::C
         let options = flow.saved.iter().map(SavedLogin::words).collect();
         flow.ask_jev(Asked::SavedLogin, orders::ASK_PROFILE, options, ctx);
     }
-    let (_, connect) = theme::button(
+    let save_top = wish_row.bottom() + GAP * 2.0;
+    save_question(flow, ui, right, save_top, margin);
+    let bottom = Pos2::new(right.left() + LABEL_WIDTH, right.bottom() - FIELD_ROW);
+    let (connect_rect, connect) = theme::button(ui, bottom, WORDS_CONNECT, theme::GOAL);
+    let (save_rect, save) = theme::button(
         ui,
-        Pos2::new(right.left() + LABEL_WIDTH, right.bottom() - FIELD_ROW),
-        WORDS_CONNECT,
-        theme::GOAL,
+        Pos2::new(connect_rect.right() + GAP, bottom.y),
+        WORDS_SAVE_LOGIN,
+        theme::TEXT,
     );
+    ui.painter().text(
+        Pos2::new(save_rect.right() + GAP, save_rect.center().y),
+        Align2::LEFT_CENTER,
+        WORDS_NOT_SAVED,
+        text_font(theme::SIZE_SMALL),
+        theme::TEXT_FAINT,
+    );
+    if save {
+        flow.begin_save();
+    }
     if connect || enter {
         flow.start(ctx);
     }
+}
+
+/// A label on the left of a row, and the field of the row after it.
+/// Gives the field.
+fn labeled_field(ui: &egui::Ui, row: Rect, label: &str) -> Rect {
+    ui.painter().text(
+        row.left_center(),
+        Align2::LEFT_CENTER,
+        label,
+        text_font(theme::SIZE_BODY),
+        theme::TEXT_DIM,
+    );
+    let field = Rect::from_min_max(
+        Pos2::new(row.left() + LABEL_WIDTH, row.top()),
+        row.right_bottom(),
+    );
+    ui.painter()
+        .rect_filled(field, CornerRadius::same(FIELD_RADIUS), theme::TRACK);
+    field
+}
+
+/// The question of "Save login", while it is asked: the name and the
+/// variable that holds the password, with Save and Cancel.
+fn save_question(
+    flow: &mut LoginFlow,
+    ui: &mut egui::Ui,
+    right: Rect,
+    top: f32,
+    margin: egui::Margin,
+) {
+    let Some(ask) = flow.saving.as_mut() else {
+        return;
+    };
+    let name_row = Rect::from_min_size(
+        Pos2::new(right.left(), top),
+        Vec2::new(right.width() - (SAVE_BUTTON_WIDTH + GAP) * 2.0, FIELD_ROW),
+    );
+    let variable_row = name_row.translate(Vec2::new(0.0, FIELD_ROW + GAP));
+    let variable_row = variable_row.with_max_x(right.right());
+    let name_field = labeled_field(ui, name_row, WORDS_SAVE_AS);
+    let name = ui.put(name_field, plain_edit(&mut ask.name, margin));
+    let variable_field = labeled_field(ui, variable_row, WORDS_PASSWORD_VARIABLE);
+    ui.put(
+        variable_field,
+        plain_edit(&mut ask.password_env, margin).hint_text(HINT_PASSWORD_VARIABLE),
+    );
+    let button_at = |place: f32| {
+        Rect::from_min_size(
+            Pos2::new(
+                name_row.right() + GAP + place * (SAVE_BUTTON_WIDTH + GAP),
+                top,
+            ),
+            Vec2::new(SAVE_BUTTON_WIDTH, FIELD_ROW),
+        )
+    };
+    let save = theme::segment(ui, button_at(0.0), WORDS_SAVE, theme::GOAL);
+    let cancel = theme::segment(ui, button_at(1.0), WORDS_CANCEL, theme::TEXT);
+    if save || (name.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))) {
+        flow.finish_save();
+    } else if cancel {
+        flow.saving = None;
+        flow.editing = None;
+        flow.note = None;
+    }
+}
+
+/// A one-line field with no frame, in the words of the form.
+fn plain_edit(value: &mut String, margin: egui::Margin) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(value)
+        .frame(false)
+        .margin(margin)
+        .font(text_font(theme::SIZE_BODY))
+        .text_color(theme::TEXT)
+}
+
+/// The saved logins, each with its name, "account @ host:port", and Edit
+/// and Delete. Gives what a click asked.
+fn saved_list(flow: &LoginFlow, ui: &mut egui::Ui, list: Rect) -> Option<SavedAct> {
+    ui.painter().text(
+        list.left_top(),
+        Align2::LEFT_TOP,
+        WORDS_SAVED,
+        text_font(theme::SIZE_BODY),
+        theme::TEXT_DIM,
+    );
+    let rows = Rect::from_min_max(list.left_top() + Vec2::new(0.0, ROW), list.max);
+    if flow.saved.is_empty() {
+        let mut job = egui::text::LayoutJob::single_section(
+            WORDS_NO_SAVED.into(),
+            egui::TextFormat::simple(text_font(theme::SIZE_SMALL), theme::TEXT_FAINT),
+        );
+        job.wrap.max_width = LIST_WIDTH;
+        let galley = ui.painter().layout_job(job);
+        ui.painter()
+            .galley(rows.left_top(), galley, theme::TEXT_FAINT);
+        return None;
+    }
+    let mut act = None;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rows), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("saved-logins")
+            .max_height(rows.height())
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                for (i, saved) in flow.saved.iter().enumerate() {
+                    let (spot, _) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), SAVED_ROW),
+                        Sense::hover(),
+                    );
+                    let row = spot.with_max_y(spot.bottom() - theme::ROW_GAP / 2.0);
+                    let chosen = flow.form.profile.as_deref() == Some(saved.name.as_str());
+                    let asked = flow.forget_asked.as_deref() == Some(saved.name.as_str());
+                    act = saved_row(ui, row, i, saved, chosen, asked).or(act);
+                }
+            });
+    });
+    act
+}
+
+/// One saved login of the list. Gives what a click on it asked.
+fn saved_row(
+    ui: &egui::Ui,
+    row: Rect,
+    place: usize,
+    saved: &SavedLogin,
+    chosen: bool,
+    asked: bool,
+) -> Option<SavedAct> {
+    let response = ui.interact(row, Id::new(("saved-login", place)), Sense::click());
+    let fill = if chosen || response.hovered() {
+        theme::BUTTON_HOVER
+    } else {
+        theme::BUTTON
+    };
+    ui.painter()
+        .rect_filled(row, CornerRadius::same(FIELD_RADIUS), fill);
+    let buttons: &[(&str, SavedAct, egui::Color32)] = match (asked, saved.deletable) {
+        (true, _) => &[
+            (WORDS_YES, SavedAct::Sure(true), theme::ALARM),
+            (WORDS_NO, SavedAct::Sure(false), theme::TEXT),
+        ],
+        (false, true) => &[
+            (WORDS_EDIT, SavedAct::Edit(place), theme::TEXT),
+            (WORDS_DELETE, SavedAct::Delete(place), theme::ALARM),
+        ],
+        (false, false) => &[(WORDS_EDIT, SavedAct::Edit(place), theme::TEXT)],
+    };
+    let buttons_left = row.right() - (SMALL_BUTTON.x + GAP) * buttons.len() as f32;
+    let name_room = Rect::from_min_max(row.min, Pos2::new(buttons_left, row.bottom()));
+    let painter = ui.painter().with_clip_rect(row.intersect(ui.clip_rect()));
+    painter
+        .with_clip_rect(name_room.intersect(ui.clip_rect()))
+        .text(
+            row.left_top() + Vec2::new(GAP, SAVED_NAME_TOP),
+            Align2::LEFT_TOP,
+            &saved.name,
+            text_font(theme::SIZE_BODY),
+            theme::TEXT,
+        );
+    let (detail, detail_color) = if asked {
+        (WORDS_DELETE_SAVED.to_string(), theme::ALARM)
+    } else {
+        (saved.detail(), theme::TEXT_DIM)
+    };
+    painter.text(
+        row.left_top() + Vec2::new(GAP, SAVED_DETAIL_TOP),
+        Align2::LEFT_TOP,
+        detail,
+        text_font(theme::SIZE_SMALL),
+        detail_color,
+    );
+    let mut act = response.clicked().then_some(SavedAct::Pick(place));
+    for (i, (words, asks, color)) in buttons.iter().enumerate() {
+        let button = Rect::from_min_size(
+            Pos2::new(
+                buttons_left + i as f32 * (SMALL_BUTTON.x + GAP),
+                row.top() + SMALL_BUTTON_TOP,
+            ),
+            SMALL_BUTTON,
+        );
+        let key = Id::new(("saved-login-button", place, *words));
+        if theme::segment_keyed(ui, button, key, words, *color) {
+            act = Some(*asks);
+        }
+    }
+    act
 }
 
 /// One row of a list. True when it was clicked.
@@ -776,57 +1204,113 @@ fn pick_list(ui: &egui::Ui, body: Rect, title: &str, names: &[String]) -> Option
 
 #[cfg(test)]
 mod tests {
+    use super::super::modern::testing::{click, Canvas, ENV_PICTURES, SCREEN};
     use super::*;
+    use std::sync::Mutex;
 
     const OLD_VERSION: ClientVersion = ClientVersion::new(5, 0, 9, 1);
+    const TYPED_PASSWORD: &str = "hunter2-typed";
 
     fn cedric() -> SavedLogin {
         SavedLogin {
             name: "cedric".into(),
+            host: "play.example.com".into(),
+            port: 2594,
+            encryption: EncryptionMode::Osi,
             account: "acct2".into(),
             character: "Cedric".into(),
             shard: "Britannia".into(),
+            password_env: Some("CEDRIC_PASS".into()),
             version: OLD_VERSION,
+            deletable: true,
         }
     }
 
-    fn flow() -> LoginFlow {
-        let connect: Connect = Arc::new(|_, _| Err("not used".into()));
-        LoginFlow::new(LoginStart {
-            form: LoginForm::default(),
-            saved: vec![cedric()],
-            connect,
-            connect_at_once: false,
-            version: ClientVersion::MODERN,
-            uopath: None,
+    /// A keeper of saved logins in memory, which also tells what it was
+    /// asked.
+    fn keeper(asked: Arc<Mutex<Vec<KeepLogin>>>) -> KeepLogins {
+        let saved = Mutex::new(vec![cedric()]);
+        Arc::new(move |ask: KeepLogin| {
+            let mut saved = saved.lock().unwrap();
+            match &ask {
+                KeepLogin::Save { name, profile } => {
+                    saved.retain(|known| &known.name != name);
+                    saved.push(SavedLogin {
+                        name: name.clone(),
+                        account: profile.account.clone(),
+                        ..cedric()
+                    });
+                }
+                KeepLogin::Delete(name) => saved.retain(|known| &known.name != name),
+            }
+            asked.lock().unwrap().push(ask);
+            Ok(saved.clone())
         })
     }
 
-    #[test]
-    fn a_saved_login_fills_the_form_and_keeps_the_host_and_the_password() {
-        let typed = LoginForm {
-            host: "play.example".into(),
-            port: "2593".into(),
-            password: "typed".into(),
-            ..LoginForm::default()
-        };
-        let form = with_saved(&typed, &cedric());
-        assert_eq!(
-            (form.account.as_str(), form.character.as_str()),
-            ("acct2", "Cedric")
-        );
-        assert_eq!(form.profile.as_deref(), Some("cedric"));
-        assert_eq!(
-            (form.host.as_str(), form.password.as_str()),
-            ("play.example", "typed")
-        );
+    fn flow_asked() -> (LoginFlow, Arc<Mutex<Vec<KeepLogin>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let connect: Connect = Arc::new(|_, _| Err("not used".into()));
+        let flow = LoginFlow::new(LoginStart {
+            form: LoginForm::default(),
+            saved: vec![cedric()],
+            connect,
+            keep: keeper(Arc::clone(&asked)),
+            connect_at_once: false,
+            version: ClientVersion::MODERN,
+            uopath: None,
+        });
+        (flow, asked)
+    }
+
+    fn flow() -> LoginFlow {
+        flow_asked().0
     }
 
     #[test]
-    fn jev_reads_the_name_the_character_and_the_shard_and_never_the_account() {
+    fn a_saved_login_fills_the_form_and_the_password_is_typed_again() {
+        let mut screen = flow();
+        screen.form = LoginForm {
+            host: "other.example".into(),
+            port: "2593".into(),
+            password: TYPED_PASSWORD.into(),
+            ..LoginForm::default()
+        };
+        screen.pick_saved(0);
+        let form = &screen.form;
+        assert_eq!(
+            (
+                form.host.as_str(),
+                form.port.as_str(),
+                form.account.as_str()
+            ),
+            ("play.example.com", "2594", "acct2")
+        );
+        assert_eq!(
+            (form.shard.as_str(), form.character.as_str()),
+            ("Britannia", "Cedric")
+        );
+        assert_eq!(form.encryption, EncryptionMode::Osi);
+        assert_eq!(form.profile.as_deref(), Some("cedric"));
+        assert!(form.password.is_empty(), "the password is typed again");
+        assert!(screen.focus_password, "the cursor goes to the password");
+    }
+
+    #[test]
+    fn jev_reads_the_name_the_character_the_shard_and_the_server_and_never_the_account() {
         let words = cedric().words();
-        assert_eq!(words, "cedric: character Cedric, shard Britannia");
+        assert_eq!(
+            words,
+            "cedric, character Cedric, shard Britannia, server play.example.com:2594"
+        );
         assert!(!words.contains("acct2"));
+        let bare = SavedLogin {
+            character: String::new(),
+            shard: String::new(),
+            ..cedric()
+        };
+        assert_eq!(bare.words(), "cedric, server play.example.com:2594");
+        assert_eq!(cedric().detail(), "acct2 @ play.example.com:2594");
     }
 
     #[test]
@@ -851,6 +1335,107 @@ mod tests {
             .unwrap();
         screen.take_jev_answers();
         assert_eq!(screen.form.character, "Cedric");
+        assert_eq!(screen.form.host, "play.example.com");
+    }
+
+    #[test]
+    fn saving_asks_a_name_and_never_saves_the_password() {
+        let (mut screen, asked) = flow_asked();
+        screen.form = LoginForm {
+            host: " 10.0.0.7 ".into(),
+            port: "2593".into(),
+            account: "mara".into(),
+            password: TYPED_PASSWORD.into(),
+            encryption: EncryptionMode::Osi,
+            ..LoginForm::default()
+        };
+        screen.begin_save();
+        let ask = screen.saving.clone().unwrap();
+        assert_eq!(ask.name, "mara@10.0.0.7");
+        assert!(ask.password_env.is_empty(), "no variable unless typed");
+        screen.finish_save();
+        let asked = asked.lock().unwrap();
+        let [KeepLogin::Save { name, profile }] = asked.as_slice() else {
+            panic!("one save: {asked:?}");
+        };
+        assert_eq!(name, "mara@10.0.0.7");
+        assert_eq!(profile.host.as_deref(), Some("10.0.0.7"));
+        assert_eq!(profile.port, Some(2593));
+        assert_eq!(profile.encryption, Some(EncryptionMode::Osi));
+        assert_eq!(profile.password_env, None);
+        let text = toml::to_string(profile).unwrap();
+        assert!(!text.contains(TYPED_PASSWORD), "{text}");
+        assert!(!text.contains("password"), "{text}");
+        assert!(screen.saving.is_none());
+        assert_eq!(screen.form.profile.as_deref(), Some("mara@10.0.0.7"));
+        assert!(screen
+            .saved
+            .iter()
+            .any(|saved| saved.name == "mara@10.0.0.7"));
+        assert_eq!(screen.form.password, TYPED_PASSWORD, "the form keeps it");
+    }
+
+    #[test]
+    fn a_login_with_no_account_or_a_bad_port_is_not_saved() {
+        let (mut screen, asked) = flow_asked();
+        screen.form.host = "10.0.0.7".into();
+        screen.form.port = "2593".into();
+        screen.begin_save();
+        screen.finish_save();
+        assert_eq!(screen.note, Some((NEEDS_ACCOUNT.to_string(), true)));
+        screen.form.account = "mara".into();
+        screen.form.port = "none".into();
+        screen.finish_save();
+        assert_eq!(screen.note, Some((BAD_PORT.to_string(), true)));
+        screen.form.port = "2593".into();
+        screen.saving.as_mut().unwrap().name = "  ".into();
+        screen.finish_save();
+        assert_eq!(screen.note, Some((NEEDS_NAME.to_string(), true)));
+        assert!(asked.lock().unwrap().is_empty());
+        assert!(screen.saving.is_some(), "the question stays");
+    }
+
+    #[test]
+    fn edit_saves_over_the_saved_login_with_its_password_variable() {
+        let (mut screen, asked) = flow_asked();
+        screen.edit_saved(0);
+        assert_eq!(screen.editing.as_deref(), Some("cedric"));
+        assert!(!screen.focus_password);
+        let ask = screen.saving.clone().unwrap();
+        assert_eq!(
+            (ask.name.as_str(), ask.password_env.as_str()),
+            ("cedric", "CEDRIC_PASS")
+        );
+        screen.form.character = "Mara".into();
+        screen.finish_save();
+        let asked = asked.lock().unwrap();
+        let [KeepLogin::Save { name, profile }] = asked.as_slice() else {
+            panic!("one save: {asked:?}");
+        };
+        assert_eq!(name, "cedric");
+        assert_eq!(profile.character, "Mara");
+        assert_eq!(profile.password_env.as_deref(), Some("CEDRIC_PASS"));
+        assert!(screen.editing.is_none());
+    }
+
+    #[test]
+    fn delete_asks_first() {
+        let (mut screen, asked) = flow_asked();
+        screen.pick_saved(0);
+        screen.act_on_saved(SavedAct::Delete(0));
+        assert_eq!(screen.forget_asked.as_deref(), Some("cedric"));
+        assert!(asked.lock().unwrap().is_empty(), "nothing yet");
+        screen.act_on_saved(SavedAct::Sure(false));
+        assert!(screen.forget_asked.is_none());
+        assert!(asked.lock().unwrap().is_empty(), "no is no");
+        screen.act_on_saved(SavedAct::Delete(0));
+        screen.act_on_saved(SavedAct::Sure(true));
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            [KeepLogin::Delete("cedric".into())]
+        );
+        assert!(screen.saved.is_empty());
+        assert_eq!(screen.form.profile, None);
     }
 
     #[test]
@@ -882,7 +1467,7 @@ mod tests {
     fn a_saved_login_gives_the_version_a_new_character_follows() {
         let mut screen = flow();
         assert_eq!(screen.version(), ClientVersion::MODERN);
-        screen.form = with_saved(&screen.form, &cedric());
+        screen.pick_saved(0);
         assert_eq!(screen.version(), OLD_VERSION);
     }
 
@@ -909,5 +1494,99 @@ mod tests {
         };
         assert_eq!((wish.name.as_str(), wish.slot), ("Mara", 4));
         assert!(screen.creating.is_none());
+    }
+
+    /// Draws the login screen once for each list of events. Gives the
+    /// output of the last frame.
+    fn draw_frames(
+        login: &mut LoginUi,
+        ctx: &egui::Context,
+        canvas: &mut Canvas,
+        frames: &[Vec<egui::Event>],
+    ) -> egui::FullOutput {
+        let screen = Rect::from_min_size(Pos2::ZERO, SCREEN);
+        let mut last = None;
+        for events in frames {
+            let input = egui::RawInput {
+                events: events.clone(),
+                screen_rect: Some(screen),
+                ..egui::RawInput::default()
+            };
+            let output = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    assert!(login.draw(ui, screen).is_none());
+                });
+            });
+            canvas.take(&output.textures_delta);
+            last = Some(output);
+        }
+        last.expect("at least one frame")
+    }
+
+    /// The first saved login of the list on the screen, as the form stage
+    /// lays it out.
+    fn first_saved_row() -> Rect {
+        let panel =
+            Rect::from_center_size(Rect::from_min_size(Pos2::ZERO, SCREEN).center(), PANEL_SIZE);
+        let inner = panel.shrink(theme::PANEL_PAD * 1.5);
+        Rect::from_min_size(
+            inner.left_top() + Vec2::new(0.0, TITLE_ROW + ROW),
+            Vec2::new(LIST_WIDTH, SAVED_ROW - theme::ROW_GAP / 2.0),
+        )
+    }
+
+    #[test]
+    fn a_click_on_a_saved_login_fills_the_form_and_delete_asks_yes_or_no() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let connect: Connect = Arc::new(|_, _| Err("not used".into()));
+        let mut login = LoginUi::new(LoginStart {
+            form: LoginForm::default(),
+            saved: vec![cedric()],
+            connect,
+            keep: keeper(Arc::clone(&asked)),
+            connect_at_once: false,
+            version: ClientVersion::MODERN,
+            uopath: None,
+        });
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut canvas = Canvas::default();
+        let row = first_saved_row();
+        let first_button = Pos2::new(
+            row.right() - (SMALL_BUTTON.x + GAP) * 2.0 + SMALL_BUTTON.x / 2.0,
+            row.top() + SMALL_BUTTON_TOP + SMALL_BUTTON.y / 2.0,
+        );
+        let second_button = first_button + Vec2::new(SMALL_BUTTON.x + GAP, 0.0);
+        let mut frames = vec![Vec::new()];
+        frames.extend(click(row.left_center() + Vec2::new(GAP * 2.0, 0.0)));
+        draw_frames(&mut login, &ctx, &mut canvas, &frames);
+        assert_eq!(login.flow.form.account, "acct2");
+        assert_eq!(login.flow.form.encryption, EncryptionMode::Osi);
+        draw_frames(&mut login, &ctx, &mut canvas, &click(second_button));
+        assert_eq!(login.flow.forget_asked.as_deref(), Some("cedric"));
+        let mut frames = click(first_button);
+        frames.push(Vec::new());
+        let asking = draw_frames(&mut login, &ctx, &mut canvas, &[Vec::new()]);
+        save_picture(&ctx, &canvas, asking, "login-delete.png");
+        draw_frames(&mut login, &ctx, &mut canvas, &frames);
+        assert_eq!(
+            asked.lock().unwrap().as_slice(),
+            [KeepLogin::Delete("cedric".into())]
+        );
+        assert!(login.flow.saved.is_empty());
+        // The question of Save, as Edit opens it.
+        login.flow.saved = vec![cedric()];
+        login.flow.edit_saved(0);
+        let saving = draw_frames(&mut login, &ctx, &mut canvas, &[Vec::new()]);
+        save_picture(&ctx, &canvas, saving, "login-save.png");
+    }
+
+    /// Saves the picture of a frame when the test is asked for pictures.
+    fn save_picture(ctx: &egui::Context, canvas: &Canvas, output: egui::FullOutput, name: &str) {
+        if let Some(out) = std::env::var_os(ENV_PICTURES) {
+            let picture = canvas.paint(ctx, output, SCREEN);
+            let path = std::path::PathBuf::from(out).join(name);
+            super::super::save_png(&path, &picture).expect("the picture is saved");
+        }
     }
 }

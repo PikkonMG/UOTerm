@@ -19,7 +19,7 @@ use uoterm_protocol::StartTown;
 use crate::config::{
     client_version, era_from_str, load_app_config, load_profile, parse_encryption_mode,
     password_from_env, profile_path, AppConfig, CharacterRequest, ConnectOptions, LoginPicker,
-    LoginQuestion, NewCharacterWish,
+    LoginQuestion, LoginTarget, NewCharacterWish,
 };
 use crate::manager::Runtime;
 use crate::tools::ToolResult;
@@ -34,7 +34,7 @@ pub const TOOL_CHARACTER_DELETE: &str = "character_delete";
 pub const RUNTIME_TOOLS: [(&str, &str, &str); 5] = [
     (
         TOOL_CONNECT,
-        "Logs in and starts a session: the character named (character), or the first of the account. Credentials: profile (a saved login of the profiles folder), or account and password_env (the name of an environment variable that holds the password; a password is never an argument). host, port, shard, era, version, encryption and proxy default to the saved login and the config file. Answers session_id.",
+        "Logs in and starts a session: the character named (character), or the first of the account. Credentials: profile (a saved login: the logins folder of the config folder, or the profiles folder), or account and password_env (the name of an environment variable that holds the password; a password is never an argument). host, port, shard, era, version, encryption and proxy default to the saved login and the config file. Answers session_id.",
         "the shard is up",
     ),
     (
@@ -260,7 +260,7 @@ fn login_options(cfg: &AppConfig, args: &Value) -> std::result::Result<ConnectOp
         .ok_or(NEEDS_ACCOUNT)?;
     let password_env = text(args, ARG_PASSWORD_ENV)
         .map(str::to_string)
-        .or_else(|| from_profile(|p| Some(p.password_env.as_str())))
+        .or_else(|| from_profile(|p| p.password_env.as_deref()))
         .ok_or(NEEDS_ACCOUNT)?;
     let password = password_from_env(&password_env).map_err(|e| e.to_string())?;
     let era_name = text(args, ARG_ERA)
@@ -282,13 +282,20 @@ fn login_options(cfg: &AppConfig, args: &Value) -> std::result::Result<ConnectOp
         Some(url) => Some(url.parse()?),
         None => cfg.proxy.clone(),
     };
-    let encryption = match text(args, ARG_ENCRYPTION) {
-        Some(mode) => parse_encryption_mode(mode).map_err(|e| e.to_string())?,
-        None => Default::default(),
-    };
+    let encryption = text(args, ARG_ENCRYPTION)
+        .map(parse_encryption_mode)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let target = LoginTarget::choose(
+        text(args, ARG_HOST).map(str::to_string),
+        number(args, ARG_PORT),
+        encryption,
+        profile.as_ref(),
+        cfg,
+    );
     Ok(ConnectOptions {
-        host: text(args, ARG_HOST).map_or_else(|| cfg.host.clone(), str::to_string),
-        port: number(args, ARG_PORT).unwrap_or(cfg.port),
+        host: target.host,
+        port: target.port,
         account,
         password,
         shard: text(args, ARG_SHARD)
@@ -302,7 +309,7 @@ fn login_options(cfg: &AppConfig, args: &Value) -> std::result::Result<ConnectOp
         era,
         uopath: cfg.uopath.clone(),
         markers: cfg.markers.clone(),
-        encryption,
+        encryption: target.encryption,
         obey_shard_rules: cfg.obey_shard_rules,
         answer_when_named: cfg.answer_when_named,
         play_along: cfg.play_along,

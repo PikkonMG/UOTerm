@@ -122,7 +122,15 @@ Copy `uoterm.toml.example` to `uoterm.toml` if you want a local API bind. `conne
 
 `proxy` (default none): reach the shard through a proxy, `socks5://host:port` or `http://host:port` (HTTP CONNECT), with `user:password@` before the host when the proxy asks for a login. The login and the game link both go through it. `POST /v1/sessions` takes the same field. The log shows the proxy with its password left out.
 
-Account profile: copy `profiles/example.toml`. Extra `profiles/*.toml` files are gitignored. `--profile` supplies account, character, password env, and shard.
+### Saved logins
+
+A saved login holds the host (an IP address or a DNS name), the port, the account, and when you want them the shard, the character, the encryption (`none` or `osi`), the era, the client version and `password_env`, the name of an environment variable that holds the password. A saved login never holds the password.
+
+- The login screen of `uoterm play` saves logins in the `logins` folder of the UOTerm config folder (Linux `~/.config/uoterm/logins`, Windows `%APPDATA%\uoterm\logins`), one `<name>.toml` for each. A name with marks that a file name may not hold is kept with `%` and two hex digits for each such mark.
+- Older saved logins in the `profiles` folder of the working directory are read too, never written. When a name is in both folders, the one of the config folder is used.
+- `connect --profile`, `play --profile`, `populate` and the runtime tools (`profile`) all find a saved login by its name in the same way. A `--profile` path with a folder, such as `profiles/cedric.toml`, is read as it is.
+- A value on the command line wins over the saved login, and the saved login wins over `uoterm.toml`.
+- To make one by hand, copy `profiles/example.toml`. Extra `profiles/*.toml` files are gitignored.
 
 Persona files live in `personas/`. See `docs/PERSONAS.md`. Attach a persona with `connect --persona`. `agent run --persona` loads the persona into the session, then maps `class` to `set_goal`. Extra persona and shard files are gitignored; the shipped files stay tracked.
 
@@ -214,7 +222,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `uoterm walk --dir DIR [--run] [--hold-ms N]` | Client | Tool `walk`. One step or a hold stream of `0x02`. |
 | `uoterm open-door` | Client | Tool `open_door` (`0x12`/`0x58`). |
 | `uoterm look` | Client | Radar. `--json` prints full observe JSON. |
-| `uoterm play [--profile FILE] [--go] [--encryption none\|osi] [--uopath DIR] [--api-bind ADDR]` | Server | Play by hand. It opens the login screens: a form with host, port, account, password, shard and character, and the saved logins of the `profiles` folder. You type the password in a field that hides it; it stays in memory for the login and is written nowhere. When the field is empty, the password comes from the environment variable of the saved login. A shard list with more than one shard shows as a list to click. The characters of the account show with an empty slot for each free place: click one to play, press Delete twice to remove one, or type a name and press "New character" to make one. When the shard refuses, it says why. With a TypeSafe key, a field takes plain words such as `my miner on the test shard`; Jev picks the saved login, and later the shard and the character, from the lists. Jev sees the words and the names of the lists, never the account or the password. After the login the same window is the game window, you have control, and the HTTP API runs as with `connect`. `--go` logs in at once with `--profile`. |
+| `uoterm play [--profile FILE] [--go] [--encryption none\|osi] [--uopath DIR] [--api-bind ADDR]` | Server | Play by hand. It opens the login screens: a form with host, port, account, password, shard, character and encryption, and the list of saved logins (see "Saved logins" above), each with its name and `account @ host:port`. Click a saved login to fill the form; the cursor goes to the password field. "Save login" saves the form: it asks for a name (default `account@host`) and, if you want, the name of a variable that holds the password. The password itself is not saved. "Edit" puts a saved login in the form to change it and save it over, and "Delete" asks Yes or No first; a login of the older `profiles` folder can be edited, which saves a copy in the config folder, but not deleted. You type the password in a field that hides it; it stays in memory for the login and is written nowhere. When the field is empty, the password comes from the environment variable of the saved login. `--encryption` wins over the encryption of the saved logins. A shard list with more than one shard shows as a list to click. The characters of the account show with an empty slot for each free place: click one to play, press Delete twice to remove one, or type a name and press "New character" to make one. When the shard refuses, it says why. With a TypeSafe key, a field takes plain words such as `my miner on the test shard`; Jev picks the saved login, and later the shard and the character, from the lists. Jev sees the words and the names of the lists, never the account or the password. After the login the same window is the game window, you have control, and the HTTP API runs as with `connect`. `--go` logs in at once with `--profile`. |
 | `uoterm watch [--text] [--uopath DIR] [--open sheet\|map\|macros\|profile\|chat] [--snapshot FILE.png]` | Client | Live window of the running session: the map, vitals, what the agent does, who is near, the journal, the pack. With client files (`--uopath`, or `uopath` in `uoterm.toml`) it draws the real map. Without them it draws flat colors from the radar. Scroll to zoom. "Take control" stops the agent and lets you click: a double-click to use (or to attack in war mode), one click to look, and the target cursor. You walk with the arrow keys (Shift runs) and with the right mouse button held; a left click while it is held keeps you going. A double-click on the ground walks there when "Enable pathfinding" is on (General page; "Use Shift for pathfinding" asks for Shift too), Alt+click on the ground runs there, and "Click on the ground runs there" and "Use W A S D to walk" are options of the same page. See "Keys, macros and the controller" below. You drag items to move, wear, give, trade or drop them; hold Shift to split a pile. A right-click on a thing opens a ring of acts with the context menu of the shard (in the Classic look, the context menu gump). "Bag", "Sheet" and "Map" open the backpack, the character sheet (worn items, skills with locks, spells, party) and the map of the land; `--open` opens the sheet or the map at the start. The hotbar takes a dragged item, a pinned skill or spell, or a pinned command; the keys 1 to 0 use its slots, it moves and locks like the other panels, and it is saved in `watch-hotbar.toml`. "Macros" opens the macro editor: pick a script of the scripts folder, change its lines, run it once or in a loop, save it, record what you do as a new macro, or pin it to the hotbar. With a TypeSafe key, a field takes the next step in plain words, such as `heal myself with a bandage`; Jev picks the hotkey that does it, and the script lines of that hotkey go into the macro. The chat box says words. In Do mode it runs one script command. When the shard asks for words, the box answers it. In Order mode it takes a plain order such as `attack the orc`; TypeSafe's Jev model picks the act and the target, and the order and the names of the things near go to `api.typesafe.ai`. Order mode is on only when `TYPESAFE_API_KEY` is set (environment or `.env`). "Give back", or 90 s with no act, returns the character to the agent. The "Options" button opens the Options with all their pages (see "The play window" above); the sounds and the music come from your client files, and the options are kept in the profile of the character. `--snapshot` saves one PNG picture and closes. `--text` prints the radar in the terminal. |
 | `uoterm state` | Client | YAML. `--json` for JSON. Field name is `self_state`. |
 | `uoterm agent run --persona FILE [--goal NAME]` | Client | `set_persona` then `set_goal`. |
@@ -226,18 +234,18 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--host` | from config, `127.0.0.1` | Login host |
-| `--port` | from config, `2593` | Login port |
+| `--host` | from `--profile`, else config, `127.0.0.1` | Login host (IP address or DNS name) |
+| `--port` | from `--profile`, else config, `2593` | Login port |
 | `--account` | required unless `--profile` | Account name |
-| `--password-env` | `UO_PASS` | Env var that holds the password |
+| `--password-env` | the one of `--profile`, else `UO_PASS` | Env var that holds the password |
 | `--character` | required unless `--profile` | Character name on the account |
 | `--shard` | none | Select by name when the server list has more than one |
 | `--version` | the version of `client.exe` in `--uopath`; else the era default (`7.0.102.3` for `modern`) | Client version string (`0xBD`). Shards that check versions kick a client older than their own `client.exe`. |
 | `--era` | `modern` | `t2a` or `modern` |
-| `--encryption` | `none` | `none` = nocrypt. `osi` = Classic Client encryption. |
+| `--encryption` | the one of `--profile`, else `none` | `none` = nocrypt. `osi` = Classic Client encryption. |
 | `--uopath` | from config | Client data directory. Without it, nav uses an open mock grid |
 | `--markers` | from config | Marker file of named places to travel to: a UO Auto Map `.map` file or an Ultima Mapper `Waypoints.lua` file |
-| `--profile` | none | TOML profile |
+| `--profile` | none | A saved login, by name or by file. Its host, port, account, character, shard, encryption, era, version and password env fill each flag you do not give |
 | `--persona` | built-in lumberjack | Persona TOML used by speech and reflex |
 | `--api-bind` | from config, `127.0.0.1:7733` | HTTP listen address |
 | `--view` | off | Open the watch window in the same process. Closing the window ends the program, as Ctrl+C does. |
@@ -378,7 +386,7 @@ export UO_PASS=test
 uoterm populate --manifest shards/britannia.toml
 ```
 
-Each `[[agents]]` row needs a working profile and a persona. Agents outside `active_hours` (local clock) are skipped.
+Each `[[agents]]` row needs a working profile (a saved login, by name or by file) and a persona. The host and the port of the manifest are used for every agent; the encryption and the password variable come from the saved login, else `none` and `UO_PASS`. Agents outside `active_hours` (local clock) are skipped.
 
 ## Private shard on another host
 

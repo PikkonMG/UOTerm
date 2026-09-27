@@ -1,5 +1,6 @@
 use crate::config::{
     client_version, era_from_str, load_persona, load_profile, password_from_env, ConnectOptions,
+    DEFAULT_PASSWORD_ENV,
 };
 use crate::error::Result;
 use crate::manager::Runtime;
@@ -45,7 +46,8 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
             continue;
         }
         let profile = load_profile(&agent.profile)?;
-        let password = password_from_env(&profile.password_env)?;
+        let password_env = profile.password_env.as_deref();
+        let password = password_from_env(password_env.unwrap_or(DEFAULT_PASSWORD_ENV))?;
         let version = client_version(profile.version.as_deref(), era, man.uopath.as_deref());
         let goal = Goal::for_class(&persona.class).name();
         let opts = ConnectOptions {
@@ -61,7 +63,7 @@ pub async fn run(runtime: &Runtime, path: &Path) -> Result<Vec<String>> {
             markers: man.markers.clone(),
             persona: Some(persona),
             next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
-            encryption: Default::default(),
+            encryption: profile.encryption.unwrap_or_default(),
             obey_shard_rules: crate::config::OBEY_SHARD_RULES_DEFAULT,
             answer_when_named: crate::config::ANSWER_WHEN_NAMED_DEFAULT,
             play_along: crate::config::PLAY_ALONG_DEFAULT,

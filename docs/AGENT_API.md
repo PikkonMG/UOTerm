@@ -193,7 +193,7 @@ These tools belong to the runtime, not to a session: before a login there is no 
 | `connect` | logs in as `character` (or the first of the account) and answers `session_id` and `character` |
 | `disconnect` | ends the session `session_id` at once, with no logout |
 
-The account comes from a saved login, `profile` (a file of the `profiles` folder, as `uoterm connect --profile` reads), or from `account` and `password_env`: the name of an environment variable that holds the password. A password is never an argument, and it is never written to a log or given back. `host`, `port`, `shard`, `era`, `version`, `encryption` and `proxy` default to the saved login and to the config file (`uoterm.toml`).
+The account comes from a saved login, `profile` (its name: a file of the `logins` folder of the config folder, else of the `profiles` folder, as `uoterm connect --profile` finds it), or from `account` and `password_env`: the name of an environment variable that holds the password. A password is never an argument, and it is never written to a log or given back. `host`, `port`, `shard`, `era`, `version`, `encryption` and `proxy` default to the saved login and to the config file (`uoterm.toml`).
 
 To play another character of the account in the same session, `logout` with `then_play`.
 

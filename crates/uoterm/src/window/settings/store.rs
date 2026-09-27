@@ -7,7 +7,7 @@ use super::Profile;
 use serde::Deserialize;
 use std::fmt::Display;
 use std::path::PathBuf;
-use uoterm_runtime::config::config_dir;
+use uoterm_runtime::config::{config_dir, file_safe};
 
 const PROFILES_DIR: &str = "profiles";
 const DEFAULT_PROFILE_FILE: &str = "default.toml";
@@ -15,10 +15,6 @@ const PROFILE_EXTENSION: &str = "toml";
 /// The sound settings of older windows. They are read one time, when there
 /// is no global profile yet.
 const OLD_AUDIO_FILE: &str = "watch-audio.toml";
-/// Stands for any byte that may not be in a file name.
-const ESCAPE: char = '%';
-/// The name of a file that has no name left.
-const EMPTY_NAME: &str = "%";
 
 /// The shard a profile belongs to, as the login server's `host:port`.
 pub fn shard_address(host: &str, port: impl Display) -> String {
@@ -41,28 +37,6 @@ impl CharacterKey {
             name: name.to_string(),
         })
     }
-}
-
-/// Words made safe for a file name: letters, digits, `-` and `_` stay, and
-/// each other byte becomes `%` and two hex digits. A dot stays too, but not
-/// at the start, so no name is hidden or means a parent folder.
-fn file_safe(words: &str) -> String {
-    let mut safe = String::with_capacity(words.len());
-    for (at, byte) in words.bytes().enumerate() {
-        let keep = byte.is_ascii_alphanumeric()
-            || byte == b'-'
-            || byte == b'_'
-            || (byte == b'.' && at > 0);
-        if keep {
-            safe.push(char::from(byte));
-        } else {
-            safe.push_str(&format!("{ESCAPE}{byte:02X}"));
-        }
-    }
-    if safe.is_empty() {
-        safe.push_str(EMPTY_NAME);
-    }
-    safe
 }
 
 /// The sound settings of older windows, before profiles.
@@ -333,17 +307,13 @@ mod tests {
 
     #[test]
     fn names_become_safe_file_names_that_do_not_meet() {
-        assert_eq!(file_safe("Mara"), "Mara");
         let store = test_store(Path::new("x"));
         let key = CharacterKey::new(SHARD, "Mara.Jr").unwrap();
         assert!(store.character_path(&key).ends_with("Mara.Jr.toml"));
-        assert_eq!(
-            file_safe("play.example.com:2593"),
-            "play.example.com%3A2593"
-        );
-        assert_eq!(file_safe("../x"), "%2E.%2Fx");
-        assert_eq!(file_safe(""), EMPTY_NAME);
-        assert_ne!(file_safe("a b"), file_safe("a_b"));
+        let key = CharacterKey::new("play.example.com:2593", "../x").unwrap();
+        assert!(store
+            .character_path(&key)
+            .ends_with("play.example.com%3A2593/%2E.%2Fx.toml"));
         assert_eq!(
             shard_address(" Play.Example.com ", 2593),
             "play.example.com:2593"

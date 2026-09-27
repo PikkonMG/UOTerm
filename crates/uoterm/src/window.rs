@@ -107,7 +107,9 @@ pub struct Shown {
     pub open: Vec<Panel>,
 }
 
-pub use login_ui::{Connect, LoginForm, SavedLogin};
+pub use login_ui::{Connect, KeepLogin, KeepLogins, LoginForm, SavedLogin};
+#[cfg(test)]
+pub use login_ui::{BAD_PORT, NEEDS_ACCOUNT, NEEDS_HOST};
 pub use settings::shard_address;
 
 /// What `uoterm play` starts with: the login screens, then the game.
@@ -115,6 +117,8 @@ pub struct PlayOptions {
     pub form: LoginForm,
     pub saved: Vec<SavedLogin>,
     pub connect: Connect,
+    /// Saves and deletes the saved logins.
+    pub keep: KeepLogins,
     /// The client files for the real map.
     pub uopath: Option<PathBuf>,
     /// Log in with the form as it is, with no click on Connect.
@@ -133,6 +137,7 @@ pub fn play(options: PlayOptions) -> Result<(), String> {
                 form: options.form,
                 saved: options.saved,
                 connect: options.connect,
+                keep: options.keep,
                 connect_at_once: options.connect_at_once,
                 version: options.version,
                 uopath: options.uopath.as_deref(),

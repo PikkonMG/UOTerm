@@ -126,14 +126,61 @@ impl Default for AppConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A saved login: where to log in and as whom. The password is never in
+/// it; `password_env` may name the environment variable that holds it.
+/// Each key but the account may be left out, so older files still load.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub account: String,
-    pub password_env: String,
+    /// The login server: an IP address or a DNS name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<EncryptionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_env: Option<String>,
+    /// Empty: the login asks, or plays the first of the account.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub character: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shard: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub era: Option<String>,
+}
+
+/// Where a login goes and how it speaks to the shard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginTarget {
+    pub host: String,
+    pub port: u16,
+    pub encryption: EncryptionMode,
+}
+
+impl LoginTarget {
+    /// Each part is the one the command line or the call names, else the
+    /// one of the saved login, else the one of the config file. The config
+    /// file names no encryption: then it is none.
+    pub fn choose(
+        host: Option<String>,
+        port: Option<u16>,
+        encryption: Option<EncryptionMode>,
+        saved: Option<&Profile>,
+        cfg: &AppConfig,
+    ) -> Self {
+        Self {
+            host: host
+                .or_else(|| saved.and_then(|p| p.host.clone()))
+                .unwrap_or_else(|| cfg.host.clone()),
+            port: port.or(saved.and_then(|p| p.port)).unwrap_or(cfg.port),
+            encryption: encryption
+                .or(saved.and_then(|p| p.encryption))
+                .unwrap_or_default(),
+        }
+    }
 }
 
 /// What a login asks a human: which shard of the list, or which character.
@@ -414,17 +461,216 @@ pub fn client_version(named: Option<&str>, era: Era, uopath: Option<&Path>) -> C
         .unwrap_or_else(|| era.default_version())
 }
 
-/// The folder the saved logins are kept in, below the working directory,
-/// and the extension of each file.
+/// The folder of the saved logins the login screen writes, in the config
+/// folder.
+pub const LOGINS_DIR: &str = "logins";
+/// The older folder of saved logins, below the working directory. It is
+/// read and never written.
 pub const PROFILES_DIR: &str = "profiles";
 pub const PROFILE_EXT: &str = "toml";
+/// The variable that holds the password when nothing names one.
+pub const DEFAULT_PASSWORD_ENV: &str = "UO_PASS";
+/// Stands for any byte that may not be in a file name.
+const ESCAPE: char = '%';
+/// The name of a file that has no name left.
+const EMPTY_NAME: &str = "%";
+const HEX: u32 = 16;
+/// The hex digits after each [`ESCAPE`].
+const ESCAPE_DIGITS: usize = 2;
 
-/// The file of the saved login of this name.
-pub fn profile_path(name: &str) -> PathBuf {
-    PathBuf::from(PROFILES_DIR).join(format!("{name}.{PROFILE_EXT}"))
+/// Words made safe for a file name: letters, digits, `-` and `_` stay, and
+/// each other byte becomes `%` and two hex digits. A dot stays too, but not
+/// at the start, so no name is hidden or means a parent folder.
+pub fn file_safe(words: &str) -> String {
+    let mut safe = String::with_capacity(words.len());
+    for (at, byte) in words.bytes().enumerate() {
+        let keep = byte.is_ascii_alphanumeric()
+            || byte == b'-'
+            || byte == b'_'
+            || (byte == b'.' && at > 0);
+        if keep {
+            safe.push(char::from(byte));
+        } else {
+            safe.push_str(&format!("{ESCAPE}{byte:02X}"));
+        }
+    }
+    if safe.is_empty() {
+        safe.push_str(EMPTY_NAME);
+    }
+    safe
 }
 
-pub fn load_profile(path: &std::path::Path) -> crate::error::Result<Profile> {
+/// The words a [`file_safe`] name was made from. A `%` with no two hex
+/// digits after it stays as it is.
+pub fn from_file_safe(safe: &str) -> String {
+    if safe == EMPTY_NAME {
+        return String::new();
+    }
+    let mut bytes = Vec::with_capacity(safe.len());
+    let mut rest = safe.as_bytes();
+    while let Some((&first, after)) = rest.split_first() {
+        let escaped = (char::from(first) == ESCAPE)
+            .then(|| after.get(..ESCAPE_DIGITS))
+            .flatten()
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| u8::from_str_radix(digits, HEX).ok());
+        match escaped {
+            Some(byte) => {
+                bytes.push(byte);
+                rest = &after[ESCAPE_DIGITS..];
+            }
+            None => {
+                bytes.push(first);
+                rest = after;
+            }
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// One saved login of the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredLogin {
+    pub name: String,
+    pub profile: Profile,
+    /// It is kept in the config folder, so the screen may change or delete
+    /// it. An older one is only read.
+    pub kept: bool,
+}
+
+/// The saved logins: the files the login screen writes, in the config
+/// folder, and the older files of the profiles folder in the working
+/// directory, which are read and never written. When a name is in both,
+/// the one of the config folder wins.
+#[derive(Clone, Debug)]
+pub struct LoginStore {
+    kept: PathBuf,
+    old: PathBuf,
+}
+
+impl LoginStore {
+    /// The saved logins of this process: `<config_dir>/logins` and
+    /// `profiles` in the working directory.
+    pub fn standard() -> Self {
+        Self::at(config_dir().join(LOGINS_DIR), PathBuf::from(PROFILES_DIR))
+    }
+
+    pub fn at(kept: PathBuf, old: PathBuf) -> Self {
+        Self { kept, old }
+    }
+
+    fn kept_path(&self, name: &str) -> PathBuf {
+        self.kept.join(format!("{}.{PROFILE_EXT}", file_safe(name)))
+    }
+
+    /// The older file of a name. A name that is not one plain file name,
+    /// such as `../x`, has none.
+    fn old_path(&self, name: &str) -> Option<PathBuf> {
+        let file = format!("{name}.{PROFILE_EXT}");
+        (Path::new(&file).file_name() == Some(std::ffi::OsStr::new(&file)))
+            .then(|| self.old.join(file))
+    }
+
+    /// The file of the saved login of this name: the one of the config
+    /// folder when there is one, else the older one.
+    pub fn path(&self, name: &str) -> PathBuf {
+        let kept = self.kept_path(name);
+        if kept.is_file() {
+            return kept;
+        }
+        self.old_path(name).unwrap_or(kept)
+    }
+
+    pub fn load(&self, name: &str) -> crate::error::Result<Profile> {
+        read_profile(&self.path(name))
+    }
+
+    /// Every saved login that loads, by name.
+    pub fn list(&self) -> Vec<StoredLogin> {
+        let mut listed: Vec<StoredLogin> = Vec::new();
+        for (dir, kept) in [(&self.kept, true), (&self.old, false)] {
+            for path in profile_files(dir) {
+                let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+                let name = if kept {
+                    from_file_safe(stem)
+                } else {
+                    stem.to_string()
+                };
+                if listed.iter().any(|known| known.name == name) {
+                    continue;
+                }
+                if let Ok(profile) = read_profile(&path) {
+                    listed.push(StoredLogin {
+                        name,
+                        profile,
+                        kept,
+                    });
+                }
+            }
+        }
+        listed.sort_by(|a, b| a.name.cmp(&b.name));
+        listed
+    }
+
+    /// Writes a saved login to the config folder, over the one of that
+    /// name. Gives the file.
+    pub fn save(&self, name: &str, profile: &Profile) -> crate::error::Result<PathBuf> {
+        let path = self.kept_path(name);
+        let text = toml::to_string(profile)
+            .map_err(|e| crate::error::RuntimeError::Usage(format!("profile: {e}")))?;
+        std::fs::create_dir_all(&self.kept)
+            .and_then(|()| std::fs::write(&path, text))
+            .map_err(|e| {
+                crate::error::RuntimeError::Usage(format!("profile {}: {e}", path.display()))
+            })?;
+        Ok(path)
+    }
+
+    /// Deletes the saved login of this name from the config folder. An
+    /// older file is left as it is.
+    pub fn delete(&self, name: &str) -> crate::error::Result<()> {
+        let path = self.kept_path(name);
+        std::fs::remove_file(&path).map_err(|e| {
+            crate::error::RuntimeError::Usage(format!("profile {}: {e}", path.display()))
+        })
+    }
+}
+
+/// The saved login files of a folder.
+fn profile_files(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == PROFILE_EXT))
+        .collect()
+}
+
+/// The file of the saved login of this name. See [`LoginStore::path`].
+pub fn profile_path(name: &str) -> PathBuf {
+    LoginStore::standard().path(name)
+}
+
+/// The saved login a path names. A plain name, such as `cedric` or
+/// `cedric.toml`, is found as [`profile_path`] finds it. A path with a
+/// folder is read as it is.
+pub fn load_profile(path: &Path) -> crate::error::Result<Profile> {
+    let plain = path.parent().is_none_or(|dir| dir.as_os_str().is_empty());
+    let name = if path.extension().is_some_and(|ext| ext == PROFILE_EXT) {
+        path.file_stem()
+    } else {
+        path.file_name()
+    };
+    match name.and_then(|name| name.to_str()).filter(|_| plain) {
+        Some(name) => read_profile(&profile_path(name)),
+        None => read_profile(path),
+    }
+}
+
+fn read_profile(path: &Path) -> crate::error::Result<Profile> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         crate::error::RuntimeError::Usage(format!("profile {}: {e}", path.display()))
     })?;
@@ -656,6 +902,196 @@ answer_when_named = false
             Some(std::path::Path::new("/path/to/Waypoints.lua"))
         );
         assert!(!EXAMPLE.contains("stay_on_socket"), "old key must not ship");
+    }
+
+    /// A store of saved logins in folders of the test's own.
+    fn test_store() -> (LoginStore, PathBuf) {
+        let root = std::env::temp_dir().join(format!("uoterm-logins-{}", uuid::Uuid::new_v4()));
+        (
+            LoginStore::at(root.join(LOGINS_DIR), root.join(PROFILES_DIR)),
+            root,
+        )
+    }
+
+    fn full_profile() -> Profile {
+        Profile {
+            account: "acct".into(),
+            host: Some("play.example.com".into()),
+            port: Some(2594),
+            encryption: Some(EncryptionMode::Osi),
+            password_env: Some("MY_PASS".into()),
+            character: "Mara".into(),
+            shard: Some("Britannia".into()),
+            version: Some("7.0.102.3".into()),
+            era: Some("modern".into()),
+        }
+    }
+
+    #[test]
+    fn a_profile_goes_to_a_file_and_back_with_and_without_the_new_keys() {
+        let full = full_profile();
+        let text = toml::to_string(&full).unwrap();
+        assert!(text.contains("encryption = \"osi\""), "{text}");
+        assert_eq!(toml::from_str::<Profile>(&text).unwrap(), full);
+        let bare = Profile {
+            account: "acct".into(),
+            ..Profile::default()
+        };
+        let text = toml::to_string(&bare).unwrap();
+        assert_eq!(text.trim(), "account = \"acct\"");
+        assert_eq!(toml::from_str::<Profile>(&text).unwrap(), bare);
+    }
+
+    #[test]
+    fn the_older_profile_files_still_load() {
+        for text in [
+            include_str!("../../../profiles/cedric.toml"),
+            include_str!("../../../profiles/aldreth.toml"),
+        ] {
+            let profile: Profile = toml::from_str(text).expect("an older file loads");
+            assert_eq!(profile.password_env.as_deref(), Some(DEFAULT_PASSWORD_ENV));
+            assert!(!profile.character.is_empty());
+            assert_eq!(
+                (profile.host, profile.port, profile.encryption),
+                (None, None, None)
+            );
+        }
+    }
+
+    #[test]
+    fn the_example_profile_names_every_new_key() {
+        let example: Profile = toml::from_str(include_str!("../../../profiles/example.toml"))
+            .expect("the example loads");
+        assert_eq!(example.host.as_deref(), Some(DEFAULT_HOST));
+        assert_eq!(example.port, Some(DEFAULT_LOGIN_PORT));
+        assert_eq!(example.encryption, Some(EncryptionMode::None));
+        assert_eq!(example.password_env.as_deref(), Some(DEFAULT_PASSWORD_ENV));
+    }
+
+    #[test]
+    fn the_config_folder_wins_on_a_name_in_both_folders() {
+        let (store, root) = test_store();
+        std::fs::create_dir_all(root.join(PROFILES_DIR)).unwrap();
+        for (name, account) in [("cedric", "old"), ("mara", "older")] {
+            std::fs::write(
+                root.join(PROFILES_DIR)
+                    .join(format!("{name}.{PROFILE_EXT}")),
+                format!("account = \"{account}\"\n"),
+            )
+            .unwrap();
+        }
+        let kept = Profile {
+            account: "new".into(),
+            ..Profile::default()
+        };
+        store.save("cedric", &kept).unwrap();
+        store.save("x y", &kept).unwrap();
+        let listed = store.list();
+        let names: Vec<_> = listed.iter().map(|l| (l.name.as_str(), l.kept)).collect();
+        assert_eq!(names, [("cedric", true), ("mara", false), ("x y", true)]);
+        assert_eq!(store.load("cedric").unwrap().account, "new");
+        assert_eq!(store.load("mara").unwrap().account, "older");
+        // Deleting the kept one shows the older one again, which stays.
+        store.delete("cedric").unwrap();
+        assert_eq!(store.load("cedric").unwrap().account, "old");
+        assert!(
+            store.delete("mara").is_err(),
+            "an older file is never deleted"
+        );
+        assert!(root.join(PROFILES_DIR).join("mara.toml").is_file());
+        assert!(store.load("../mara").is_err(), "no way out of the folders");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn load_profile_finds_a_plain_name_as_profile_path_does() {
+        let name = format!("test-{}", uuid::Uuid::new_v4());
+        let store = LoginStore::standard();
+        let path = store.save(&name, &full_profile()).unwrap();
+        assert!(path.starts_with(config_dir().join(LOGINS_DIR)));
+        assert_eq!(profile_path(&name), path);
+        for plain in [name.clone(), format!("{name}.{PROFILE_EXT}")] {
+            assert_eq!(load_profile(Path::new(&plain)).unwrap(), full_profile());
+        }
+        // A path with a folder is read as it is.
+        assert_eq!(load_profile(&path).unwrap(), full_profile());
+        assert!(load_profile(&Path::new(PROFILES_DIR).join(&name)).is_err());
+        store.delete(&name).unwrap();
+        assert!(load_profile(Path::new(&name)).is_err());
+    }
+
+    #[test]
+    fn names_become_safe_file_names_and_come_back() {
+        assert_eq!(file_safe("Mara"), "Mara");
+        assert_eq!(
+            file_safe("acct@play.example.com:2593"),
+            "acct%40play.example.com%3A2593"
+        );
+        assert_eq!(file_safe("../x"), "%2E.%2Fx");
+        assert_eq!(file_safe(""), EMPTY_NAME);
+        assert_ne!(file_safe("a b"), file_safe("a_b"));
+        for name in ["Mara", "acct@host:2593", "../x", "", "a b", "100%", "Élan"] {
+            assert_eq!(from_file_safe(&file_safe(name)), name);
+        }
+        assert_eq!(from_file_safe("50%zz"), "50%zz");
+    }
+
+    #[test]
+    fn a_saved_login_holds_no_password() {
+        let (store, root) = test_store();
+        let path = store.save("mara", &full_profile()).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        let keys: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.split_once(" = ").map(|(key, _)| key))
+            .collect();
+        assert!(keys
+            .iter()
+            .all(|key| *key == "password_env" || !key.contains("pass")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_command_line_wins_then_the_saved_login_then_the_config() {
+        let cfg = AppConfig::default();
+        let saved = full_profile();
+        let named = LoginTarget::choose(
+            Some("10.0.0.9".into()),
+            Some(3000),
+            Some(EncryptionMode::None),
+            Some(&saved),
+            &cfg,
+        );
+        assert_eq!(
+            named,
+            LoginTarget {
+                host: "10.0.0.9".into(),
+                port: 3000,
+                encryption: EncryptionMode::None,
+            }
+        );
+        let from_saved = LoginTarget::choose(None, None, None, Some(&saved), &cfg);
+        assert_eq!(
+            (
+                from_saved.host.as_str(),
+                from_saved.port,
+                from_saved.encryption
+            ),
+            ("play.example.com", 2594, EncryptionMode::Osi)
+        );
+        let from_config = LoginTarget::choose(None, None, None, Some(&Profile::default()), &cfg);
+        assert_eq!(
+            from_config,
+            LoginTarget {
+                host: cfg.host.clone(),
+                port: cfg.port,
+                encryption: EncryptionMode::None,
+            }
+        );
+        assert_eq!(
+            LoginTarget::choose(None, None, None, None, &cfg),
+            from_config
+        );
     }
 
     #[test]

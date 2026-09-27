@@ -227,7 +227,7 @@ const OPTION_PREFIX: &str = "option_";
 const ASK_HOTKEY: &str =
     "`wish` says what the next step of a macro must do. Which one hotkey does that?";
 /// The question of the login screen about the saved profiles.
-pub const ASK_PROFILE: &str = "A player of an online role-playing game says in `wish` who he wants to play. Each option is one saved login: its name, its character and its shard. Which one does he mean?";
+pub const ASK_PROFILE: &str = "A player of an online role-playing game says in `wish` who he wants to play. Each option is one saved login: its name, its character, its shard and its server. Which one does he mean?";
 /// The question of the house designer about the parts of the catalog.
 pub const ASK_HOUSE_PART: &str = "A player of an online role-playing game builds his own house. `wish` says which part he wants to build with. Each option is one style of part from the catalog of the client: its kind and its name. Which one does he mean?";
 /// The question of the character sheet about what to wear or take off.

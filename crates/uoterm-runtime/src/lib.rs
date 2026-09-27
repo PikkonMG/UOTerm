@@ -30,7 +30,8 @@ pub mod tools;
 
 pub use config::{
     parse_encryption_mode, AppConfig, CharacterChoices, CharacterRequest, ConnectOptions,
-    EncryptionMode, LoginPicker, LoginQuestion, NewCharacterWish, Profile,
+    EncryptionMode, LoginPicker, LoginQuestion, LoginStore, LoginTarget, NewCharacterWish, Profile,
+    StoredLogin,
 };
 pub use error::{Result, RuntimeError};
 pub use manager::{FacetCache, Runtime};

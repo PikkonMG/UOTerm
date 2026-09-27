@@ -1,5 +1,24 @@
+# A saved login. Copy this file to a new name in this folder, or save one
+# from the login screen of `uoterm play`, which writes to the `logins`
+# folder of the UOTerm config folder. Only `account` is required.
+# A saved login never holds the password.
+
 account = "your_account"
+# The login server: an IP address or a DNS name. Default: `host` of uoterm.toml.
+host = "127.0.0.1"
+# The login port. Default: `port` of uoterm.toml.
+port = 2593
+# "none" for most free shards, "osi" for Classic Client encryption. Default: "none".
+encryption = "none"
+# The environment variable that holds the password. Default for `connect`
+# and `populate`: UO_PASS. On the login screen you can type the password instead.
 password_env = "UO_PASS"
+# The character to play. Leave it out to pick one on the login screen.
 character = "Mara"
+# The shard of the list, when the login server has more than one.
 shard = "Test Shard"
+# "t2a" or "modern". Default: `era` of uoterm.toml.
 era = "modern"
+# The client version to send, such as "7.0.102.3". Default: the version of
+# client.exe in `uopath`, else the one of the era.
+# version = "7.0.102.3"

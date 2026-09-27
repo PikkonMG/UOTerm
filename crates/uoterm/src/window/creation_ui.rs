@@ -1749,7 +1749,7 @@ fn summary_swatches(ui: &egui::Ui, at: Pos2, creation: &Creation, scene: Option<
 
 #[cfg(test)]
 mod tests {
-    use super::super::modern::testing::{click, typing, Canvas, SCREEN};
+    use super::super::modern::testing::{click, typing, Canvas, ENV_PICTURES, SCREEN};
     use super::super::{save_png, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
     use super::*;
     use crate::window::model::creation::{sample_choices, Blocker, NameFault};
@@ -1759,8 +1759,6 @@ mod tests {
     /// The side of the texture the art of the client goes into.
     const ART_TEXTURE_SIDE: usize = 4096;
     const SMALLEST: Vec2 = Vec2::new(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
-    /// The folder a test saves its pictures in, when it is set.
-    const ENV_PICTURES: &str = "UOTERM_TEST_PICTURES";
 
     /// A screen with its own context, the map pictures and a canvas.
     struct Screen {

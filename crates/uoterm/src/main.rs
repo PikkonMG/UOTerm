@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use uoterm_protocol::types::{ClientVersion, Era, Point3, EXIT_OK, EXIT_USAGE};
 use uoterm_runtime::config::{
-    load_app_config, load_persona, load_profile, password_from_env, ConnectOptions, PROFILES_DIR,
-    PROFILE_EXT,
+    load_app_config, load_persona, load_profile, password_from_env, ConnectOptions,
+    DEFAULT_PASSWORD_ENV,
 };
 use uoterm_runtime::mock;
 use uoterm_runtime::persona::Persona;
@@ -19,7 +19,9 @@ use uoterm_runtime::tools::{
     TOOL_CANCEL_GOAL, TOOL_MOVE_TO, TOOL_OPEN_DOOR, TOOL_SAY, TOOL_SET_GOAL, TOOL_SET_PERSONA,
     TOOL_WALK,
 };
-use uoterm_runtime::{Runtime, RuntimeError};
+use uoterm_runtime::{
+    AppConfig, LoginStore, LoginTarget, Profile, Runtime, RuntimeError, StoredLogin,
+};
 
 const ENCRYPTION_NONE: &str = "none";
 const ENCRYPTION_OSI: &str = "osi";
@@ -50,6 +52,24 @@ impl EncryptionMode {
         match self {
             Self::None => ENCRYPTION_NONE,
             Self::Osi => ENCRYPTION_OSI,
+        }
+    }
+}
+
+impl From<EncryptionMode> for uoterm_runtime::EncryptionMode {
+    fn from(mode: EncryptionMode) -> Self {
+        match mode {
+            EncryptionMode::None => Self::None,
+            EncryptionMode::Osi => Self::Osi,
+        }
+    }
+}
+
+impl From<uoterm_runtime::EncryptionMode> for EncryptionMode {
+    fn from(mode: uoterm_runtime::EncryptionMode) -> Self {
+        match mode {
+            uoterm_runtime::EncryptionMode::None => Self::None,
+            uoterm_runtime::EncryptionMode::Osi => Self::Osi,
         }
     }
 }
@@ -86,8 +106,9 @@ enum Commands {
         port: Option<u16>,
         #[arg(long, required_unless_present = "profile")]
         account: Option<String>,
-        #[arg(long = "password-env", default_value = "UO_PASS")]
-        password_env: String,
+        /// The variable that holds the password. Default: the one of --profile, else UO_PASS.
+        #[arg(long = "password-env")]
+        password_env: Option<String>,
         #[arg(long)]
         shard: Option<String>,
         #[arg(long, required_unless_present = "profile")]
@@ -98,9 +119,9 @@ enum Commands {
         /// Packet era: t2a or modern
         #[arg(long, value_parser = ["t2a", "modern"])]
         era: Option<String>,
-        /// none = nocrypt freeshard, the usual private shard default. osi = Classic Client encryption for official/encrypted shards.
-        #[arg(long, value_enum, default_value_t = EncryptionMode::None)]
-        encryption: EncryptionMode,
+        /// none = nocrypt freeshard, the usual private shard default. osi = Classic Client encryption for official/encrypted shards. Default: the one of the saved login, else none.
+        #[arg(long, value_enum)]
+        encryption: Option<EncryptionMode>,
         #[arg(long)]
         uopath: Option<PathBuf>,
         /// A marker file of named places to travel to (UO Auto Map .map or Ultima Mapper Waypoints.lua).
@@ -167,12 +188,12 @@ enum Commands {
     Mcp,
     /// Play by hand: login screens, then the game window with control taken
     Play {
-        /// A saved login that fills the form at the start
+        /// A saved login that fills the form at the start: its name, or its file
         #[arg(long)]
         profile: Option<PathBuf>,
-        /// none = nocrypt freeshard, the usual private shard default. osi = Classic Client encryption for official/encrypted shards.
-        #[arg(long, value_enum, default_value_t = EncryptionMode::None)]
-        encryption: EncryptionMode,
+        /// none = nocrypt freeshard, the usual private shard default. osi = Classic Client encryption for official/encrypted shards. Default: the one of the saved login, else none.
+        #[arg(long, value_enum)]
+        encryption: Option<EncryptionMode>,
         /// The client files for the real map. The default is `uopath` in uoterm.toml.
         #[arg(long)]
         uopath: Option<PathBuf>,
@@ -410,8 +431,25 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
     }
 }
 
-async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
-    let json = cli.json;
+/// What `connect` logs in with, apart from the password and the files.
+#[derive(Debug, PartialEq, Eq)]
+struct ConnectChoice {
+    target: LoginTarget,
+    account: String,
+    character: String,
+    password_env: String,
+    shard: Option<String>,
+    era: Option<String>,
+    version: Option<String>,
+}
+
+/// Each part is the one of the command line, else the one of the saved
+/// login, else the one of the config file.
+fn connect_choice(
+    command: &Commands,
+    saved: Option<&Profile>,
+    cfg: &AppConfig,
+) -> Result<ConnectChoice, RuntimeError> {
     let Commands::Connect {
         host,
         port,
@@ -422,9 +460,48 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         version,
         era,
         encryption,
+        ..
+    } = command
+    else {
+        return Err(RuntimeError::Usage("connect".into()));
+    };
+    let from_saved = |pick: fn(&Profile) -> Option<String>| saved.and_then(pick);
+    Ok(ConnectChoice {
+        target: LoginTarget::choose(host.clone(), *port, encryption.map(Into::into), saved, cfg),
+        account: account
+            .clone()
+            .or_else(|| from_saved(|p| Some(p.account.clone())))
+            .ok_or_else(|| RuntimeError::Usage("account is required".into()))?,
+        character: character
+            .clone()
+            .or_else(|| from_saved(|p| Some(p.character.clone())))
+            .ok_or_else(|| RuntimeError::Usage("character is required".into()))?,
+        password_env: password_env
+            .clone()
+            .or_else(|| from_saved(|p| p.password_env.clone()))
+            .unwrap_or_else(|| DEFAULT_PASSWORD_ENV.into()),
+        shard: shard.clone().or_else(|| from_saved(|p| p.shard.clone())),
+        era: era.clone().or_else(|| from_saved(|p| p.era.clone())),
+        version: version
+            .clone()
+            .or_else(|| from_saved(|p| p.version.clone())),
+    })
+}
+
+async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
+    let json = cli.json;
+    let cfg = load_app_config(None);
+    let saved = match &cli.command {
+        Commands::Connect {
+            profile: Some(path),
+            ..
+        } => Some(load_profile(path)?),
+        _ => None,
+    };
+    let choice = connect_choice(&cli.command, saved.as_ref(), &cfg)?;
+    let Commands::Connect {
         uopath,
         markers,
-        profile,
         persona,
         api_bind,
         view,
@@ -434,30 +511,17 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     else {
         return Err(RuntimeError::Usage("connect".into()));
     };
-    let cfg = load_app_config(None);
-    let (account, character, password_env, shard, profile_era, profile_version) =
-        if let Some(p) = profile {
-            let pr = load_profile(&p)?;
-            (
-                pr.account,
-                pr.character,
-                pr.password_env,
-                pr.shard.or(shard),
-                pr.era,
-                pr.version,
-            )
-        } else {
-            (
-                account.ok_or_else(|| RuntimeError::Usage("account is required".into()))?,
-                character.ok_or_else(|| RuntimeError::Usage("character is required".into()))?,
-                password_env,
-                shard,
-                None,
-                None,
-            )
-        };
+    let ConnectChoice {
+        target,
+        account,
+        character,
+        password_env,
+        shard,
+        era,
+        version,
+    } = choice;
     let password = password_from_env(&password_env)?;
-    let era_raw = era.or(profile_era).unwrap_or_else(|| match cfg.era {
+    let era_raw = era.unwrap_or_else(|| match cfg.era {
         Era::T2a => ERA_T2A.into(),
         Era::Modern => ERA_MODERN.into(),
     });
@@ -466,21 +530,22 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         Some(p) => load_persona(&p)?,
         None => Persona::lumberjack_yew(),
     };
-    let host = host.unwrap_or(cfg.host);
-    let port = port.unwrap_or(cfg.port);
+    let LoginTarget {
+        host,
+        port,
+        encryption,
+    } = target;
     let uopath = uopath.or(cfg.uopath);
-    let version = uoterm_runtime::config::client_version(
-        version.or(profile_version).as_deref(),
-        era,
-        uopath.as_deref(),
-    );
+    let version =
+        uoterm_runtime::config::client_version(version.as_deref(), era, uopath.as_deref());
     let view_uopath = uopath.clone();
     let view_shard = window::shard_address(&host, port);
     // The file may ask for the window. The terminal view takes its place.
     let view = view || (cfg.view && !text_view);
     let markers = markers.or(cfg.markers);
+    let encryption_name = EncryptionMode::from(encryption).as_str();
     tracing::info!(
-        encryption = encryption.as_str(),
+        encryption = encryption_name,
         era = ?era,
         version = %version,
         "connect"
@@ -498,10 +563,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         markers,
         persona: Some(persona),
         next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
-        encryption: match encryption {
-            EncryptionMode::None => uoterm_runtime::EncryptionMode::None,
-            EncryptionMode::Osi => uoterm_runtime::EncryptionMode::Osi,
-        },
+        encryption,
         obey_shard_rules: cfg.obey_shard_rules,
         answer_when_named: cfg.answer_when_named,
         play_along: cfg.play_along,
@@ -519,7 +581,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
                 "id": handle.id,
                 "logged_in": handle.world.read().logged_in,
                 "api": bind,
-                "encryption": encryption.as_str(),
+                "encryption": encryption_name,
                 "era": match era {
                     Era::T2a => ERA_T2A,
                     Era::Modern => ERA_MODERN,
@@ -529,9 +591,8 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         );
     } else {
         println!(
-            "session {} started; api {bind}; encryption {}",
-            handle.id,
-            encryption.as_str()
+            "session {} started; api {bind}; encryption {encryption_name}",
+            handle.id
         );
     }
     if text_view {
@@ -641,32 +702,10 @@ async fn remote_tool(
 }
 
 const NEEDS_PASSWORD: &str = "Type the password.";
-const NEEDS_ACCOUNT: &str = "Type the account.";
-const BAD_PORT: &str = "The port must be a number from 1 to 65535.";
-
-/// The saved logins of the profiles folder, by file name.
-fn saved_profiles() -> Vec<(String, uoterm_runtime::Profile)> {
-    let mut saved: Vec<_> = std::fs::read_dir(PROFILES_DIR)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == PROFILE_EXT))
-        .filter_map(|path| {
-            let name = path.file_stem()?.to_str()?.to_string();
-            Some((name, load_profile(&path).ok()?))
-        })
-        .collect();
-    saved.sort_by(|a, b| a.0.cmp(&b.0));
-    saved
-}
 
 /// The era and the client version of a login: the saved login's, or the
 /// era of the config and its version.
-fn login_era_version(
-    cfg: &uoterm_runtime::AppConfig,
-    profile: Option<&uoterm_runtime::Profile>,
-) -> (Era, ClientVersion) {
+fn login_era_version(cfg: &AppConfig, profile: Option<&Profile>) -> (Era, ClientVersion) {
     let era: Era = profile
         .and_then(|p| p.era.as_deref())
         .and_then(|era| era.parse().ok())
@@ -679,29 +718,71 @@ fn login_era_version(
     (era, version)
 }
 
+/// A saved login as the login screen lists it. The host, the port and the
+/// encryption are the ones of the command line, else of the saved login,
+/// else of the config file.
+fn saved_login_row(
+    cfg: &AppConfig,
+    encryption: Option<EncryptionMode>,
+    stored: &StoredLogin,
+) -> window::SavedLogin {
+    let profile = &stored.profile;
+    let target = LoginTarget::choose(None, None, encryption.map(Into::into), Some(profile), cfg);
+    window::SavedLogin {
+        name: stored.name.clone(),
+        host: target.host,
+        port: target.port,
+        encryption: target.encryption,
+        account: profile.account.clone(),
+        character: profile.character.clone(),
+        shard: profile.shard.clone().unwrap_or_default(),
+        password_env: profile.password_env.clone(),
+        version: login_era_version(cfg, Some(profile)).1,
+        deletable: stored.kept,
+    }
+}
+
+/// Saves or deletes a saved login as the login screen asks, and gives the
+/// list after. A save over a saved login keeps the era and the version it
+/// names, which the screen does not show, and its password variable when
+/// the screen names none.
+fn keep_login(
+    store: &LoginStore,
+    row: impl Fn(&StoredLogin) -> window::SavedLogin,
+    asked: window::KeepLogin,
+) -> Result<Vec<window::SavedLogin>, String> {
+    match asked {
+        window::KeepLogin::Save { name, profile } => {
+            let old = store.load(&name).ok().unwrap_or_default();
+            let profile = Profile {
+                password_env: profile.password_env.or(old.password_env),
+                era: old.era,
+                version: old.version,
+                ..profile
+            };
+            store.save(&name, &profile).map(drop)
+        }
+        window::KeepLogin::Delete(name) => store.delete(&name),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(store.list().iter().map(row).collect())
+}
+
 /// The options of a login from what the human typed. The password comes
 /// from the form, or from the environment variable of the saved login.
 fn play_options(
-    cfg: &uoterm_runtime::AppConfig,
+    cfg: &AppConfig,
     form: &window::LoginForm,
-    profile: Option<&uoterm_runtime::Profile>,
-    encryption: EncryptionMode,
+    profile: Option<&Profile>,
     picker: uoterm_runtime::LoginPicker,
 ) -> Result<ConnectOptions, String> {
-    let account = form.account.trim();
-    if account.is_empty() {
-        return Err(NEEDS_ACCOUNT.into());
-    }
-    let port: u16 = form
-        .port
-        .trim()
-        .parse()
-        .ok()
-        .filter(|port| *port != 0)
-        .ok_or(BAD_PORT)?;
+    let account = form.account_name()?;
+    let host = form.host_name()?;
+    let port = form.port_number()?;
     let password = if form.password.is_empty() {
         profile
-            .and_then(|p| password_from_env(&p.password_env).ok())
+            .and_then(|p| p.password_env.as_deref())
+            .and_then(|var| password_from_env(var).ok())
             .ok_or(NEEDS_PASSWORD)?
     } else {
         form.password.clone()
@@ -709,7 +790,7 @@ fn play_options(
     let (era, version) = login_era_version(cfg, profile);
     let shard = form.shard.trim();
     Ok(ConnectOptions {
-        host: form.host.trim().to_string(),
+        host: host.to_string(),
         port,
         account: account.to_string(),
         password,
@@ -719,10 +800,7 @@ fn play_options(
         era,
         uopath: cfg.uopath.clone(),
         markers: cfg.markers.clone(),
-        encryption: match encryption {
-            EncryptionMode::None => uoterm_runtime::EncryptionMode::None,
-            EncryptionMode::Osi => uoterm_runtime::EncryptionMode::Osi,
-        },
+        encryption: form.encryption,
         obey_shard_rules: cfg.obey_shard_rules,
         answer_when_named: cfg.answer_when_named,
         play_along: cfg.play_along,
@@ -733,11 +811,32 @@ fn play_options(
     })
 }
 
+/// The form `play` starts with: the saved login `--profile` names, by its
+/// name or its file, else the config file and the encryption of the
+/// command line.
+fn start_form(
+    cfg: &AppConfig,
+    encryption: Option<EncryptionMode>,
+    profile: Option<&std::path::Path>,
+    rows: &[window::SavedLogin],
+) -> window::LoginForm {
+    let blank = window::LoginForm {
+        host: cfg.host.clone(),
+        port: cfg.port.to_string(),
+        encryption: encryption.unwrap_or_default().into(),
+        ..window::LoginForm::default()
+    };
+    profile
+        .and_then(|path| path.file_stem()?.to_str())
+        .and_then(|name| rows.iter().find(|row| row.name == name))
+        .map_or_else(|| blank.clone(), |row| blank.filled_from(row))
+}
+
 /// `uoterm play`: the login screens, then the game window. The window has
 /// the main thread. The logins and the sessions run on the other threads.
 fn play(
     profile: Option<PathBuf>,
-    encryption: EncryptionMode,
+    encryption: Option<EncryptionMode>,
     uopath: Option<PathBuf>,
     api_bind: Option<String>,
     go: bool,
@@ -745,37 +844,18 @@ fn play(
     let mut cfg = load_app_config(None);
     cfg.uopath = uopath.or(cfg.uopath);
     let bind = api_bind.unwrap_or_else(|| cfg.api_bind.clone());
-    let saved = saved_profiles();
-    let start_with = profile
-        .as_deref()
-        .and_then(|path| path.file_stem()?.to_str())
-        .and_then(|name| saved.iter().find(|(saved_name, _)| saved_name == name));
-    let form = window::LoginForm {
-        host: cfg.host.clone(),
-        port: cfg.port.to_string(),
-        account: start_with
-            .map(|(_, p)| p.account.clone())
-            .unwrap_or_default(),
-        character: start_with
-            .map(|(_, p)| p.character.clone())
-            .unwrap_or_default(),
-        shard: start_with
-            .and_then(|(_, p)| p.shard.clone())
-            .unwrap_or_default(),
-        profile: start_with.map(|(name, _)| name.clone()),
-        password: String::new(),
-    };
-    let (_, version) = login_era_version(&cfg, start_with.map(|(_, p)| p));
-    let listed = saved
+    let store = LoginStore::standard();
+    let row_cfg = cfg.clone();
+    let row = move |stored: &StoredLogin| saved_login_row(&row_cfg, encryption, stored);
+    let listed: Vec<_> = store.list().iter().map(&row).collect();
+    let form = start_form(&cfg, encryption, profile.as_deref(), &listed);
+    let version = listed
         .iter()
-        .map(|(name, p)| window::SavedLogin {
-            name: name.clone(),
-            account: p.account.clone(),
-            character: p.character.clone(),
-            shard: p.shard.clone().unwrap_or_default(),
-            version: login_era_version(&cfg, Some(p)).1,
-        })
-        .collect();
+        .find(|saved| form.profile.as_ref() == Some(&saved.name))
+        .map_or_else(|| login_era_version(&cfg, None).1, |saved| saved.version);
+    let keep_store = store.clone();
+    let keep: window::KeepLogins =
+        std::sync::Arc::new(move |asked| keep_login(&keep_store, &row, asked));
     let rt = Runtime::new(cfg.max_sessions);
     let tokio = tokio::runtime::Handle::current();
     let api_started = std::sync::atomic::AtomicBool::new(false);
@@ -784,9 +864,8 @@ fn play(
         let profile = form
             .profile
             .as_deref()
-            .and_then(|name| saved.iter().find(|(saved_name, _)| saved_name == name))
-            .map(|(_, profile)| profile);
-        let opts = play_options(&cfg, &form, profile, encryption, picker)?;
+            .and_then(|name| store.load(name).ok());
+        let opts = play_options(&cfg, &form, profile.as_ref(), picker)?;
         let handle = tokio
             .block_on(rt.connect(opts))
             .map_err(|e| e.to_string())?;
@@ -803,6 +882,7 @@ fn play(
         form,
         saved: listed,
         connect,
+        keep,
         uopath,
         connect_at_once: go,
         version,
@@ -942,8 +1022,7 @@ mod tests {
                 text_view,
                 ..
             } => {
-                assert_eq!(encryption, EncryptionMode::None);
-                assert_eq!(encryption.as_str(), ENCRYPTION_NONE);
+                assert_eq!(encryption, None, "the saved login or none decides");
                 assert!(era.is_none());
                 assert!(version.is_none());
                 assert!(!view);
@@ -977,8 +1056,8 @@ mod tests {
                 version,
                 ..
             } => {
-                assert_eq!(encryption, EncryptionMode::Osi);
-                assert_eq!(encryption.as_str(), ENCRYPTION_OSI);
+                assert_eq!(encryption, Some(EncryptionMode::Osi));
+                assert_eq!(EncryptionMode::Osi.as_str(), ENCRYPTION_OSI);
                 assert_eq!(era.as_deref(), Some(ERA_MODERN));
                 assert_eq!(version.as_deref(), Some(VERSION_MODERN_EXAMPLE));
             }
@@ -1005,7 +1084,7 @@ mod tests {
             Commands::Connect {
                 encryption, era, ..
             } => {
-                assert_eq!(encryption, EncryptionMode::None);
+                assert_eq!(encryption, Some(EncryptionMode::None));
                 assert_eq!(era.as_deref(), Some(ERA_T2A));
             }
             _ => panic!("expected connect"),
@@ -1090,17 +1169,26 @@ mod tests {
     }
 
     #[test]
-    fn a_login_form_needs_an_account_a_port_and_a_password() {
-        let cfg = uoterm_runtime::AppConfig::default();
-        let options = |form: &window::LoginForm| {
-            play_options(&cfg, form, None, EncryptionMode::None, no_screen())
-        };
+    fn a_login_form_needs_an_account_a_host_a_port_and_a_password() {
+        let cfg = AppConfig::default();
+        let options = |form: &window::LoginForm| play_options(&cfg, form, None, no_screen());
         assert_eq!(
             options(&typed("", "2593", "pw")).unwrap_err(),
-            NEEDS_ACCOUNT
+            window::NEEDS_ACCOUNT
         );
-        assert_eq!(options(&typed("acct", "port", "pw")).unwrap_err(), BAD_PORT);
-        assert_eq!(options(&typed("acct", "0", "pw")).unwrap_err(), BAD_PORT);
+        assert_eq!(
+            options(&typed("acct", "port", "pw")).unwrap_err(),
+            window::BAD_PORT
+        );
+        assert_eq!(
+            options(&typed("acct", "0", "pw")).unwrap_err(),
+            window::BAD_PORT
+        );
+        let no_host = window::LoginForm {
+            host: " ".into(),
+            ..typed("acct", "2593", "pw")
+        };
+        assert_eq!(options(&no_host).unwrap_err(), window::NEEDS_HOST);
         assert_eq!(
             options(&typed("acct", "2593", "")).unwrap_err(),
             NEEDS_PASSWORD
@@ -1109,6 +1197,170 @@ mod tests {
         assert_eq!((ready.account.as_str(), ready.port), ("acct", 2593));
         assert_eq!(ready.shard, None);
         assert!(ready.picker.is_some());
+        assert_eq!(ready.encryption, uoterm_runtime::EncryptionMode::None);
+    }
+
+    /// A saved login in folders of the test's own.
+    fn test_store() -> (LoginStore, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("uoterm-main-logins-{}", uuid::Uuid::new_v4()));
+        (
+            LoginStore::at(root.join("logins"), root.join("profiles")),
+            root,
+        )
+    }
+
+    fn saved_mara() -> Profile {
+        Profile {
+            account: "mara_acct".into(),
+            host: Some("saved.example.com".into()),
+            port: Some(2600),
+            encryption: Some(uoterm_runtime::EncryptionMode::Osi),
+            password_env: Some("MARA_PASS".into()),
+            character: "Mara".into(),
+            shard: Some("Saved Shard".into()),
+            version: Some("7.0.50.0".into()),
+            era: Some(ERA_MODERN.into()),
+        }
+    }
+
+    #[test]
+    fn connect_takes_the_command_line_then_the_saved_login_then_the_config() {
+        let cfg = AppConfig::default();
+        let saved = saved_mara();
+        let bare = Cli::try_parse_from(["uoterm", "connect", "--profile", "mara"]).unwrap();
+        let choice = connect_choice(&bare.command, Some(&saved), &cfg).unwrap();
+        assert_eq!(
+            choice.target,
+            LoginTarget {
+                host: "saved.example.com".into(),
+                port: 2600,
+                encryption: uoterm_runtime::EncryptionMode::Osi,
+            }
+        );
+        assert_eq!(
+            (choice.account.as_str(), choice.character.as_str()),
+            ("mara_acct", "Mara")
+        );
+        assert_eq!(choice.password_env, "MARA_PASS");
+        assert_eq!(choice.shard.as_deref(), Some("Saved Shard"));
+        assert_eq!(choice.version.as_deref(), Some("7.0.50.0"));
+        let named = Cli::try_parse_from([
+            "uoterm",
+            "connect",
+            "--profile",
+            "mara",
+            "--host",
+            "cli.example.com",
+            "--port",
+            "3000",
+            "--encryption",
+            ENCRYPTION_NONE,
+            "--account",
+            "cli_acct",
+            "--password-env",
+            "CLI_PASS",
+            "--shard",
+            "Cli Shard",
+        ])
+        .unwrap();
+        let choice = connect_choice(&named.command, Some(&saved), &cfg).unwrap();
+        assert_eq!(
+            choice.target,
+            LoginTarget {
+                host: "cli.example.com".into(),
+                port: 3000,
+                encryption: uoterm_runtime::EncryptionMode::None,
+            }
+        );
+        assert_eq!(choice.account, "cli_acct");
+        assert_eq!(choice.password_env, "CLI_PASS");
+        assert_eq!(choice.shard.as_deref(), Some("Cli Shard"));
+        assert_eq!(choice.character, "Mara", "the saved login fills the rest");
+        let plain =
+            Cli::try_parse_from(["uoterm", "connect", "--account", "a", "--character", "b"])
+                .unwrap();
+        let choice = connect_choice(&plain.command, None, &cfg).unwrap();
+        assert_eq!(
+            choice.target,
+            LoginTarget {
+                host: cfg.host.clone(),
+                port: cfg.port,
+                encryption: uoterm_runtime::EncryptionMode::None,
+            }
+        );
+        assert_eq!(choice.password_env, DEFAULT_PASSWORD_ENV);
+    }
+
+    #[test]
+    fn play_takes_the_command_line_then_the_saved_login_then_the_config() {
+        let cfg = AppConfig::default();
+        let stored = StoredLogin {
+            name: "mara".into(),
+            profile: saved_mara(),
+            kept: true,
+        };
+        let row = saved_login_row(&cfg, None, &stored);
+        assert_eq!((row.host.as_str(), row.port), ("saved.example.com", 2600));
+        assert_eq!(row.encryption, uoterm_runtime::EncryptionMode::Osi);
+        assert!(row.deletable);
+        let forced = saved_login_row(&cfg, Some(EncryptionMode::None), &stored);
+        assert_eq!(forced.encryption, uoterm_runtime::EncryptionMode::None);
+        let old = StoredLogin {
+            name: "old".into(),
+            profile: Profile {
+                account: "old".into(),
+                ..Profile::default()
+            },
+            kept: false,
+        };
+        let row_old = saved_login_row(&cfg, None, &old);
+        assert_eq!(
+            (row_old.host.as_str(), row_old.port),
+            (cfg.host.as_str(), cfg.port)
+        );
+        assert!(!row_old.deletable);
+        let rows = [row, row_old];
+        let form = start_form(&cfg, None, Some(std::path::Path::new("mara")), &rows);
+        assert_eq!(form.host, "saved.example.com");
+        assert_eq!(form.profile.as_deref(), Some("mara"));
+        let form = start_form(&cfg, Some(EncryptionMode::Osi), None, &rows);
+        assert_eq!(form.host, cfg.host);
+        assert_eq!(form.encryption, uoterm_runtime::EncryptionMode::Osi);
+    }
+
+    #[test]
+    fn a_save_from_the_screen_keeps_what_the_screen_does_not_show() {
+        let (store, root) = test_store();
+        let cfg = AppConfig::default();
+        store.save("mara", &saved_mara()).unwrap();
+        let row = |stored: &StoredLogin| saved_login_row(&cfg, None, stored);
+        let from_screen = Profile {
+            account: "mara_acct".into(),
+            host: Some("new.example.com".into()),
+            port: Some(2601),
+            ..Profile::default()
+        };
+        let listed = keep_login(
+            &store,
+            row,
+            window::KeepLogin::Save {
+                name: "mara".into(),
+                profile: from_screen,
+            },
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].host, "new.example.com");
+        let text = std::fs::read_to_string(store.path("mara")).unwrap();
+        assert!(!text.contains("password ="), "{text}");
+        let kept = store.load("mara").unwrap();
+        assert_eq!(kept.password_env.as_deref(), Some("MARA_PASS"));
+        assert_eq!(kept.version.as_deref(), Some("7.0.50.0"));
+        assert_eq!(kept.encryption, None, "the screen chose none");
+        let listed = keep_login(&store, row, window::KeepLogin::Delete("mara".into())).unwrap();
+        assert!(listed.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

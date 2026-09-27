@@ -22,6 +22,8 @@ use std::collections::HashMap;
 /// An address no session answers.
 const NO_API: &str = "http://127.0.0.1:1";
 pub const SCREEN: Vec2 = Vec2::new(1280.0, 800.0);
+/// The folder a test saves its pictures in, when it is set.
+pub const ENV_PICTURES: &str = "UOTERM_TEST_PICTURES";
 
 /// Draws a panel once for each list of input events, as the frames of a
 /// player who moves the mouse, clicks and types. `draw` gets the screen
