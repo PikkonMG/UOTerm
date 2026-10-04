@@ -57,7 +57,7 @@ fn bag_items(frame: &WatchFrame, tools: &mut Tools<'_>) -> (Vec<Picked>, Vec<Wat
         .iter()
         .map(|item| {
             (
-                tools.scene.item_picture(frame.map, item.graphic, item.hue),
+                tools.scene.item_picture(item.graphic, item.hue),
                 item.name.clone(),
             )
         })

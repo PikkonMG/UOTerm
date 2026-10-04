@@ -5,8 +5,10 @@
 //! fits, and a word wider than the whole width breaks where it overflows.
 //! The space a line breaks at is dropped. A new line char always ends a line.
 
+use serde::{Deserialize, Serialize};
+
 /// Where each line of a block of words sits across the width.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TextAlign {
     #[default]
     Left,

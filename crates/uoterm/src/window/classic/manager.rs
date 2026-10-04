@@ -794,7 +794,8 @@ impl GumpManager {
         if let Some((texture, sprite)) = scene.gump_picture(LOCK_GUMP, 0) {
             let size = Vec2::new(sprite.width, sprite.height) * scale;
             let rect = Rect::from_min_size(Pos2::new(drawn.right() - size.x, drawn.top()), size);
-            ui.painter().image(texture, rect, sprite.uv, Color32::WHITE);
+            ui.painter()
+                .image(texture, rect, bridge::rect(sprite.uv), Color32::WHITE);
         }
     }
 
@@ -1018,12 +1019,7 @@ mod tests {
         fn draw(&mut self, g: &mut Canvas<'_>, _: &mut GumpContext<'_>) {
             let mut seen = self.0.borrow_mut();
             seen.size = g.size();
-            let sprite = crate::window::atlas::Sprite {
-                uv: Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                width: 10.0,
-                height: 10.0,
-                anchor: Vec2::ZERO,
-            };
+            let sprite = uoterm_view::art::Sprite::whole(10.0, 10.0);
             g.sprite(0, 0, egui::TextureId::default(), sprite);
             seen.scroll = g.expandable_scroll(0, 0, JOURNAL_SCROLL, JOURNAL_HEIGHT);
         }

@@ -14,7 +14,7 @@
 use super::layout::{self, frame_part_ids, frame_parts, FRAME_PARTS};
 use super::text::{HtmlLook, TextKit, TextLook, TextTexture};
 use super::text_field::{FieldKey, FieldOutcome, TextField};
-use crate::window::atlas::Sprite;
+use crate::window::bridge;
 use crate::window::keys;
 use crate::window::scene::Scene;
 use eframe::egui::{
@@ -22,6 +22,7 @@ use eframe::egui::{
     Stroke, TextureId, Vec2,
 };
 use std::hash::Hash;
+use uoterm_view::art::Sprite;
 use uoterm_world::GumpScroll;
 
 // The scroll bar of the classic client.
@@ -415,7 +416,7 @@ impl<'a> Canvas<'a> {
 
     fn picture_at(&mut self, gump: u16, hue: u16, rect: Rect) {
         if let Some((texture, sprite)) = self.scene.gump_picture(gump, hue) {
-            self.paint(texture, rect, sprite.uv);
+            self.paint(texture, rect, bridge::rect(sprite.uv));
         }
     }
 
@@ -427,15 +428,16 @@ impl<'a> Canvas<'a> {
         };
         let size = Vec2::new(sprite.width, sprite.height);
         let rect = self.area(x, y, size);
-        self.paint(texture, rect, sprite.uv);
+        self.paint(texture, rect, bridge::rect(sprite.uv));
         self.piece(rect, true);
         size
     }
 
     fn tile_over(&mut self, texture: TextureId, sprite: Sprite, rect: Rect) {
         let size = Vec2::new(sprite.width, sprite.height) * self.input.scale;
+        let whole = bridge::rect(sprite.uv);
         for tile in layout::tiles(rect, size) {
-            let uv = Rect::from_min_size(sprite.uv.min, sprite.uv.size() * tile.shown);
+            let uv = Rect::from_min_size(whole.min, whole.size() * tile.shown);
             self.paint(texture, tile.area, uv);
         }
     }
@@ -457,11 +459,12 @@ impl<'a> Canvas<'a> {
             return;
         };
         let share = |pixels: i32| pixels as f32 / sprite.height.max(1.0);
+        let whole = bridge::rect(sprite.uv);
         let band = Sprite {
-            uv: Rect::from_min_size(
-                sprite.uv.min + Vec2::new(0.0, sprite.uv.height() * share(top)),
-                Vec2::new(sprite.uv.width(), sprite.uv.height() * share(rows)),
-            ),
+            uv: bridge::area(Rect::from_min_size(
+                whole.min + Vec2::new(0.0, whole.height() * share(top)),
+                Vec2::new(whole.width(), whole.height() * share(rows)),
+            )),
             height: rows as f32,
             ..sprite
         };
@@ -498,7 +501,7 @@ impl<'a> Canvas<'a> {
             if part.tiled {
                 self.tile_over(texture, sprite, part.area);
             } else {
-                self.paint(texture, part.area, sprite.uv);
+                self.paint(texture, part.area, bridge::rect(sprite.uv));
             }
         }
         self.piece(rect, true);
@@ -506,12 +509,12 @@ impl<'a> Canvas<'a> {
 
     /// The picture of an item, in a hue, as a gump shows it. Gives its size.
     pub fn item(&mut self, x: i32, y: i32, graphic: u16, hue: u16) -> Vec2 {
-        let Some((texture, sprite)) = self.scene.item_picture(self.input.map, graphic, hue) else {
+        let Some((texture, sprite)) = self.scene.item_picture(graphic, hue) else {
             return Vec2::ZERO;
         };
         let size = Vec2::new(sprite.width, sprite.height);
         let rect = self.area(x, y, size);
-        self.paint(texture, rect, sprite.uv);
+        self.paint(texture, rect, bridge::rect(sprite.uv));
         self.piece(rect, true);
         size
     }
@@ -519,7 +522,7 @@ impl<'a> Canvas<'a> {
     /// A picture the window made, such as a paperdoll figure, at its size.
     pub fn sprite(&mut self, x: i32, y: i32, texture: TextureId, sprite: Sprite) {
         let rect = self.area(x, y, Vec2::new(sprite.width, sprite.height));
-        self.paint(texture, rect, sprite.uv);
+        self.paint(texture, rect, bridge::rect(sprite.uv));
         self.piece(rect, true);
     }
 
@@ -709,20 +712,18 @@ impl<'a> Canvas<'a> {
         y: i32,
         look: ItemLook,
     ) -> Option<Response> {
-        let map = self.input.map;
         let (texture, sprite) = if look.whole_hue {
-            self.scene
-                .item_picture_whole_hue(map, look.graphic, look.hue)
+            self.scene.item_picture_whole_hue(look.graphic, look.hue)
         } else {
-            self.scene.item_picture(map, look.graphic, look.hue)
+            self.scene.item_picture(look.graphic, look.hue)
         }?;
         let size = Vec2::new(sprite.width, sprite.height) * look.scale;
         let rect = self.area(x, y, size);
-        self.paint(texture, rect, sprite.uv);
+        self.paint(texture, rect, bridge::rect(sprite.uv));
         let mut whole = rect;
         if let Some(offset) = look.pile_offset {
             let pile = self.area(x + offset, y + offset, size);
-            self.paint(texture, pile, sprite.uv);
+            self.paint(texture, pile, bridge::rect(sprite.uv));
             whole = whole.union(pile);
         }
         Some(self.drag_control(key, whole))
@@ -761,7 +762,7 @@ impl<'a> Canvas<'a> {
     /// The size of an item picture, or none when the files lack it.
     pub fn item_size(&mut self, graphic: u16) -> Vec2 {
         self.scene
-            .item_picture(self.input.map, graphic, NO_HUE)
+            .item_picture(graphic, NO_HUE)
             .map_or(Vec2::ZERO, |(_, sprite)| {
                 Vec2::new(sprite.width, sprite.height)
             })

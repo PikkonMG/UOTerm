@@ -507,13 +507,12 @@ impl GridUi {
         } else {
             NATURAL_ART
         };
-        if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, item.hue)
-        {
+        if let Some((texture, sprite)) = tools.scene.item_picture(item.graphic, item.hue) {
             let area = theme::fit_up_to(cell, sprite.width, sprite.height, max_scale);
             painter.image(
                 texture,
                 area,
-                sprite.uv,
+                bridge::rect(sprite.uv),
                 Color32::WHITE.gamma_multiply(alpha),
             );
         }

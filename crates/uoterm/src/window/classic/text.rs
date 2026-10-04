@@ -1,17 +1,16 @@
-//! Words in the fonts of the client: the ASCII fonts of `fonts.mul` and the
-//! Unicode fonts of `unifont*.mul`, in a hue or a color, and the HTML of
-//! gumps. Each drawn block of words becomes one texture, kept in a cache by
-//! its words and its look, so a label that does not change is drawn once.
+//! Words in the fonts of the client, and the HTML of gumps. The fonts are
+//! `crate::art::text`, and how words look is `uoterm_view::art`. Each drawn
+//! block of words becomes one texture, kept in a cache by its words and its
+//! look, so a label that does not change is drawn once.
+
+pub use crate::art::text::UoFonts;
+pub use uoterm_view::art::{TextLook, UoFont};
 
 use super::html::{parse_html, CharLook, HtmlChar, Rgba};
 use eframe::egui::{self, ColorImage, TextureHandle, TextureId, TextureOptions, Vec2};
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::path::Path;
-use uoterm_nav::{
-    AsciiFonts, ClilocData, HueData, TextAlign, TextPicture, UnicodeFonts, UnicodeStyle,
-    UNICODE_PICTURE_PADDING,
-};
+use uoterm_nav::{TextAlign, TextPicture, UnicodeStyle, UNICODE_PICTURE_PADDING};
 
 /// How many drawn blocks of words the cache keeps. A busy screen shows a
 /// few hundred.
@@ -27,91 +26,6 @@ const HTML_INDENT: u32 = 14;
 pub const HTML_FONT: u8 = 1;
 const SPACE: char = ' ';
 const NEW_LINE: char = '\n';
-/// Words as tall as the tallest line of a font.
-const LINE_MEASURE: &str = "Ay";
-
-/// One font of the client.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum UoFont {
-    /// A font of `fonts.mul`, in the colors of its pixels or in a hue.
-    Ascii(u8),
-    /// A Unicode font, in one color.
-    Unicode(u8),
-}
-
-/// How a block of words is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TextLook {
-    pub font: UoFont,
-    /// A hue number as the client files count them: 1 is the first. Zero
-    /// keeps the colors of an ASCII font; `0xFFFF` is white Unicode words.
-    pub hue: u16,
-    pub align: TextAlign,
-    /// The width the words wrap to, or are cut to with `crop`.
-    pub width: Option<u32>,
-    /// Cut the words short with dots, on one line, instead of wrapping.
-    pub crop: bool,
-    /// Bold, italic, underline and the black border of Unicode words.
-    pub style: UnicodeStyle,
-}
-
-impl TextLook {
-    const PLAIN: UnicodeStyle = UnicodeStyle {
-        bold: false,
-        italic: false,
-        underline: false,
-        border: false,
-        extra_height: false,
-    };
-
-    pub const fn ascii(font: u8, hue: u16) -> Self {
-        Self {
-            font: UoFont::Ascii(font),
-            hue,
-            align: TextAlign::Left,
-            width: None,
-            crop: false,
-            style: Self::PLAIN,
-        }
-    }
-
-    pub const fn unicode(font: u8, hue: u16) -> Self {
-        Self {
-            font: UoFont::Unicode(font),
-            ..Self::ascii(0, hue)
-        }
-    }
-
-    /// The words wrap to this width.
-    pub const fn wrap(self, width: u32) -> Self {
-        Self {
-            width: Some(width),
-            crop: false,
-            ..self
-        }
-    }
-
-    /// The words stay on one line and are cut short with dots at this width.
-    pub const fn cropped(self, width: u32) -> Self {
-        Self {
-            width: Some(width),
-            crop: true,
-            ..self
-        }
-    }
-
-    /// Where each line sits across the width.
-    pub const fn aligned(self, align: TextAlign) -> Self {
-        Self { align, ..self }
-    }
-
-    /// Unicode words with a black ring round the ink.
-    pub const fn bordered(self) -> Self {
-        let mut style = self.style;
-        style.border = true;
-        Self { style, ..self }
-    }
-}
 
 /// How a block of gump HTML is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -122,150 +36,73 @@ pub struct HtmlLook {
     pub color: Rgba,
 }
 
-/// The fonts, the hues and the text numbers of the client.
-pub struct UoFonts {
-    pub ascii: AsciiFonts,
-    pub unicode: UnicodeFonts,
-    pub hues: HueData,
-    /// None when the client files hold no text numbers.
-    cliloc: Option<ClilocData>,
+/// The pixels one char takes across, as the Unicode font draws it.
+fn html_advance(fonts: &UoFonts, ch: &HtmlChar) -> u32 {
+    let width = fonts
+        .unicode
+        .width(ch.look.font, ch.ch.encode_utf8(&mut [0; 4]));
+    width + u32::from(ch.look.bold && ch.ch != SPACE)
 }
 
-impl UoFonts {
-    pub fn open(uopath: &Path) -> Result<Self, String> {
-        Ok(Self {
-            ascii: AsciiFonts::open(uopath).map_err(|e| e.to_string())?,
-            unicode: UnicodeFonts::open(uopath).map_err(|e| e.to_string())?,
-            hues: HueData::open(uopath).map_err(|e| e.to_string())?,
-            cliloc: ClilocData::open(uopath).ok(),
-        })
+/// Draws gump HTML, wrapped to the width of `look`.
+pub fn render_html(fonts: &UoFonts, html: &str, look: &HtmlLook) -> Option<TextPicture> {
+    let base = CharLook {
+        font: HTML_FONT,
+        color: look.color,
+        bold: false,
+        italic: false,
+        underline: false,
+        indent: false,
+        align: TextAlign::Left,
+    };
+    let text = parse_html(html, base, &|font| fonts.unicode.has_font(font));
+    let lines = html_lines(&text.chars, look.width, |ch| html_advance(fonts, ch));
+    if lines.is_empty() {
+        return None;
     }
-
-    /// The sentence of a text number of the client, or `fallback` when the
-    /// files do not hold it.
-    pub fn words(&self, number: u32, fallback: &str) -> String {
-        self.cliloc
-            .as_ref()
-            .and_then(|cliloc| cliloc.text(number))
-            .unwrap_or(fallback)
-            .to_string()
-    }
-
-    /// The width of one line of words in a font, in pixels.
-    pub fn width(&self, font: UoFont, text: &str) -> u32 {
-        match font {
-            UoFont::Ascii(font) => self.ascii.width(font, text),
-            UoFont::Unicode(font) => self.unicode.width(font, text),
+    let width = (look.width + UNICODE_PICTURE_PADDING) as usize;
+    let height = (lines.len() as u32 * HTML_LINE_HEIGHT + UNICODE_PICTURE_PADDING) as usize;
+    let mut picture = TextPicture {
+        width,
+        height,
+        rgba: vec![0; width * height * RGBA_BYTES],
+    };
+    if let Some(color) = text.background {
+        for pixel in picture.rgba.chunks_exact_mut(RGBA_BYTES) {
+            pixel.copy_from_slice(&color);
         }
     }
-
-    /// The height of one line of words in a font, in pixels.
-    pub fn line_height(&self, look: &TextLook) -> u32 {
-        match look.font {
-            UoFont::Ascii(font) => self.ascii.height(font, LINE_MEASURE, None),
-            UoFont::Unicode(font) => self.unicode.height(font, LINE_MEASURE, None, look.style),
-        }
-    }
-
-    /// The color of one step of a hue ramp, as a solid box in that hue
-    /// shows it.
-    pub fn hue_rgb(&self, hue: u16, step: usize) -> Option<[u8; 3]> {
-        self.hues.step_rgb(hue, step)
-    }
-
-    /// Draws a block of words.
-    pub fn render(&self, text: &str, look: &TextLook) -> Option<TextPicture> {
-        match look.font {
-            UoFont::Ascii(font) => {
-                let shown = shown_words(text, look, |w| self.ascii.crop(font, text, w));
-                self.ascii
-                    .render_rgba(font, &shown, look.width, look.align, look.hue, &self.hues)
+    for (row, line) in lines.iter().enumerate() {
+        let chars = &text.chars[line.start..line.end];
+        let mut x = line.left(look.width);
+        let top = row * HTML_LINE_HEIGHT as usize;
+        for run in chars.chunk_by(|a, b| a.look == b.look) {
+            let words: String = run.iter().map(|c| c.ch).collect();
+            let look = run[0].look;
+            let style = UnicodeStyle {
+                bold: look.bold,
+                italic: look.italic,
+                underline: look.underline,
+                ..UnicodeStyle::default()
+            };
+            // The run is drawn as wide as its chars step, so bold chars,
+            // one pixel wider each, are not cut at its end.
+            let run_width: u32 = run.iter().map(|c| html_advance(fonts, c)).sum();
+            let drawn = fonts.unicode.render(
+                look.font,
+                &words,
+                Some(run_width),
+                TextAlign::Left,
+                style,
+                look.color,
+            );
+            if let Some(drawn) = drawn {
+                blit(&mut picture, &drawn, x as usize, top);
             }
-            UoFont::Unicode(font) => {
-                let shown = shown_words(text, look, |w| self.unicode.crop(font, text, w));
-                self.unicode.render_hued(
-                    font, &shown, look.width, look.align, look.style, look.hue, &self.hues,
-                )
-            }
+            x += run_width;
         }
     }
-
-    /// The pixels one char takes across, as the Unicode font draws it.
-    fn html_advance(&self, ch: &HtmlChar) -> u32 {
-        let width = self
-            .unicode
-            .width(ch.look.font, ch.ch.encode_utf8(&mut [0; 4]));
-        width + u32::from(ch.look.bold && ch.ch != SPACE)
-    }
-
-    /// Draws gump HTML, wrapped to the width of `look`.
-    pub fn render_html(&self, html: &str, look: &HtmlLook) -> Option<TextPicture> {
-        let base = CharLook {
-            font: HTML_FONT,
-            color: look.color,
-            bold: false,
-            italic: false,
-            underline: false,
-            indent: false,
-            align: TextAlign::Left,
-        };
-        let text = parse_html(html, base, &|font| self.unicode.has_font(font));
-        let lines = html_lines(&text.chars, look.width, |ch| self.html_advance(ch));
-        if lines.is_empty() {
-            return None;
-        }
-        let width = (look.width + UNICODE_PICTURE_PADDING) as usize;
-        let height = (lines.len() as u32 * HTML_LINE_HEIGHT + UNICODE_PICTURE_PADDING) as usize;
-        let mut picture = TextPicture {
-            width,
-            height,
-            rgba: vec![0; width * height * RGBA_BYTES],
-        };
-        if let Some(color) = text.background {
-            for pixel in picture.rgba.chunks_exact_mut(RGBA_BYTES) {
-                pixel.copy_from_slice(&color);
-            }
-        }
-        for (row, line) in lines.iter().enumerate() {
-            let chars = &text.chars[line.start..line.end];
-            let mut x = line.left(look.width);
-            let top = row * HTML_LINE_HEIGHT as usize;
-            for run in chars.chunk_by(|a, b| a.look == b.look) {
-                let words: String = run.iter().map(|c| c.ch).collect();
-                let look = run[0].look;
-                let style = UnicodeStyle {
-                    bold: look.bold,
-                    italic: look.italic,
-                    underline: look.underline,
-                    ..UnicodeStyle::default()
-                };
-                // The run is drawn as wide as its chars step, so bold chars,
-                // one pixel wider each, are not cut at its end.
-                let run_width: u32 = run.iter().map(|c| self.html_advance(c)).sum();
-                let drawn = self.unicode.render(
-                    look.font,
-                    &words,
-                    Some(run_width),
-                    TextAlign::Left,
-                    style,
-                    look.color,
-                );
-                if let Some(drawn) = drawn {
-                    blit(&mut picture, &drawn, x as usize, top);
-                }
-                x += run_width;
-            }
-        }
-        Some(picture)
-    }
-}
-
-/// The words a look shows: cut short with dots when it crops.
-fn shown_words(text: &str, look: &TextLook, crop: impl Fn(u32) -> String) -> String {
-    match look.width.filter(|_| look.crop) {
-        Some(width) => crop(width),
-        None => text.to_string(),
-    }
+    Some(picture)
 }
 
 /// Lays one picture over another at a place. Clear pixels of the top one
@@ -494,7 +331,7 @@ impl TextKit {
         let fonts = &self.fonts;
         self.cache
             .get_or_make(&TextKey::Html(html.to_string(), *look), || {
-                upload(ctx, fonts.render_html(html, look)?)
+                upload(ctx, render_html(fonts, html, look)?)
             })
             .clone()
     }
@@ -599,29 +436,21 @@ mod tests {
     }
 
     #[test]
-    fn real_fonts_draw_labels_and_html() {
+    fn real_fonts_draw_html() {
         let Some(dir) = uoterm_nav::client_data_dir_from_env() else {
             return;
         };
         let fonts = UoFonts::open(&dir).unwrap();
-        let label = fonts
-            .render("Strength", &TextLook::ascii(1, 0x0386))
-            .unwrap();
-        assert!(label.width > 0 && label.height > 0);
-        let cut = fonts
-            .render(
-                "A very long name",
-                &TextLook::unicode(1, 0xFFFF).cropped(40),
-            )
-            .unwrap();
-        assert!(cut.width <= 40 + UNICODE_PICTURE_PADDING as usize);
         let look = HtmlLook {
             width: 120,
             color: [0, 0, 0, u8::MAX],
         };
-        let html = fonts
-            .render_html("<center><b>Runebook</b></center><br>Charges: 5", &look)
-            .unwrap();
+        let html = render_html(
+            &fonts,
+            "<center><b>Runebook</b></center><br>Charges: 5",
+            &look,
+        )
+        .unwrap();
         assert_eq!(
             html.height,
             (3 * HTML_LINE_HEIGHT + UNICODE_PICTURE_PADDING) as usize

@@ -33,9 +33,11 @@ mod tiles;
 mod unifont;
 mod uop;
 
-pub use anim::{Action, AnimData, AnimFrame, Deed, EquipConv, Facing, Stance};
+pub use anim::{Action, AnimData, AnimFrame, AnimRules, Deed, EquipConv, Facing, Stance};
 pub use animdata::{ArtCycles, TILE_ANIMATED};
-pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
+pub use art::{
+    ArtData, ArtPixels, ART_IDX_NAME, ART_MUL_NAME, ITEM_ART_BASE, LAND_ART_SIDE, PIXEL_DRAWN,
+};
 pub use client_program::{client_program_version, CLIENT_PROGRAM_NAME};
 pub use cliloc::ClilocData;
 pub use cursors::{

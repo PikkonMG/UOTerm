@@ -8,11 +8,11 @@
 use super::canvas::Canvas;
 use super::registry::{well_known, GumpBody, GumpContext, GumpKind, GumpRules};
 use crate::view::WatchFrame;
-use crate::window::atlas::Sprite;
 use crate::window::look::notoriety_hue;
 use crate::window::scene::Scene;
-use eframe::egui::{self, Color32, ColorImage, Pos2, Rect, TextureHandle, TextureOptions};
+use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
 use uoterm_nav::ArtPixels;
+use uoterm_view::art::Sprite;
 
 pub const MINIMAP: GumpKind = GumpKind {
     id: well_known::MINIMAP,
@@ -37,7 +37,6 @@ const DOT: i32 = 2;
 const NO_HUE: u16 = 0;
 const HALF: i32 = 2;
 const TEXTURE_NAME: &str = "classic-minimap";
-const WHOLE_UV: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
 
 /// Where one tile a step from the character lands on the gump picture:
 /// east goes right and down, south goes left and down.
@@ -151,12 +150,7 @@ impl GumpBody for Minimap {
             return;
         };
         let (width, height) = (made.width, made.height);
-        let sprite = Sprite {
-            uv: WHOLE_UV,
-            width,
-            height,
-            anchor: egui::Vec2::ZERO,
-        };
+        let sprite = Sprite::whole(width, height);
         g.sprite(0, 0, made.texture.id(), sprite);
         let time = ctx.input(|i| i.time);
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(BLINK_SECONDS));

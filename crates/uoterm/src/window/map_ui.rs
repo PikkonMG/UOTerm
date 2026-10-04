@@ -13,8 +13,11 @@
 //! `map_view`'s, shared with the Classic world map gump.
 
 use super::boxes_ui::{Tools, CELL_RADIUS};
+use super::bridge;
 use super::control::Act;
-use super::map_view::{self, Lay, MapFilesCache, MapPictures, MarkLook, Marks, ZOOM_MIN};
+use super::map_view::{
+    self, Lay, MapFilesCache, MapPictures, MarkLook, MarkStyle, Marks, ZOOM_MIN,
+};
 use super::model::world_map::{self, Marker, NEW_MARKER_COLOR};
 use super::modern::frame::{self as panel_frame, FrameEvent, PanelSpec, TITLE_ROW};
 use super::modern::layout::{self, Spot};
@@ -24,6 +27,7 @@ use super::settings::Profile;
 use super::theme::{self, number_font, text_font};
 use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, CornerRadius, Id, Painter, Pos2, Rect, Sense, Vec2};
+use uoterm_view::geom::Vector;
 
 /// The smallest the map field is drawn, whatever the size of the window.
 const PANEL_SIDE: f32 = 470.0;
@@ -111,21 +115,24 @@ fn modern_bar(painter: &Painter, track: Rect, share: f32) {
 }
 
 /// The marks of a map in the colors of the Modern style.
-pub fn mark_look() -> MarkLook {
-    MarkLook {
+pub fn mark_look() -> MarkStyle {
+    use uoterm_view::ui::theme as shared;
+    MarkStyle {
+        look: MarkLook {
+            marker: shared::WAITING,
+            waypoint: shared::WAITING,
+            multi: shared::FLAT_DOOR,
+            party: shared::GOAL,
+            guild: shared::MANA,
+            goal: shared::GOAL,
+            looking: shared::WAITING,
+            me: shared::SELF_FIGURE,
+            grid: shared::GLASS_EDGE,
+            mobile: shared::notoriety_color,
+        },
         font: text_font(theme::SIZE_SMALL),
         shadowed: false,
         square_dots: false,
-        marker: theme::WAITING,
-        waypoint: theme::WAITING,
-        multi: theme::FLAT_DOOR,
-        party: theme::GOAL,
-        guild: theme::MANA,
-        goal: theme::GOAL,
-        looking: theme::WAITING,
-        me: theme::SELF_FIGURE,
-        grid: theme::GLASS_EDGE,
-        mobile: theme::notoriety_color,
         health_bar: modern_bar,
     }
 }
@@ -391,7 +398,7 @@ impl MapUi {
         let Some(mouse) = response.hover_pos() else {
             return;
         };
-        let (x, y) = map_view::whole_tile(lay.tile(mouse));
+        let (x, y) = map_view::whole_tile(lay.tile(bridge::point(mouse)));
         if profile.world_map.show_mouse_coordinates {
             theme::shadowed_text(
                 &painter,
@@ -461,8 +468,8 @@ impl MapUi {
         // spreads it wider than that.
         let unit = field.width().min(field.height()) / (map_view::SPAN as f32 * HALF) * self.zoom;
         let lay = Lay::Turned {
-            center: field.center(),
-            from: Vec2::new(f32::from(frame.x), f32::from(frame.y)),
+            center: bridge::point(field.center()),
+            from: Vector::new(f32::from(frame.x), f32::from(frame.y)),
             unit,
         };
         self.pictures
@@ -503,11 +510,12 @@ impl MapUi {
             None => Vec2::new(f32::from(frame.x), f32::from(frame.y)),
         };
         if response.dragged() && profile.world_map.free_view {
-            self.looking_at = Some(map_view::whole_tile(middle - response.drag_delta() / scale));
+            let dragged = middle - response.drag_delta() / scale;
+            self.looking_at = Some(map_view::whole_tile(bridge::vector(dragged)));
         }
         let lay = Lay::NorthUp {
-            center: field.center(),
-            middle,
+            center: bridge::point(field.center()),
+            middle: bridge::vector(middle),
             scale,
         };
         self.pictures

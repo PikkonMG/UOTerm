@@ -17,7 +17,8 @@ use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use crate::window::bridge;
-use eframe::egui::{self, Align2, Id, Rect, Sense, Vec2};
+use eframe::egui::{self, Align2, Id, Rect, Sense};
+use uoterm_view::geom::Vector;
 use uoterm_view::ui::launch::RADAR_ID;
 use uoterm_view::ui::lists::radar_panel_size;
 
@@ -115,8 +116,8 @@ impl RadarUi {
             return;
         }
         let lay = Lay::Turned {
-            center: field.center(),
-            from: Vec2::new(f32::from(frame.x), f32::from(frame.y)),
+            center: bridge::point(field.center()),
+            from: Vector::new(f32::from(frame.x), f32::from(frame.y)),
             unit: field.width().min(field.height()) / (map_view::SPAN as f32 * HALF) * self.zoom,
         };
         let painter = ui.painter().with_clip_rect(field);

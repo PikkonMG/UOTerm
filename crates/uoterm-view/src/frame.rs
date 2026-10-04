@@ -3,6 +3,7 @@
 //! it. The caller gives the time it read the picture, in seconds of its own
 //! clock, so the frame reads no clock itself.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uoterm_protocol::types::{tile_distance, DIR_MASK, DIR_RUNNING, LAYER_BACKPACK};
 
@@ -37,7 +38,7 @@ pub enum Danger {
 }
 
 /// One worn item, as the animation files need it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WatchEquip {
     pub serial: u32,
     pub graphic: u16,
@@ -46,7 +47,7 @@ pub struct WatchEquip {
 }
 
 /// How a mobile looks: what the animation files need to draw him.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WatchLook {
     pub body: u16,
     pub hue: u16,

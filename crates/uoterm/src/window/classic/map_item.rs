@@ -10,10 +10,10 @@ use super::canvas::{ButtonArt, Canvas};
 use super::registry::{well_known, Closing, GumpBody, GumpContext, GumpKind, GumpRules};
 use super::text::TextLook;
 use crate::view::{WatchFrame, WatchMap};
-use crate::window::atlas::Sprite;
 use crate::window::control::Act;
 use crate::window::model::host::map_item::LandPicture;
-use eframe::egui::{Color32, Pos2, Rect, Vec2};
+use eframe::egui::{Color32, Vec2};
+use uoterm_view::art::Sprite;
 
 pub const MAP_ITEM: GumpKind = GumpKind {
     id: well_known::MAP_ITEM,
@@ -209,12 +209,7 @@ impl GumpBody for MapItemGump {
             .land
             .texture(&ctx, map, |facet, x, y| scene.radar_rgb(facet, x, y));
         if let Some(texture) = land {
-            let sprite = Sprite {
-                uv: Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                width: width as f32,
-                height: height as f32,
-                anchor: Vec2::ZERO,
-            };
+            let sprite = Sprite::whole(width as f32, height as f32);
             g.sprite(MAP_AT.0, MAP_AT.1, texture, sprite);
         }
         let mut acts = Vec::new();

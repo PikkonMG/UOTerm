@@ -110,15 +110,14 @@ fn item_art(
     ui: &egui::Ui,
     cell: Rect,
     item: &WatchPackItem,
-    frame: &WatchFrame,
     tools: &mut Tools<'_>,
     with_amount: bool,
 ) {
     let painter = ui.painter();
     painter.rect_filled(cell, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-    if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, item.hue) {
+    if let Some((texture, sprite)) = tools.scene.item_picture(item.graphic, item.hue) {
         let area = theme::fit(cell, sprite.width, sprite.height);
-        painter.image(texture, area, sprite.uv, Color32::WHITE);
+        painter.image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
     }
     if with_amount && item.amount > 1 {
         theme::shadowed_text(
@@ -297,7 +296,7 @@ impl DealUi {
             Pos2::new(row.left() + ART_SIDE / 2.0, row.center().y),
             Vec2::splat(ART_SIDE),
         );
-        item_art(ui, art, &good.item, frame, tools, false);
+        item_art(ui, art, &good.item, tools, false);
         let painter = ui.painter();
         let name = painter.text(
             Pos2::new(art.right() + theme::ROW_GAP, row.center().y),
@@ -504,7 +503,7 @@ fn traded_cell(
         Id::new(("trade-item", item.serial)),
         Sense::click_and_drag(),
     );
-    item_art(ui, cell, item, frame, tools, true);
+    item_art(ui, cell, item, tools, true);
     let live = frame.human_control;
     let footer = match (live, mine) {
         (false, _) => "",

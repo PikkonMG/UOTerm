@@ -268,9 +268,10 @@ impl PagesUi {
                 );
             }
             Some(look) => {
-                if let Some((texture, sprite)) = tools.scene.doll_picture(frame.map, look) {
+                if let Some((texture, sprite)) = tools.scene.doll_picture(look) {
                     let area = theme::fit(picture, sprite.width, sprite.height);
-                    ui.painter().image(texture, area, sprite.uv, Color32::WHITE);
+                    ui.painter()
+                        .image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
                 }
                 let list = Rect::from_min_max(
                     Pos2::new(picture.right() + theme::ROW_GAP * 2.0, body.top()),
@@ -335,11 +336,10 @@ impl PagesUi {
                 Sense::click_and_drag(),
             );
             let art = Rect::from_min_size(row.min, Vec2::splat(row.height()));
-            if let Some((texture, sprite)) =
-                tools.scene.item_picture(frame.map, item.graphic, item.hue)
-            {
+            if let Some((texture, sprite)) = tools.scene.item_picture(item.graphic, item.hue) {
                 let area = theme::fit(art, sprite.width, sprite.height);
-                ui.painter().image(texture, area, sprite.uv, Color32::WHITE);
+                ui.painter()
+                    .image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
             }
             ui.painter().text(
                 Pos2::new(art.right() + theme::ROW_GAP, row.center().y),
@@ -488,13 +488,10 @@ impl PagesUi {
                     Pos2::new(row.left() + ART_SIDE / 2.0 + theme::ROW_GAP, row.center().y),
                     Vec2::splat(ART_SIDE),
                 );
-                if let Some((texture, sprite)) =
-                    tools
-                        .scene
-                        .item_picture(frame.map, entry.graphic, entry.hue)
+                if let Some((texture, sprite)) = tools.scene.item_picture(entry.graphic, entry.hue)
                 {
                     let area = theme::fit(art, sprite.width, sprite.height);
-                    painter.image(texture, area, sprite.uv, Color32::WHITE);
+                    painter.image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
                 }
                 words_left = art.right() + theme::ROW_GAP;
             }

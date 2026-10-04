@@ -86,7 +86,7 @@ pub fn carry_and_land(
         Landing::Nothing => {}
         Landing::Carried(at) => {
             if let Some(item) = carried {
-                draw_carried(ui, bridge::pos2(at), &item, frame, map.scene);
+                draw_carried(ui, bridge::pos2(at), &item, map.scene);
             }
         }
         Landing::AskAmount(split) => desk.ask_amount(split),
@@ -95,22 +95,16 @@ pub fn carry_and_land(
 }
 
 /// The picture of the carried item, with its middle at `at`.
-fn draw_carried(
-    ui: &egui::Ui,
-    at: Pos2,
-    item: &WatchPackItem,
-    frame: &WatchFrame,
-    scene: &mut Scene,
-) {
+fn draw_carried(ui: &egui::Ui, at: Pos2, item: &WatchPackItem, scene: &mut Scene) {
     let painter = ui.ctx().layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
         Id::new("desk-carry"),
     ));
     let area = Rect::from_center_size(at, Vec2::splat(CARRY_SIDE));
-    if let Some((texture, sprite)) = scene.item_picture(frame.map, item.graphic, item.hue) {
+    if let Some((texture, sprite)) = scene.item_picture(item.graphic, item.hue) {
         let fitted = theme::fit(area, sprite.width, sprite.height);
         let tint = theme::with_alpha(Color32::WHITE, CARRY_ALPHA);
-        painter.image(texture, fitted, sprite.uv, tint);
+        painter.image(texture, fitted, bridge::rect(sprite.uv), tint);
     }
     ui.ctx().request_repaint();
 }

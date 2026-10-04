@@ -65,12 +65,11 @@ pub fn draw(
         );
         let art = Rect::from_min_size(row.min, Vec2::splat(ART_SIDE.min(row.height())));
         painter.rect_filled(art, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, wear.graphic, wear.hue)
-        {
+        if let Some((texture, sprite)) = tools.scene.item_picture(wear.graphic, wear.hue) {
             painter.image(
                 texture,
                 theme::fit(art, sprite.width, sprite.height),
-                sprite.uv,
+                bridge::rect(sprite.uv),
                 Color32::WHITE,
             );
         }

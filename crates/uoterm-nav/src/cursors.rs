@@ -7,6 +7,7 @@
 //! its left column, and its frame with black pixels. Those marks and the
 //! outer ring of pixels are not drawn.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use uoterm_protocol::Direction;
@@ -31,7 +32,7 @@ const HOT_SPOT_GREEN: u16 = 0x03E0;
 const FRAME_BLACK: u16 = 0;
 
 /// One pointer of the classic client.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CursorShape {
     /// The arrow that points a way on the screen while the mouse is over
     /// the world. It names the way a person walks toward the mouse.

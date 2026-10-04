@@ -1,0 +1,592 @@
+//! What the world maps of both styles share, apart from how they draw: how
+//! a view lays tiles on its field (turned as the play field is turned, or
+//! north up), the zoom of the wheel, the marker and zone files, the named
+//! places of the session, and where each mark goes over the land. The
+//! window paints the marks.
+
+use crate::frame::WatchFrame;
+use crate::geom::{Area, Point, Rgba, Vector};
+use crate::model::world_map::{self, Marker, MarkerFile, ZoneFile};
+use crate::settings::{Profile, WorldMapOptions};
+use serde_json::Value;
+
+/// How many tiles one side of the picture near a place covers.
+pub const SPAN: usize = 256;
+/// The least zoom of a Modern map: the whole picture fits the field.
+pub const ZOOM_MIN: f32 = 1.0;
+/// How much one notch of the wheel changes the zoom of a Modern map.
+const ZOOM_PER_NOTCH: f32 = 1.15;
+const LANDMARK_KEY_NAME: &str = "name";
+const LANDMARK_KEY_LOCATION: &str = "location";
+const DOT_RADIUS: f32 = 2.5;
+const SELF_RADIUS: f32 = 4.0;
+const MULTI_SIDE: f32 = 5.0;
+const GOAL_STROKE: f32 = 1.5;
+const ZONE_STROKE: f32 = 1.5;
+const ZONE_ALPHA: f32 = 0.6;
+const GROUP_BAR_WIDTH: f32 = 24.0;
+const GROUP_BAR_HEIGHT: f32 = 3.0;
+const PERCENT: f32 = 100.0;
+/// Grid lines show every this many tiles, when they are this many points
+/// apart.
+const GRID_TILES: f32 = 8.0;
+const GRID_MIN_GAP: f32 = 24.0;
+const GRID_STROKE: f32 = 0.5;
+const HALF: f32 = 2.0;
+
+/// Where a tile is on the turned map, as a step from the middle. One tile
+/// east goes right and down, one tile south goes left and down.
+pub fn turned(tiles: Vector, unit: f32) -> Vector {
+    Vector::new(tiles.x - tiles.y, tiles.x + tiles.y) * unit
+}
+
+/// The tiles from the middle for a step on the turned map.
+pub fn unturned(on_screen: Vector, unit: f32) -> Vector {
+    let (a, b) = (on_screen.x / unit, on_screen.y / unit);
+    Vector::new((a + b) / HALF, (b - a) / HALF)
+}
+
+/// How a view lays tiles on the field: turned round a middle tile, as the
+/// play field is turned, or north up round a middle tile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lay {
+    Turned {
+        center: Point,
+        from: Vector,
+        /// Half the points one tile takes along a side of the diamond.
+        unit: f32,
+    },
+    NorthUp {
+        center: Point,
+        middle: Vector,
+        /// Points for each tile.
+        scale: f32,
+    },
+}
+
+impl Lay {
+    pub fn screen(self, x: f32, y: f32) -> Point {
+        let tile = Vector::new(x, y);
+        match self {
+            Self::Turned { center, from, unit } => center + turned(tile - from, unit),
+            Self::NorthUp {
+                center,
+                middle,
+                scale,
+            } => center + (tile - middle) * scale,
+        }
+    }
+
+    pub fn tile(self, at: Point) -> Vector {
+        match self {
+            Self::Turned { center, from, unit } => from + unturned(at - center, unit),
+            Self::NorthUp {
+                center,
+                middle,
+                scale,
+            } => middle + (at - center) / scale,
+        }
+    }
+
+    /// Points on the field for one tile.
+    pub fn tile_points(self) -> f32 {
+        match self {
+            Self::Turned { unit, .. } => unit * HALF,
+            Self::NorthUp { scale, .. } => scale,
+        }
+    }
+}
+
+/// The zoom after `notches` of the wheel, held between the least zoom and
+/// `max`.
+pub fn zoomed(zoom: f32, notches: f32, max: f32) -> f32 {
+    (zoom * ZOOM_PER_NOTCH.powf(notches)).clamp(ZOOM_MIN, max)
+}
+
+/// A tile held inside the range of the map.
+pub fn whole_tile(tile: Vector) -> (u16, u16) {
+    let clamp = |at: f32| at.round().clamp(0.0, f32::from(u16::MAX)) as u16;
+    (clamp(tile.x), clamp(tile.y))
+}
+
+/// A place in words: its tiles, and its sextant place when the World Map
+/// page asks for one and the facet has one.
+pub fn place_words(profile: &Profile, map: u8, x: u16, y: u16) -> String {
+    let sextant = profile
+        .world_map
+        .sextant_coordinates
+        .then(|| world_map::sextant(map, x, y))
+        .flatten();
+    match sextant {
+        Some(sextant) => format!("{x}, {y}  {sextant}"),
+        None => format!("{x}, {y}"),
+    }
+}
+
+/// The places the session names on a map, from its marker file.
+pub fn landmarks(answer: &Value, map: u8) -> Vec<Marker> {
+    answer
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|place| {
+            let at = place.get(LANDMARK_KEY_LOCATION)?;
+            let number = |key: &str| u16::try_from(at.get(key)?.as_u64()?).ok();
+            Some(Marker {
+                name: place.get(LANDMARK_KEY_NAME)?.as_str()?.to_string(),
+                map,
+                x: number("x")?,
+                y: number("y")?,
+                icon: String::new(),
+                color: String::new(),
+            })
+        })
+        .collect()
+}
+
+/// The marker and zone files, with the hidden lists they were read with.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MapFiles {
+    pub markers: Vec<MarkerFile>,
+    pub zones: Vec<ZoneFile>,
+    pub hidden_markers: Vec<String>,
+    pub hidden_zones: Vec<String>,
+}
+
+impl MapFiles {
+    /// The label of the zone a tile lies in, on a facet.
+    pub fn zone_at(&self, map: u8, x: u16, y: u16) -> Option<String> {
+        self.zones
+            .iter()
+            .filter(|file| file.map == map)
+            .find_map(|file| {
+                file.zones
+                    .iter()
+                    .find(|zone| world_map::inside(&zone.corners, x, y))
+                    .map(|zone| zone.label.clone())
+            })
+    }
+
+    /// True when the files were read with the hidden lists the World Map
+    /// page has now.
+    pub fn read_for(&self, options: &WorldMapOptions) -> bool {
+        self.hidden_markers == options.hidden_marker_files
+            && self.hidden_zones == options.hidden_zone_files
+    }
+}
+
+/// The colors of the marks of one style.
+#[derive(Clone, Copy, Debug)]
+pub struct MarkLook {
+    /// A marker whose file names no color.
+    pub marker: Rgba,
+    pub waypoint: Rgba,
+    pub multi: Rgba,
+    pub party: Rgba,
+    pub guild: Rgba,
+    /// Where the character walks to.
+    pub goal: Rgba,
+    /// The place the player looked for.
+    pub looking: Rgba,
+    pub me: Rgba,
+    pub grid: Rgba,
+    pub mobile: fn(u8) -> Rgba,
+}
+
+/// What the marks of one frame come from.
+pub struct Marks<'a> {
+    pub frame: &'a WatchFrame,
+    /// The facet the map shows. The marks of the world round the
+    /// character show only on his own facet.
+    pub map: u8,
+    pub profile: &'a Profile,
+    pub files: &'a MapFiles,
+    /// The named places of the session.
+    pub session: &'a [Marker],
+    pub looking_at: Option<(u16, u16)>,
+}
+
+/// Which corner or edge of words lies on their point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WordsAnchor {
+    LeftTop,
+    LeftCenter,
+}
+
+/// One mark over the land, in the points of the field.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkPlace {
+    Line {
+        from: Point,
+        to: Point,
+        width: f32,
+        color: Rgba,
+    },
+    /// A closed line round a zone.
+    Outline {
+        points: Vec<Point>,
+        width: f32,
+        color: Rgba,
+    },
+    Words {
+        at: Point,
+        anchor: WordsAnchor,
+        words: String,
+        color: Rgba,
+    },
+    /// A dot, which a style may draw round or square.
+    Dot {
+        at: Point,
+        radius: f32,
+        color: Rgba,
+    },
+    Square {
+        at: Point,
+        side: f32,
+        color: Rgba,
+    },
+    Ring {
+        at: Point,
+        radius: f32,
+        width: f32,
+        color: Rgba,
+    },
+    /// A small health bar: its track and its share from 0 to 1.
+    HealthBar {
+        track: Area,
+        share: f32,
+    },
+}
+
+/// A dot with its name beside it, when the name shows.
+fn named_dot(out: &mut Vec<MarkPlace>, at: Point, radius: f32, name: Option<&str>, color: Rgba) {
+    out.push(MarkPlace::Dot { at, radius, color });
+    if let Some(name) = name {
+        out.push(MarkPlace::Words {
+            at: at + Vector::new(radius * HALF, 0.0),
+            anchor: WordsAnchor::LeftCenter,
+            words: name.to_string(),
+            color,
+        });
+    }
+}
+
+/// A small health bar under a dot of the map.
+fn health_bar(at: Point, share: f32) -> MarkPlace {
+    let track = Area::from_min_size(
+        at + Vector::new(-GROUP_BAR_WIDTH / HALF, SELF_RADIUS * HALF),
+        Vector::new(GROUP_BAR_WIDTH, GROUP_BAR_HEIGHT),
+    );
+    MarkPlace::HealthBar { track, share }
+}
+
+/// Grid lines every few tiles, over the part of the map the field shows.
+fn grid(out: &mut Vec<MarkPlace>, field: Area, lay: Lay, color: Rgba) {
+    let corners = [
+        lay.tile(field.min),
+        lay.tile(Point::new(field.max.x, field.min.y)),
+        lay.tile(Point::new(field.min.x, field.max.y)),
+        lay.tile(field.max),
+    ];
+    let low = corners
+        .iter()
+        .fold(Vector::new(f32::MAX, f32::MAX), |a, b| {
+            Vector::new(a.x.min(b.x), a.y.min(b.y))
+        });
+    let high = corners
+        .iter()
+        .fold(Vector::new(f32::MIN, f32::MIN), |a, b| {
+            Vector::new(a.x.max(b.x), a.y.max(b.y))
+        });
+    let line = |from: Point, to: Point| MarkPlace::Line {
+        from,
+        to,
+        width: GRID_STROKE,
+        color,
+    };
+    let first = |from: f32| (from / GRID_TILES).floor() * GRID_TILES;
+    let mut x = first(low.x);
+    while x <= high.x {
+        out.push(line(lay.screen(x, low.y), lay.screen(x, high.y)));
+        x += GRID_TILES;
+    }
+    let mut y = first(low.y);
+    while y <= high.y {
+        out.push(line(lay.screen(low.x, y), lay.screen(high.x, y)));
+        y += GRID_TILES;
+    }
+}
+
+/// Everything a map carries over the land, in paint order: the grid, the
+/// zones, the markers, the marks of the shard, the houses, the mobiles,
+/// the party and the guild, the goal, the place looked for, and the
+/// character.
+pub fn mark_layout(field: Area, lay: Lay, marks: &Marks<'_>, look: &MarkLook) -> Vec<MarkPlace> {
+    let Marks {
+        frame,
+        map,
+        profile,
+        files,
+        session,
+        looking_at,
+    } = *marks;
+    let options = &profile.world_map;
+    let mut out = Vec::new();
+    if options.grid_when_zoomed && lay.tile_points() * GRID_TILES >= GRID_MIN_GAP {
+        grid(&mut out, field, lay, look.grid);
+    }
+    for zone in files
+        .zones
+        .iter()
+        .filter(|file| file.map == map)
+        .flat_map(|file| &file.zones)
+    {
+        let Some([r, g, b]) = world_map::color_of(&zone.color) else {
+            continue;
+        };
+        let color = Rgba::from_rgb(r, g, b).with_alpha(ZONE_ALPHA);
+        let points: Vec<Point> = zone
+            .corners
+            .iter()
+            .map(|(x, y)| lay.screen(f32::from(*x), f32::from(*y)))
+            .collect();
+        if let Some(first) = points.first().copied() {
+            out.push(MarkPlace::Outline {
+                points,
+                width: ZONE_STROKE,
+                color,
+            });
+            out.push(MarkPlace::Words {
+                at: first,
+                anchor: WordsAnchor::LeftTop,
+                words: zone.label.clone(),
+                color,
+            });
+        }
+    }
+    if options.show_markers {
+        let all = files
+            .markers
+            .iter()
+            .flat_map(|file| file.markers.iter())
+            .chain(session.iter())
+            .filter(|marker| marker.map == map);
+        for marker in all {
+            let at = lay.screen(f32::from(marker.x), f32::from(marker.y));
+            if !field.contains(at) {
+                continue;
+            }
+            let color = world_map::color_of(&marker.color)
+                .map_or(look.marker, |[r, g, b]| Rgba::from_rgb(r, g, b));
+            let name = options.show_marker_names.then_some(marker.name.as_str());
+            named_dot(&mut out, at, DOT_RADIUS, name, color);
+        }
+    }
+    if let Some((x, y)) = looking_at {
+        out.push(MarkPlace::Ring {
+            at: lay.screen(f32::from(x), f32::from(y)),
+            radius: SELF_RADIUS * HALF,
+            width: GOAL_STROKE,
+            color: look.looking,
+        });
+    }
+    if map == frame.map {
+        world_round_me(&mut out, lay, frame, options, look);
+    }
+    out
+}
+
+/// The marks of the world round the character: the marks of the shard,
+/// the houses, the mobiles, the party and the guild, the goal, and the
+/// character himself.
+fn world_round_me(
+    out: &mut Vec<MarkPlace>,
+    lay: Lay,
+    frame: &WatchFrame,
+    options: &WorldMapOptions,
+    look: &MarkLook,
+) {
+    // The marks the shard put on the map, each with its name.
+    for mark in frame.waypoints.iter().filter(|mark| mark.map == frame.map) {
+        let at = lay.screen(f32::from(mark.x), f32::from(mark.y));
+        named_dot(out, at, DOT_RADIUS, Some(&mark.name), look.waypoint);
+    }
+    if options.show_multis {
+        for multi in &frame.multis {
+            out.push(MarkPlace::Square {
+                at: lay.screen(f32::from(multi.x), f32::from(multi.y)),
+                side: MULTI_SIDE,
+                color: look.multi,
+            });
+        }
+    }
+    if options.show_mobiles {
+        for mobile in &frame.mobiles {
+            out.push(MarkPlace::Dot {
+                at: lay.screen(f32::from(mobile.x), f32::from(mobile.y)),
+                radius: DOT_RADIUS,
+                color: (look.mobile)(mobile.notoriety),
+            });
+        }
+    }
+    if options.show_party {
+        for member in world_map::group_on_map(frame) {
+            let at = lay.screen(f32::from(member.x), f32::from(member.y));
+            let color = if member.guild { look.guild } else { look.party };
+            let name = options.show_group_names.then_some(member.name.as_str());
+            named_dot(out, at, SELF_RADIUS, name, color);
+            if let (true, Some(percent)) = (options.show_group_bars, member.hits_percent) {
+                out.push(health_bar(at, f32::from(percent) / PERCENT));
+            }
+        }
+    }
+    if let (Some(x), Some(y)) = (frame.dest_x, frame.dest_y) {
+        out.push(MarkPlace::Ring {
+            at: lay.screen(f32::from(x), f32::from(y)),
+            radius: SELF_RADIUS,
+            width: GOAL_STROKE,
+            color: look.goal,
+        });
+    }
+    let me = lay.screen(f32::from(frame.x), f32::from(frame.y));
+    let name = options.show_player_name.then_some(frame.name.as_str());
+    named_dot(out, me, SELF_RADIUS, name, look.me);
+    if options.show_player_bar && frame.hits_max > 0 {
+        let share = f32::from(frame.hits) / f32::from(frame.hits_max);
+        out.push(health_bar(me, share));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_wheel_zooms_between_the_two_bounds() {
+        const MAX: f32 = 8.0;
+        assert!(
+            zoomed(ZOOM_MIN, 1.0, MAX) > ZOOM_MIN,
+            "a notch up comes closer"
+        );
+        assert_eq!(zoomed(ZOOM_MIN, -5.0, MAX), ZOOM_MIN, "never below the fit");
+        assert_eq!(zoomed(MAX, 20.0, MAX), MAX, "never above the bound");
+        let twice = zoomed(zoomed(ZOOM_MIN, 1.0, MAX), -1.0, MAX);
+        assert!((twice - ZOOM_MIN).abs() < 0.001, "up then down comes back");
+    }
+
+    #[test]
+    fn a_click_on_the_turned_map_finds_its_tile_again() {
+        const UNIT: f32 = 0.9;
+        let east = turned(Vector::new(1.0, 0.0), UNIT);
+        assert!(east.x > 0.0 && east.y > 0.0, "east goes right and down");
+        let south = turned(Vector::new(0.0, 1.0), UNIT);
+        assert!(south.x < 0.0 && south.y > 0.0, "south goes left and down");
+        let tiles = Vector::new(37.0, -12.0);
+        let back = unturned(turned(tiles, UNIT), UNIT);
+        assert!((back - tiles).length() < 0.001);
+    }
+
+    #[test]
+    fn each_view_finds_the_tile_it_drew() {
+        let views = [
+            Lay::Turned {
+                center: Point::new(200.0, 200.0),
+                from: Vector::new(1000.0, 1200.0),
+                unit: 1.5,
+            },
+            Lay::NorthUp {
+                center: Point::new(200.0, 200.0),
+                middle: Vector::new(3000.0, 2000.0),
+                scale: 0.25,
+            },
+        ];
+        for lay in views {
+            let at = lay.screen(1010.0, 1195.0);
+            assert!((lay.tile(at) - Vector::new(1010.0, 1195.0)).length() < 0.01);
+        }
+        assert_eq!(whole_tile(Vector::new(-4.0, 70_000.0)), (0, u16::MAX));
+    }
+
+    #[test]
+    fn the_places_of_the_session_become_markers_of_their_map() {
+        let answer = json!([
+            { "name": "Britain Bank", "map": 1, "location": { "x": 1434, "y": 1699 } },
+            { "name": "no place" },
+        ]);
+        let found = landmarks(&answer, 1);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].x, found[0].y, found[0].map), (1434, 1699, 1));
+        let mut profile = Profile::default();
+        assert_eq!(place_words(&profile, 1, 1434, 1699), "1434, 1699");
+        profile.world_map.sextant_coordinates = true;
+        assert!(place_words(&profile, 1, 1434, 1699).ends_with("7o 48'E"));
+    }
+
+    fn white(_notoriety: u8) -> Rgba {
+        Rgba::from_rgb(u8::MAX, u8::MAX, u8::MAX)
+    }
+
+    const LOOK: MarkLook = MarkLook {
+        marker: Rgba::from_rgb(1, 0, 0),
+        waypoint: Rgba::from_rgb(2, 0, 0),
+        multi: Rgba::from_rgb(3, 0, 0),
+        party: Rgba::from_rgb(4, 0, 0),
+        guild: Rgba::from_rgb(5, 0, 0),
+        goal: Rgba::from_rgb(6, 0, 0),
+        looking: Rgba::from_rgb(7, 0, 0),
+        me: Rgba::from_rgb(8, 0, 0),
+        grid: Rgba::from_rgb(9, 0, 0),
+        mobile: white,
+    };
+
+    #[test]
+    fn the_character_and_his_goal_are_marked_on_his_own_facet_only() {
+        let frame = WatchFrame {
+            map: 1,
+            x: 100,
+            y: 100,
+            name: "Mara".into(),
+            dest_x: Some(110),
+            dest_y: Some(100),
+            ..WatchFrame::default()
+        };
+        let mut profile = Profile::default();
+        profile.world_map.show_player_name = true;
+        profile.world_map.grid_when_zoomed = false;
+        let files = MapFiles::default();
+        let field = Area::from_min_size(Point::new(0.0, 0.0), Vector::new(400.0, 400.0));
+        let lay = Lay::NorthUp {
+            center: field.center(),
+            middle: Vector::new(100.0, 100.0),
+            scale: 1.0,
+        };
+        let marks = |map| Marks {
+            frame: &frame,
+            map,
+            profile: &profile,
+            files: &files,
+            session: &[],
+            looking_at: None,
+        };
+        let placed = mark_layout(field, lay, &marks(1), &LOOK);
+        let me = field.center();
+        assert!(placed.contains(&MarkPlace::Dot {
+            at: me,
+            radius: SELF_RADIUS,
+            color: LOOK.me,
+        }));
+        assert!(placed.iter().any(|mark| matches!(
+            mark,
+            MarkPlace::Words { words, .. } if words == "Mara"
+        )));
+        assert!(placed.contains(&MarkPlace::Ring {
+            at: me + Vector::new(10.0, 0.0),
+            radius: SELF_RADIUS,
+            width: GOAL_STROKE,
+            color: LOOK.goal,
+        }));
+        assert!(mark_layout(field, lay, &marks(0), &LOOK).is_empty());
+    }
+}

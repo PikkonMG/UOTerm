@@ -13,3 +13,6 @@ uoterm-protocol.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -147,7 +147,7 @@ pub struct Shop {
 
 impl Shop {
     /// The goods of the list, with the stock that is not in the deal.
-    fn list(&mut self, g: &mut Canvas<'_>, shop: &WatchShop, width: i32, map: u8) -> i32 {
+    fn list(&mut self, g: &mut Canvas<'_>, shop: &WatchShop, width: i32) -> i32 {
         let mut y = 0;
         for good in &shop.goods {
             let serial = good.item.serial;
@@ -186,10 +186,9 @@ impl Shop {
             g.pic(GOOD_X + line_x + line_width - right, y, GOOD_LINE + 2, 0);
             if serial < FIRST_ITEM_SERIAL && shop.buying {
                 if let Some((texture, sprite)) =
-                    g.scene
-                        .creature_picture(map, good.item.graphic, good.item.hue)
+                    g.scene.creature_picture(good.item.graphic, good.item.hue)
                 {
-                    let shown = crate::window::atlas::Sprite {
+                    let shown = uoterm_view::art::Sprite {
                         width: sprite.width.min(CREATURE_MOST),
                         height: sprite.height.min(CREATURE_MOST),
                         ..sprite
@@ -406,7 +405,7 @@ impl GumpBody for Shop {
             TOP_HEIGHT,
             list_width,
             list_height + LIST_ROOM_BELOW,
-            |g| self.list(g, &shop, list_width, cx.frame.map),
+            |g| self.list(g, &shop, list_width),
         );
         g.scroll_area(
             DEAL_AREA,

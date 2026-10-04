@@ -15,6 +15,7 @@ use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use crate::window::desk;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, Vec2};
 
@@ -93,12 +94,11 @@ impl CounterUi {
                 .observe(index, amount, tools.time)
                 .map_or(f64::MIN, |change| change.at);
             let hue = if item.hue == NO_HUE { 0 } else { item.hue };
-            if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, hue)
-            {
+            if let Some((texture, sprite)) = tools.scene.item_picture(item.graphic, hue) {
                 ui.painter().image(
                     texture,
                     theme::fit(cell, sprite.width, sprite.height),
-                    sprite.uv,
+                    bridge::rect(sprite.uv),
                     Color32::WHITE,
                 );
             }

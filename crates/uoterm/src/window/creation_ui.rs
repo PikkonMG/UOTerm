@@ -13,6 +13,7 @@ use super::model::creation::{
 };
 use super::scene::{Scene, DOLL_FACING};
 use super::theme::{self, text_font, title_font};
+use crate::window::bridge;
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Galley, Id, Key, Pos2, Rect, Sense, Shape, Stroke,
@@ -21,6 +22,7 @@ use eframe::egui::{
 use std::sync::Arc;
 use uoterm_nav::{Profession, ProfessionKind};
 use uoterm_protocol::StartTown;
+use uoterm_view::geom::Vector;
 
 // The frame of the screen.
 /// The panel fills the window up to this size.
@@ -41,8 +43,6 @@ const CAPTION_ROW: f32 = 44.0;
 /// The feet of the figure stand this far above the bottom of its box.
 const FLOOR_PAD: f32 = 26.0;
 const SHADOW_RADIUS: Vec2 = Vec2::new(34.0, 8.0);
-/// The facet the figure is drawn for.
-const FIGURE_MAP: u8 = 0;
 
 // The row of steps.
 const STEP_HEIGHT: f32 = 32.0;
@@ -597,15 +597,14 @@ fn preview(
     ui.painter()
         .rect_filled(figure_box, CornerRadius::same(RADIUS), theme::TRACK);
     let direction = (DOLL_FACING + creation.turns) % FACINGS;
-    let picture =
-        scene.and_then(|scene| scene.turned_picture(FIGURE_MAP, &creation.look(), direction));
+    let picture = scene.and_then(|scene| scene.turned_picture(&creation.look(), direction));
     match picture {
         Some((texture, sprite)) => {
             let room = Vec2::new(figure_box.width(), figure_box.height() - FLOOR_PAD * HALF);
             let scale = preview_scale(room, Vec2::new(sprite.width, sprite.height));
             let size = Vec2::new(sprite.width, sprite.height) * scale;
             let floor = figure_box.bottom() - FLOOR_PAD;
-            let left = (figure_box.center().x - sprite.anchor.x * scale)
+            let left = (figure_box.center().x - bridge::vec2(sprite.anchor).x * scale)
                 .clamp(figure_box.left(), figure_box.right() - size.x);
             let shown = Rect::from_min_size(Pos2::new(left, floor - size.y).round(), size);
             ui.painter().add(Shape::ellipse_filled(
@@ -614,7 +613,7 @@ fn preview(
                 theme::TEXT_SHADOW,
             ));
             ui.painter()
-                .image(texture, shown, sprite.uv, Color32::WHITE);
+                .image(texture, shown, bridge::rect(sprite.uv), Color32::WHITE);
         }
         None => {
             let galley = wrapped(
@@ -1007,7 +1006,8 @@ fn card(
         scene.and_then(|scene| scene.gump_picture(profession.gump, NO_HUE))
     {
         let shown = theme::fit(icon, sprite.width, sprite.height);
-        ui.painter().image(texture, shown, sprite.uv, tint);
+        ui.painter()
+            .image(texture, shown, bridge::rect(sprite.uv), tint);
     }
     let text_left = icon.right() + ICON_GAP;
     let text_width = spot.right() - GAP - text_left;
@@ -1529,12 +1529,12 @@ fn town_map(ui: &egui::Ui, area: Rect, town: &StartTown, art: &mut Art<'_>) -> b
     painter.rect_filled(area, CornerRadius::same(RADIUS), theme::TRACK);
     let (x, y) = (f32::from(place.x), f32::from(place.y));
     let lay = Lay::NorthUp {
-        center: area.center(),
-        middle: Vec2::new(x, y),
+        center: bridge::point(area.center()),
+        middle: Vector::new(x, y),
         scale: area.width() / MAP_TILES,
     };
     art.town_map.draw_near(&painter, lay);
-    let pin = lay.screen(x, y);
+    let pin = bridge::pos2(lay.screen(x, y));
     painter.circle_stroke(pin, PIN_RING, Stroke::new(LINE_WIDTH, theme::GOAL));
     painter.circle(
         pin,
@@ -2098,8 +2098,6 @@ mod tests {
             }
         }
         let look = Creation::new(ClientVersion::MODERN, sample_choices());
-        assert!(scene
-            .turned_picture(FIGURE_MAP, &look.look(), DOLL_FACING)
-            .is_some());
+        assert!(scene.turned_picture(&look.look(), DOLL_FACING).is_some());
     }
 }

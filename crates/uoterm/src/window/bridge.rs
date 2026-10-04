@@ -1,12 +1,6 @@
 //! The edge between egui and the shared rules: each egui type the window
 //! holds becomes the plain type of `uoterm-view` here, and back.
 
-// The window moves its rules to `uoterm-view` task by task, and each move
-// starts to call these. Until all of them are called, some stay unused
-// outside the tests, which call every one. The expectation fails once
-// every function is used: then remove it.
-#![cfg_attr(not(test), expect(dead_code))]
-
 use eframe::egui;
 use uoterm_view::geom::{Area, Point, Rgba, Vector};
 use uoterm_view::input::{KeyName, Mods};

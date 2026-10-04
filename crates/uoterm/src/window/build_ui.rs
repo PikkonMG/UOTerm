@@ -31,6 +31,7 @@ use super::modern::layout::{self, Spot};
 use super::settings::Profile;
 use super::theme::{self, text_font};
 use crate::view::{WatchChat, WatchFrame};
+use crate::window::bridge;
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, TextFormat, Vec2,
@@ -195,7 +196,7 @@ impl BuildUi {
             Pos2::new(inner.left(), y),
             Vec2::new(inner.width(), PIECE_SIDE),
         );
-        self.piece_row(ui, pieces, &styles, frame, tools);
+        self.piece_row(ui, pieces, &styles, tools);
         y = pieces.bottom() + GAP;
         let wish_row = Rect::from_min_size(
             Pos2::new(inner.left(), y),
@@ -299,7 +300,6 @@ impl BuildUi {
         ui: &egui::Ui,
         row: Rect,
         styles: &[&HousePart],
-        frame: &WatchFrame,
         tools: &mut Tools<'_>,
     ) {
         let HouseDesign { style, piece, .. } = *self.design.borrow();
@@ -322,9 +322,10 @@ impl BuildUi {
             };
             ui.painter()
                 .rect_filled(cell, CornerRadius::same(CELL_RADIUS), fill);
-            if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, *graphic, 0) {
+            if let Some((texture, sprite)) = tools.scene.item_picture(*graphic, 0) {
                 let area = theme::fit(cell, sprite.width, sprite.height);
-                ui.painter().image(texture, area, sprite.uv, Color32::WHITE);
+                ui.painter()
+                    .image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
             }
             if response.clicked() {
                 self.design.borrow_mut().piece = i;

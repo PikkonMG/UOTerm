@@ -6,6 +6,7 @@
 //! records in groups of 32. Each group starts with a header no reader needs.
 //! High Seas files hold 64-bit flags, older files 32-bit flags.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::mul::{
@@ -29,7 +30,7 @@ const DWORD: usize = 4;
 const QWORD: usize = 8;
 
 /// One land tile of the tiledata file.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LandTile {
     pub flags: TileFlagSet,
     /// The picture of `texmaps.mul` the land takes on a slope. Zero is none.
@@ -38,7 +39,7 @@ pub struct LandTile {
 }
 
 /// One item graphic of the tiledata file.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemTile {
     pub flags: TileFlagSet,
     pub weight: u8,

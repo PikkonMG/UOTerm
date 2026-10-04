@@ -18,6 +18,7 @@ use super::super::theme::{self, text_font, title_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::abilities::ABILITIES;
 use uoterm_view::ui::lists::{ability_slot_words, ability_weapon_names};
@@ -58,7 +59,7 @@ fn icon(ui: &egui::Ui, tools: &mut Tools<'_>, cell: Rect, gump: u16, hue: u16) {
         ui.painter().image(
             texture,
             theme::fit(cell, sprite.width, sprite.height),
-            sprite.uv,
+            bridge::rect(sprite.uv),
             Color32::WHITE,
         );
     }

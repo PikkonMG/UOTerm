@@ -2,7 +2,7 @@
 //! so the shared rules do not depend on egui.
 
 use serde::{Deserialize, Serialize};
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, Div, Mul, Sub};
 
 /// A position in screen points.
 #[derive(Copy, Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -52,11 +52,43 @@ impl Sub for Point {
     }
 }
 
+impl Add for Vector {
+    type Output = Vector;
+
+    fn add(self, other: Vector) -> Vector {
+        Vector::new(self.x + other.x, self.y + other.y)
+    }
+}
+
+impl Sub for Vector {
+    type Output = Vector;
+
+    fn sub(self, other: Vector) -> Vector {
+        Vector::new(self.x - other.x, self.y - other.y)
+    }
+}
+
+impl Sub<Vector> for Point {
+    type Output = Point;
+
+    fn sub(self, offset: Vector) -> Point {
+        Point::new(self.x - offset.x, self.y - offset.y)
+    }
+}
+
 impl Mul<f32> for Vector {
     type Output = Vector;
 
     fn mul(self, factor: f32) -> Vector {
         Vector::new(self.x * factor, self.y * factor)
+    }
+}
+
+impl Div<f32> for Vector {
+    type Output = Vector;
+
+    fn div(self, divisor: f32) -> Vector {
+        Vector::new(self.x / divisor, self.y / divisor)
     }
 }
 

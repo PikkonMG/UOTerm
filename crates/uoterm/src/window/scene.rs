@@ -4,20 +4,19 @@
 
 pub use uoterm_view::clicks::PickKind;
 
-use super::atlas::{Atlas, Sprite};
+use super::art_host::NativeArt;
 use super::audio::Step;
-use super::classic::text::TextLook;
-use super::client_art::{is_drawn, Cell, ClientArt, ItemPaint};
-use super::figure::{is_mounted, Paint, Pose};
-use super::filters::{self, Seat};
-use super::lights::{flicker, shown_light_color, world_light, LightMap, LightRules, LightSource};
+use super::bridge;
+use super::lights::{
+    flicker, light_cells, shown_light_color, world_light, LightMap, LightRules, LightSource,
+};
 use super::link::POLL_MS_SAME_PROGRAM;
 use super::look::{self, HitsShown, MobileState, PlateOf, WorldLook};
 use super::model::health_bars::MapDrag;
 use super::model::house_design::{kind_of, piece_look, PieceLook, StoreyLook, STOREYS};
-use super::predict::WalkPrediction;
 use super::settings::{CircleStyle, FieldStyle, Profile};
 use super::theme;
+use crate::art::client_art::ClientArt;
 use crate::view::{
     WatchCueKind, WatchFrame, WatchItem, WatchLook, WatchMobile, WatchStride, SYM_BLOCK, SYM_DOOR,
     SYM_WALK, SYM_WATER,
@@ -31,10 +30,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use uoterm_nav::{
-    item_light, Action, CursorShape, Deed, Facing, LightHolder, TileFlagSet,
-    UNICODE_PICTURE_PADDING,
+use uoterm_nav::{item_light, Action, CursorShape, Deed, Facing, LightHolder, TileFlagSet};
+use uoterm_view::art::{
+    deed_action, is_drawn, is_mounted, stance_action, ArtRequest, Cell, ItemPaint, Paint, Pose,
+    Sprite, TextLook, WorldArt,
 };
+use uoterm_view::filters::{self, Seat};
+use uoterm_view::predict::WalkPrediction;
 
 /// Half the side of a tile picture. One tile step moves this far on each
 /// screen axis.
@@ -253,8 +255,7 @@ const EDGE_MARK_RADIUS: f32 = 6.0;
 pub const NOTE_NO_UOPATH: &str = "No client files. Give --uopath to see the real map.";
 
 pub struct Scene {
-    client: Option<ClientArt>,
-    atlas: Option<Atlas>,
+    art: NativeArt,
     note: String,
     /// Where the character is drawn now. The map is drawn round this point.
     camera: [f32; 3],
@@ -384,7 +385,7 @@ impl Words {
                 painter.image(
                     *texture,
                     Rect::from_min_size(min, self.size()),
-                    sprite.uv,
+                    bridge::rect(sprite.uv),
                     Color32::WHITE.gamma_multiply(alpha),
                 );
             }
@@ -650,11 +651,12 @@ impl Canvas {
         let columns = (rect.width() / cell).ceil().max(1.0) as u32;
         let rows = (rect.height() / cell).ceil().max(1.0) as u32;
         let first = self.mesh.vertices.len() as u32;
+        let whole = bridge::rect(sprite.uv);
         for row in 0..=rows {
             for column in 0..=columns {
                 let share = Vec2::new(column as f32 / columns as f32, row as f32 / rows as f32);
                 let pos = rect.min + rect.size() * share;
-                let uv = sprite.uv.min + sprite.uv.size() * share;
+                let uv = whole.min + whole.size() * share;
                 self.vertex(pos, uv, color.gamma_multiply(shown(pos)));
             }
         }
@@ -690,7 +692,7 @@ impl Canvas {
             Pos2::new(area.left(), top + height),
         ];
         let color = Color32::from_black_alpha((SHADOW_ALPHA * alpha * f32::from(u8::MAX)) as u8);
-        self.quad(points, corners(sprite.uv), color);
+        self.quad(points, corners(bridge::rect(sprite.uv)), color);
     }
 
     /// Water that moves: the picture again over itself, grown and shrunk
@@ -725,10 +727,11 @@ impl Canvas {
     fn sitting(&mut self, sprite: Sprite, area: Rect, color: Color32, mirrored: bool, zoom: f32) {
         let lean = if mirrored { -SIT_LEAN } else { SIT_LEAN } * zoom;
         let leans = [lean, lean, 0.0, 0.0];
+        let uv = bridge::rect(sprite.uv);
         let at = |fold: usize| {
             let share = SIT_FOLDS[fold];
             let y = area.top() + area.height() * share;
-            let v = sprite.uv.top() + sprite.uv.height() * share;
+            let v = uv.top() + uv.height() * share;
             (y, v, leans[fold])
         };
         for fold in 0..SIT_FOLDS.len() - 1 {
@@ -742,10 +745,10 @@ impl Canvas {
                     Pos2::new(area.left() + bottom_lean, bottom),
                 ],
                 [
-                    Pos2::new(sprite.uv.left(), top_v),
-                    Pos2::new(sprite.uv.right(), top_v),
-                    Pos2::new(sprite.uv.right(), bottom_v),
-                    Pos2::new(sprite.uv.left(), bottom_v),
+                    Pos2::new(uv.left(), top_v),
+                    Pos2::new(uv.right(), top_v),
+                    Pos2::new(uv.right(), bottom_v),
+                    Pos2::new(uv.left(), bottom_v),
                 ],
                 color,
             );
@@ -775,7 +778,7 @@ impl Canvas {
     }
 
     fn sprite(&mut self, sprite: Sprite, rect: Rect, color: Color32) {
-        let uv = sprite.uv;
+        let uv = bridge::rect(sprite.uv);
         self.quad(
             [
                 rect.left_top(),
@@ -1124,8 +1127,7 @@ impl Scene {
             None => (None, NOTE_NO_UOPATH.to_string()),
         };
         Self {
-            client,
-            atlas: None,
+            art: NativeArt::new(client),
             note,
             camera: [0.0; 3],
             camera_glide: None,
@@ -1190,24 +1192,25 @@ impl Scene {
         self.now = time;
         self.frame_count += 1;
         self.take_cues(frame, time);
-        if let Some(client) = self.client.as_mut() {
-            client.take_live_map(&frame.live_map);
-        }
+        self.art.take_live_map(&frame.live_map);
         self.note_arrivals(frame);
         let moving = self.follow(frame, time) || !self.shows.is_empty();
         // A mobile that stands still moves a little, and a fire burns. Wake
         // for the next picture.
-        if self.client.is_some() {
+        if self.art.has_art() {
             ui.ctx()
                 .request_repaint_after(Duration::from_secs_f64(ART_CYCLE_SECONDS));
         }
         if self.death_screen(&painter, rect, frame, time) {
             return true;
         }
-        let atlas = self.atlas.get_or_insert_with(|| Atlas::new(ui.ctx()));
+        self.art.make_atlas(ui.ctx());
+        let Some(texture) = self.art.texture_id() else {
+            return moving;
+        };
         let mut canvas = Canvas {
-            mesh: Mesh::with_texture(atlas.texture_id()),
-            white: atlas.white_uv(),
+            mesh: Mesh::with_texture(texture),
+            white: bridge::pos2(self.art.white_uv()),
         };
         let mut plates = Vec::new();
         self.build(rect, frame, &mut canvas, &mut plates);
@@ -1482,9 +1485,7 @@ impl Scene {
         } else {
             &frame.mobiles.iter().find(|m| m.serial == serial)?.look
         };
-        self.client
-            .as_ref()?
-            .deed_action(look, Deed::from_packet(kind, action)?)
+        deed_action(self.art.anim(), look, Deed::from_packet(kind, action)?)
     }
 
     /// The pose of a mobile that shows an action now.
@@ -1511,21 +1512,18 @@ impl Scene {
         };
         let (x, y, z) = self.tile_at(rect, frame, mouse);
         let pieces: Vec<(i16, i16, i16, u16)> = self
-            .client
-            .as_ref()
-            .map(|client| {
-                client
-                    .multi_pieces(placing.multi_id)
-                    .iter()
-                    .map(|piece| (piece.dx, piece.dy, piece.dz, piece.graphic))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut mesh = Mesh::with_texture(match self.atlas.as_ref() {
-            Some(atlas) => atlas.texture_id(),
-            None => return false,
-        });
-        let white = self.atlas.as_ref().map(Atlas::white_uv).unwrap_or_default();
+            .art
+            .multi_pieces(placing.multi_id)
+            .ready()
+            .unwrap_or_default()
+            .iter()
+            .map(|piece| (piece.dx, piece.dy, piece.dz, piece.graphic))
+            .collect();
+        let Some(texture) = self.art.texture_id() else {
+            return false;
+        };
+        let mut mesh = Mesh::with_texture(texture);
+        let white = bridge::pos2(self.art.white_uv());
         let mut canvas = Canvas { mesh, white };
         for (dx, dy, dz, graphic) in pieces {
             if !is_drawn(graphic) {
@@ -1540,12 +1538,12 @@ impl Scene {
                 hue: placing.hue,
                 ..ItemPaint::default()
             };
-            let Some(sprite) = self.item_sprite(frame.map, graphic, paint, true) else {
+            let Some(sprite) = self.item_sprite(graphic, paint, true) else {
                 continue;
             };
             let foot = self.project(rect, at);
             let area = Rect::from_min_size(
-                foot - sprite.anchor * self.zoom,
+                foot - bridge::vec2(sprite.anchor) * self.zoom,
                 Vec2::new(sprite.width, sprite.height) * self.zoom,
             );
             canvas.sprite(
@@ -1598,73 +1596,67 @@ impl Scene {
     /// paperdoll. It carries what he wears.
     pub fn doll_picture(
         &mut self,
-        map: u8,
         look: &crate::view::WatchLook,
     ) -> Option<(egui::TextureId, Sprite)> {
-        self.standing_picture(map, look, DOLL_FACING, Paint::outlined(theme::SELF_FIGURE))
+        let ring = Paint::outlined(bridge::rgba(theme::SELF_FIGURE));
+        self.standing_picture(look, DOLL_FACING, ring)
     }
 
     /// The picture of a mobile as he stands turned to `direction`, with no
     /// ring round it, as the figure of a new character shows.
     pub fn turned_picture(
         &mut self,
-        map: u8,
         look: &crate::view::WatchLook,
         direction: u8,
     ) -> Option<(egui::TextureId, Sprite)> {
-        self.standing_picture(map, look, direction, Paint::outlined(Color32::TRANSPARENT))
+        let no_ring = Paint::outlined(bridge::rgba(Color32::TRANSPARENT));
+        self.standing_picture(look, direction, no_ring)
     }
 
     /// The picture of a creature as a shopkeeper shows it for sale:
     /// standing, facing the watcher, with no ring round it.
-    pub fn creature_picture(
-        &mut self,
-        map: u8,
-        body: u16,
-        hue: u16,
-    ) -> Option<(egui::TextureId, Sprite)> {
+    pub fn creature_picture(&mut self, body: u16, hue: u16) -> Option<(egui::TextureId, Sprite)> {
         let look = crate::view::WatchLook {
             body,
             hue,
             ..crate::view::WatchLook::default()
         };
-        self.turned_picture(map, &look, DOLL_FACING)
+        self.turned_picture(&look, DOLL_FACING)
     }
 
     fn standing_picture(
         &mut self,
-        map: u8,
         look: &crate::view::WatchLook,
         direction: u8,
         paint: Paint,
     ) -> Option<(egui::TextureId, Sprite)> {
-        let facing = crate::view::WatchLook {
-            direction,
-            ..look.clone()
+        let request = ArtRequest::Figure {
+            look: crate::view::WatchLook {
+                direction,
+                ..look.clone()
+            },
+            pose: STANDING,
+            paint,
         };
-        let pose = Pose {
-            action: Action::Stand,
-            tick: 0,
-        };
-        self.client.as_mut()?.open_map(map);
-        let atlas = self.atlas.as_mut()?;
-        let sprite = self
-            .client
-            .as_ref()?
-            .figure_sprite(atlas, map, &facing, pose, paint)?;
-        Some((atlas.texture_id(), sprite))
+        self.picture(&request)
+    }
+
+    /// The picture of a request, with the texture it is in.
+    fn picture(&mut self, request: &ArtRequest) -> Option<(egui::TextureId, Sprite)> {
+        let sprite = self.art.sprite(request).ready()?;
+        Some((self.art.texture_id()?, sprite))
     }
 
     /// Makes the texture the pictures go into, as the first draw of the
     /// world does, for gumps drawn with no world under them, as the login
     /// screens are.
     pub fn make_atlas(&mut self, ctx: &egui::Context) {
-        self.atlas.get_or_insert_with(|| Atlas::new(ctx));
+        self.art.make_atlas(ctx);
     }
 
     /// True when gumps can show in their own pictures.
     pub fn has_gump_art(&self) -> bool {
-        self.client.as_ref().is_some_and(ClientArt::has_gump_art)
+        self.art.has_gump_art()
     }
 
     /// A picture of a gump, for a window that is not the map.
@@ -1680,39 +1672,32 @@ impl Scene {
         hue: u16,
         partial: bool,
     ) -> Option<(egui::TextureId, Sprite)> {
-        let atlas = self.atlas.as_mut()?;
-        let sprite = self
-            .client
-            .as_ref()?
-            .gump_sprite(atlas, gump, hue, partial)?;
-        Some((atlas.texture_id(), sprite))
+        self.picture(&ArtRequest::Gump { gump, hue, partial })
     }
 
     /// True when the gump draws the pixel at `x`, `y` of its picture.
     pub fn gump_drawn_at(&self, gump: u16, x: usize, y: usize) -> bool {
-        self.client
-            .as_ref()
-            .is_some_and(|client| client.gump_drawn_at(gump, x, y))
+        self.art.gump_drawn_at(gump, x, y)
     }
 
     /// What `Equipconv.def` puts in the place of a worn item on a body.
     pub fn equip_conv(&self, body: u16, worn_anim: u16) -> Option<uoterm_nav::EquipConv> {
-        self.client.as_ref()?.equip_conv(body, worn_anim)
+        self.art.anim().equip_conv(body, worn_anim)
     }
 
     /// The color of one tile on a map of the world.
     pub fn radar_rgb(&mut self, map: u8, x: u16, y: u16) -> Option<[u8; 3]> {
-        self.client.as_mut()?.radar_rgb(map, x, y)
+        self.art.radar_rgb(map, x, y)
     }
 
     /// The height of the land of one tile of a map of the world.
     pub fn land_z(&mut self, map: u8, x: u16, y: u16) -> Option<i8> {
-        self.client.as_mut()?.land_z(map, x, y)
+        self.art.land_z(map, x, y)
     }
 
     /// The pixels of a gump picture as the files hold them.
     pub fn gump_pixels(&self, gump: u16) -> Option<uoterm_nav::ArtPixels> {
-        self.client.as_ref()?.gump_pixels(gump)
+        self.art.gump_pixels(gump)
     }
 
     /// Where a place of the world is on the screen.
@@ -1786,11 +1771,7 @@ impl Scene {
     /// Notes one footstep for the sound, when the walker is a person and his
     /// last footstep is long enough ago. A jump makes no footstep.
     fn step(&mut self, walker: u32, look: &WatchLook, glide: &Glide, tiles_away: f32, time: f64) {
-        let person = self
-            .client
-            .as_ref()
-            .is_some_and(|client| client.is_person(look.body));
-        if !person || glide.from == glide.to {
+        if !self.is_person(look.body) || glide.from == glide.to {
             return;
         }
         let mounted = is_mounted(look);
@@ -1821,34 +1802,26 @@ impl Scene {
     }
 
     fn land_sprite(&mut self, land_id: u16, hue: u16) -> Option<Sprite> {
-        let client = self.client.as_ref()?;
-        let land_id = client.season_land(self.season, land_id);
-        client.land_sprite(self.atlas.as_mut()?, land_id, hue)
+        let land_id = self.art.season_land(self.season, land_id);
+        self.art.sprite(&ArtRequest::Land { land_id, hue }).ready()
     }
 
     fn texture_sprite(&mut self, texture_id: u16, hue: u16) -> Option<Sprite> {
-        let client = self.client.as_ref()?;
-        client.texture_sprite(self.atlas.as_mut()?, texture_id, hue)
+        let request = ArtRequest::Texture { texture_id, hue };
+        self.art.sprite(&request).ready()
     }
 
     /// The picture of an item as it shows now. `animate` lets a fire or a
     /// fountain go through its pictures.
-    fn item_sprite(
-        &mut self,
-        map: u8,
-        graphic: u16,
-        paint: ItemPaint,
-        animate: bool,
-    ) -> Option<Sprite> {
-        let client = self.client.as_ref()?;
+    fn item_sprite(&mut self, graphic: u16, paint: ItemPaint, animate: bool) -> Option<Sprite> {
         let now_ms = (self.now * MS_PER_SECOND) as u64;
-        let graphic = client.season_item(self.season, graphic);
+        let graphic = self.art.season_item(self.season, graphic);
         let shown = if animate {
-            client.shown_graphic(map, graphic, now_ms)
+            self.art.shown_graphic(graphic, now_ms)
         } else {
             graphic
         };
-        client.item_sprite(self.atlas.as_mut()?, map, shown, paint)
+        self.art.sprite(&ArtRequest::item(shown, paint)).ready()
     }
 
     /// Where a place of the world is in the window. The camera moves in
@@ -1868,7 +1841,7 @@ impl Scene {
     }
 
     /// The things that stand on each tile this frame.
-    fn standing<'a>(&self, frame: &'a WatchFrame) -> HashMap<(i32, i32), Vec<Standing<'a>>> {
+    fn standing<'a>(&mut self, frame: &'a WatchFrame) -> HashMap<(i32, i32), Vec<Standing<'a>>> {
         let mut out: HashMap<(i32, i32), Vec<Standing<'a>>> = HashMap::new();
         let tile = |at: [f32; 3]| (at[0].round() as i32, at[1].round() as i32);
         for item in frame.items.iter().filter(|i| is_drawn(i.graphic)) {
@@ -1913,27 +1886,25 @@ impl Scene {
                 });
             }
         }
-        for (multi, piece) in frame.multis.iter().flat_map(|multi| {
-            let designed = designed.contains_key(&multi.serial);
-            let pieces = self
-                .client
-                .as_ref()
-                .filter(|_| !designed)
-                .map_or(&[][..], |client| client.multi_pieces(multi.multi_id));
-            pieces.iter().map(move |piece| (multi, piece))
-        }) {
-            if !is_drawn(piece.graphic) {
+        for multi in &frame.multis {
+            if designed.contains_key(&multi.serial) {
                 continue;
             }
-            let tile = (
-                i32::from(multi.x) + i32::from(piece.dx),
-                i32::from(multi.y) + i32::from(piece.dy),
-            );
-            out.entry(tile).or_default().push(Standing::Piece {
-                graphic: piece.graphic,
-                z: f32::from(multi.z) + f32::from(piece.dz),
-                faded: false,
-            });
+            let pieces = self.art.multi_pieces(multi.multi_id).ready();
+            for piece in pieces.unwrap_or_default() {
+                if !is_drawn(piece.graphic) {
+                    continue;
+                }
+                let tile = (
+                    i32::from(multi.x) + i32::from(piece.dx),
+                    i32::from(multi.y) + i32::from(piece.dy),
+                );
+                out.entry(tile).or_default().push(Standing::Piece {
+                    graphic: piece.graphic,
+                    z: f32::from(multi.z) + f32::from(piece.dz),
+                    faded: false,
+                });
+            }
         }
         for mobile in &frame.mobiles {
             let at = self.actors[&mobile.serial];
@@ -1955,16 +1926,17 @@ impl Scene {
         standing: &HashMap<(i32, i32), Vec<Standing<'_>>>,
     ) -> Ceiling {
         let draw_roofs = !self.look.general.hide_roofs;
-        let Some(client) = self.client.as_mut() else {
+        if !self.art.has_art() {
             return Ceiling::open(draw_roofs);
-        };
+        }
+        let art = &mut self.art;
         let mut over = |x: i32, y: i32| -> (Option<i16>, Vec<Over>) {
             let (Ok(tile_x), Ok(tile_y)) = (u16::try_from(x), u16::try_from(y)) else {
                 return (None, Vec::new());
             };
             let mut land = None;
             let mut found = Vec::new();
-            if let Some(cell) = client.cell(frame.map, tile_x, tile_y) {
+            if let Some(cell) = art.cell(frame.map, tile_x, tile_y).ready() {
                 land = cell.land_id.map(|_| i16::from(cell.average_z));
                 found.extend(cell.statics.iter().map(|s| Over {
                     z: i16::from(s.z),
@@ -1975,7 +1947,7 @@ impl Scene {
                 if let Standing::Piece { graphic, z, .. } = thing {
                     found.push(Over {
                         z: *z as i16,
-                        flags: client
+                        flags: art
                             .item_tile(*graphic)
                             .map_or(TileFlagSet::NONE, |tile| tile.flags),
                     });
@@ -2063,7 +2035,7 @@ impl Scene {
                     continue;
                 };
                 let things = standing.remove(&(x, y)).unwrap_or_default();
-                if self.client.is_some() {
+                if self.art.has_art() {
                     self.real_tile(rect, frame, (tile_x, tile_y), canvas);
                 } else {
                     let symbol = radar_symbol(
@@ -2087,11 +2059,7 @@ impl Scene {
         (x, y): (u16, u16),
         canvas: &mut Canvas,
     ) {
-        let Some(cell) = self
-            .client
-            .as_mut()
-            .and_then(|client| client.cell(frame.map, x, y).cloned())
-        else {
+        let Some(cell) = self.art.cell(frame.map, x, y).ready().cloned() else {
             return;
         };
         if let Some(land_id) = cell.land_id {
@@ -2147,14 +2115,14 @@ impl Scene {
                 let colors = stretch
                     .normals
                     .map(|normal| lit(land_light(normal, bright)));
-                canvas.quad_colors(points, corners(sprite.uv), colors);
+                canvas.quad_colors(points, corners(bridge::rect(sprite.uv)), colors);
                 return;
             }
         }
         let Some(sprite) = self.land_sprite(land_id, hue) else {
             return;
         };
-        let uv = sprite.uv;
+        let uv = bridge::rect(sprite.uv);
         let diamond = [
             Pos2::new(uv.center().x, uv.top()),
             Pos2::new(uv.right(), uv.center().y),
@@ -2219,7 +2187,7 @@ impl Scene {
         let out_of_range = tiles_from(frame, x, y) > look::VIEW_RANGE;
         let paint = self.paint(frame.dead, false, out_of_range, art.hue, border);
         let at = [f32::from(x), f32::from(y), art.z];
-        let Some(sprite) = self.item_sprite(frame.map, graphic, paint, true) else {
+        let Some(sprite) = self.item_sprite(graphic, paint, true) else {
             return;
         };
         let center = self.project(rect, at);
@@ -2323,9 +2291,8 @@ impl Scene {
                 Standing::Art(item) => self.ground_item(rect, frame, item, canvas, plates),
                 Standing::Piece { graphic, z, faded } => {
                     let (flags, height) = self
-                        .client
-                        .as_ref()
-                        .and_then(|client| client.item_tile(graphic))
+                        .art
+                        .item_tile(graphic)
                         .map_or((TileFlagSet::NONE, 0), |tile| (tile.flags, tile.height));
                     let art = StaticArt {
                         tile,
@@ -2359,9 +2326,8 @@ impl Scene {
         plates: &mut Vec<Plate>,
     ) {
         let flags = self
-            .client
-            .as_ref()
-            .and_then(|client| client.item_tile(item.graphic))
+            .art
+            .item_tile(item.graphic)
             .map_or(TileFlagSet::NONE, |tile| tile.flags);
         let bare = flags.contains(TileFlagSet::FOLIAGE)
             && !flags.contains(TileFlagSet::MULTI_MOVABLE)
@@ -2387,13 +2353,13 @@ impl Scene {
         let paint = self.paint(frame.dead, hovered, out_of_range, own_hue, false);
         let at = [f32::from(item.x), f32::from(item.y), f32::from(item.z)];
         let center = self.project(rect, at);
-        let area = match self.item_sprite(frame.map, graphic, paint, animate) {
+        let area = match self.item_sprite(graphic, paint, animate) {
             Some(sprite) => {
                 let area = self.art_rect(center, sprite);
                 canvas.sprite(sprite, area, theme::with_alpha(Color32::WHITE, alpha));
                 area
             }
-            None if self.client.is_none() => {
+            None if !self.art.has_art() => {
                 let radius = Vec2::new(FLAT_ITEM_RADIUS * 2.0, FLAT_ITEM_RADIUS) * self.zoom;
                 canvas.fill(&ellipse(center, radius), theme::FLAT_ITEM);
                 Rect::from_center_size(center, radius * 2.0)
@@ -2453,15 +2419,11 @@ impl Scene {
             outline: self.outline(theme::CORPSE),
             whole_hue: look::thing_hue(&self.look, frame.dead, hovered, out_of_range),
         };
-        let sprite = self
-            .client
-            .as_ref()
-            .zip(self.atlas.as_mut())
-            .and_then(|(client, atlas)| client.corpse_sprite(atlas, frame.map, &look, paint));
+        let sprite = self.corpse_sprite(look, paint);
         let area = match sprite {
             Some(sprite) => {
                 let area = Rect::from_min_size(
-                    center - sprite.anchor * self.zoom,
+                    center - bridge::vec2(sprite.anchor) * self.zoom,
                     Vec2::new(sprite.width, sprite.height) * self.zoom,
                 );
                 canvas.sprite(sprite, area, theme::with_alpha(Color32::WHITE, alpha));
@@ -2551,7 +2513,7 @@ impl Scene {
             seat,
         };
         let foot = self.project(rect, at);
-        let area = self.figure(canvas, frame.map, looks, foot, target);
+        let area = self.figure(canvas, looks, foot, target);
         self.held_lights(mobile.serial, look, area);
         self.picks.push(Pick {
             area,
@@ -2630,7 +2592,7 @@ impl Scene {
             shadow: self.look.video.shadows && !frame.dead && !frame.hidden,
             seat,
         };
-        let area = self.figure(canvas, frame.map, looks, foot, false);
+        let area = self.figure(canvas, looks, foot, false);
         self.held_lights(frame.serial, look, area);
         let hits_percent = (frame.hits_max > 0).then(|| {
             (u32::from(frame.hits) * u32::from(PERCENT_MAX) / u32::from(frame.hits_max)) as u8
@@ -2707,9 +2669,9 @@ impl Scene {
         let z = at[2].round() as i16;
         let near = |thing_z: i16| (thing_z - z).abs() <= SEAT_REACH;
         let statics: Vec<u16> = self
-            .client
-            .as_mut()
-            .and_then(|client| client.cell(frame.map, x, y))
+            .art
+            .cell(frame.map, x, y)
+            .ready()
             .map(|cell| {
                 cell.statics
                     .iter()
@@ -2729,11 +2691,35 @@ impl Scene {
             .find_map(|graphic| filters::seat(graphic, look.direction))
     }
 
+    /// The picture of one mobile in one pose. Two ticks that show the
+    /// same frame share one picture.
+    fn figure_sprite(&mut self, look: &WatchLook, pose: Pose, paint: Paint) -> Option<Sprite> {
+        let frames = self.art.frame_count(look, pose.action).ready()?;
+        let request = ArtRequest::Figure {
+            look: look.clone(),
+            pose: Pose {
+                tick: pose.tick % frames.max(1),
+                ..pose
+            },
+            paint,
+        };
+        self.art.sprite(&request).ready()
+    }
+
+    /// The picture of a fallen body: the last picture of its death.
+    fn corpse_sprite(&mut self, look: WatchLook, paint: Paint) -> Option<Sprite> {
+        let action = deed_action(self.art.anim(), &look, Deed::Die)?;
+        let frames = self.art.frame_count(&look, action).ready()?;
+        let last = Pose {
+            action,
+            tick: frames.saturating_sub(1),
+        };
+        self.figure_sprite(&look, last, paint)
+    }
+
     /// True when the body is a person.
     fn is_person(&self, body: u16) -> bool {
-        self.client
-            .as_ref()
-            .is_some_and(|client| client.is_person(body))
+        self.art.has_art() && self.art.anim().is_person(body)
     }
 
     /// The ring round a figure in the Modern style. The Classic style draws
@@ -2805,11 +2791,11 @@ impl Scene {
         center: Pos2,
         seed: u32,
     ) -> Option<LightSource> {
-        let tile = self.client.as_ref()?.item_tile(graphic)?;
+        let tile = self.art.item_tile(graphic)?;
         let light = item_light(graphic, tile, holder)?;
         let rules = LightRules::from(&self.look.video);
         Some(LightSource {
-            center,
+            center: bridge::point(center),
             shape: light.shape,
             color: shown_light_color(&rules, graphic, light.color),
             strength: if rules.candle_flicker {
@@ -2859,9 +2845,9 @@ impl Scene {
     fn light_hidden(&mut self, map: u8, (x, y): (u16, u16), z: i16) -> bool {
         let max_z = self.ceiling.max_z;
         let Some(cell) = self
-            .client
-            .as_mut()
-            .and_then(|client| client.cell(map, x.saturating_add(1), y.saturating_add(1)))
+            .art
+            .cell(map, x.saturating_add(1), y.saturating_add(1))
+            .ready()
         else {
             return false;
         };
@@ -2899,35 +2885,28 @@ impl Scene {
             return;
         }
         let sources = std::mem::take(&mut self.light_sources);
-        if let Some(client) = self.client.as_mut() {
-            for source in &sources {
-                client.load_light_shape(source.shape);
+        let mut shapes = HashMap::new();
+        for source in &sources {
+            if let Some(shape) = self.art.light_shape(source.shape).ready() {
+                shapes.entry(source.shape).or_insert_with(|| shape.clone());
             }
         }
-        let client = self.client.as_ref();
-        self.lights.draw(
-            painter,
-            rect,
+        let cells = light_cells(
+            bridge::area(rect),
             light,
             rules.alternative,
             &sources,
             self.zoom,
-            |shape| client.and_then(|client| client.light_shape(shape)),
+            |shape| shapes.get(&shape),
         );
+        self.lights.draw(painter, rect, &cells);
     }
 
     /// One mobile: his aura, his shadow and his real picture, in the hue
     /// the Options screen puts over him. The Modern style adds a ring on the
     /// ground and an outline in his color. When the client files hold no
     /// picture of him, a plain figure stands in. Gives the area he covers.
-    fn figure(
-        &mut self,
-        canvas: &mut Canvas,
-        map: u8,
-        looks: Looks<'_>,
-        foot: Pos2,
-        target: bool,
-    ) -> Rect {
+    fn figure(&mut self, canvas: &mut Canvas, looks: Looks<'_>, foot: Pos2, target: bool) -> Rect {
         let Looks {
             look,
             pose,
@@ -2973,31 +2952,25 @@ impl Scene {
             outline: self.outline(color),
             whole_hue: hue,
         };
-        let sprite = self
-            .client
-            .as_ref()
-            .zip(self.atlas.as_mut())
-            .and_then(|(client, atlas)| {
-                let pose = match seat {
-                    Some(seat) if seat.from_back => Pose {
-                        action: Action::Shown(SIT_FROM_BACK_GROUP),
-                        tick: 0,
-                    },
-                    Some(_) => STANDING,
-                    None => Pose {
-                        action: client.stance_action(look, pose.action),
-                        ..pose
-                    },
-                };
-                client.figure_sprite(atlas, map, look, pose, paint)
-            });
+        let pose = match seat {
+            Some(seat) if seat.from_back => Pose {
+                action: Action::Shown(SIT_FROM_BACK_GROUP),
+                tick: 0,
+            },
+            Some(_) => STANDING,
+            None => Pose {
+                action: stance_action(self.art.anim(), look, pose.action),
+                ..pose
+            },
+        };
+        let sprite = self.figure_sprite(look, pose, paint);
         let Some(sprite) = sprite else {
             self.plain_figure(canvas, foot, color, alpha);
             return self.figure_rect(foot);
         };
-        let foot = foot + seat.map_or(Vec2::ZERO, |seat| seat.offset * zoom);
+        let foot = foot + seat.map_or(Vec2::ZERO, |seat| bridge::vec2(seat.offset) * zoom);
         let area = Rect::from_min_size(
-            foot - sprite.anchor * zoom,
+            foot - bridge::vec2(sprite.anchor) * zoom,
             Vec2::new(sprite.width, sprite.height) * zoom,
         );
         if shadow {
@@ -3055,14 +3028,8 @@ impl Scene {
     }
 
     /// The picture of an item, for a window that is not the map.
-    pub fn item_picture(
-        &mut self,
-        map: u8,
-        graphic: u16,
-        hue: u16,
-    ) -> Option<(egui::TextureId, Sprite)> {
+    pub fn item_picture(&mut self, graphic: u16, hue: u16) -> Option<(egui::TextureId, Sprite)> {
         self.painted_item_picture(
-            map,
             graphic,
             ItemPaint {
                 hue,
@@ -3075,12 +3042,10 @@ impl Scene {
     /// marks the item under the mouse.
     pub fn item_picture_whole_hue(
         &mut self,
-        map: u8,
         graphic: u16,
         hue: u16,
     ) -> Option<(egui::TextureId, Sprite)> {
         self.painted_item_picture(
-            map,
             graphic,
             ItemPaint {
                 hue,
@@ -3092,17 +3057,16 @@ impl Scene {
 
     fn painted_item_picture(
         &mut self,
-        map: u8,
         graphic: u16,
         paint: ItemPaint,
     ) -> Option<(egui::TextureId, Sprite)> {
-        let sprite = self.item_sprite(map, graphic, paint, true)?;
-        Some((self.atlas.as_ref()?.texture_id(), sprite))
+        let sprite = self.item_sprite(graphic, paint, true)?;
+        Some((self.art.texture_id()?, sprite))
     }
 
     /// The tiledata record of an item graphic, when the files have one.
     pub fn item_tile(&self, graphic: u16) -> Option<&uoterm_nav::ItemTile> {
-        self.client.as_ref()?.item_tile(graphic)
+        self.art.item_tile(graphic)
     }
 
     /// The point over a mobile or a thing that is drawn now, where the
@@ -3121,15 +3085,11 @@ impl Scene {
     /// Words in a UO font, as `look` says, ready to draw. With no UO fonts
     /// in the client files they come in the window's own font.
     pub fn words(&mut self, painter: &Painter, text: &str, look: TextLook) -> Words {
-        let picture = self
-            .client
-            .as_ref()
-            .zip(self.atlas.as_mut())
-            .and_then(|(client, atlas)| {
-                let sprite = client.text_sprite(atlas, text, look)?;
-                Some((atlas.texture_id(), sprite))
-            });
-        match picture {
+        let request = ArtRequest::Text {
+            text: text.to_string(),
+            look,
+        };
+        match self.picture(&request) {
             Some((texture, sprite)) => Words::Picture(texture, sprite),
             None => {
                 let color = self.words_color(look.hue);
@@ -3143,20 +3103,10 @@ impl Scene {
         }
     }
 
-    /// How many lines words take in a UO font, as `look` breaks them. One
-    /// when the client files hold no UO fonts.
-    pub fn text_lines(&mut self, text: &str, look: TextLook) -> usize {
-        let lines = self
-            .client
-            .as_ref()
-            .zip(self.atlas.as_mut())
-            .and_then(|(client, atlas)| {
-                let sprite = client.text_sprite(atlas, text, look)?;
-                let line = client.line_height(&look)?.max(1) as f32;
-                let drawn = sprite.height - UNICODE_PICTURE_PADDING as f32;
-                Some((drawn / line).round() as usize)
-            });
-        lines.unwrap_or(1).max(1)
+    /// The lines words break into in a UO font, as `look` breaks them.
+    /// Empty when the client files hold no UO fonts.
+    pub fn text_lines(&self, text: &str, look: &TextLook) -> Vec<String> {
+        self.art.text_lines(text, look)
     }
 
     /// The picture of a mouse pointer of the classic client, with its point
@@ -3167,12 +3117,7 @@ impl Scene {
         war: bool,
         hue: u16,
     ) -> Option<(egui::TextureId, Sprite)> {
-        let atlas = self.atlas.as_mut()?;
-        let sprite = self
-            .client
-            .as_ref()?
-            .cursor_sprite(atlas, shape, war, hue)?;
-        Some((atlas.texture_id(), sprite))
+        self.picture(&ArtRequest::Cursor { shape, war, hue })
     }
 
     /// The hit points and the name plates of the Classic style, over each
@@ -3294,7 +3239,7 @@ impl Scene {
                     painter.image(
                         texture,
                         part,
-                        sprite.uv,
+                        bridge::rect(sprite.uv),
                         Color32::WHITE.gamma_multiply(alpha),
                     );
                 }
@@ -3307,10 +3252,8 @@ impl Scene {
 
     /// The color of words in a hue. Without client files, the plain color.
     pub fn words_color(&self, hue: u16) -> Color32 {
-        self.client
-            .as_ref()
-            .and_then(|client| client.text_rgb(hue))
-            .map_or(theme::TEXT, |[r, g, b]| Color32::from_rgb(r, g, b))
+        let [red, green, blue] = self.art.text_rgb(hue);
+        Color32::from_rgb(red, green, blue)
     }
 
     /// The thing on top under the mouse.
@@ -3351,7 +3294,7 @@ impl Scene {
 
     /// The floor of a tile that is nearest to the height of the character.
     fn floor_near(&mut self, frame: &WatchFrame, x: u16, y: u16) -> Option<i8> {
-        let cell = self.client.as_mut()?.cell(frame.map, x, y)?;
+        let cell = self.art.cell(frame.map, x, y).ready()?;
         let land = cell.land_id.map(|_| i16::from(cell.corners[0]));
         let here = i16::from(frame.z);
         cell.statics
@@ -3540,7 +3483,7 @@ mod tests {
             at: [0.0, 0.0, 12.0],
         };
         assert!(floor.z() < character.z());
-        let without_files = Scene::new(None);
+        let mut without_files = Scene::new(None);
         let frame = WatchFrame {
             multis: vec![crate::view::WatchMulti {
                 serial: 50,
@@ -3595,7 +3538,7 @@ mod tests {
             }],
             ..WatchFrame::default()
         };
-        let faded_at = |scene: &Scene, x| {
+        let faded_at = |scene: &mut Scene, x| {
             scene.standing(&frame).get(&(x, 10)).and_then(|things| {
                 things.iter().find_map(|thing| match thing {
                     Standing::Piece { faded, .. } => Some(*faded),
@@ -3603,15 +3546,15 @@ mod tests {
                 })
             })
         };
-        assert_eq!(faded_at(&scene, 11), Some(false));
+        assert_eq!(faded_at(&mut scene, 11), Some(false));
         let mut looks = [StoreyLook::Normal; STOREYS];
         looks[0] = StoreyLook::SeeThroughContent;
         scene.set_storey_looks(looks);
-        assert_eq!(faded_at(&scene, 11), Some(true));
+        assert_eq!(faded_at(&mut scene, 11), Some(true));
         looks[0] = StoreyLook::HideAll;
         scene.set_storey_looks(looks);
-        assert_eq!(faded_at(&scene, 11), None, "hidden");
-        assert_eq!(faded_at(&scene, 31), Some(false), "another house");
+        assert_eq!(faded_at(&mut scene, 11), None, "hidden");
+        assert_eq!(faded_at(&mut scene, 31), Some(false), "another house");
     }
 
     #[test]

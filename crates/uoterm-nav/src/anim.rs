@@ -7,6 +7,7 @@
 //! This reader holds the classic MUL files only. A body that lives in the
 //! UOP animation files alone gives no picture.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -75,7 +76,7 @@ const FILE_ANIM2: usize = 1;
 const FILE_ANIM3: usize = 2;
 const ANIM3_FIRST_MONSTER: u16 = 300;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum BodyKind {
     Monster,
     SeaMonster,
@@ -84,7 +85,7 @@ enum BodyKind {
 }
 
 /// What a body does in a picture.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Action {
     Stand,
     Walk,
@@ -149,7 +150,7 @@ pub struct Stance {
 }
 
 /// The five directions the files hold. The other three are these, mirrored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Facing {
     stored: u32,
     pub mirrored: bool,
@@ -185,7 +186,7 @@ pub struct AnimFrame {
 }
 
 /// What `Equipconv.def` puts in the place of a worn item on one body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EquipConv {
     pub anim: u16,
     /// The gump the item shows on a paperdoll of the body.
@@ -198,14 +199,23 @@ struct AnimFile {
     mul: Mutex<File>,
 }
 
-pub struct AnimData {
-    files: Vec<Option<AnimFile>>,
+/// The tables of the animation files that hold no pictures: the kind of
+/// each body, the file it lives in, and what a worn item shows as on it.
+/// They are small, so a window that reads no files can take them whole.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnimRules {
     kinds: HashMap<u16, (BodyKind, u32)>,
     /// A body that lives in a later file: the file, and its number there.
     moved: HashMap<u16, (usize, u16)>,
+    /// By body, then by worn animation.
+    equip_conv: HashMap<u16, HashMap<u16, EquipConv>>,
+}
+
+pub struct AnimData {
+    files: Vec<Option<AnimFile>>,
+    rules: AnimRules,
     /// A body that shows as a different body, with a hue.
     shown_as: HashMap<u16, (u16, u16)>,
-    equip_conv: HashMap<(u16, u16), EquipConv>,
     /// None when the client files hold no newer animation packages.
     uop: Option<crate::anim_uop::UopAnims>,
 }
@@ -315,7 +325,7 @@ fn parse_body_def(text: &str) -> HashMap<u16, (u16, u16)> {
 /// A row is `body worn_anim new_anim gump hue`. A gump of zero is the worn
 /// animation, and one of -1 the new animation, as the classic client reads
 /// them; a row with a gump past the gump files is left out.
-fn parse_equipconv(text: &str) -> HashMap<(u16, u16), EquipConv> {
+fn parse_equipconv(text: &str) -> HashMap<u16, HashMap<u16, EquipConv>> {
     const COLUMNS: usize = 5;
     const GUMP_COLUMN: usize = 3;
     const GUMP_OF_WORN: i64 = 0;
@@ -332,8 +342,8 @@ fn parse_equipconv(text: &str) -> HashMap<(u16, u16), EquipConv> {
                 gump if GUMP_OF_NEW.contains(&gump) => anim,
                 _ => number(GUMP_COLUMN).unwrap_or(anim),
             };
-            out.insert(
-                (body, worn),
+            out.entry(body).or_insert_with(HashMap::new).insert(
+                worn,
                 EquipConv {
                     anim,
                     gump,
@@ -425,35 +435,16 @@ fn first_record_and_groups(
     }
 }
 
-impl AnimData {
-    pub fn open(uopath: impl AsRef<Path>) -> Result<Self, MapError> {
-        let dir = uopath.as_ref();
-        let files: Vec<Option<AnimFile>> = (0..ANIM_FILE_COUNT)
-            .map(|i| {
-                let (idx, mul) = anim_file_names(i);
-                Some(AnimFile {
-                    idx: read_file(&dir.join(idx)).ok()?,
-                    mul: Mutex::new(File::open(dir.join(mul)).ok()?),
-                })
-            })
-            .collect();
-        if !matches!(files.first(), Some(Some(_))) {
-            return Err(MapError::Missing("anim.mul"));
-        }
-        Ok(Self {
-            files,
-            kinds: parse_mobtypes(&read_text(&dir.join(MOBTYPES_NAME))),
-            moved: parse_bodyconv(&read_text(&dir.join(BODYCONV_NAME))),
-            shown_as: parse_body_def(&read_text(&dir.join(BODY_DEF_NAME))),
-            equip_conv: parse_equipconv(&read_text(&dir.join(EQUIPCONV_NAME))),
-            uop: crate::anim_uop::UopAnims::open(dir),
-        })
+impl AnimRules {
+    /// The file a body lives in, and its number there.
+    fn file_of(&self, body: u16) -> (usize, u16) {
+        self.moved.get(&body).copied().unwrap_or((0, body))
     }
 
     /// The action that shows a deed of a body. None when the body has no
     /// pictures for it.
     pub fn deed_action(&self, body: u16, deed: Deed, mounted: bool) -> Option<Action> {
-        let (file, body_in_file) = self.moved.get(&body).copied().unwrap_or((0, body));
+        let (file, body_in_file) = self.file_of(body);
         let (kind, _) = self.kind_of(body, body_in_file, file);
         let column = match kind {
             BodyKind::Person if mounted => 1,
@@ -482,13 +473,13 @@ impl AnimData {
 
     /// What a worn item with animation `worn_anim` shows as on `body`.
     pub fn equip_conv(&self, body: u16, worn_anim: u16) -> Option<EquipConv> {
-        self.equip_conv.get(&(body, worn_anim)).copied()
+        self.equip_conv.get(&body)?.get(&worn_anim).copied()
     }
 
     /// True when the pictures of this body are those of a person, so worn
     /// items show on it.
     pub fn is_person(&self, body: u16) -> bool {
-        let (file, body_in_file) = self.moved.get(&body).copied().unwrap_or((0, body));
+        let (file, body_in_file) = self.file_of(body);
         self.kind_of(body, body_in_file, file).0 == BodyKind::Person
     }
 
@@ -499,6 +490,59 @@ impl AnimData {
             .get(&body)
             .copied()
             .unwrap_or((default_kind(body_in_file, file), 0))
+    }
+}
+
+impl AnimData {
+    pub fn open(uopath: impl AsRef<Path>) -> Result<Self, MapError> {
+        let dir = uopath.as_ref();
+        let files: Vec<Option<AnimFile>> = (0..ANIM_FILE_COUNT)
+            .map(|i| {
+                let (idx, mul) = anim_file_names(i);
+                Some(AnimFile {
+                    idx: read_file(&dir.join(idx)).ok()?,
+                    mul: Mutex::new(File::open(dir.join(mul)).ok()?),
+                })
+            })
+            .collect();
+        if !matches!(files.first(), Some(Some(_))) {
+            return Err(MapError::Missing("anim.mul"));
+        }
+        Ok(Self {
+            files,
+            rules: AnimRules {
+                kinds: parse_mobtypes(&read_text(&dir.join(MOBTYPES_NAME))),
+                moved: parse_bodyconv(&read_text(&dir.join(BODYCONV_NAME))),
+                equip_conv: parse_equipconv(&read_text(&dir.join(EQUIPCONV_NAME))),
+            },
+            shown_as: parse_body_def(&read_text(&dir.join(BODY_DEF_NAME))),
+            uop: crate::anim_uop::UopAnims::open(dir),
+        })
+    }
+
+    /// The tables that hold no pictures.
+    pub fn rules(&self) -> &AnimRules {
+        &self.rules
+    }
+
+    /// The action that shows a deed of a body. See [`AnimRules::deed_action`].
+    pub fn deed_action(&self, body: u16, deed: Deed, mounted: bool) -> Option<Action> {
+        self.rules.deed_action(body, deed, mounted)
+    }
+
+    /// See [`AnimRules::stance_action`].
+    pub fn stance_action(&self, body: u16, action: Action, stance: Stance) -> Action {
+        self.rules.stance_action(body, action, stance)
+    }
+
+    /// See [`AnimRules::equip_conv`].
+    pub fn equip_conv(&self, body: u16, worn_anim: u16) -> Option<EquipConv> {
+        self.rules.equip_conv(body, worn_anim)
+    }
+
+    /// See [`AnimRules::is_person`].
+    pub fn is_person(&self, body: u16) -> bool {
+        self.rules.is_person(body)
     }
 
     /// Each frame of a body that does `action` and looks toward `facing`.
@@ -514,8 +558,8 @@ impl AnimData {
         let mut body = body;
         let mut file_hue = 0;
         for _ in 0..BODY_DEF_MAX_HOPS {
-            let (file, body_in_file) = self.moved.get(&body).copied().unwrap_or((0, body));
-            let (kind, flags) = self.kind_of(body, body_in_file, file);
+            let (file, body_in_file) = self.rules.file_of(body);
+            let (kind, flags) = self.rules.kind_of(body, body_in_file, file);
             let read = |action: Action| {
                 if flags & FLAG_USE_UOP != 0 {
                     let group = action.group(uop_groups(kind, mounted));
@@ -734,15 +778,29 @@ mod tests {
             "401\t1249 1250 61250\t0\t#\tHuman M to F\n605 5 6 0 0\n605 7 8 -1 0\n",
         );
         assert_eq!(
-            conv[&(401, 1249)],
+            conv[&401][&1249],
             EquipConv {
                 anim: 1250,
                 gump: 61250,
                 hue: 0
             }
         );
-        assert_eq!(conv[&(605, 5)].gump, 5);
-        assert_eq!(conv[&(605, 7)].gump, 8);
+        assert_eq!(conv[&605][&5].gump, 5);
+        assert_eq!(conv[&605][&7].gump, 8);
+    }
+
+    #[test]
+    fn the_rules_go_on_the_wire_and_come_back_whole() {
+        let rules = AnimRules {
+            kinds: parse_mobtypes("5 ANIMAL 2A\n"),
+            moved: parse_bodyconv("157\t1\t-1\n"),
+            equip_conv: parse_equipconv("401 1249 1250 61250 0\n"),
+        };
+        let text = serde_json::to_string(&rules).unwrap();
+        let back: AnimRules = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, rules);
+        assert_eq!(back.equip_conv(401, 1249).map(|conv| conv.anim), Some(1250));
+        assert!(back.is_person(BODY_MAN) && !back.is_person(5));
     }
 
     #[test]

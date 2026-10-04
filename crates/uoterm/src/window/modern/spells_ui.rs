@@ -17,6 +17,7 @@ use super::super::model::spell_data::{
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font, title_font};
 use crate::view::{WatchFrame, WatchSpellbook};
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::spells::School;
 use uoterm_view::ui::lists::{self, spell_book_words, spell_chosen};
@@ -253,7 +254,7 @@ impl SpellsTab {
                 ui.painter().image(
                     texture,
                     theme::fit(icon, sprite.width, sprite.height),
-                    sprite.uv,
+                    bridge::rect(sprite.uv),
                     Color32::WHITE,
                 );
             }
@@ -329,7 +330,7 @@ impl SpellsTab {
             painter.image(
                 texture,
                 theme::fit(icon, sprite.width, sprite.height),
-                sprite.uv,
+                bridge::rect(sprite.uv),
                 Color32::WHITE,
             );
         }

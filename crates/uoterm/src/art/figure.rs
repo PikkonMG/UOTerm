@@ -3,21 +3,21 @@
 //! An outline in the color of his notoriety goes round the whole figure, so
 //! he stays easy to find on busy ground.
 
-use super::atlas::Picture;
-use crate::view::{WatchEquip, WatchLook};
-use eframe::egui::{Color32, Vec2};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use uoterm_nav::{
-    mount_of, Action, AnimData, AnimFrame, Facing, HueData, MulMap, TILE_PARTIAL_HUE,
+    mount_of, Action, AnimData, AnimFrame, Facing, HueData, TileData, TILE_PARTIAL_HUE,
 };
 use uoterm_protocol::types::{
     LAYER_ARMS, LAYER_BEARD, LAYER_BRACELET, LAYER_CLOAK, LAYER_EARRINGS, LAYER_FACE, LAYER_GLOVES,
-    LAYER_HAIR, LAYER_HELMET, LAYER_LEGS, LAYER_MOUNT, LAYER_NECKLACE, LAYER_ONE_HANDED,
-    LAYER_PANTS, LAYER_RING, LAYER_ROBE, LAYER_SHIRT, LAYER_SHOES, LAYER_SKIRT, LAYER_TALISMAN,
-    LAYER_TORSO, LAYER_TUNIC, LAYER_TWO_HANDED, LAYER_WAIST,
+    LAYER_HAIR, LAYER_HELMET, LAYER_LEGS, LAYER_NECKLACE, LAYER_ONE_HANDED, LAYER_PANTS,
+    LAYER_RING, LAYER_ROBE, LAYER_SHIRT, LAYER_SHOES, LAYER_SKIRT, LAYER_TALISMAN, LAYER_TORSO,
+    LAYER_TUNIC, LAYER_TWO_HANDED, LAYER_WAIST,
 };
+use uoterm_view::art::{mount_item, Paint, Picture, Pose};
+use uoterm_view::frame::{WatchEquip, WatchLook};
+use uoterm_view::geom::Vector;
 
 /// The order the game paints worn items, first to last. The cloak is not
 /// here: its place depends on the way the mobile faces.
@@ -70,17 +70,8 @@ pub struct FrameCache {
 pub struct Source<'a> {
     pub anim: &'a AnimData,
     pub hues: Option<&'a HueData>,
-    pub tiledata: &'a MulMap,
+    pub tiledata: &'a TileData,
     pub cache: &'a FrameCache,
-}
-
-/// Which picture of a mobile to make: what he does, and how far into it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Pose {
-    pub action: Action,
-    /// The frame count since the window opened. Each part takes this modulo
-    /// its own number of frames.
-    pub tick: usize,
 }
 
 /// One part of the figure, placed from the point on the tile.
@@ -148,7 +139,8 @@ impl Source<'_> {
         rider_drop: Option<i32>,
         whole_hue: Option<u16>,
     ) -> Option<Part> {
-        let own = self.tiledata.item_anim(item.graphic);
+        let tile = self.tiledata.item(item.graphic)?;
+        let own = tile.anim_id;
         if own == 0 {
             return None;
         }
@@ -167,7 +159,7 @@ impl Source<'_> {
                 } else {
                     item.hue
                 };
-                let partial = self.tiledata.item_flags(item.graphic) & TILE_PARTIAL_HUE != 0;
+                let partial = tile.flags.low_bits() & TILE_PARTIAL_HUE != 0;
                 (hue, partial)
             }
         };
@@ -207,17 +199,6 @@ fn paint_order(direction: u8) -> Vec<u8> {
 /// body has no pictures of its own in the client files.
 fn shown_body(look: &WatchLook) -> u16 {
     uoterm_world::body_when_alive(look.body).unwrap_or(look.body)
-}
-
-fn mount_item(look: &WatchLook) -> Option<&WatchEquip> {
-    look.equipment
-        .iter()
-        .find(|item| item.layer == LAYER_MOUNT && mount_of(item.graphic).is_some())
-}
-
-/// True when the mobile sits on a mount.
-pub fn is_mounted(look: &WatchLook) -> bool {
-    mount_item(look).is_some()
 }
 
 /// The parts of a figure in paint order. `whole_hue` paints every part in
@@ -286,7 +267,7 @@ fn paint_part(canvas: &mut [u8], canvas_width: usize, origin: (i32, i32), part: 
 }
 
 /// Colors each clear pixel that touches the figure.
-fn outline(canvas: &mut [u8], width: usize, height: usize, color: Color32) {
+fn outline(canvas: &mut [u8], width: usize, height: usize, color: [u8; RGBA]) {
     let solid: Vec<bool> = canvas.chunks_exact(RGBA).map(|p| p[ALPHA] != 0).collect();
     let touches = |x: usize, y: usize| {
         (x > 0 && solid[y * width + x - 1])
@@ -298,26 +279,8 @@ fn outline(canvas: &mut [u8], width: usize, height: usize, color: Color32) {
         for x in 0..width {
             if !solid[y * width + x] && touches(x, y) {
                 let at = (y * width + x) * RGBA;
-                canvas[at..at + RGBA].copy_from_slice(&color.to_array());
+                canvas[at..at + RGBA].copy_from_slice(&color);
             }
-        }
-    }
-}
-
-/// How a figure is painted: the ring round it, and one hue over all of it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Paint {
-    /// Clear draws no ring.
-    pub outline: [u8; 4],
-    pub whole_hue: Option<u16>,
-}
-
-impl Paint {
-    /// The paint of the Modern style: a ring of one color, own hues.
-    pub fn outlined(outline: Color32) -> Self {
-        Self {
-            outline: outline.to_array(),
-            whole_hue: None,
         }
     }
 }
@@ -334,20 +297,14 @@ pub fn compose(source: &Source<'_>, look: &WatchLook, pose: Pose, paint: Paint) 
     for part in &parts {
         paint_part(&mut rgba, width, (left, top), part);
     }
-    let [red, green, blue, alpha] = paint.outline;
-    if alpha > 0 {
-        outline(
-            &mut rgba,
-            width,
-            height,
-            Color32::from_rgba_premultiplied(red, green, blue, alpha),
-        );
+    if paint.outline[ALPHA] > 0 {
+        outline(&mut rgba, width, height, paint.outline);
     }
     Some(Picture {
         width,
         height,
         rgba,
-        anchor: Vec2::new(-left as f32, -top as f32),
+        anchor: Vector::new(-left as f32, -top as f32),
     })
 }
 
@@ -416,12 +373,13 @@ mod tests {
         };
         let (width, height) = (4, 3);
         let mut canvas = vec![0u8; width * height * RGBA];
+        const WHITE: [u8; 4] = [u8::MAX; 4];
         paint_part(&mut canvas, width, (-1, -1), &part);
-        outline(&mut canvas, width, height, Color32::WHITE);
+        outline(&mut canvas, width, height, WHITE);
         let pixel = |x: usize, y: usize| &canvas[(y * width + x) * RGBA..][..RGBA];
         assert_eq!(pixel(2, 1), RED);
-        assert_eq!(pixel(1, 1), Color32::WHITE.to_array());
-        assert_eq!(pixel(2, 0), Color32::WHITE.to_array());
+        assert_eq!(pixel(1, 1), WHITE);
+        assert_eq!(pixel(2, 0), WHITE);
         assert_eq!(pixel(0, 0), [0; 4]);
     }
 }

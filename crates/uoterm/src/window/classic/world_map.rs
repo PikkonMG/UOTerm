@@ -14,13 +14,15 @@ use super::context_menu::{ContextMenu, MenuLine};
 use super::map_markers::{LocationGo, UserMarker};
 use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpRules};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use crate::window::control::Act;
-use crate::window::map_view::{self, Lay, MapFilesCache, MapPictures, MarkLook, Marks};
+use crate::window::map_view::{self, Lay, MapFilesCache, MapPictures, MarkLook, MarkStyle, Marks};
 use crate::window::model::host;
 use crate::window::model::world_map::{self, Marker};
 use crate::window::settings::{Profile, WorldMapOptions};
 use crate::window::theme;
 use eframe::egui::{Align2, Color32, CornerRadius, FontId, Id, Painter, Pos2, Rect, Sense, Vec2};
+use uoterm_view::geom::Rgba;
 
 pub const WORLD_MAP: GumpKind = GumpKind {
     id: well_known::WORLD_MAP,
@@ -54,11 +56,14 @@ const MOUSE_COORDINATES_ROOM: f32 = 15.0;
 const FACET_COUNT: u8 = 6;
 const HALF: f32 = 2.0;
 // The colors of the marks, as the reference client draws them.
-const GRID: Color32 = Color32::from_rgba_premultiplied(56, 56, 56, 56);
-const MULTI: Color32 = Color32::from_rgb(169, 169, 169);
-const PARTY: Color32 = Color32::YELLOW;
-const GUILD: Color32 = Color32::from_rgb(50, 205, 50);
-const GOING_TO: Color32 = Color32::from_rgb(127, 255, 212);
+const GRID: Rgba = Rgba::from_rgba_premultiplied(56, 56, 56, 56);
+const MULTI: Rgba = Rgba::from_rgb(169, 169, 169);
+const YELLOW: Rgba = Rgba::from_rgb(u8::MAX, u8::MAX, 0);
+const PARTY: Rgba = YELLOW;
+const GUILD: Rgba = Rgba::from_rgb(50, 205, 50);
+const GOING_TO: Rgba = Rgba::from_rgb(127, 255, 212);
+const WHITE: Rgba = Rgba::from_rgb(u8::MAX, u8::MAX, u8::MAX);
+const RED: Rgba = Rgba::from_rgb(u8::MAX, 0, 0);
 const BAR_EMPTY: Color32 = Color32::RED;
 const BAR_FULL: Color32 = Color32::from_rgb(100, 149, 237);
 const BAR_EDGE: f32 = 1.0;
@@ -347,28 +352,30 @@ fn classic_bar(painter: &Painter, track: Rect, share: f32) {
     painter.rect_filled(part, CornerRadius::ZERO, BAR_FULL);
 }
 
-fn red(_notoriety: u8) -> Color32 {
-    Color32::RED
+fn red(_notoriety: u8) -> Rgba {
+    RED
 }
 
 /// The marks in the colors of the classic client.
-fn classic_look(options: &WorldMapOptions) -> MarkLook {
+fn classic_look(options: &WorldMapOptions) -> MarkStyle {
     let style = usize::from(options.marker_font_style.max(1)) - 1;
     let size = MARKER_FONT_SIZES[style.min(MARKER_FONT_SIZES.len() - 1)];
-    MarkLook {
+    MarkStyle {
+        look: MarkLook {
+            marker: WHITE,
+            waypoint: YELLOW,
+            multi: MULTI,
+            party: PARTY,
+            guild: GUILD,
+            goal: GOING_TO,
+            looking: GOING_TO,
+            me: WHITE,
+            grid: GRID,
+            mobile: red,
+        },
         font: FontId::proportional(size),
         shadowed: true,
         square_dots: true,
-        marker: Color32::WHITE,
-        waypoint: Color32::YELLOW,
-        multi: MULTI,
-        party: PARTY,
-        guild: GUILD,
-        goal: GOING_TO,
-        looking: GOING_TO,
-        me: Color32::WHITE,
-        grid: GRID,
-        mobile: red,
         health_bar: classic_bar,
     }
 }
@@ -403,15 +410,16 @@ impl WorldMap {
     /// How the view lays the tiles on the field.
     fn lay(&self, field: Rect, middle: Vec2, options: &WorldMapOptions, scale: f32) -> Lay {
         let tile = world_map::zoom_points(options.zoom_step) * scale;
+        let (center, middle) = (bridge::point(field.center()), bridge::vector(middle));
         if options.flip_map {
             Lay::Turned {
-                center: field.center(),
+                center,
                 from: middle,
                 unit: tile / std::f32::consts::SQRT_2,
             }
         } else {
             Lay::NorthUp {
-                center: field.center(),
+                center,
                 middle,
                 scale: tile,
             }
@@ -534,7 +542,11 @@ impl WorldMap {
                 response.interact_pointer_pos(),
                 g.ui().input(|i| i.pointer.press_origin()),
             ) {
-                self.view = Some(from + lay.tile(origin) - lay.tile(now));
+                self.view = Some(
+                    from + bridge::vec2(
+                        lay.tile(bridge::point(origin)) - lay.tile(bridge::point(now)),
+                    ),
+                );
             }
             if response.drag_stopped() {
                 self.drag_from = None;
@@ -556,7 +568,7 @@ impl WorldMap {
         let Some(at) = click else {
             return;
         };
-        let (tile_x, tile_y) = map_view::whole_tile(lay.tile(at));
+        let (tile_x, tile_y) = map_view::whole_tile(lay.tile(bridge::point(at)));
         let frame = cx.frame;
         let ctrl = g.ui().input(|i| i.modifiers.ctrl);
         if ctrl {
@@ -617,7 +629,7 @@ impl GumpBody for WorldMap {
         if self.pictures.grow_world(&ctx, g.scene, facet) {
             ctx.request_repaint();
         }
-        let near = map_view::whole_tile(middle);
+        let near = map_view::whole_tile(bridge::vector(middle));
         let has_world = self.pictures.draw_world(&painter, lay);
         if self.pictures.make_near(&ctx, g.scene, facet, near) {
             self.pictures.draw_near(&painter, lay);
@@ -653,7 +665,7 @@ impl GumpBody for WorldMap {
         }
         let pointer = g.ctx().pointer_hover_pos().filter(|at| field.contains(*at));
         if let (true, Some(at)) = (options.show_mouse_coordinates, pointer) {
-            let (x, y) = map_view::whole_tile(lay.tile(at));
+            let (x, y) = map_view::whole_tile(lay.tile(bridge::point(at)));
             let words = sextant_line(format!("{x} {y}"), &options, facet, x, y);
             let corner = Pos2::new(
                 field.left() + COORDINATES_AT.x * scale,

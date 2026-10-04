@@ -14,6 +14,7 @@ use super::frame::{self, PanelSpec};
 use super::hue_ui::{self, HueGridUi};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Vec2};
 
 pub const DYE_ID: &str = "modern:dye";
@@ -78,12 +79,10 @@ impl DyeUi {
         );
         ui.painter()
             .rect_filled(tub, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        if let Some((texture, sprite)) =
-            tools.scene.item_picture(frame.map, dye.graphic, pick.hue())
-        {
+        if let Some((texture, sprite)) = tools.scene.item_picture(dye.graphic, pick.hue()) {
             let shown = theme::fit(tub, sprite.width, sprite.height);
             ui.painter()
-                .image(texture, shown, sprite.uv, Color32::WHITE);
+                .image(texture, shown, bridge::rect(sprite.uv), Color32::WHITE);
         }
         ui.painter().text(
             tub.center_bottom() + Vec2::new(0.0, theme::ROW_GAP),

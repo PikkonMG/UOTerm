@@ -2,7 +2,7 @@
 //! does: trees that become stumps, plants that hide, cave walls that are
 //! marked, fields that stop moving, and the chairs a person sits on.
 
-use eframe::egui::Vec2;
+use crate::geom::Vector;
 use std::ops::RangeInclusive;
 use uoterm_nav::TileFlagSet;
 
@@ -308,7 +308,7 @@ pub struct Seat {
     /// The way he faces: north, east, south or west.
     pub facing: u8,
     /// How far his picture moves from where he would stand.
-    pub offset: Vec2,
+    pub offset: Vector,
     /// Seen from the back he takes the pose of a rider; seen from the front
     /// his standing picture is folded at the waist and the knees.
     pub from_back: bool,
@@ -348,7 +348,7 @@ pub fn seat(graphic: u16, direction: u8) -> Option<Seat> {
     };
     Some(Seat {
         facing,
-        offset: Vec2::new(side, drop + SIT_DROP),
+        offset: Vector::new(side, drop + SIT_DROP),
         from_back: matches!(facing, FACING_NORTH | FACING_WEST),
     })
 }

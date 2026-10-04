@@ -16,6 +16,7 @@ use super::frame::{self, FrameEvent, PanelSpec};
 use super::hue_ui;
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
 use uoterm_view::ui::lists::{race_change_words, race_preview_look};
 use uoterm_world::RaceChange;
@@ -82,7 +83,7 @@ impl RaceUi {
             Pos2::new(right.left() - PART_GAP, columns.bottom()),
         );
         ui.add_enabled_ui(live, |ui| self.styles(ui, left, change));
-        self.preview(ui, middle, change, frame, tools);
+        self.preview(ui, middle, change, tools);
         self.colors(ui, right, change, tools, live);
         let mut keep = false;
         if live {
@@ -136,21 +137,14 @@ impl RaceUi {
     }
 
     /// The figure with the new looks.
-    fn preview(
-        &self,
-        ui: &egui::Ui,
-        area: Rect,
-        change: RaceChange,
-        frame: &WatchFrame,
-        tools: &mut Tools<'_>,
-    ) {
+    fn preview(&self, ui: &egui::Ui, area: Rect, change: RaceChange, tools: &mut Tools<'_>) {
         ui.painter()
             .rect_filled(area, CornerRadius::same(CELL_RADIUS), theme::TRACK);
         let look = race_preview_look(change, &self.picks);
-        if let Some((texture, sprite)) = tools.scene.doll_picture(frame.map, &look) {
+        if let Some((texture, sprite)) = tools.scene.doll_picture(&look) {
             let shown = theme::fit(area, sprite.width, sprite.height);
             ui.painter()
-                .image(texture, shown, sprite.uv, Color32::WHITE);
+                .image(texture, shown, bridge::rect(sprite.uv), Color32::WHITE);
         }
     }
 

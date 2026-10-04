@@ -1,5 +1,6 @@
 //! MIDI music, for the clients that have no MP3 music. A software synth
 //! plays the MIDI file with the SoundFont the player set on the Sound page.
+//! Which file of a track plays is `uoterm_view::audio::music_file`.
 
 use rodio::Source;
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
@@ -9,7 +10,6 @@ use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use uoterm_nav::MusicTrack;
 
 const MIDI_SAMPLE_RATE: u32 = 44_100;
 const STEREO: usize = 2;
@@ -17,30 +17,6 @@ const MIDI_CHANNELS: NonZero<u16> = NonZero::new(STEREO as u16).unwrap();
 const MIDI_RATE: NonZero<u32> = NonZero::new(MIDI_SAMPLE_RATE).unwrap();
 /// The synth makes this many frames at a time.
 const RENDER_FRAMES: usize = 2048;
-
-/// The file of a track that plays.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MusicFile<'a> {
-    Mp3(&'a Path),
-    Midi(&'a Path),
-}
-
-/// The file of `track` to play. A MIDI file plays only with a SoundFont.
-/// When `Config.txt` names the MIDI file, it plays before the MP3 file;
-/// else the MP3 file plays first.
-pub fn music_file(track: &MusicTrack, has_sound_font: bool) -> Option<MusicFile<'_>> {
-    let midi = track
-        .midi
-        .as_deref()
-        .filter(|_| has_sound_font)
-        .map(MusicFile::Midi);
-    let mp3 = track.mp3.as_deref().map(MusicFile::Mp3);
-    if track.midi_first {
-        midi.or(mp3)
-    } else {
-        mp3.or(midi)
-    }
-}
 
 /// The last SoundFont read, with the file it came from. A file that could
 /// not be read is kept as None, so it is not read again each frame.
@@ -139,27 +115,6 @@ mod tests {
 
     /// A SoundFont for the tests that need one. They skip when it is unset.
     const ENV_TEST_SOUNDFONT: &str = "UOTERM_TEST_SOUNDFONT";
-
-    fn track(mp3: bool, midi: bool, midi_first: bool) -> MusicTrack {
-        MusicTrack {
-            mp3: mp3.then(|| PathBuf::from("a.mp3")),
-            midi: midi.then(|| PathBuf::from("a.mid")),
-            midi_first,
-            repeats: false,
-        }
-    }
-
-    #[test]
-    fn midi_plays_only_with_a_sound_font_and_mp3_is_the_fallback() {
-        let mp3 = Some(MusicFile::Mp3(Path::new("a.mp3")));
-        let midi = Some(MusicFile::Midi(Path::new("a.mid")));
-        assert_eq!(music_file(&track(true, true, true), true), midi);
-        assert_eq!(music_file(&track(true, true, true), false), mp3);
-        assert_eq!(music_file(&track(true, true, false), true), mp3);
-        assert_eq!(music_file(&track(false, true, false), true), midi);
-        assert_eq!(music_file(&track(false, true, false), false), None);
-        assert_eq!(music_file(&track(true, false, true), true), mp3);
-    }
 
     #[test]
     fn a_sound_font_that_cannot_be_read_gives_none() {

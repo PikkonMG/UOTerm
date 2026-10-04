@@ -2,10 +2,11 @@
 //! call lays one row under the last, and the wheel scrolls the column. A
 //! row out of sight draws nothing and takes no click.
 
-use super::super::atlas::Sprite;
 use super::super::boxes_ui::CELL_RADIUS;
 use super::super::theme::{self, text_font};
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Vec2};
+use uoterm_view::art::Sprite;
 
 pub const ROW: f32 = 26.0;
 
@@ -194,7 +195,7 @@ impl<'a> Rows<'a> {
                 self.ui.painter().image(
                     *texture,
                     theme::fit(cell, sprite.width, sprite.height),
-                    sprite.uv,
+                    bridge::rect(sprite.uv),
                     Color32::WHITE,
                 );
             }

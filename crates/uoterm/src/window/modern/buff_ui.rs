@@ -8,6 +8,7 @@ use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 
 pub const BUFFS_ID: &str = "modern:buffs";
@@ -59,7 +60,7 @@ pub fn draw(
                 painter.image(
                     texture,
                     theme::fit(icon, sprite.width, sprite.height),
-                    sprite.uv,
+                    bridge::rect(sprite.uv),
                     Color32::WHITE,
                 );
             }

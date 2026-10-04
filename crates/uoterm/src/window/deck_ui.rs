@@ -10,7 +10,6 @@ pub use uoterm_view::ui::deck::{layer_words, Slot};
 
 use super::actions::windows::wanted;
 use super::actions::GumpOp;
-use super::atlas::Sprite;
 use super::boxes_ui::{scrolled, Tools, CELL_GAP, CELL_RADIUS};
 use super::control::{Act, Answer, Ask, Asker};
 use super::desk::Zone;
@@ -36,6 +35,7 @@ use crate::view::{WatchEquip, WatchFrame, WatchPackItem};
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::spells::School;
+use uoterm_view::art::Sprite;
 use uoterm_view::ui::deck::{
     hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
     WearChoice, HOTBAR_FILE, HOTBAR_SLOTS, SLOT_ROW, WORN_COLUMNS,
@@ -136,7 +136,7 @@ fn slot_picture(
     tools: &mut Tools<'_>,
 ) -> Option<(egui::TextureId, Sprite)> {
     match slot {
-        Slot::Item { graphic, hue, .. } => tools.scene.item_picture(frame.map, *graphic, *hue),
+        Slot::Item { graphic, hue, .. } => tools.scene.item_picture(*graphic, *hue),
         Slot::Spell { id, .. } => {
             let (_, spell) = book_spell(*id)?;
             tools
@@ -627,10 +627,10 @@ impl DeckUi {
         let painter = ui.painter();
         let doll = Rect::from_min_size(body.left_top(), Vec2::new(DOLL_WIDTH, DOLL_HEIGHT));
         painter.rect_filled(doll, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        match tools.scene.doll_picture(frame.map, &frame.look) {
+        match tools.scene.doll_picture(&frame.look) {
             Some((texture, sprite)) => {
                 let area = theme::fit(doll, sprite.width, sprite.height);
-                painter.image(texture, area, sprite.uv, Color32::WHITE);
+                painter.image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
             }
             None => {
                 painter.text(
@@ -783,10 +783,10 @@ impl DeckUi {
             );
             theme::bar(ui.painter(), track, wear.share(), wear_color(wear, warning));
         }
-        if let Some((texture, sprite)) = tools.scene.item_picture(frame.map, item.graphic, item.hue)
-        {
+        if let Some((texture, sprite)) = tools.scene.item_picture(item.graphic, item.hue) {
             let area = theme::fit(art, sprite.width, sprite.height);
-            ui.painter().image(texture, area, sprite.uv, Color32::WHITE);
+            ui.painter()
+                .image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
         }
         let response = ui.interact(
             row,
@@ -1091,7 +1091,7 @@ impl DeckUi {
                     painter.image(
                         texture,
                         theme::fit(area, sprite.width, sprite.height),
-                        sprite.uv,
+                        bridge::rect(sprite.uv),
                         tint,
                     );
                 }
@@ -1193,7 +1193,8 @@ fn slot_face(ui: &egui::Ui, cell: Rect, what: &Slot, frame: &WatchFrame, tools: 
     match slot_picture(what, frame, tools) {
         Some((texture, sprite)) => {
             let area = theme::fit(cell, sprite.width, sprite.height);
-            ui.painter().image(texture, area, sprite.uv, Color32::WHITE);
+            ui.painter()
+                .image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
         }
         None => {
             let short: String = what.words(frame).chars().take(SLOT_WORD_CHARS).collect();

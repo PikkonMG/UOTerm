@@ -1,3 +1,4 @@
+mod art;
 mod mcp;
 mod remote;
 mod view;

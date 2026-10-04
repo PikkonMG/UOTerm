@@ -5,6 +5,7 @@
 //! tells the shard with the left or the right button (0xBF 0x07).
 
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use crate::window::control::{Act, Hand};
 use crate::window::scene::Scene;
 use eframe::egui::{self, Color32, Id, Order, Pos2, Rect, Sense, Vec2};
@@ -122,7 +123,8 @@ pub fn draw(
         .fixed_pos(corner)
         .constrain(false)
         .show(ctx, |ui| {
-            ui.painter().image(texture, rect, sprite.uv, Color32::WHITE);
+            ui.painter()
+                .image(texture, rect, bridge::rect(sprite.uv), Color32::WHITE);
             let response = ui.interact(rect, Id::new((AREA_ID, "click")), Sense::click());
             let right = response.secondary_clicked();
             if (response.clicked() || right) && frame.human_control {

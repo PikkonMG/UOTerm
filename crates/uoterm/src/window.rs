@@ -7,13 +7,13 @@
 //! a human, and the agent waits.
 
 mod actions;
+mod art_host;
 mod atlas;
 mod audio;
 mod boxes_ui;
 mod bridge;
 mod build_ui;
 mod classic;
-mod client_art;
 mod control;
 mod control_ui;
 mod creation_ui;
@@ -21,8 +21,6 @@ mod cursor;
 mod deal_ui;
 mod deck_ui;
 mod desk;
-mod figure;
-mod filters;
 mod floats;
 mod gump_ui;
 mod hud;
@@ -41,7 +39,6 @@ mod options_ui;
 mod orders;
 mod pad;
 mod pages_ui;
-mod predict;
 mod ring_ui;
 mod scene;
 mod settings;
@@ -572,7 +569,8 @@ impl eframe::App for WatchApp {
                         if let Some(act) = self.game_view.due(frame.serial, size, time) {
                             self.hand.act(act);
                         }
-                        moving |= self.sky.draw(
+                        moving |= sky::draw(
+                            &mut self.sky,
                             &view_painter,
                             view,
                             frame,
@@ -580,7 +578,8 @@ impl eframe::App for WatchApp {
                             time,
                             &self.profile.video,
                         );
-                        moving |= self.floats.draw(
+                        moving |= floats::draw(
+                            &mut self.floats,
                             &view_painter,
                             view,
                             frame,

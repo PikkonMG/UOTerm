@@ -8,6 +8,7 @@
 //! takes the light byte of the packet that shows it, and an item a mobile
 //! holds takes the light index of its tiledata record.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::mul::{idx_entries, idx_sizes, read_file, MapError};
@@ -38,7 +39,7 @@ const COLORED_LIGHT_FROM: u8 = 200;
 const COLORED_LIGHT_SHAPE: u8 = 1;
 
 /// One light shape, one level of light for each pixel.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LightShape {
     pub width: usize,
     pub height: usize,

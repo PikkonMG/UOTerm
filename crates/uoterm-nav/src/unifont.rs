@@ -10,6 +10,7 @@
 //! pixel, italic slants the rows, a border rings the ink in black (the
 //! overhead words), and underline draws a line under the letters.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::hues::HueData;
@@ -71,7 +72,7 @@ pub fn unifont_name(font: usize) -> String {
 }
 
 /// How words are drawn. The default is plain.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UnicodeStyle {
     pub bold: bool,
     pub italic: bool,
