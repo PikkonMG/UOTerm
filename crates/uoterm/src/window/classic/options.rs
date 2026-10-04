@@ -17,20 +17,20 @@ use super::text_field::TextField;
 use crate::window::actions::editor::{step_words, Capture, MacroEditor};
 use crate::window::keys::default_keys;
 use crate::window::model::options_draft::Draft;
-use crate::window::options_ui::{
-    format_ids, parse_ids, parse_lines, snap, NEW_INFO_BAR_DATA, WORDS_ADD_ITEM, WORDS_ADD_MACRO,
-    WORDS_ADD_TAB, WORDS_CLEAR, WORDS_DEFAULT_BUTTONS, WORDS_DEFAULT_KEYS, WORDS_NEW_TAB,
-    WORDS_NO_BUTTON, WORDS_NO_KEY, WORDS_PRESS_BUTTON, WORDS_PRESS_KEY, WORDS_REMOVE,
-    WORDS_SAVE_DEFAULT, WORDS_STEPS,
-};
 use crate::window::pad::default_buttons;
 use crate::window::settings::{
     rows_on, Choice, InfoBarData, InfoBarItem, JournalKind, JournalTab, KeyBinding, OptionKind,
-    OptionRow, OptionValue, Page, Profile, NO_HUE,
+    OptionRow, OptionValue, Page, Profile,
 };
 use eframe::egui::{Color32, Pos2, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use uoterm_view::ui::options::{
+    format_ids, new_info_bar_item, new_journal_tab, parse_ids, parse_lines, snap, WORDS_ADD_ITEM,
+    WORDS_ADD_MACRO, WORDS_ADD_TAB, WORDS_CLEAR, WORDS_DEFAULT_BUTTONS, WORDS_DEFAULT_KEYS,
+    WORDS_NO_BUTTON, WORDS_NO_KEY, WORDS_PRESS_BUTTON, WORDS_PRESS_KEY, WORDS_REMOVE,
+    WORDS_SAVE_DEFAULT, WORDS_STEPS,
+};
 
 pub const OPTIONS: GumpKind = GumpKind {
     id: well_known::OPTIONS,
@@ -665,11 +665,7 @@ impl Options {
             &look,
             false,
         ) {
-            items.push(InfoBarItem {
-                label: String::new(),
-                hue: NO_HUE,
-                data: NEW_INFO_BAR_DATA,
-            });
+            items.push(new_info_bar_item());
             changed = true;
         }
         y += BUTTON_HEIGHT;
@@ -753,10 +749,7 @@ impl Options {
             &look,
             false,
         ) {
-            tabs.push(JournalTab {
-                name: WORDS_NEW_TAB.to_string(),
-                kinds: Vec::new(),
-            });
+            tabs.push(new_journal_tab());
             changed = true;
         }
         y += BUTTON_HEIGHT;

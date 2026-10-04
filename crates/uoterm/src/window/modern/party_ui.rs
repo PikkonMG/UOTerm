@@ -16,19 +16,16 @@ use super::super::model::party::{
 use super::super::settings::{Profile, SpeechOptions};
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::{WatchFrame, WatchPartyMember};
+use crate::window::bridge;
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_view::ui::lists::{party_entries, PartyEntry};
 use uoterm_view::ui::sheet::{
-    tell_hint, HINT_MEMBER, WORDS_ACCEPT, WORDS_ADD, WORDS_DECLINE, WORDS_EMPTY, WORDS_INVITE,
-    WORDS_INVITE_TITLE, WORDS_KICK, WORDS_LOOT_OFF, WORDS_LOOT_ON, WORDS_NEAR, WORDS_SAY,
-    WORDS_TELL,
+    invite_first_place, tell_hint, HINT_MEMBER, INVITE_CHOICE_WIDTH, INVITE_ID, WORDS_ACCEPT,
+    WORDS_ADD, WORDS_DECLINE, WORDS_EMPTY, WORDS_INVITE, WORDS_INVITE_TITLE, WORDS_KICK,
+    WORDS_LOOT_OFF, WORDS_LOOT_ON, WORDS_NEAR, WORDS_SAY, WORDS_TELL,
 };
 
-pub const INVITE_ID: &str = "modern:party_invite";
-const INVITE_WIDTH: f32 = 320.0;
-const CHOICE_WIDTH: f32 = 80.0;
 const BUTTON_WIDTH: f32 = 64.0;
 const LOOT_WIDTH: f32 = 128.0;
 const ADD_WIDTH: f32 = 104.0;
@@ -55,10 +52,10 @@ fn invite_band(ui: &egui::Ui, row: Rect, frame: &WatchFrame, tools: &Tools<'_>, 
         return;
     }
     let decline = Rect::from_min_size(
-        Pos2::new(row.right() - CHOICE_WIDTH, row.top()),
-        Vec2::new(CHOICE_WIDTH, row.height() - TAB_GAP),
+        Pos2::new(row.right() - INVITE_CHOICE_WIDTH, row.top()),
+        Vec2::new(INVITE_CHOICE_WIDTH, row.height() - TAB_GAP),
     );
-    let accept = decline.translate(Vec2::new(-(CHOICE_WIDTH + TAB_GAP), 0.0));
+    let accept = decline.translate(Vec2::new(-(INVITE_CHOICE_WIDTH + TAB_GAP), 0.0));
     if theme::segment_keyed(
         ui,
         accept,
@@ -89,11 +86,10 @@ pub fn invite_panel(
     profile: &mut Profile,
 ) -> Option<Rect> {
     let leader = frame.party_invite?;
-    let height = frame::TITLE_ROW + ROW * 2.0 + theme::PANEL_PAD * 2.0;
     let spec = PanelSpec {
         id: INVITE_ID,
         title: WORDS_INVITE_TITLE,
-        default: layout::first_place(rect, Spot::LeftColumn(0), Vec2::new(INVITE_WIDTH, height)),
+        default: bridge::rect(invite_first_place(bridge::area(rect))),
         min_size: None,
         closable: false,
     };
@@ -111,8 +107,8 @@ pub fn invite_panel(
         Vec2::new(body.width(), ROW),
     );
     if frame.human_control {
-        let accept = Rect::from_min_size(row.min, Vec2::new(CHOICE_WIDTH, ROW - TAB_GAP));
-        let decline = accept.translate(Vec2::new(CHOICE_WIDTH + TAB_GAP, 0.0));
+        let accept = Rect::from_min_size(row.min, Vec2::new(INVITE_CHOICE_WIDTH, ROW - TAB_GAP));
+        let decline = accept.translate(Vec2::new(INVITE_CHOICE_WIDTH + TAB_GAP, 0.0));
         if theme::segment_keyed(
             ui,
             accept,

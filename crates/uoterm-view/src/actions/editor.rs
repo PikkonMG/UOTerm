@@ -6,9 +6,12 @@
 //! first.
 
 use super::{new_step, step_action, ActionId};
+use crate::input::{KeyName, Mods};
 use crate::settings::{KeyBinding, KeyChord, PadChord};
 
 const NEW_MACRO_NAME: &str = "New macro";
+/// The key that lets a capture go.
+const CANCEL_KEY: &str = "Escape";
 const UNKNOWN_ACTION: &str = "Unknown action";
 
 /// What waits for the player to press it.
@@ -18,6 +21,24 @@ pub enum Capture {
     Chord(usize),
     /// The controller buttons of the macro at this place.
     Pad(usize),
+}
+
+/// What the player pressed while a binding waited for a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pressed {
+    Cancel,
+    Chord(KeyChord),
+}
+
+impl Pressed {
+    /// The press of a key, by its egui name: Escape cancels.
+    pub fn of(key: &KeyName, mods: Mods) -> Self {
+        if key.0 == CANCEL_KEY {
+            Self::Cancel
+        } else {
+            Self::Chord(KeyChord::from_press(key, mods))
+        }
+    }
 }
 
 /// Which way a step moves in its macro.
@@ -125,6 +146,26 @@ impl MacroEditor {
         true
     }
 
+    /// Takes the key or the controller buttons the editor waits for: the
+    /// key `pressed` this frame, and the buttons `pad` pressed this frame.
+    /// Escape cancels. True when a macro took them.
+    pub fn take_capture(
+        &mut self,
+        macros: &mut [KeyBinding],
+        pressed: Option<Pressed>,
+        pad: Option<PadChord>,
+    ) -> bool {
+        match (self.capture, pressed, pad) {
+            (Some(_), Some(Pressed::Cancel), _) => self.cancel_capture(),
+            (Some(Capture::Chord(_)), Some(Pressed::Chord(chord)), _) => {
+                return self.take_chord(macros, chord)
+            }
+            (Some(Capture::Pad(_)), _, Some(chord)) => return self.take_pad(macros, chord),
+            _ => {}
+        }
+        false
+    }
+
     /// Adds a step of the action at the end of a macro.
     pub fn add_step(macros: &mut [KeyBinding], at: usize, action: ActionId) {
         if let Some(binding) = macros.get_mut(at) {
@@ -179,6 +220,27 @@ mod tests {
 
     fn chord(words: &str) -> KeyChord {
         words.parse().unwrap()
+    }
+
+    #[test]
+    fn a_capture_takes_its_key_or_its_buttons_and_escape_lets_it_go() {
+        let mut macros = vec![KeyBinding::default()];
+        let mut editor = MacroEditor::default();
+        let escape = Pressed::of(&KeyName(CANCEL_KEY.into()), Mods::default());
+        assert_eq!(escape, Pressed::Cancel);
+        editor.capture(Capture::Chord(0));
+        let f1 = Pressed::of(&KeyName("F1".into()), Mods::default());
+        assert!(editor.take_capture(&mut macros, Some(f1), None));
+        assert_eq!(macros[0].chord, Some(chord("F1")));
+        editor.capture(Capture::Pad(0));
+        let pad: PadChord = "LeftTrigger+South".parse().unwrap();
+        let other_key = Pressed::of(&KeyName("A".into()), Mods::default());
+        assert!(!editor.take_capture(&mut macros, Some(other_key), None));
+        assert!(editor.take_capture(&mut macros, None, Some(pad.clone())));
+        assert_eq!(macros[0].pad, Some(pad));
+        editor.capture(Capture::Chord(0));
+        assert!(!editor.take_capture(&mut macros, Some(Pressed::Cancel), None));
+        assert_eq!(editor.capture, None);
     }
 
     #[test]

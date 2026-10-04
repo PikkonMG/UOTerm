@@ -59,11 +59,6 @@ pub enum FrameEvent {
     Closed,
 }
 
-/// A size made wide enough for the title and the marks.
-pub fn with_title_room(size: Vec2) -> Vec2 {
-    bridge::vec2(rules::with_title_room(bridge::vector(size)))
-}
-
 /// Where the panel stands now.
 pub fn place(window: Rect, spec: &PanelSpec<'_>, profile: &Profile) -> Rect {
     bridge::rect(rules::place(

@@ -6,18 +6,13 @@ use super::super::model::buffs;
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
-
-pub const BUFFS_ID: &str = "modern:buffs";
-const ICON: f32 = 34.0;
-const ICON_GAP: f32 = 4.0;
-const TIME_ROW: f32 = 14.0;
-/// The words of a buff with no picture show this many letters.
-const SHORT_NAME_CHARS: usize = 4;
-const WORDS_TITLE: &str = "Buffs";
+use uoterm_view::ui::buff_bar::{
+    buffs_first_place, short_name, time_color, BUFFS_ID, BUFF_GAP as ICON_GAP, BUFF_ICON as ICON,
+    WORDS_BUFFS as WORDS_TITLE,
+};
 
 /// Draws the bar while a buff is on. Gives its place.
 pub fn draw(
@@ -31,16 +26,14 @@ pub fn draw(
     if ordered.is_empty() {
         return None;
     }
-    let show_time = profile.combat.buff_duration;
-    let row = ICON + if show_time { TIME_ROW } else { 0.0 };
-    let width = ordered.len() as f32 * (ICON + ICON_GAP) - ICON_GAP;
-    let size = frame::with_title_room(
-        Vec2::new(width, row + frame::TITLE_ROW) + Vec2::splat(theme::PANEL_PAD * 2.0),
-    );
     let spec = PanelSpec {
         id: BUFFS_ID,
         title: WORDS_TITLE,
-        default: layout::first_place(rect, Spot::MiddleTop(0), size),
+        default: bridge::rect(buffs_first_place(
+            bridge::area(rect),
+            ordered.len(),
+            profile.combat.buff_duration,
+        )),
         min_size: None,
         closable: false,
     };
@@ -65,22 +58,17 @@ pub fn draw(
                 );
             }
             None => {
-                let short: String = buff.title.chars().take(SHORT_NAME_CHARS).collect();
                 painter.text(
                     icon.center(),
                     Align2::CENTER_CENTER,
-                    short,
+                    short_name(buff),
                     text_font(theme::SIZE_SMALL),
                     theme::TEXT,
                 );
             }
         }
-        if show_time {
-            let color = if buffs::is_ending(buff) {
-                theme::ALARM
-            } else {
-                theme::TEXT_DIM
-            };
+        if profile.combat.buff_duration {
+            let color = bridge::color(time_color(buff));
             painter.text(
                 Pos2::new(icon.center().x, icon.bottom()),
                 Align2::CENTER_TOP,

@@ -4,32 +4,23 @@
 //! the range of the range circle.
 
 use super::super::boxes_ui::Tools;
-use super::super::model::casting;
-use super::super::model::casting::{spell_hue, CastWatch};
-use super::super::model::cooldowns::Cooldowns;
+use super::super::model::casting::spell_hue;
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Vec2};
 use uoterm_assist::spells::SpellFlag;
-
-pub const COOLDOWNS_ID: &str = "modern:cooldowns";
-pub const CAST_ID: &str = "modern:cast";
-const WIDTH: f32 = 260.0;
-const BAR_ROW: f32 = 26.0;
-const BAR_HEIGHT: f32 = 8.0;
-const CAST_HEIGHT: f32 = 64.0;
-const WORDS_COOLDOWNS: &str = "Cooldowns";
-const WORDS_CAST: &str = "Casting";
-const WORDS_AIM: &str = "choose a target";
-const WORDS_IN_RANGE: &str = "in range";
+use uoterm_view::ui::combat::{
+    cast_aside_words, cast_first_place, cooldowns_first_place, seconds_words, CombatWatch, CAST_ID,
+    COMBAT_BAR_HEIGHT as BAR_HEIGHT, COOLDOWNS_ID, COOLDOWN_ROW as BAR_ROW, WORDS_CAST,
+    WORDS_COOLDOWNS,
+};
 
 #[derive(Default)]
 pub struct CombatUi {
-    cooldowns: Cooldowns,
-    casts: CastWatch,
+    watch: CombatWatch,
 }
 
 /// The color of a spell by what it does, in the hues of the Combat page.
@@ -40,9 +31,7 @@ fn spell_color(flag: SpellFlag, profile: &Profile, tools: &Tools<'_>) -> Color32
 impl CombatUi {
     /// Reads the journal and the cursor. Call it once in each frame.
     pub fn observe(&mut self, frame: &WatchFrame, profile: &Profile, time: f64) {
-        self.cooldowns
-            .observe(&profile.combat.cooldowns, &frame.speech, frame.serial, time);
-        self.casts.observe(frame, time);
+        self.watch.observe(frame, profile, time);
     }
 
     /// Draws the cooldown bars that run. Gives their place, when any runs.
@@ -53,15 +42,14 @@ impl CombatUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Option<Rect> {
-        let bars = self.cooldowns.bars(tools.time);
+        let bars = self.watch.bars(tools.time);
         if bars.is_empty() {
             return None;
         }
-        let height = frame::TITLE_ROW + bars.len() as f32 * BAR_ROW + theme::PANEL_PAD * 2.0;
         let spec = PanelSpec {
             id: COOLDOWNS_ID,
             title: WORDS_COOLDOWNS,
-            default: layout::first_place(rect, Spot::MiddleTop(1), Vec2::new(WIDTH, height)),
+            default: bridge::rect(cooldowns_first_place(bridge::area(rect), bars.len())),
             min_size: None,
             closable: false,
         };
@@ -84,7 +72,7 @@ impl CombatUi {
             painter.text(
                 row.right_top(),
                 Align2::RIGHT_TOP,
-                format!("{:.1}s", bar.seconds_left(tools.time)),
+                seconds_words(bar, tools.time),
                 number_font(theme::SIZE_SMALL),
                 theme::TEXT_DIM,
             );
@@ -106,15 +94,11 @@ impl CombatUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Option<Rect> {
-        let cast = self.casts.cast()?;
+        let cast = self.watch.cast()?;
         let spec = PanelSpec {
             id: CAST_ID,
             title: WORDS_CAST,
-            default: layout::first_place(
-                rect,
-                Spot::MiddleBottom(1),
-                Vec2::new(WIDTH, CAST_HEIGHT + frame::TITLE_ROW),
-            ),
+            default: bridge::rect(cast_first_place(bridge::area(rect))),
             min_size: None,
             closable: false,
         };
@@ -129,13 +113,7 @@ impl CombatUi {
             text_font(theme::SIZE_BODY),
             color,
         );
-        let range = profile.combat.range_circle_tiles;
-        let reach = casting::in_range(frame, range).len();
-        let right_words = if cast.aiming {
-            WORDS_AIM.to_string()
-        } else {
-            format!("{reach} {WORDS_IN_RANGE} ({range})")
-        };
+        let right_words = cast_aside_words(cast, frame, profile);
         painter.text(
             body.right_top(),
             Align2::RIGHT_TOP,

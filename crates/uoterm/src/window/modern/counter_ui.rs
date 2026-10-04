@@ -13,24 +13,18 @@ use super::super::settings::Profile;
 use super::super::settings::NO_HUE;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use crate::window::bridge;
 use crate::window::desk;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, Vec2};
+use uoterm_view::ui::counter_bar::{
+    amount_color, cell_hint, counters_first_place, fixed_color, flashing, uses_item, COUNTERS_ID,
+    COUNTER_GAP as CELL_GAP, HINT_EMPTY, HINT_FIXED, WORDS_COUNTERS as WORDS_TITLE, WORDS_FIXED,
+};
 
-pub const COUNTERS_ID: &str = "modern:counters";
-const CELL_GAP: f32 = 4.0;
-const FLASH_SECONDS: f64 = 1.5;
 const FLASH_WIDTH: f32 = 2.0;
 /// The switch that fixes the cells takes the room of this many marks.
 const FIXED_MARKS: usize = 3;
-const WORDS_TITLE: &str = "Counters";
-const WORDS_FIXED: &str = "Fixed";
-const HINT_EMPTY: &str = "Drop an item here to count it.";
-const HINT_USE: &str = "Click: use one. Alt+right-click: empty the cell.";
-const HINT_USE_DOUBLE: &str = "Double-click: use one. Alt+right-click: empty the cell.";
-const HINT_FIXED: &str = "Fixed cells take no dropped items and do not empty.";
 
 #[derive(Default)]
 pub struct CounterUi {
@@ -50,17 +44,10 @@ impl CounterUi {
     ) -> Rect {
         let options = profile.counters.clone();
         let side = f32::from(options.cell_size);
-        let columns = f32::from(options.columns.max(1));
-        let rows = f32::from(options.rows.max(1));
-        let size = frame::with_title_room(
-            Vec2::new(columns, rows) * (side + CELL_GAP) - Vec2::splat(CELL_GAP)
-                + Vec2::new(0.0, frame::TITLE_ROW)
-                + Vec2::splat(theme::PANEL_PAD * 2.0),
-        );
         let spec = PanelSpec {
             id: COUNTERS_ID,
             title: WORDS_TITLE,
-            default: layout::first_place(rect, Spot::OverVitals, size),
+            default: bridge::rect(counters_first_place(bridge::area(rect), &options)),
             min_size: None,
             closable: false,
         };
@@ -89,10 +76,7 @@ impl CounterUi {
                 continue;
             };
             let amount = counters::count(&bags, item);
-            let changed_at = self
-                .changes
-                .observe(index, amount, tools.time)
-                .map_or(f64::MIN, |change| change.at);
+            let change = self.changes.observe(index, amount, tools.time);
             let hue = if item.hue == NO_HUE { 0 } else { item.hue };
             if let Some((texture, sprite)) = tools.scene.item_picture(item.graphic, hue) {
                 ui.painter().image(
@@ -102,17 +86,15 @@ impl CounterUi {
                     Color32::WHITE,
                 );
             }
-            let low = counters::is_low(amount, &options);
             theme::shadowed_text(
                 ui.painter(),
                 cell.right_bottom() - Vec2::splat(theme::CELL_ART_PAD),
                 Align2::RIGHT_BOTTOM,
                 &counters::amount_words(amount, &options),
                 number_font(theme::SIZE_SMALL),
-                if low { theme::ALARM } else { theme::TEXT },
+                bridge::color(amount_color(amount, &options)),
             );
-            let flashing = options.highlight_on_change && tools.time - changed_at < FLASH_SECONDS;
-            if flashing {
+            if flashing(&options, change, tools.time) {
                 ui.painter().rect_stroke(
                     cell,
                     CornerRadius::same(CELL_RADIUS),
@@ -122,18 +104,11 @@ impl CounterUi {
                 ui.ctx().request_repaint();
             }
             if response.hovered() {
-                let hint = match (frame.human_control, single_click) {
-                    (false, _) => "",
-                    (true, true) => HINT_USE,
-                    (true, false) => HINT_USE_DOUBLE,
-                };
+                let hint = cell_hint(frame.human_control, single_click);
                 super::super::tips::label(ui, &item.label, hint);
             }
-            let used = if single_click {
-                response.clicked()
-            } else {
-                response.double_clicked()
-            };
+            let used = (response.clicked() && uses_item(single_click, false))
+                || (response.double_clicked() && uses_item(single_click, true));
             if frame.human_control && used {
                 if let Some(pack) = counters::first_counted(&bags, item) {
                     tools.hand.act(Act::Use(pack.serial));
@@ -185,11 +160,7 @@ fn fixed_switch(ui: &egui::Ui, panel: Rect, spec: &PanelSpec<'_>, profile: &mut 
     let left = frame::mark_area(panel, first + FIXED_MARKS - 1);
     let area = Rect::from_min_max(left.min, right.max);
     let fixed = profile.counters.read_only;
-    let color = if fixed {
-        theme::GOAL
-    } else {
-        theme::TEXT_FAINT
-    };
+    let color = bridge::color(fixed_color(fixed));
     let response = ui.interact(area, Id::new("counters-fixed"), Sense::click());
     ui.painter().text(
         area.center(),

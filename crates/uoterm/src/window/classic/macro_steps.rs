@@ -9,14 +9,13 @@ use super::options::{
     input, text, BUTTON_HEIGHT, COMBO_HEIGHT, FIELD_HEIGHT, LABEL_GAP, ROW_GAP, SMALL_BUTTON,
 };
 use super::text_field::TextField;
-use crate::window::actions::editor::{Capture, MacroEditor, Move};
+use crate::window::actions::editor::{MacroEditor, Move};
 use crate::window::actions::{ActionId, ACTIONS};
-use crate::window::options_ui::{
-    take_pressed, Pressed, WORDS_ADD_STEP, WORDS_DOWN, WORDS_REMOVE, WORDS_UP,
-};
+use crate::window::options_ui::take_pressed;
 use crate::window::pad::pressed_this_frame;
 use crate::window::settings::KeyBinding;
 use std::collections::HashMap;
+use uoterm_view::ui::options::{WORDS_ADD_STEP, WORDS_DOWN, WORDS_REMOVE, WORDS_UP};
 
 /// The width of the number, the action and each half of the argument of a
 /// step.
@@ -30,22 +29,11 @@ pub const STEPS_WIDTH: i32 =
 /// Takes the key or the controller buttons the editor waits for. Escape
 /// cancels. True when a macro took them.
 pub fn take_capture(editor: &mut MacroEditor, g: &Canvas<'_>, keys: &mut [KeyBinding]) -> bool {
-    match editor.capture {
-        Some(Capture::Chord(_)) => match take_pressed(g.ui()) {
-            Some(Pressed::Cancel) => editor.cancel_capture(),
-            Some(Pressed::Chord(chord)) => return editor.take_chord(keys, chord),
-            None => {}
-        },
-        Some(Capture::Pad(_)) => {
-            if matches!(take_pressed(g.ui()), Some(Pressed::Cancel)) {
-                editor.cancel_capture();
-            } else if let Some(chord) = pressed_this_frame(g.ctx()) {
-                return editor.take_pad(keys, chord);
-            }
-        }
-        None => {}
+    if editor.capture.is_none() {
+        return false;
     }
-    false
+    let pressed = take_pressed(g.ui());
+    editor.take_capture(keys, pressed, pressed_this_frame(g.ctx()))
 }
 
 /// The words typed in the arguments of the steps, by macro and step.

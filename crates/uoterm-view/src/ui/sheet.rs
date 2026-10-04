@@ -122,6 +122,24 @@ pub fn sheet_first_place(window: Area) -> Area {
     )
 }
 
+/// The id that keeps the place of the box of a party invite, which shows
+/// while the party tab is closed.
+pub const INVITE_ID: &str = "modern:party_invite";
+const INVITE_WIDTH: f32 = 320.0;
+/// The width of Accept and of Decline in the box of an invite.
+pub const INVITE_CHOICE_WIDTH: f32 = 80.0;
+
+/// Where the box of a party invite first stands: the top of the left
+/// column.
+pub fn invite_first_place(window: Area) -> Area {
+    let height = TITLE_ROW + ROW * 2.0 + PANEL_PAD * 2.0;
+    first_place(
+        window,
+        Spot::LeftColumn(0),
+        Vector::new(INVITE_WIDTH, height),
+    )
+}
+
 /// The least size the player may make the sheet.
 pub fn sheet_least() -> Vector {
     Vector::new(SHEET_WIDTH, sheet_height(SHEET_MIN_ROWS))

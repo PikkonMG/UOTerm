@@ -7,49 +7,29 @@
 //! gargoyle's flight flies or lands, and pins onto the hotbar.
 
 use super::super::boxes_ui::{scrolled, Tools, CELL_RADIUS};
-use super::super::control::Act;
-use super::super::deck_ui::{Offer, Slot, ROW, TAB_GAP};
+use super::super::deck_ui::{Offer, ROW, TAB_GAP};
 use super::super::model::abilities::{
-    ability_of, armed, icon_of, race_of, racial_command, slot_hue, toggle_command, AbilitySlot,
-    Race,
+    ability_of, armed, icon_of, race_of, slot_hue, AbilitySlot, Race,
 };
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font, title_font};
 use super::frame::{self, FrameEvent, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
-use uoterm_assist::abilities::ABILITIES;
+use uoterm_view::ui::abilities::{
+    abilities_first_place, ability_rows, arm_words, racial_act, racial_first_place, racial_height,
+    racial_slot, slot_act, slot_of, ABILITIES_MIN, ABILITY_ICON as ICON_SIDE, HINT_FLIGHT,
+    HINT_SLOT, WORDS_ABILITIES, WORDS_ALL, WORDS_ARMED, WORDS_NO_RACE, WORDS_PASSIVE, WORDS_RACIAL,
+    WORDS_RACIAL_USE as WORDS_USE, WORDS_WEAPONS,
+};
+pub use uoterm_view::ui::abilities::{ABILITIES_ID, RACIAL_ID};
 use uoterm_view::ui::lists::{ability_slot_words, ability_weapon_names};
+use uoterm_view::ui::sheet::WORDS_PIN;
 
-pub const ABILITIES_ID: &str = "modern:abilities";
-pub const RACIAL_ID: &str = "modern:racial";
-const ABILITIES_SIZE: Vec2 = Vec2::new(300.0, 390.0);
-const ABILITIES_MIN: Vec2 = Vec2::new(260.0, 260.0);
-const RACIAL_WIDTH: f32 = 250.0;
-/// Where the panels first open: the combat panel in the left column a
-/// step from the box of a party invite, the racial panel in the right
-/// column, beside the sheet in the middle.
-const ABILITIES_SPOT: Spot = Spot::LeftColumn(1);
-const RACIAL_SPOT: Spot = Spot::RightColumn(0);
-const ICON_SIDE: f32 = 44.0;
 const BUTTON_WIDTH: f32 = 72.0;
 /// The buttons under the name of an ability.
 const BUTTON_HEIGHT: f32 = ROW - TAB_GAP;
-const WORDS_ABILITIES: &str = "Combat abilities";
-const WORDS_RACIAL: &str = "Racial abilities";
-const WORDS_ALL: &str = "Every weapon ability";
-const WORDS_ARM: &str = "Arm";
-const WORDS_LET_GO: &str = "Let go";
-const WORDS_ARMED: &str = "Armed";
-const WORDS_PIN: &str = "Pin";
-const WORDS_USE: &str = "Use";
-const WORDS_PASSIVE: &str = "Passive";
-const WORDS_NO_RACE: &str = "The shard names no race for the character.";
-const WORDS_WEAPONS: &str = "Weapons: ";
-const HINT_SLOT: &str = "Click: arm or let go.  Drag: onto the hotbar.";
-const HINT_FLIGHT: &str = "Click: fly or land.  Drag: onto the hotbar.";
 
 /// A gump icon in a cell.
 fn icon(ui: &egui::Ui, tools: &mut Tools<'_>, cell: Rect, gump: u16, hue: u16) {
@@ -65,18 +45,16 @@ fn icon(ui: &egui::Ui, tools: &mut Tools<'_>, cell: Rect, gump: u16, hue: u16) {
     }
 }
 
-/// The spec of a panel that first opens at `spot` of the plan.
+/// The spec of a panel that first opens at `default`.
 fn spec<'a>(
-    rect: Rect,
     (id, title): (&'a str, &'a str),
-    spot: Spot,
-    size: Vec2,
+    default: egui::Rect,
     min: Option<Vec2>,
 ) -> PanelSpec<'a> {
     PanelSpec {
         id,
         title,
-        default: layout::first_place(rect, spot, size),
+        default,
         min_size: min,
         closable: true,
     }
@@ -116,11 +94,9 @@ pub fn abilities_panel(
     first_row: &mut usize,
 ) -> (Rect, bool, Option<Offer>) {
     let spec = spec(
-        rect,
         (ABILITIES_ID, WORDS_ABILITIES),
-        ABILITIES_SPOT,
-        ABILITIES_SIZE,
-        Some(ABILITIES_MIN),
+        bridge::rect(abilities_first_place(bridge::area(rect))),
+        Some(bridge::vec2(ABILITIES_MIN)),
     );
     let panel = frame::place(rect, &spec, profile);
     let body = frame::draw(ui.painter(), panel, WORDS_ABILITIES);
@@ -186,7 +162,7 @@ fn slot_card(
     if !live {
         return None;
     }
-    let toggle = || tools.hand.act(Act::Command(toggle_command(frame, slot)));
+    let toggle = || tools.hand.act(slot_act(frame, slot));
     let response = ui.interact(
         cell,
         Id::new(("ability-slot", slot.serial())),
@@ -195,20 +171,19 @@ fn slot_card(
     if response.hovered() && !response.dragged() {
         super::super::tips::label(ui, &words, HINT_SLOT);
     }
-    let arm_words = if is_armed { WORDS_LET_GO } else { WORDS_ARM };
     let pressed = button_pair(
         ui,
         cell,
         ("ability", slot.serial() as u16),
-        [arm_words, WORDS_PIN],
+        [arm_words(is_armed), WORDS_PIN],
     );
     if pressed == Some(0) || response.clicked() {
         toggle();
     }
     if response.drag_started() {
-        return Some(Offer::Drag(Slot::Ability { slot }));
+        return Some(Offer::Drag(slot_of(slot)));
     }
-    (pressed == Some(1)).then_some(Offer::Pin(Slot::Ability { slot }))
+    (pressed == Some(1)).then_some(Offer::Pin(slot_of(slot)))
 }
 
 /// Every weapon ability, with its icon; the ones of the weapon in hand are
@@ -221,21 +196,17 @@ fn every_ability(
     first_row: &mut usize,
 ) {
     let rows = ((list.height() / ROW).floor() as usize).max(1);
-    let last_first = ABILITIES.len().saturating_sub(rows);
+    let every = ability_rows(frame);
+    let last_first = every.len().saturating_sub(rows);
     *first_row = scrolled(ui, list, (*first_row).min(last_first), last_first);
-    let in_hand: Vec<(u8, AbilitySlot)> = AbilitySlot::BOTH
-        .into_iter()
-        .map(|slot| (ability_of(frame, slot), slot))
-        .collect();
-    for (at, (ability, name)) in ABILITIES.iter().skip(*first_row).take(rows).enumerate() {
+    for (at, ability) in every.iter().skip(*first_row).take(rows).enumerate() {
         let row = Rect::from_min_size(
             list.left_top() + Vec2::new(0.0, at as f32 * ROW),
             Vec2::new(list.width(), ROW - TAB_GAP / 2.0),
         );
         let cell = Rect::from_min_size(row.min, Vec2::splat(row.height()));
-        icon(ui, tools, cell, icon_of(*ability), 0);
-        let slot = in_hand.iter().find(|(number, _)| number == ability);
-        let color = if slot.is_some() {
+        icon(ui, tools, cell, ability.icon, 0);
+        let color = if ability.in_hand.is_some() {
             theme::GOAL
         } else {
             theme::TEXT
@@ -243,11 +214,11 @@ fn every_ability(
         ui.painter().text(
             Pos2::new(cell.right() + theme::ROW_GAP, row.center().y),
             Align2::LEFT_CENTER,
-            *name,
+            ability.name,
             text_font(theme::SIZE_SMALL),
             color,
         );
-        if let Some((_, slot)) = slot {
+        if let Some(slot) = ability.in_hand {
             ui.painter().text(
                 row.right_center(),
                 Align2::RIGHT_CENTER,
@@ -256,15 +227,19 @@ fn every_ability(
                 theme::GOAL,
             );
         }
-        let response = ui.interact(row, Id::new(("every-ability", *ability)), Sense::hover());
+        let response = ui.interact(
+            row,
+            Id::new(("every-ability", ability.ability)),
+            Sense::hover(),
+        );
         if response.hovered() {
             let weapons = format!(
                 "{WORDS_WEAPONS}{}",
-                ability_weapon_names(*ability, |graphic| {
+                ability_weapon_names(ability.ability, |graphic| {
                     tools.scene.item_tile(graphic).map(|tile| tile.name.clone())
                 })
             );
-            super::super::tips::label(ui, name, &weapons);
+            super::super::tips::label(ui, ability.name, &weapons);
         }
     }
 }
@@ -279,13 +254,10 @@ pub fn racial_panel(
     profile: &mut Profile,
 ) -> (Rect, bool, Option<Offer>) {
     let race = race_of(frame);
-    let rows = race.map_or(1, |race| race.names.len()) as f32;
-    let height = frame::TITLE_ROW + rows * (ICON_SIDE + theme::ROW_GAP) + theme::PANEL_PAD * 2.0;
+    let height = racial_height(race);
     let spec = spec(
-        rect,
         (RACIAL_ID, WORDS_RACIAL),
-        RACIAL_SPOT,
-        Vec2::new(RACIAL_WIDTH, height),
+        bridge::rect(racial_first_place(bridge::area(rect), race)),
         None,
     );
     let placed = frame::place(rect, &spec, profile);
@@ -345,12 +317,11 @@ fn race_rows(
             );
             continue;
         }
-        let Some(command) = racial_command(frame, gump).filter(|_| frame.human_control) else {
+        let (Some(act), Some(slot)) = (
+            racial_act(frame, race, index),
+            racial_slot(frame, race, index),
+        ) else {
             continue;
-        };
-        let slot = || Slot::Racial {
-            icon: gump,
-            name: (*name).to_string(),
         };
         let response = ui.interact(cell, Id::new(("racial", gump)), Sense::click_and_drag());
         if response.hovered() && !response.dragged() {
@@ -358,12 +329,12 @@ fn race_rows(
         }
         let pressed = button_pair(ui, cell, ("racial", gump), [WORDS_USE, WORDS_PIN]);
         if pressed == Some(0) || response.clicked() {
-            tools.hand.act(Act::Command(command.into()));
+            tools.hand.act(act);
         }
         if response.drag_started() {
-            offer = Some(Offer::Drag(slot()));
+            offer = Some(Offer::Drag(slot));
         } else if pressed == Some(1) {
-            offer = Some(Offer::Pin(slot()));
+            offer = Some(Offer::Pin(slot));
         }
     }
     offer
@@ -395,7 +366,10 @@ mod tests {
         draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
             drawn.push(racial_panel(ui, rect, &frame, tools, profile).0);
         });
-        assert_eq!(drawn[0].size(), ABILITIES_SIZE);
+        assert_eq!(
+            drawn[0].size(),
+            bridge::vec2(uoterm_view::ui::abilities::ABILITIES_SIZE)
+        );
         assert!(
             drawn[2].height() > drawn[1].height(),
             "six abilities need more room"

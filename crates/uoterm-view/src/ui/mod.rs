@@ -5,10 +5,15 @@
 //! colors and sizes of the theme. The Rust window draws them with egui;
 //! the browser draws them with its own page.
 
+pub mod abilities;
+pub mod agents;
 pub mod bars;
+pub mod buff_bar;
 pub mod build;
 pub mod chat_panel;
+pub mod combat;
 pub mod control_bar;
+pub mod counter_bar;
 pub mod deals;
 pub mod deck;
 pub mod doll;
@@ -19,12 +24,16 @@ pub mod gumps;
 pub mod html;
 pub mod hud;
 pub mod hues;
+pub mod info_bar;
 pub mod launch;
 pub mod layout;
 pub mod lists;
+pub mod macros;
 pub mod map_item;
 pub mod map_panel;
 pub mod markers;
+pub mod meters;
+pub mod options;
 pub mod pages;
 pub mod places;
 pub mod quest_arrow;

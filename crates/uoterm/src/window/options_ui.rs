@@ -6,38 +6,43 @@
 //! makes it the start of each new character. A hue row opens the color
 //! picker: the grid of hues with its shade slider and the eyedropper.
 
-use super::actions::editor::{step_words, Capture, MacroEditor, Move};
+use super::actions::editor::{step_words, Capture, MacroEditor, Move, Pressed};
 use super::actions::{ActionId, Group, ACTIONS};
 use super::audio::Audio;
 use super::boxes_ui::Tools;
 use super::bridge;
 use super::keys::default_keys;
 use super::model::highlight;
-use super::model::hue_grid::HuePick;
-use super::model::options_draft::Draft;
 use super::model::places;
 use super::modern::frame::{self as panel_frame, FrameEvent, PanelSpec};
 use super::modern::hue_ui::{self, HueGridUi};
-use super::modern::layout::{self, Spot};
 use super::pad::{default_buttons, pressed_this_frame};
 use super::settings::{
     rows_on, Choice, CooldownRule, CooldownSource, CounterItem, HighlightRule, InfoBarData,
-    InfoBarItem, JournalKind, JournalTab, KeyBinding, KeyChord, MacroStep, OptionKind, OptionRow,
-    OptionValue, Page, Profile, PropertyNeed, DEFAULT_COOLDOWN_SECONDS, NO_HUE,
+    InfoBarItem, JournalKind, JournalTab, KeyBinding, MacroStep, OptionKind, OptionRow,
+    OptionValue, Page, Profile, PropertyNeed,
 };
 use super::theme::{self, text_font, title_font};
 use crate::view::WatchFrame;
-use eframe::egui::{self, Align2, Event, Id, Key, Pos2, Rect, RichText, Sense, Vec2};
+use eframe::egui::{self, Align2, Event, Id, Pos2, Rect, RichText, Sense, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use uoterm_view::ui::hues::picker_size;
+use uoterm_view::ui::options::{
+    at_least, foot_color, format_ids, hue_words, new_cooldown, new_counter_item, new_info_bar_item,
+    new_journal_tab, new_property_need, options_first_place, parse_ids, parse_lines,
+    picker_first_place, snap, Foot, HueKey, HueRows, OptionsPanel, COOLDOWN_SECONDS_MAX,
+    COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_STEP, FOOT, HEX_PREFIX, HINT_DEFAULT, HINT_IDS,
+    HINT_LABEL, HINT_LINES, HINT_MACRO_NAME, HINT_NO_FILE, HINT_PROPERTY, HINT_RULE_NAME,
+    HINT_SWATCH, HINT_TAB_NAME, HINT_TRIGGER, HUE_DIGITS, LINE_BREAK, OPTIONS_FOOT_ROW as FOOT_ROW,
+    OPTIONS_ID, OPTIONS_LEAST, PAGE_LIST_WIDTH, PAGE_ROW, PICKED_SWATCH, PICKER_ID, SECONDS_SUFFIX,
+    WORDS_ADD_COOLDOWN, WORDS_ADD_ITEM, WORDS_ADD_MACRO, WORDS_ADD_NEED, WORDS_ADD_PRESET,
+    WORDS_ADD_RULE, WORDS_ADD_STEP, WORDS_ADD_TAB, WORDS_AT_LEAST, WORDS_CANCEL, WORDS_CLEAR,
+    WORDS_COLOR, WORDS_CORPSES_ONLY, WORDS_DEFAULT_BUTTONS, WORDS_DEFAULT_KEYS, WORDS_DOWN,
+    WORDS_NEED_ALL, WORDS_NO_BUTTON, WORDS_NO_KEY, WORDS_OKAY, WORDS_OPTIONS as WORDS_TITLE,
+    WORDS_PRESS_BUTTON, WORDS_PRESS_KEY, WORDS_REMOVE, WORDS_RESTART, WORDS_STEPS,
+    WORDS_SUGGESTIONS, WORDS_UP,
+};
 
-const OPTIONS_ID: &str = "modern:options";
-const PICKER_ID: &str = "modern:color_picker";
-const PANEL_SIZE: Vec2 = Vec2::new(800.0, 600.0);
-const PANEL_LEAST: Vec2 = Vec2::new(560.0, 360.0);
-const PAGE_LIST_WIDTH: f32 = 170.0;
-const PAGE_ROW: f32 = 24.0;
 const COLUMN_GAP: f32 = 16.0;
 const CONTROL_WIDTH: f32 = 240.0;
 const NUMBER_WIDTH: f32 = 72.0;
@@ -45,254 +50,45 @@ const CHORD_WIDTH: f32 = 140.0;
 const WORDS_WIDTH: f32 = 150.0;
 const HUE_WIDTH: f32 = 72.0;
 const SWATCH: Vec2 = Vec2::new(22.0, 18.0);
-const PICKED_SWATCH: Vec2 = Vec2::new(64.0, 40.0);
-const FOOT_ROW: f32 = 30.0;
-const FOOT_BUTTON_WIDTH: f32 = 84.0;
-const SAVE_DEFAULT_WIDTH: f32 = 130.0;
 const SECTION_GAP: f32 = 10.0;
 const LIST_LINES: usize = 4;
-const HUE_DIGITS: usize = 4;
-const HEX_PREFIX: &str = "0x";
-const HEX_RADIX: u32 = 16;
-const DECIMAL_BASE: f32 = 10.0;
-const ID_SEPARATORS: [char; 4] = [',', ' ', '\n', ';'];
-const ID_JOIN: &str = ", ";
-const LINE_BREAK: &str = "\n";
-
-const WORDS_TITLE: &str = "Options";
-const WORDS_CANCEL: &str = "Cancel";
-const WORDS_APPLY: &str = "Apply";
-const WORDS_DEFAULT: &str = "Default";
-const WORDS_OKAY: &str = "Okay";
-const WORDS_COLOR: &str = "Color";
-const HINT_DEFAULT: &str = "Puts this page back to its defaults.";
-const HINT_SWATCH: &str = "Pick the color.";
-pub(super) const WORDS_SAVE_DEFAULT: &str = "Save as default";
-pub(super) const WORDS_PRESS_KEY: &str = "Press a key";
-pub(super) const WORDS_PRESS_BUTTON: &str = "Press a button";
-pub(super) const WORDS_NO_KEY: &str = "No key";
-pub(super) const WORDS_NO_BUTTON: &str = "No button";
-pub(super) const WORDS_CLEAR: &str = "Clear";
-pub(super) const WORDS_STEPS: &str = "Steps";
-pub(super) const WORDS_ADD_MACRO: &str = "Add macro";
-pub(super) const WORDS_ADD_STEP: &str = "Add step";
-pub(super) const WORDS_UP: &str = "Up";
-pub(super) const WORDS_DOWN: &str = "Down";
-pub(super) const WORDS_DEFAULT_KEYS: &str = "Default keys (the Experimental page turns them off)";
-pub(super) const WORDS_DEFAULT_BUTTONS: &str = "Default controller buttons";
-const WORDS_SUGGESTIONS: &str = "Pick";
-pub(super) const WORDS_ADD_ITEM: &str = "Add item";
-pub(super) const WORDS_ADD_TAB: &str = "Add tab";
-pub(super) const WORDS_REMOVE: &str = "Remove";
-pub(super) const WORDS_NEW_TAB: &str = "New tab";
-const HINT_MACRO_NAME: &str = "macro name";
 const NAME_WIDTH: f32 = 140.0;
 const ACTION_WIDTH: f32 = 200.0;
 const STEP_NUMBER_WIDTH: f32 = 20.0;
-const HINT_LABEL: &str = "label";
-const HINT_TAB_NAME: &str = "tab name";
-const HINT_NO_FILE: &str = "no file";
-const HINT_IDS: &str = "0x0123, 0x0456";
-const HINT_LINES: &str = "one on each line";
-const FIRST_PAGE: Page = Page::General;
-const WORDS_ADD_COOLDOWN: &str = "Add cooldown bar";
-const WORDS_ADD_RULE: &str = "Add rule";
-const WORDS_ADD_NEED: &str = "Add property";
-const WORDS_ADD_PRESET: &str = "Add";
-const WORDS_RESTART: &str = "Start again when it comes again";
-const WORDS_NEED_ALL: &str = "Needs every property";
-const WORDS_CORPSES_ONLY: &str = "Corpses only";
-const WORDS_AT_LEAST: &str = "at least";
-const HINT_TRIGGER: &str = "words in the journal";
-const HINT_RULE_NAME: &str = "rule name";
-const HINT_PROPERTY: &str = "property words";
-const SECONDS_SUFFIX: &str = " s";
-const COOLDOWN_SECONDS_MIN: f32 = 0.1;
-const COOLDOWN_SECONDS_MAX: f32 = 3600.0;
-const COOLDOWN_SECONDS_STEP: f64 = 0.1;
-pub(super) const NEW_INFO_BAR_DATA: InfoBarData = InfoBarData::HitPoints;
 
-/// What the player pressed while a binding waited for a key.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Pressed {
-    Cancel,
-    Chord(KeyChord),
-}
-
+#[derive(Default)]
 pub struct OptionsUi {
-    open: bool,
-    page: Page,
-    /// The copy of the profile the player edits, until Apply.
-    draft: Option<Draft>,
-    /// The macro editor of the Macros page.
-    macros: MacroEditor,
+    panel: OptionsPanel,
     /// The words the player types in a list field, kept while the field has
     /// the keys, so a line he has only begun stays as he typed it.
     drafts: HashMap<(Page, &'static str), String>,
-    hues: HueRows,
-}
-
-impl Default for OptionsUi {
-    fn default() -> Self {
-        Self {
-            open: false,
-            page: FIRST_PAGE,
-            draft: None,
-            macros: MacroEditor::default(),
-            drafts: HashMap::new(),
-            hues: HueRows::default(),
-        }
-    }
-}
-
-/// Where a hue row sits: the page, the row and a place inside the row.
-type HueKey = (Page, &'static str, usize);
-
-/// The color picker a hue row opened, for that row.
-struct HueChoice {
-    key: HueKey,
-    pick: HuePick,
+    /// The grid of the color picker a hue row opened.
     grid: HueGridUi,
 }
 
-/// The hue rows of the pages, the color picker one of them opened, and the
-/// hue it picked, until its row takes it.
-#[derive(Default)]
-struct HueRows {
-    open: Option<HueChoice>,
-    picked: Option<(HueKey, u16)>,
-}
-
-impl HueRows {
-    /// A hue: its number, and a swatch that opens the color picker. True
-    /// when it changed.
-    fn row(&mut self, ui: &mut egui::Ui, key: HueKey, hue: &mut u16, tools: &Tools<'_>) -> bool {
-        let mut changed = hue_box(ui, hue);
-        let (area, response) = ui.allocate_exact_size(SWATCH, Sense::click());
-        hue_ui::swatch(ui, area, *hue, tools);
-        if response.hovered() {
-            super::tips::label(ui, HINT_SWATCH, "");
-        }
-        if response.clicked() {
-            self.open = Some(HueChoice {
-                key,
-                pick: HuePick::of(*hue),
-                grid: HueGridUi::default(),
-            });
-        }
-        if let Some((_, picked)) = self.picked.take_if(|(at, _)| *at == key) {
-            changed |= *hue != picked;
-            *hue = picked;
-        }
-        changed
+/// A hue: its number, and a swatch that opens the color picker. True when
+/// it changed.
+fn hue_row(
+    rows: &mut HueRows,
+    ui: &mut egui::Ui,
+    key: HueKey,
+    hue: &mut u16,
+    tools: &Tools<'_>,
+) -> bool {
+    let mut changed = hue_box(ui, hue);
+    let (area, response) = ui.allocate_exact_size(SWATCH, Sense::click());
+    hue_ui::swatch(ui, area, *hue, tools);
+    if response.hovered() {
+        super::tips::label(ui, HINT_SWATCH, "");
     }
-
-    /// The color picker, when a row opened it. Gives its place.
-    fn picker(
-        &mut self,
-        ui: &mut egui::Ui,
-        rect: Rect,
-        frame: &WatchFrame,
-        tools: &Tools<'_>,
-        profile: &mut Profile,
-    ) -> Option<Rect> {
-        let choice = self.open.as_mut()?;
-        choice.grid.take_picked(&mut choice.pick, frame, tools);
-        let size = bridge::vec2(picker_size())
-            + Vec2::new(
-                theme::ROW_GAP * 2.0 + PICKED_SWATCH.x,
-                panel_frame::TITLE_ROW + FOOT_ROW + theme::ROW_GAP,
-            )
-            + Vec2::splat(theme::PANEL_PAD * 2.0);
-        let spec = PanelSpec {
-            id: PICKER_ID,
-            title: WORDS_COLOR,
-            default: layout::first_place(rect, Spot::Middle(0), size),
-            min_size: None,
-            closable: true,
-        };
-        let panel = panel_frame::place(rect, &spec, profile);
-        let body = panel_frame::draw(ui.painter(), panel, WORDS_COLOR);
-        let grid = choice
-            .grid
-            .draw(ui, body.min, PICKER_ID, &mut choice.pick, tools, true);
-        let shown = Rect::from_min_size(
-            Pos2::new(grid.right() + theme::ROW_GAP * 2.0, grid.top()),
-            PICKED_SWATCH,
-        );
-        hue_ui::swatch(ui, shown, choice.pick.hue(), tools);
-        ui.painter().text(
-            shown.center_bottom() + Vec2::new(0.0, theme::ROW_GAP),
-            Align2::CENTER_TOP,
-            format!("{HEX_PREFIX}{:04X}", choice.pick.hue()),
-            text_font(theme::SIZE_SMALL),
-            theme::TEXT_DIM,
-        );
-        let foot = Pos2::new(body.left(), grid.bottom() + theme::ROW_GAP);
-        let dropper = choice.grid.eyedropper(ui, foot, PICKER_ID, frame, tools);
-        let button = |at: f32| {
-            Rect::from_min_size(
-                Pos2::new(at, foot.y),
-                Vec2::new(FOOT_BUTTON_WIDTH, hue_ui::EYEDROPPER_SIZE.y),
-            )
-        };
-        let okay_area = button(dropper.right() + theme::ROW_GAP);
-        let cancel_area = button(okay_area.right() + theme::ROW_GAP);
-        let okay = theme::segment_keyed(
-            ui,
-            okay_area,
-            Id::new("picker-okay"),
-            WORDS_OKAY,
-            theme::GOAL,
-        );
-        let cancel = theme::segment_keyed(
-            ui,
-            cancel_area,
-            Id::new("picker-cancel"),
-            WORDS_CANCEL,
-            theme::TEXT,
-        );
-        let closed =
-            panel_frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
-        if okay {
-            self.picked = Some((choice.key, choice.pick.hue()));
-        }
-        if okay || cancel || closed {
-            choice.grid.stop();
-            self.open = None;
-        }
-        Some(panel)
+    if response.clicked() {
+        rows.open(key, *hue);
     }
-}
-
-/// The numbers of a list field: hex with `0x`, or decimal. Words that are
-/// not numbers are left out.
-pub(super) fn parse_ids(words: &str) -> Vec<u16> {
-    words
-        .split(ID_SEPARATORS)
-        .map(str::trim)
-        .filter_map(|word| match word.strip_prefix(HEX_PREFIX) {
-            Some(hex) => u16::from_str_radix(hex, HEX_RADIX).ok(),
-            None => word.parse().ok(),
-        })
-        .collect()
-}
-
-pub(super) fn format_ids(ids: &[u16]) -> String {
-    ids.iter()
-        .map(|id| format!("{HEX_PREFIX}{id:04X}"))
-        .collect::<Vec<_>>()
-        .join(ID_JOIN)
-}
-
-/// The lines of a list field, with no empty ones.
-pub(super) fn parse_lines(words: &str) -> Vec<String> {
-    words
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect()
+    if let Some(picked) = rows.take_picked(key) {
+        changed |= *hue != picked;
+        *hue = picked;
+    }
+    changed
 }
 
 /// The key the player pressed this frame, taken from the input so no other
@@ -309,23 +105,8 @@ pub(super) fn take_pressed(ui: &egui::Ui) -> Option<Pressed> {
             _ => None,
         })?;
         input.consume_key(modifiers, key);
-        Some(if key == Key::Escape {
-            Pressed::Cancel
-        } else {
-            Pressed::Chord(KeyChord::from_press(
-                &bridge::key_name(key),
-                bridge::mods(modifiers),
-            ))
-        })
+        Some(Pressed::of(&bridge::key_name(key), bridge::mods(modifiers)))
     })
-}
-
-/// The slider value nearest `value` that is a whole number of steps from
-/// `min`, rounded to the decimals of the step, so 0.81 is kept as 0.81.
-pub(super) fn snap(value: f32, min: f32, max: f32, step: f32) -> f32 {
-    let stepped = ((value - min) / step).round() * step + min;
-    let scale = DECIMAL_BASE.powf((-step.log10().floor()).max(0.0));
-    ((stepped * scale).round() / scale).clamp(min, max)
 }
 
 /// A drop-down list of choices. Gives the index chosen.
@@ -387,32 +168,24 @@ fn edit_list<T>(
     changed
 }
 
-/// The buttons at the foot of the Options.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Foot {
-    Cancel,
-    Apply,
-    Default,
-    Okay,
-    SaveAsDefault,
-}
-
-const FOOT: [(Foot, &str, f32); 5] = [
-    (Foot::Cancel, WORDS_CANCEL, FOOT_BUTTON_WIDTH),
-    (Foot::Apply, WORDS_APPLY, FOOT_BUTTON_WIDTH),
-    (Foot::Default, WORDS_DEFAULT, FOOT_BUTTON_WIDTH),
-    (Foot::Okay, WORDS_OKAY, FOOT_BUTTON_WIDTH),
-    (Foot::SaveAsDefault, WORDS_SAVE_DEFAULT, SAVE_DEFAULT_WIDTH),
-];
-
 impl OptionsUi {
     /// Opens the panel, or closes it. The button is in the control bar.
     pub fn toggle(&mut self) {
-        self.open = !self.open;
+        self.panel.toggle();
+        if !self.panel.open {
+            self.forget();
+        }
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.panel.open
+    }
+
+    /// Lets the words typed in the fields and the color picker go, as the
+    /// panel closes.
+    fn forget(&mut self) {
+        self.drafts.clear();
+        self.grid = HueGridUi::default();
     }
 
     /// Draws the panel when it is open, and the color picker a hue row
@@ -426,17 +199,15 @@ impl OptionsUi {
         profile: &mut Profile,
         audio: &Audio,
     ) -> Vec<Rect> {
-        if !self.open {
-            self.draft = None;
-            self.hues = HueRows::default();
+        if !self.panel.open {
             return Vec::new();
         }
-        let mut draft = self.draft.take().unwrap_or_else(|| Draft::of(profile));
+        let mut draft = self.panel.draft(profile).clone();
         let spec = PanelSpec {
             id: OPTIONS_ID,
             title: WORDS_TITLE,
-            default: layout::first_place(rect, Spot::Middle(0), PANEL_SIZE),
-            min_size: Some(PANEL_LEAST),
+            default: bridge::rect(options_first_place(bridge::area(rect))),
+            min_size: Some(bridge::vec2(OPTIONS_LEAST)),
             closable: true,
         };
         let panel = panel_frame::place(rect, &spec, profile);
@@ -451,45 +222,112 @@ impl OptionsUi {
         );
         let mut rows_ui = ui.new_child(egui::UiBuilder::new().max_rect(rows_area));
         egui::ScrollArea::vertical()
-            .id_salt(("options-rows", self.page.index()))
+            .id_salt(("options-rows", self.panel.page.index()))
             .auto_shrink(false)
             .show(&mut rows_ui, |ui| {
                 self.page_rows(ui, &mut draft.edited, audio, tools);
             });
+        self.panel.draft = Some(draft);
         let closed =
             panel_frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
-        if pressed == Some(Foot::Default) {
-            draft.reset_page(self.page);
-            let page = self.page;
-            self.drafts.retain(|(on, _), _| *on != page);
-        }
-        if matches!(
-            pressed,
-            Some(Foot::Apply | Foot::Okay | Foot::SaveAsDefault)
-        ) {
+        if let Some(foot) = pressed {
+            let page = self.panel.page;
             let sound_before = profile.sound.clone();
-            draft.apply(profile);
-            tools.keep_profile(profile);
-            if profile.sound != sound_before {
-                audio.options_changed(&profile.sound);
+            let done = self.panel.press_foot(foot, profile);
+            if foot == Foot::Default {
+                self.drafts.retain(|(on, _), _| *on != page);
+            }
+            if done.applied {
+                tools.keep_profile(profile);
+                if profile.sound != sound_before {
+                    audio.options_changed(&profile.sound);
+                }
+            }
+            if done.save_as_default {
+                tools
+                    .profile_home
+                    .save_as_default(&places::for_saving(profile));
             }
         }
-        if pressed == Some(Foot::SaveAsDefault) {
-            tools
-                .profile_home
-                .save_as_default(&places::for_saving(profile));
+        if closed {
+            self.panel.close();
         }
         let mut covered = vec![panel];
-        if closed || matches!(pressed, Some(Foot::Cancel | Foot::Okay)) {
-            self.open = false;
-            self.macros.cancel_capture();
-            self.drafts.clear();
-            self.hues = HueRows::default();
+        if self.panel.open {
+            covered.extend(self.picker(ui, rect, frame, tools, profile));
         } else {
-            self.draft = Some(draft);
-            covered.extend(self.hues.picker(ui, rect, frame, tools, profile));
+            self.forget();
         }
         covered
+    }
+
+    /// The color picker, when a row opened it. Gives its place.
+    fn picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        frame: &WatchFrame,
+        tools: &Tools<'_>,
+        profile: &mut Profile,
+    ) -> Option<Rect> {
+        let (_, pick) = self.panel.hues.open.as_mut()?;
+        self.grid.take_picked(pick, frame, tools);
+        let spec = PanelSpec {
+            id: PICKER_ID,
+            title: WORDS_COLOR,
+            default: bridge::rect(picker_first_place(bridge::area(rect))),
+            min_size: None,
+            closable: true,
+        };
+        let panel = panel_frame::place(rect, &spec, profile);
+        let body = panel_frame::draw(ui.painter(), panel, WORDS_COLOR);
+        let grid = self.grid.draw(ui, body.min, PICKER_ID, pick, tools, true);
+        let shown = Rect::from_min_size(
+            Pos2::new(grid.right() + theme::ROW_GAP * 2.0, grid.top()),
+            bridge::vec2(PICKED_SWATCH),
+        );
+        hue_ui::swatch(ui, shown, pick.hue(), tools);
+        ui.painter().text(
+            shown.center_bottom() + Vec2::new(0.0, theme::ROW_GAP),
+            Align2::CENTER_TOP,
+            hue_words(pick.hue()),
+            text_font(theme::SIZE_SMALL),
+            theme::TEXT_DIM,
+        );
+        let foot = Pos2::new(body.left(), grid.bottom() + theme::ROW_GAP);
+        let dropper = self.grid.eyedropper(ui, foot, PICKER_ID, frame, tools);
+        let button = |at: f32| {
+            Rect::from_min_size(
+                Pos2::new(at, foot.y),
+                Vec2::new(
+                    uoterm_view::ui::options::FOOT_BUTTON_WIDTH,
+                    hue_ui::EYEDROPPER_SIZE.y,
+                ),
+            )
+        };
+        let okay_area = button(dropper.right() + theme::ROW_GAP);
+        let cancel_area = button(okay_area.right() + theme::ROW_GAP);
+        let okay = theme::segment_keyed(
+            ui,
+            okay_area,
+            Id::new("picker-okay"),
+            WORDS_OKAY,
+            theme::GOAL,
+        );
+        let cancel = theme::segment_keyed(
+            ui,
+            cancel_area,
+            Id::new("picker-cancel"),
+            WORDS_CANCEL,
+            theme::TEXT,
+        );
+        let closed =
+            panel_frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
+        if okay || cancel || closed {
+            self.grid.stop();
+            self.panel.hues.finish(okay);
+        }
+        Some(panel)
     }
 
     /// The pages, one button for each.
@@ -497,7 +335,7 @@ impl OptionsUi {
         let mut y = left_top.y;
         for (index, words) in Page::LABELS.iter().enumerate() {
             let page = Page::from_index(index);
-            let color = if page == self.page {
+            let color = if page == self.panel.page {
                 theme::GOAL
             } else {
                 theme::TEXT_DIM
@@ -507,8 +345,7 @@ impl OptionsUi {
                 Vec2::new(PAGE_LIST_WIDTH, PAGE_ROW - theme::ROW_GAP),
             );
             if theme::segment_keyed(ui, area, Id::new(("options-page", index)), words, color) {
-                self.page = page;
-                self.macros.cancel_capture();
+                self.panel.choose_page(page);
             }
             y += PAGE_ROW;
         }
@@ -521,7 +358,7 @@ impl OptionsUi {
         audio: &Audio,
         tools: &Tools<'_>,
     ) {
-        if self.page == Page::Sound && !audio.note().is_empty() {
+        if self.panel.page == Page::Sound && !audio.note().is_empty() {
             ui.label(
                 RichText::new(audio.note())
                     .font(text_font(theme::SIZE_BODY))
@@ -529,7 +366,7 @@ impl OptionsUi {
             );
         }
         let mut section = "";
-        for row in rows_on(self.page) {
+        for row in rows_on(self.panel.page) {
             if row.section != section {
                 section = row.section;
                 ui.add_space(SECTION_GAP);
@@ -554,7 +391,7 @@ impl OptionsUi {
         value: OptionValue,
         tools: &Tools<'_>,
     ) -> Option<OptionValue> {
-        let page = self.page;
+        let page = self.panel.page;
         let height = ui.spacing().interact_size.y;
         match (row.kind, value) {
             (OptionKind::Toggle, OptionValue::Toggle(mut on)) => ui
@@ -591,7 +428,7 @@ impl OptionsUi {
             }
             (OptionKind::Choice { labels }, OptionValue::Choice(index)) => {
                 ui.horizontal(|ui| {
-                    let id = Id::new(("options-choice", self.page.index(), row.label));
+                    let id = Id::new(("options-choice", self.panel.page.index(), row.label));
                     let chosen = choice_box(ui, id, labels, index);
                     ui.label(row.label);
                     (chosen != index).then_some(OptionValue::Choice(chosen))
@@ -600,7 +437,13 @@ impl OptionsUi {
             }
             (OptionKind::Hue, OptionValue::Hue(mut hue)) => {
                 ui.horizontal(|ui| {
-                    let changed = self.hues.row(ui, (page, row.label, 0), &mut hue, tools);
+                    let changed = hue_row(
+                        &mut self.panel.hues,
+                        ui,
+                        (page, row.label, 0),
+                        &mut hue,
+                        tools,
+                    );
                     ui.label(row.label);
                     changed.then_some(OptionValue::Hue(hue))
                 })
@@ -647,7 +490,7 @@ impl OptionsUi {
             }
             (OptionKind::InfoBarItems, OptionValue::InfoBarItems(items)) => {
                 ui.label(row.label);
-                let hues = HueList::new(&mut self.hues, page, row.label, tools);
+                let hues = HueList::new(&mut self.panel.hues, page, row.label, tools);
                 info_bar_items(ui, items, hues).map(OptionValue::InfoBarItems)
             }
             (OptionKind::JournalTabs, OptionValue::JournalTabs(tabs)) => {
@@ -656,17 +499,17 @@ impl OptionsUi {
             }
             (OptionKind::Cooldowns, OptionValue::Cooldowns(rules)) => {
                 ui.label(row.label);
-                let hues = HueList::new(&mut self.hues, page, row.label, tools);
+                let hues = HueList::new(&mut self.panel.hues, page, row.label, tools);
                 cooldown_rules(ui, rules, hues).map(OptionValue::Cooldowns)
             }
             (OptionKind::HighlightRules, OptionValue::HighlightRules(rules)) => {
                 ui.label(row.label);
-                let hues = HueList::new(&mut self.hues, page, row.label, tools);
+                let hues = HueList::new(&mut self.panel.hues, page, row.label, tools);
                 highlight_rules(ui, rules, hues).map(OptionValue::HighlightRules)
             }
             (OptionKind::CounterItems, OptionValue::CounterItems(items)) => {
                 ui.label(row.label);
-                let hues = HueList::new(&mut self.hues, page, row.label, tools);
+                let hues = HueList::new(&mut self.panel.hues, page, row.label, tools);
                 counter_items(ui, items, hues).map(OptionValue::CounterItems)
             }
             (kind, value) => {
@@ -685,7 +528,7 @@ impl OptionsUi {
         kept: String,
         hint: &str,
     ) -> Option<String> {
-        let key = (self.page, label);
+        let key = (self.panel.page, label);
         let mut words = self.drafts.get(&key).cloned().unwrap_or(kept);
         let response = ui.add(
             egui::TextEdit::multiline(&mut words)
@@ -704,7 +547,7 @@ impl OptionsUi {
     /// Waits for the key or the controller buttons of a macro. The keys of
     /// the window do not run while it waits.
     pub fn capturing(&self) -> bool {
-        self.macros.capture.is_some()
+        self.panel.capturing()
     }
 
     /// The macros of the Macros page: each with its name, its key, its
@@ -724,17 +567,17 @@ impl OptionsUi {
                         remove = Some(at);
                     }
                 });
-                if self.macros.open == Some(at) {
+                if self.panel.macros.open == Some(at) {
                     changed |= macro_steps(ui, at, &mut keys);
                 }
             });
         }
         if let Some(at) = remove {
-            self.macros.remove(&mut keys, at);
+            self.panel.macros.remove(&mut keys, at);
             changed = true;
         }
         if ui.button(WORDS_ADD_MACRO).clicked() {
-            self.macros.add(&mut keys);
+            self.panel.macros.add(&mut keys);
             changed = true;
         }
         default_lists(ui);
@@ -743,22 +586,13 @@ impl OptionsUi {
 
     /// Takes the key or the buttons the editor waits for. Esc cancels.
     fn take_capture(&mut self, ui: &egui::Ui, keys: &mut [KeyBinding]) -> bool {
-        match self.macros.capture {
-            Some(Capture::Chord(_)) => match take_pressed(ui) {
-                Some(Pressed::Cancel) => self.macros.cancel_capture(),
-                Some(Pressed::Chord(chord)) => return self.macros.take_chord(keys, chord),
-                None => {}
-            },
-            Some(Capture::Pad(_)) => {
-                if matches!(take_pressed(ui), Some(Pressed::Cancel)) {
-                    self.macros.cancel_capture();
-                } else if let Some(chord) = pressed_this_frame(ui.ctx()) {
-                    return self.macros.take_pad(keys, chord);
-                }
-            }
-            None => {}
+        if self.panel.macros.capture.is_none() {
+            return false;
         }
-        false
+        let pressed = take_pressed(ui);
+        self.panel
+            .macros
+            .take_capture(keys, pressed, pressed_this_frame(ui.ctx()))
     }
 
     /// The name, the key, the buttons and the Steps switch of one macro.
@@ -768,7 +602,7 @@ impl OptionsUi {
             .hint_text(HINT_MACRO_NAME)
             .desired_width(NAME_WIDTH);
         let mut changed = ui.add(name).changed();
-        let chord_words = match (self.macros.capture, &binding.chord) {
+        let chord_words = match (self.panel.macros.capture, &binding.chord) {
             (Some(Capture::Chord(waiting)), _) if waiting == at => WORDS_PRESS_KEY.to_string(),
             (_, Some(chord)) => chord.to_string(),
             (_, None) => WORDS_NO_KEY.to_string(),
@@ -777,9 +611,9 @@ impl OptionsUi {
             .add_sized([CHORD_WIDTH, height], egui::Button::new(chord_words))
             .clicked()
         {
-            self.macros.capture(Capture::Chord(at));
+            self.panel.macros.capture(Capture::Chord(at));
         }
-        let pad_words = match (self.macros.capture, &binding.pad) {
+        let pad_words = match (self.panel.macros.capture, &binding.pad) {
             (Some(Capture::Pad(waiting)), _) if waiting == at => WORDS_PRESS_BUTTON.to_string(),
             (_, Some(pad)) => pad.to_string(),
             (_, None) => WORDS_NO_BUTTON.to_string(),
@@ -788,16 +622,16 @@ impl OptionsUi {
             .add_sized([CHORD_WIDTH, height], egui::Button::new(pad_words))
             .clicked()
         {
-            self.macros.capture(Capture::Pad(at));
+            self.panel.macros.capture(Capture::Pad(at));
         }
         if (binding.chord.is_some() || binding.pad.is_some()) && ui.button(WORDS_CLEAR).clicked() {
             binding.chord = None;
             binding.pad = None;
             changed = true;
         }
-        let open = self.macros.open == Some(at);
+        let open = self.panel.macros.open == Some(at);
         if ui.selectable_label(open, WORDS_STEPS).clicked() {
-            self.macros.open = (!open).then_some(at);
+            self.panel.macros.open = (!open).then_some(at);
         }
         changed
     }
@@ -967,8 +801,7 @@ impl<'a, 't> HueList<'a, 't> {
 
     /// The hue of the entry at `at`. True when it changed.
     fn row(&mut self, ui: &mut egui::Ui, at: usize, hue: &mut u16) -> bool {
-        self.rows
-            .row(ui, (self.page, self.label, at), hue, self.tools)
+        hue_row(self.rows, ui, (self.page, self.label, at), hue, self.tools)
     }
 }
 
@@ -979,10 +812,7 @@ fn foot_buttons(ui: &egui::Ui, left_top: Pos2, changed: bool) -> Option<Foot> {
     let mut pressed = None;
     for (foot, words, width) in FOOT {
         let area = Rect::from_min_size(Pos2::new(x, left_top.y), Vec2::new(width, FOOT_ROW));
-        let color = match foot {
-            Foot::Apply | Foot::Okay if changed => theme::GOAL,
-            _ => theme::TEXT,
-        };
+        let color = bridge::color(foot_color(foot, changed));
         if theme::segment_keyed(ui, area, Id::new(("options-foot", words)), words, color) {
             pressed = Some(foot);
         }
@@ -999,13 +829,7 @@ fn info_bar_items(
     mut items: Vec<InfoBarItem>,
     mut hues: HueList<'_, '_>,
 ) -> Option<Vec<InfoBarItem>> {
-    let new_item = || {
-        Some(InfoBarItem {
-            label: String::new(),
-            hue: NO_HUE,
-            data: NEW_INFO_BAR_DATA,
-        })
-    };
+    let new_item = || Some(new_info_bar_item());
     let changed = edit_list(ui, &mut items, WORDS_ADD_ITEM, new_item, |ui, at, item| {
         ui.horizontal(|ui| {
             let label = egui::TextEdit::singleline(&mut item.label)
@@ -1032,12 +856,7 @@ fn info_bar_items(
 }
 
 fn journal_tabs(ui: &mut egui::Ui, mut tabs: Vec<JournalTab>) -> Option<Vec<JournalTab>> {
-    let new_tab = || {
-        Some(JournalTab {
-            name: WORDS_NEW_TAB.to_string(),
-            kinds: Vec::new(),
-        })
-    };
+    let new_tab = || Some(new_journal_tab());
     let changed = edit_list(ui, &mut tabs, WORDS_ADD_TAB, new_tab, |ui, _, tab| {
         let name = egui::TextEdit::singleline(&mut tab.name)
             .hint_text(HINT_TAB_NAME)
@@ -1069,16 +888,7 @@ fn cooldown_rules(
     mut rules: Vec<CooldownRule>,
     mut hues: HueList<'_, '_>,
 ) -> Option<Vec<CooldownRule>> {
-    let new_rule = || {
-        Some(CooldownRule {
-            label: String::new(),
-            hue: NO_HUE,
-            trigger: String::new(),
-            seconds: DEFAULT_COOLDOWN_SECONDS,
-            source: CooldownSource::Anyone,
-            restart: true,
-        })
-    };
+    let new_rule = || Some(new_cooldown());
     let changed = edit_list(
         ui,
         &mut rules,
@@ -1155,12 +965,7 @@ fn highlight_rules(
                 ui,
                 &mut rule.needs,
                 WORDS_ADD_NEED,
-                || {
-                    Some(PropertyNeed {
-                        words: String::new(),
-                        min: None,
-                    })
-                },
+                || Some(new_property_need()),
                 |ui, _, need| property_need(ui, need),
             );
             changed
@@ -1190,7 +995,7 @@ fn property_need(ui: &mut egui::Ui, need: &mut PropertyNeed) -> bool {
         let mut changed = ui.add(words).changed();
         let mut has_min = need.min.is_some();
         if ui.checkbox(&mut has_min, WORDS_AT_LEAST).changed() {
-            need.min = has_min.then_some(0.0);
+            need.min = at_least(has_min);
             changed = true;
         }
         if let Some(min) = need.min.as_mut() {
@@ -1207,13 +1012,7 @@ fn counter_items(
     mut items: Vec<CounterItem>,
     mut hues: HueList<'_, '_>,
 ) -> Option<Vec<CounterItem>> {
-    let new_item = || {
-        Some(CounterItem {
-            label: String::new(),
-            graphic: 0,
-            hue: NO_HUE,
-        })
-    };
+    let new_item = || Some(new_counter_item());
     let changed = edit_list(ui, &mut items, WORDS_ADD_ITEM, new_item, |ui, at, item| {
         ui.horizontal(|ui| {
             let label = egui::TextEdit::singleline(&mut item.label)
@@ -1253,58 +1052,21 @@ mod tests {
         let covered = draw_once(&mut options, &mut profile);
         let window = Rect::from_min_size(Pos2::ZERO, crate::window::modern::testing::SCREEN);
         assert!(covered.iter().all(|panel| window.contains_rect(*panel)));
-        let draft = options.draft.as_mut().unwrap();
+        let draft = options.panel.draft.as_mut().unwrap();
         draft.edited.general.always_run = !profile.general.always_run;
         draw_once(&mut options, &mut profile);
         assert_eq!(profile, Profile::default(), "not applied yet");
-        options.draft.as_mut().unwrap().apply(&mut profile);
+        options.panel.draft.as_mut().unwrap().apply(&mut profile);
         assert_ne!(
             profile.general.always_run,
             Profile::default().general.always_run
         );
         options.toggle();
         draw_once(&mut options, &mut profile);
-        assert!(options.draft.is_none(), "a closed panel lets its copy go");
-    }
-
-    #[test]
-    fn a_picked_hue_goes_to_its_own_row() {
-        let mut rows = HueRows {
-            open: None,
-            picked: Some(((Page::Speech, "Emote", 0), 0x0035)),
-        };
-        let mut hue = 0;
-        let mut other = 0;
-        draw_frames(&mut Profile::default(), &[Vec::new()], |ui, _, tools, _| {
-            assert!(!rows.row(ui, (Page::Speech, "Speech", 0), &mut other, tools));
-            assert!(rows.row(ui, (Page::Speech, "Emote", 0), &mut hue, tools));
-        });
-        assert_eq!((hue, other), (0x0035, 0));
-        assert!(rows.picked.is_none());
-    }
-
-    #[test]
-    fn a_list_of_ids_reads_hex_and_decimal_and_skips_other_words() {
-        assert_eq!(
-            parse_ids("0x0123, 45;x 0x00FF\n7"),
-            vec![0x0123, 45, 0x00FF, 7]
+        assert!(
+            options.panel.draft.is_none(),
+            "a closed panel lets its copy go"
         );
-        assert_eq!(parse_ids(&format_ids(&[1, 0xABCD])), vec![1, 0xABCD]);
-        assert!(parse_ids("").is_empty());
-    }
-
-    #[test]
-    fn a_slider_keeps_to_its_steps_and_its_range() {
-        assert_eq!(snap(0.8134, 0.0, 1.0, 0.01), 0.81);
-        assert_eq!(snap(0.8, 0.0, 1.0, 0.01), 0.8);
-        assert_eq!(snap(17.4, 5.0, 25.0, 1.0), 17.0);
-        assert_eq!(snap(260.0, 12.0, 250.0, 1.0), 250.0);
-        assert_eq!(snap(1.0, 0.5, 3.0, 0.05), 1.0);
-    }
-
-    #[test]
-    fn a_list_of_lines_has_no_empty_lines() {
-        assert_eq!(parse_lines(" Bob \n\n Mara\n"), vec!["Bob", "Mara"]);
     }
 
     #[test]
@@ -1313,14 +1075,14 @@ mod tests {
         options.toggle();
         let mut profile = Profile::default();
         for index in 0..Page::LABELS.len() {
-            options.page = Page::from_index(index);
+            options.panel.page = Page::from_index(index);
             draw_once(&mut options, &mut profile);
-            let draft = options.draft.as_ref().unwrap();
-            for row in rows_on(options.page) {
+            let draft = options.panel.draft.as_ref().unwrap();
+            for row in rows_on(options.panel.page) {
                 let drawn = (row.get)(&draft.edited);
                 assert_eq!(drawn, (row.get)(&Profile::default()), "{}", row.label);
             }
-            assert!(!draft.changed(), "{:?}", options.page);
+            assert!(!draft.changed(), "{:?}", options.panel.page);
         }
         assert_eq!(profile, Profile::default());
     }
@@ -1329,8 +1091,8 @@ mod tests {
     fn an_open_macro_draws_every_kind_of_step_and_changes_nothing() {
         let mut options = OptionsUi::default();
         options.toggle();
-        options.page = Page::Macros;
-        options.macros.open = Some(0);
+        options.panel.page = Page::Macros;
+        options.panel.macros.open = Some(0);
         let mut profile = Profile::default();
         profile.macros.key_bindings.push(KeyBinding {
             name: "every step".into(),
@@ -1344,6 +1106,6 @@ mod tests {
         let before = profile.clone();
         draw_once(&mut options, &mut profile);
         assert_eq!(profile, before);
-        assert!(!options.draft.as_ref().unwrap().changed() && !options.capturing());
+        assert!(!options.panel.draft.as_ref().unwrap().changed() && !options.capturing());
     }
 }

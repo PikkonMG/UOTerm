@@ -2,37 +2,20 @@
 //! damage each second over the time it ran.
 
 use super::super::boxes_ui::Tools;
-use super::super::control::Act;
 use super::super::model::dps::DamageReport;
-use super::super::model::reads::ReadKey;
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Id, Pos2, Rect, Vec2};
-use serde_json::json;
 use uoterm_runtime::tools::TOOL_DAMAGE_METER;
 use uoterm_view::ui::launch::DPS_ID;
-
-const WIDTH: f32 = 300.0;
-const ROW: f32 = 22.0;
-const BUTTON_ROW: f32 = 28.0;
-const MAX_ROWS: usize = 8;
-/// The meter is read this often while the window shows, in seconds.
-const REPORT_MAX_AGE: f64 = 1.0;
-const METER_START: &str = "start";
-const METER_PAUSE: &str = "pause";
-const METER_RESUME: &str = "resume";
-const METER_STOP: &str = "stop";
-
-const WORDS_TITLE: &str = "Damage";
-const WORDS_START: &str = "Start";
-const WORDS_PAUSE: &str = "Pause";
-const WORDS_RESUME: &str = "Resume";
-const WORDS_STOP: &str = "Stop";
-const WORDS_PER_SECOND: &str = "per second";
-const WORDS_NONE: &str = "No damage counted. Press Start.";
+use uoterm_view::ui::meters::{
+    dealt_words, dps_buttons, dps_first_place, meter_key, per_second_color, per_second_words,
+    total_words, DPS_BUTTON_ROW as BUTTON_ROW, DPS_MAX_AGE, DPS_MAX_ROWS as MAX_ROWS,
+    DPS_ROW as ROW, WORDS_DAMAGE as WORDS_TITLE, WORDS_NO_DAMAGE as WORDS_NONE,
+};
 
 /// Draws the window. Gives its place, and true when the player closed it.
 pub fn draw(
@@ -44,35 +27,28 @@ pub fn draw(
 ) -> (Rect, bool) {
     let report = tools
         .readings
-        .want(ReadKey::new(TOOL_DAMAGE_METER, &json!({})), REPORT_MAX_AGE)
+        .want(meter_key(), DPS_MAX_AGE)
         .map(DamageReport::read)
         .unwrap_or_default();
-    let rows = report.mobiles.len().clamp(1, MAX_ROWS) + 1;
-    let height = frame::TITLE_ROW + BUTTON_ROW + rows as f32 * ROW + theme::PANEL_PAD * 2.0;
     let spec = PanelSpec {
         id: DPS_ID,
         title: WORDS_TITLE,
-        default: layout::first_place(rect, Spot::Middle(1), Vec2::new(WIDTH, height)),
+        default: bridge::rect(dps_first_place(bridge::area(rect), &report)),
         min_size: None,
         closable: true,
     };
     let panel = frame::place(rect, &spec, profile);
     let body = frame::draw(ui.painter(), panel, WORDS_TITLE);
     if frame.human_control {
-        let pause = if report.running {
-            (WORDS_PAUSE, METER_PAUSE)
-        } else {
-            (WORDS_RESUME, METER_RESUME)
-        };
-        let buttons = [(WORDS_START, METER_START), pause, (WORDS_STOP, METER_STOP)];
+        let buttons = dps_buttons(&report);
         let width = (body.width() - theme::ROW_GAP * 2.0) / buttons.len() as f32;
-        for (at, (words, action)) in buttons.into_iter().enumerate() {
+        for (at, (words, act)) in buttons.into_iter().enumerate() {
             let area = Rect::from_min_size(
                 body.left_top() + Vec2::new(at as f32 * (width + theme::ROW_GAP), 0.0),
                 Vec2::new(width, BUTTON_ROW - theme::ROW_GAP),
             );
             if theme::segment_keyed(ui, area, Id::new(("dps", at)), words, theme::TEXT) {
-                tools.hand.act(Act::DamageMeter(action));
+                tools.hand.act(act);
                 tools.readings.refresh(TOOL_DAMAGE_METER);
             }
         }
@@ -82,18 +58,14 @@ pub fn draw(
     painter.text(
         Pos2::new(body.left(), top),
         Align2::LEFT_TOP,
-        format!("{:.1} {WORDS_PER_SECOND}", report.per_second()),
+        per_second_words(&report),
         number_font(theme::SIZE_BODY),
-        if report.running {
-            theme::GOAL
-        } else {
-            theme::TEXT_DIM
-        },
+        bridge::color(per_second_color(&report)),
     );
     painter.text(
         Pos2::new(body.right(), top),
         Align2::RIGHT_TOP,
-        format!("{}  {:.0}s", report.total(), report.seconds),
+        total_words(&report),
         number_font(theme::SIZE_BODY),
         theme::TEXT_DIM,
     );
@@ -118,7 +90,7 @@ pub fn draw(
         painter.text(
             Pos2::new(body.right(), y),
             Align2::RIGHT_TOP,
-            format!("{}  {:.1}/s", dealt.damage, dealt.per_second),
+            dealt_words(dealt),
             number_font(theme::SIZE_SMALL),
             theme::TEXT_DIM,
         );

@@ -7,20 +7,15 @@ use super::super::model::durability::{self, Wear};
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Vec2};
 use uoterm_view::ui::launch::DURABILITY_ID;
 use uoterm_view::ui::lists;
-
-const WIDTH: f32 = 300.0;
-const ROW: f32 = 34.0;
-const ART_SIDE: f32 = 30.0;
-const MAX_ROWS: usize = 12;
-
-const WORDS_TITLE: &str = "Durability";
-const WORDS_NONE: &str = "Nothing worn has a durability, or the shard has not said yet.";
+use uoterm_view::ui::meters::{
+    durability_first_place, DURABILITY_ART as ART_SIDE, DURABILITY_MAX_ROWS as MAX_ROWS,
+    DURABILITY_ROW as ROW, WORDS_DURABILITY as WORDS_TITLE, WORDS_NO_WEAR as WORDS_NONE,
+};
 
 /// The color of a durability bar: the alarm under the warning.
 pub fn wear_color(wear: &Wear, warning: u8) -> Color32 {
@@ -36,12 +31,10 @@ pub fn draw(
     profile: &mut Profile,
 ) -> (Rect, bool) {
     let wears = durability::worn_wear(frame, tools.readings);
-    let rows = wears.len().clamp(1, MAX_ROWS);
-    let height = frame::TITLE_ROW + rows as f32 * ROW + theme::PANEL_PAD * 2.0;
     let spec = PanelSpec {
         id: DURABILITY_ID,
         title: WORDS_TITLE,
-        default: layout::first_place(rect, Spot::Middle(0), Vec2::new(WIDTH, height)),
+        default: bridge::rect(durability_first_place(bridge::area(rect), wears.len())),
         min_size: None,
         closable: true,
     };

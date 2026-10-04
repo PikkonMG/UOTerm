@@ -10,9 +10,9 @@ use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpR
 use super::text::TextLook;
 use crate::window::actions::editor::{Capture, MacroEditor};
 use crate::window::model::key_macros;
-use crate::window::options_ui::{WORDS_NO_KEY, WORDS_PRESS_KEY};
 use crate::window::settings::{MacroStep, Page};
 use eframe::egui::Pos2;
+use uoterm_view::ui::options::{WORDS_NO_KEY, WORDS_PRESS_KEY};
 
 pub const MACRO_ID: &str = "macro";
 
