@@ -7,6 +7,7 @@
 
 use uoterm_assist::items::POTIONS;
 use uoterm_assist::name_key;
+use uoterm_world::hotkeys as names;
 
 use super::*;
 
@@ -54,74 +55,74 @@ const SCRIPTS: &str = "scripts";
 
 #[rustfmt::skip]
 const FIXED: &[(&str, &str, &str)] = &[
-    (GENERAL, "Resync", "resync"),
-    (GENERAL, "Ping Server", "ping"),
-    (GENERAL, "Accept Party", "partyaccept"),
-    (GENERAL, "Decline Party", "partydecline"),
-    (GENERAL, "Where Am I", "where"),
-    (ACTIONS, "Fly On/Off", "togglefly"),
-    (ACTIONS, "Use Last Item", "useobject 'lastobject'"),
-    (ACTIONS, "Use Left Hand", "useobject 'lefthand'"),
-    (ACTIONS, "Use Right Hand", "useobject 'righthand'"),
-    (ACTIONS, "Show Names Mobiles", "shownames 'mobiles'"),
-    (ACTIONS, "Show Names Corpses", "shownames 'corpses'"),
-    (ACTIONS, "Mount / Dismount", "togglemounted"),
-    (PETS, "All Come", "msg 'all come'"),
-    (PETS, "All Follow Me", "msg 'all follow me'"),
-    (PETS, "All Follow", "msg 'all follow'"),
-    (PETS, "All Guard Me", "msg 'all guard me'"),
-    (PETS, "All Guard", "msg 'all guard'"),
-    (PETS, "All Kill", "msg 'all kill'"),
-    (PETS, "All Stay", "msg 'all stay'"),
-    (PETS, "All Stop", "msg 'all stop'"),
-    (AGENTS, "Autoloot Once", "autoloot"),
-    (AGENTS, "Dress", "dress"),
-    (AGENTS, "Undress", "undress"),
-    (AGENTS, "Save Dress", "dressconfig"),
-    (AGENTS, "Buy On", "buy"),
-    (AGENTS, "Buy Off", "clearbuy"),
-    (AGENTS, "Sell On", "sell"),
-    (AGENTS, "Sell Off", "clearsell"),
-    (COMBAT, "Primary Ability", "setability 'primary' 'on'"),
-    (COMBAT, "Secondary Ability", "setability 'secondary' 'on'"),
-    (COMBAT, "Stun", "setability 'stun'"),
-    (COMBAT, "Disarm", "setability 'disarm'"),
-    (COMBAT, "Cancel Ability", "setability 'primary' 'off'"),
-    (COMBAT, "Attack Last Target", "attack 'last'"),
-    (COMBAT, "Attack Nearest Enemy", "getenemy 'enemy' 'criminal' 'gray' 'murderer' 'closest'\nif findalias 'enemy'\nattack 'enemy'\nendif"),
-    (COMBAT, "War Mode On/Off", "togglewar"),
-    (COMBAT, "Bandage Self", "bandageself"),
-    (COMBAT, "Bandage Last", "bandagetarget 'last'"),
-    (COMBAT, "Use Bandage", "usetype 0x0E21"),
-    (COMBAT, "Clear Left Hand", "clearhands 'left'"),
-    (COMBAT, "Clear Right Hand", "clearhands 'right'"),
-    (COMBAT, "Toggle Left Hand", "togglehands 'left'"),
-    (COMBAT, "Toggle Right Hand", "togglehands 'right'"),
-    (ITEMS, "Enchanted Apple", "usetype 0x2FD8 1160"),
-    (ITEMS, "Orange Petals", "usetype 0x1021 0x002B"),
-    (ITEMS, "Wrath Grapes", "usetype 0x2FD7 0x0482"),
-    (ITEMS, "Rose Of Trinsic", "usetype 0x234B 0"),
-    (ITEMS, "Smoke Bomb", "usetype 0x2808"),
-    (ITEMS, "Spell Stone", "usetype 0x4079"),
-    (ITEMS, "Healing Stone", "usetype 0x4078"),
-    (SPELLS, "Mini Heal", "miniheal"),
-    (SPELLS, "Big Heal", "bigheal"),
-    (SPELLS, "Chivalry Heal", "chivalryheal"),
-    (SPELLS, "Interrupt", "interrupt"),
-    (SPELLS, "Last Spell", "cast 'last'"),
-    (SPELLS, "Last Spell On Last Target", "cast 'last' 'last'"),
-    (SKILLS, "Last Skill", "useskill 'last'"),
-    (VIRTUES, "Honor", "virtue 'honor'"),
-    (VIRTUES, "Sacrifice", "virtue 'sacrifice'"),
-    (VIRTUES, "Valor", "virtue 'valor'"),
-    (TARGETS, "Target Self", "target 'self'"),
-    (TARGETS, "Target Last", "target 'last'"),
-    (TARGETS, "Target Self Queued", "autotargetself"),
-    (TARGETS, "Target Last Queued", "autotargetlast"),
-    (TARGETS, "Cancel Target", "canceltarget"),
-    (TARGETS, "Clear Target Queue", "cleartargetqueue"),
-    (TARGETS, "Clear Last Target", "clearlasttarget"),
-    (TARGETS, "Clear Last And Queue", "clearlasttarget\ncleartargetqueue"),
+    (GENERAL, names::RESYNC, "resync"),
+    (GENERAL, names::PING_SERVER, "ping"),
+    (GENERAL, names::ACCEPT_PARTY, "partyaccept"),
+    (GENERAL, names::DECLINE_PARTY, "partydecline"),
+    (GENERAL, names::WHERE_AM_I, "where"),
+    (ACTIONS, names::FLY_ON_OFF, "togglefly"),
+    (ACTIONS, names::USE_LAST_ITEM, "useobject 'lastobject'"),
+    (ACTIONS, names::USE_LEFT_HAND, "useobject 'lefthand'"),
+    (ACTIONS, names::USE_RIGHT_HAND, "useobject 'righthand'"),
+    (ACTIONS, names::SHOW_NAMES_MOBILES, "shownames 'mobiles'"),
+    (ACTIONS, names::SHOW_NAMES_CORPSES, "shownames 'corpses'"),
+    (ACTIONS, names::MOUNT_DISMOUNT, "togglemounted"),
+    (PETS, names::ALL_COME, "msg 'all come'"),
+    (PETS, names::ALL_FOLLOW_ME, "msg 'all follow me'"),
+    (PETS, names::ALL_FOLLOW, "msg 'all follow'"),
+    (PETS, names::ALL_GUARD_ME, "msg 'all guard me'"),
+    (PETS, names::ALL_GUARD, "msg 'all guard'"),
+    (PETS, names::ALL_KILL, "msg 'all kill'"),
+    (PETS, names::ALL_STAY, "msg 'all stay'"),
+    (PETS, names::ALL_STOP, "msg 'all stop'"),
+    (AGENTS, names::AUTOLOOT_ONCE, "autoloot"),
+    (AGENTS, names::DRESS, "dress"),
+    (AGENTS, names::UNDRESS, "undress"),
+    (AGENTS, names::SAVE_DRESS, "dressconfig"),
+    (AGENTS, names::BUY_ON, "buy"),
+    (AGENTS, names::BUY_OFF, "clearbuy"),
+    (AGENTS, names::SELL_ON, "sell"),
+    (AGENTS, names::SELL_OFF, "clearsell"),
+    (COMBAT, names::PRIMARY_ABILITY, "setability 'primary' 'on'"),
+    (COMBAT, names::SECONDARY_ABILITY, "setability 'secondary' 'on'"),
+    (COMBAT, names::STUN, "setability 'stun'"),
+    (COMBAT, names::DISARM, "setability 'disarm'"),
+    (COMBAT, names::CANCEL_ABILITY, "setability 'primary' 'off'"),
+    (COMBAT, names::ATTACK_LAST_TARGET, "attack 'last'"),
+    (COMBAT, names::ATTACK_NEAREST_ENEMY, "getenemy 'enemy' 'criminal' 'gray' 'murderer' 'closest'\nif findalias 'enemy'\nattack 'enemy'\nendif"),
+    (COMBAT, names::WAR_MODE_ON_OFF, "togglewar"),
+    (COMBAT, names::BANDAGE_SELF, "bandageself"),
+    (COMBAT, names::BANDAGE_LAST, "bandagetarget 'last'"),
+    (COMBAT, names::USE_BANDAGE, "usetype 0x0E21"),
+    (COMBAT, names::CLEAR_LEFT_HAND, "clearhands 'left'"),
+    (COMBAT, names::CLEAR_RIGHT_HAND, "clearhands 'right'"),
+    (COMBAT, names::TOGGLE_LEFT_HAND, "togglehands 'left'"),
+    (COMBAT, names::TOGGLE_RIGHT_HAND, "togglehands 'right'"),
+    (ITEMS, names::ENCHANTED_APPLE, "usetype 0x2FD8 1160"),
+    (ITEMS, names::ORANGE_PETALS, "usetype 0x1021 0x002B"),
+    (ITEMS, names::WRATH_GRAPES, "usetype 0x2FD7 0x0482"),
+    (ITEMS, names::ROSE_OF_TRINSIC, "usetype 0x234B 0"),
+    (ITEMS, names::SMOKE_BOMB, "usetype 0x2808"),
+    (ITEMS, names::SPELL_STONE, "usetype 0x4079"),
+    (ITEMS, names::HEALING_STONE, "usetype 0x4078"),
+    (SPELLS, names::MINI_HEAL, "miniheal"),
+    (SPELLS, names::BIG_HEAL, "bigheal"),
+    (SPELLS, names::CHIVALRY_HEAL, "chivalryheal"),
+    (SPELLS, names::INTERRUPT, "interrupt"),
+    (SPELLS, names::LAST_SPELL, "cast 'last'"),
+    (SPELLS, names::LAST_SPELL_ON_LAST_TARGET, "cast 'last' 'last'"),
+    (SKILLS, names::LAST_SKILL, "useskill 'last'"),
+    (VIRTUES, names::HONOR, "virtue 'honor'"),
+    (VIRTUES, names::SACRIFICE, "virtue 'sacrifice'"),
+    (VIRTUES, names::VALOR, "virtue 'valor'"),
+    (TARGETS, names::TARGET_SELF, "target 'self'"),
+    (TARGETS, names::TARGET_LAST, "target 'last'"),
+    (TARGETS, names::TARGET_SELF_QUEUED, "autotargetself"),
+    (TARGETS, names::TARGET_LAST_QUEUED, "autotargetlast"),
+    (TARGETS, names::CANCEL_TARGET, "canceltarget"),
+    (TARGETS, names::CLEAR_TARGET_QUEUE, "cleartargetqueue"),
+    (TARGETS, names::CLEAR_LAST_TARGET, "clearlasttarget"),
+    (TARGETS, names::CLEAR_LAST_AND_QUEUE, "clearlasttarget\ncleartargetqueue"),
 ];
 
 /// The wand spells a wand hotkey equips a wand for.
@@ -141,23 +142,21 @@ const WAND_SPELLS: [&str; 11] = [
 
 /// The agents a hotkey switches on and off, by hotkey name.
 const AGENT_TOGGLES: [(&str, &str); 7] = [
-    ("Autoloot On/Off", "autoloot"),
-    ("Scavenger On/Off", "scavenger"),
-    ("Bandage Heal On/Off", "bandage"),
-    ("Auto Remount On/Off", "remount"),
-    ("Bone Cutter On/Off", "bone_cutter"),
-    ("Auto Carver On/Off", "carver"),
-    ("Open Corpses On/Off", "open_corpses"),
+    (names::AUTOLOOT_ON_OFF, "autoloot"),
+    (names::SCAVENGER_ON_OFF, "scavenger"),
+    (names::BANDAGE_HEAL_ON_OFF, "bandage"),
+    (names::AUTO_REMOUNT_ON_OFF, "remount"),
+    (names::BONE_CUTTER_ON_OFF, "bone_cutter"),
+    (names::AUTO_CARVER_ON_OFF, "carver"),
+    (names::OPEN_CORPSES_ON_OFF, "open_corpses"),
 ];
 
 const METER: [(&str, &str); 4] = [
-    ("Damage Meter Start", "start"),
-    ("Damage Meter Pause", "pause"),
-    ("Damage Meter Resume", "resume"),
-    ("Damage Meter Stop", "stop"),
+    (names::DAMAGE_METER_START, "start"),
+    (names::DAMAGE_METER_PAUSE, "pause"),
+    (names::DAMAGE_METER_RESUME, "resume"),
+    (names::DAMAGE_METER_STOP, "stop"),
 ];
-
-const STOP_ALL_SCRIPTS: &str = "Stop All Scripts";
 
 /// Every hotkey the character has now.
 fn all(inner: &Inner) -> Vec<Hotkey> {
@@ -243,7 +242,7 @@ fn all(inner: &Inner) -> Vec<Hotkey> {
         action: Action::ToggleScript(name),
     }));
     keys.push(Hotkey {
-        name: STOP_ALL_SCRIPTS.into(),
+        name: names::STOP_ALL_SCRIPTS.into(),
         group: SCRIPTS,
         action: Action::StopScripts,
     });
@@ -394,7 +393,7 @@ mod tests {
             .map(|&(_, name, _)| name)
             .chain(AGENT_TOGGLES.iter().map(|&(name, _)| name))
             .chain(METER.iter().map(|&(name, _)| name))
-            .chain([STOP_ALL_SCRIPTS])
+            .chain([names::STOP_ALL_SCRIPTS])
             .collect();
         assert_eq!(from_tables, FIXED_HOTKEY_NAMES);
     }
