@@ -238,6 +238,9 @@ enum Commands {
         #[arg(long, value_enum, conflicts_with = "text")]
         open: Vec<window::Panel>,
     },
+    /// Print the colors and sizes of the Modern theme as CSS properties
+    #[command(name = "theme-css")]
+    ThemeCss,
 }
 
 #[derive(Subcommand, Debug)]
@@ -453,6 +456,10 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
             watch_session(api, session, text, uopath, shown).await
         }
         Commands::Mcp => mcp::run_stdio(api).await,
+        Commands::ThemeCss => {
+            print!("{}", uoterm_view::ui::theme::css_tokens());
+            Ok(EXIT_OK as u8)
+        }
     }
 }
 
@@ -1479,6 +1486,12 @@ mod tests {
             _ => panic!("expected watch"),
         }
         assert!(Cli::try_parse_from(["uoterm", "watch", "--text", "--snapshot", "o.png"]).is_err());
+    }
+
+    #[test]
+    fn parses_theme_css() {
+        let cli = Cli::try_parse_from(["uoterm", "theme-css"]).unwrap();
+        assert!(matches!(cli.command, Commands::ThemeCss));
     }
 
     #[test]

@@ -219,14 +219,6 @@ impl Inputs {
         Focus::of(self.chat_focused, chat_empty, self.other_field_focused)
     }
 
-    pub fn chat_focused(&self) -> bool {
-        self.chat_focused
-    }
-
-    pub fn other_field_focused(&self) -> bool {
-        self.other_field_focused
-    }
-
     pub fn keys_down(&self) -> &[KeyName] {
         &self.keys_down
     }

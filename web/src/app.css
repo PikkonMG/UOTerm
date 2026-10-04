@@ -1,0 +1,90 @@
+/* The look of the page. Colors and sizes come from theme.css (made from the Rust theme). */
+
+@font-face {
+  font-family: 'Barlow';
+  src: url('./fonts/Barlow-Medium.ttf') format('truetype');
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: 'Barlow Condensed';
+  src: url('./fonts/BarlowCondensed-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--void);
+  color: var(--text);
+  font-family: 'Barlow', sans-serif;
+  font-size: var(--size-body);
+}
+
+#app {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+}
+
+.panel {
+  background: var(--glass);
+  border: var(--edge-width) solid var(--glass-edge);
+  border-radius: var(--panel-radius);
+  box-shadow: 0 4px 24px var(--panel-shadow);
+  padding: var(--panel-pad);
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  min-width: 18em;
+  margin: var(--screen-margin);
+}
+
+.title {
+  margin: 0;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: var(--size-title);
+  font-weight: 600;
+}
+
+.label {
+  color: var(--text-dim);
+  font-size: var(--size-small);
+}
+
+.field {
+  background: var(--track);
+  border: var(--edge-width) solid var(--glass-edge);
+  border-radius: var(--bar-radius);
+  color: var(--text);
+  font: inherit;
+  padding: var(--row-gap);
+}
+
+.button {
+  background: var(--button);
+  border: var(--edge-width) solid var(--glass-edge);
+  border-radius: var(--bar-radius);
+  color: var(--text);
+  font: inherit;
+  padding: var(--row-gap);
+  cursor: pointer;
+}
+
+.button:hover:enabled {
+  background: var(--button-hover);
+}
+
+.button:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.fault {
+  margin: 0;
+  color: var(--alarm);
+}

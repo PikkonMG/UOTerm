@@ -1,0 +1,5 @@
+node_modules
+dist
+src/wasm
+src/fonts
+src/theme.css
