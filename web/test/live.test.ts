@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ANSWER_LATE, ANSWER_WAIT_MS, LINK_LOST, LiveLink, RECONNECT_MS, type LiveHandlers } from '../src/net/live';
+import { whenTokenNeeded } from '../src/net/api';
+import { BACKOFF_MS } from '../src/net/backoff';
+import {
+  ANSWER_LATE,
+  ANSWER_WAIT_MS,
+  LINK_LOST,
+  LINK_LOST_WAITING,
+  LiveLink,
+  LOSSES_BEFORE_TOKEN_CHECK,
+  type LiveHandlers,
+} from '../src/net/live';
 import { FakeSocket } from './fake_socket';
 
 const SESSION = 's1';
@@ -23,6 +33,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('LiveLink', () => {
@@ -31,7 +42,7 @@ describe('LiveLink', () => {
     const link = new LiveLink(SESSION, { frame() {}, answer() {}, ended() {}, state: (s) => states.push(s) });
     FakeSocket.last().open();
     FakeSocket.last().drop();
-    await vi.advanceTimersByTimeAsync(RECONNECT_MS[0]);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
     FakeSocket.last().open();
     expect(states).toEqual(['open', 'lost', 'open']);
     link.close();
@@ -45,7 +56,7 @@ describe('LiveLink', () => {
 
   it('waits_longer_after_each_failed_try_and_repeats_the_last_wait', async () => {
     const link = new LiveLink(SESSION, handlers());
-    for (const wait of [...RECONNECT_MS, RECONNECT_MS[RECONNECT_MS.length - 1]]) {
+    for (const wait of [...BACKOFF_MS, BACKOFF_MS[BACKOFF_MS.length - 1]]) {
       const made = FakeSocket.made.length;
       FakeSocket.last().drop();
       await vi.advanceTimersByTimeAsync(wait - 1);
@@ -108,7 +119,7 @@ describe('LiveLink', () => {
     FakeSocket.last().open();
     link.send({ kind: 'call', id: CALL_ID, tool: 'observe', args: {} });
     FakeSocket.last().drop();
-    expect(on.answer).toHaveBeenCalledWith(CALL_ID, false, { error: LINK_LOST });
+    expect(on.answer).toHaveBeenCalledWith(CALL_ID, false, { error: LINK_LOST_WAITING });
     link.close();
   });
 
@@ -126,7 +137,7 @@ describe('LiveLink', () => {
     FakeSocket.last().open();
     link.send({ kind: 'size', size: 30 });
     FakeSocket.last().drop();
-    await vi.advanceTimersByTimeAsync(RECONNECT_MS[0]);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
     FakeSocket.last().open();
     expect(FakeSocket.last().sentJson()).toEqual([{ kind: 'size', size: 30 }]);
     link.close();
@@ -137,10 +148,44 @@ describe('LiveLink', () => {
     const link = new LiveLink(SESSION, on);
     FakeSocket.last().open();
     FakeSocket.last().receive({ kind: 'ended' });
-    await vi.advanceTimersByTimeAsync(RECONNECT_MS[RECONNECT_MS.length - 1] * 2);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1] * 2);
     expect(on.ended).toHaveBeenCalledTimes(1);
     expect(FakeSocket.made.length).toBe(1);
     expect(on.state).not.toHaveBeenCalledWith('lost');
+    link.close();
+  });
+
+  it('drops_a_message_that_does_not_read', () => {
+    const on = handlers();
+    const link = new LiveLink(SESSION, on);
+    FakeSocket.last().open();
+    FakeSocket.last().onmessage?.(new MessageEvent('message', { data: '{"kind": "fra' }));
+    FakeSocket.last().receive({ kind: 'frame', watch: { tick: 2 } });
+    expect(on.frame).toHaveBeenCalledTimes(1);
+    expect(on.frame).toHaveBeenCalledWith({ tick: 2 });
+    link.close();
+  });
+
+  it('asks_for_the_token_once_after_tries_in_a_row_fail', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('{"error":"unauthorized"}', { status: 401 }));
+    const tokenNeeded = vi.fn();
+    const stop = whenTokenNeeded(tokenNeeded);
+    const link = new LiveLink(SESSION, handlers());
+    for (let tries = 1; tries < LOSSES_BEFORE_TOKEN_CHECK; tries += 1) {
+      FakeSocket.last().drop();
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[tries - 1]);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    FakeSocket.last().drop();
+    await vi.waitFor(() => expect(tokenNeeded).toHaveBeenCalledTimes(1));
+    expect(fetchSpy).toHaveBeenCalledWith('/v1/sessions', undefined);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[LOSSES_BEFORE_TOKEN_CHECK - 1]);
+    FakeSocket.last().drop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    stop();
     link.close();
   });
 
@@ -148,7 +193,7 @@ describe('LiveLink', () => {
     const link = new LiveLink(SESSION, handlers());
     FakeSocket.last().open();
     link.close();
-    await vi.advanceTimersByTimeAsync(RECONNECT_MS[RECONNECT_MS.length - 1] * 2);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1] * 2);
     expect(FakeSocket.made.length).toBe(1);
   });
 });

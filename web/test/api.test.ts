@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiFailed, giveToken, jsonInit, TokenNeeded } from '../src/net/api';
+import { api, ApiFailed, giveToken, jsonInit, readMessage, TokenNeeded, whenTokenNeeded } from '../src/net/api';
+import { BACKOFF_MS, backoffWait, LONGEST_BACKOFF_MS } from '../src/net/backoff';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -44,5 +45,35 @@ describe('giveToken', () => {
   it('is_false_for_a_wrong_token', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"error":"unauthorized"}', { status: 401 }));
     await expect(giveToken('wrong')).resolves.toBe(false);
+  });
+});
+
+describe('whenTokenNeeded', () => {
+  it('hears_each_401_until_stopped', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(new Response('{"error":"unauthorized"}', { status: 401 })),
+    );
+    const tokenNeeded = vi.fn();
+    const stop = whenTokenNeeded(tokenNeeded);
+    await api('/v1/sessions').catch(() => undefined);
+    expect(tokenNeeded).toHaveBeenCalledTimes(1);
+    stop();
+    await api('/v1/sessions').catch(() => undefined);
+    expect(tokenNeeded).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('readMessage', () => {
+  it('reads_json_and_drops_what_does_not_read', () => {
+    expect(readMessage('{"kind":"ended"}')).toEqual({ kind: 'ended' });
+    expect(readMessage('{"kind":')).toBeUndefined();
+    expect(readMessage(new ArrayBuffer(1))).toBeUndefined();
+  });
+});
+
+describe('backoffWait', () => {
+  it('grows_then_repeats_its_last_step', () => {
+    expect(BACKOFF_MS.map((_, retry) => backoffWait(retry))).toEqual(BACKOFF_MS);
+    expect(backoffWait(BACKOFF_MS.length + 3)).toBe(LONGEST_BACKOFF_MS);
   });
 });

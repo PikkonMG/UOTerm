@@ -82,6 +82,10 @@ colors! {
 
 sizes! {
     pub PANEL_RADIUS = 10.0;
+    /// How far the shadow of a panel falls below it, and how soft it is.
+    /// Its color is `PANEL_SHADOW`.
+    pub PANEL_SHADOW_DROP = 6.0;
+    pub PANEL_SHADOW_BLUR = 22.0;
     pub PANEL_PAD = 14.0;
     pub SCREEN_MARGIN = 16.0;
     pub ROW_GAP = 6.0;
@@ -206,6 +210,7 @@ mod tests {
     #[test]
     fn sizes_are_points_and_a_grey_notoriety_is_the_default() {
         assert!(css_tokens().contains("--panel-pad: 14px;"));
+        assert!(css_tokens().contains("--panel-shadow-drop: 6px;"));
         assert_eq!(notoriety_color(0), notoriety_color(3));
         assert_ne!(notoriety_color(NOTORIETY_MURDERER), ALARM);
     }

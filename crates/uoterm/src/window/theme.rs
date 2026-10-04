@@ -54,8 +54,8 @@ pub const PANEL_RADIUS: u8 = shared::PANEL_RADIUS as u8;
 pub const BAR_RADIUS: u8 = shared::BAR_RADIUS as u8;
 
 const PANEL_SHADOW: Shadow = Shadow {
-    offset: [0, 6],
-    blur: 22,
+    offset: [0, shared::PANEL_SHADOW_DROP as i8],
+    blur: shared::PANEL_SHADOW_BLUR as u8,
     spread: 0,
     color: bridge::color(shared::PANEL_SHADOW),
 };

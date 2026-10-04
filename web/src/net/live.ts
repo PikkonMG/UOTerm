@@ -4,18 +4,37 @@
  * little longer after each failed try.
  */
 
-import { socketUrl } from './api';
+import { api, readMessage, SESSIONS_PATH, socketUrl } from './api';
+import { backoffWait } from './backoff';
 
-/** The waits between tries to open a lost link. The last one repeats. */
-export const RECONNECT_MS = [250, 500, 1000, 2000, 4000];
+// The limits of the server (crates/uoterm-runtime: `TOOL_CALL_TIMEOUT` of
+// a session, `ACT_STEP_GAP_MS`, and `MAX_ACT_STEPS` and `ACT_PLACES` of
+// the live link). They bound how long an answer can take.
+/** The longest one tool call takes before the session gives up on it. */
+const TOOL_CALL_MS = 8_000;
+const ACT_STEP_GAP_MS = 650;
+const MAX_ACT_STEPS = 4;
+/** The act that runs and the four that may wait before it. */
+const ACT_PLACES = 5;
+/** The longest act: each step at its longest, with the gaps between them. */
+const LONGEST_ACT_MS = MAX_ACT_STEPS * TOOL_CALL_MS + (MAX_ACT_STEPS - 1) * ACT_STEP_GAP_MS;
+/** Room for the answer to reach the page (the server's send timeout). */
+const ANSWER_TRAVEL_MS = 5_000;
+
 /**
- * How long a call or an act may wait for its answer. The server drops an
- * answer when the page reads too slowly, and an act may wait behind four
- * others of four steps each (about 10 s), so this leaves room.
+ * How long a call or an act waits for its answer: an act that waits
+ * behind every other place, each at its longest, then runs at its longest
+ * (about 175 s). Past it the server has dropped the answer, which it does
+ * when the page reads too slowly.
  */
-export const ANSWER_WAIT_MS = 30_000;
+export const ANSWER_WAIT_MS = ACT_PLACES * LONGEST_ACT_MS + ANSWER_TRAVEL_MS;
+/** Failed tries to open the link in a row before the page asks whether the API wants its token. */
+export const LOSSES_BEFORE_TOKEN_CHECK = 3;
 export const ANSWER_LATE = 'no answer came in time';
+/** A call or an act sent while the link is lost; it never left the page. */
 export const LINK_LOST = 'the link to UOTerm is lost';
+/** The link broke while an answer was on its way; the server finishes an act it started. */
+export const LINK_LOST_WAITING = 'the link was lost; the act may have run';
 export const SESSION_ENDED = 'the session ended';
 
 export type LinkState = 'open' | 'lost';
@@ -105,7 +124,10 @@ export class LiveLink {
       this.handlers.state('open');
       if (this.size) socket.send(JSON.stringify(this.size));
     };
-    socket.onmessage = (event: MessageEvent) => this.read(JSON.parse(event.data as string) as LiveIn);
+    socket.onmessage = (event: MessageEvent) => {
+      const message = readMessage<LiveIn>(event.data);
+      if (message) this.read(message);
+    };
     socket.onclose = () => this.lost();
     return socket;
   }
@@ -126,16 +148,22 @@ export class LiveLink {
     }
   }
 
-  /** The link broke: the answers it carried will not come; try again. */
+  /**
+   * The link broke, or did not open: the answers it carried will not come;
+   * try again. A link the API refuses shows no reason to the page, so after
+   * a few tries in a row a call asks whether the API wants its token (the
+   * call raises it to the page).
+   */
   private lost(): void {
     if (this.done) return;
-    this.failWaiting(LINK_LOST);
+    this.failWaiting(LINK_LOST_WAITING);
     if (this.reportedOpen) {
       this.reportedOpen = false;
       this.handlers.state('lost');
     }
-    const wait = RECONNECT_MS[Math.min(this.tries, RECONNECT_MS.length - 1)];
+    const wait = backoffWait(this.tries);
     this.tries += 1;
+    if (this.tries === LOSSES_BEFORE_TOKEN_CHECK) api(SESSIONS_PATH).catch(() => undefined);
     this.retry = setTimeout(() => (this.socket = this.connect()), wait);
   }
 

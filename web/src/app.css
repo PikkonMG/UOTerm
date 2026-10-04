@@ -1,5 +1,11 @@
 /* The look of the page. Colors and sizes come from theme.css (made from the Rust theme). */
 
+:root {
+  /* The narrowest a screen of the page (token, login) stands. The Rust
+     window sizes its screens to the window, so this is the page's own. */
+  --screen-width: 18em;
+}
+
 @font-face {
   font-family: 'Barlow';
   src: url('./fonts/Barlow-Medium.ttf') format('truetype');
@@ -32,7 +38,7 @@ body {
   background: var(--glass);
   border: var(--edge-width) solid var(--glass-edge);
   border-radius: var(--panel-radius);
-  box-shadow: 0 4px 24px var(--panel-shadow);
+  box-shadow: 0 var(--panel-shadow-drop) var(--panel-shadow-blur) var(--panel-shadow);
   padding: var(--panel-pad);
 }
 
@@ -40,7 +46,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--row-gap);
-  min-width: 18em;
+  min-width: var(--screen-width);
   margin: var(--screen-margin);
 }
 

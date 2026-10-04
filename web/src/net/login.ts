@@ -4,7 +4,7 @@
  * The password goes out in the first message only.
  */
 
-import { socketUrl } from './api';
+import { readMessage, socketUrl } from './api';
 
 const LOGIN_PATH = '/v1/login/live';
 export const LOGIN_CLOSED = 'the login link closed before the login ended';
@@ -116,8 +116,8 @@ export function login(form: LoginForm, onAsk: (ask: LoginAsk) => Promise<LoginRe
     socket.onopen = () => socket.send(JSON.stringify({ kind: 'login', ...form }));
     socket.onclose = () => end(() => reject(new LoginFailed(LOGIN_CLOSED)));
     socket.onmessage = (event: MessageEvent) => {
-      const message = JSON.parse(event.data as string) as LoginIn;
-      switch (message.kind) {
+      const message = readMessage<LoginIn>(event.data);
+      switch (message?.kind) {
         case 'ask':
           void answer(message.ask);
           break;

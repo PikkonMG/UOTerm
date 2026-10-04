@@ -3,14 +3,23 @@
  * names each want once; the feed fetches it, with at most `ART_PARALLEL`
  * requests in flight, and gives the answer back.
  *
+ * The view takes "missing" as final, so only an answer of the server says
+ * it: a request that does not reach the server is tried again, after the
+ * waits of `BACKOFF_MS`, up to `FETCH_TRIES` times. A request the API
+ * refuses for want of its token raises `TokenNeeded` to the page and is
+ * tried again, every `LONGEST_BACKOFF_MS`, until the token is given.
+ *
  * Browsers do not cache the answers of `POST /v1/art`, so the feed keeps
  * the pixels of each picture by the key the view gave, until the view
  * forgets the picture.
  */
 
-import { jsonInit } from './api';
+import { jsonInit, METHOD_POST, raiseTokenNeeded, STATUS_UNAUTHORIZED } from './api';
+import { backoffWait, LONGEST_BACKOFF_MS } from './backoff';
 
 export const ART_PARALLEL = 8;
+/** Tries of a request that does not reach the server, before it counts as missing. */
+export const FETCH_TRIES = 4;
 const ART_PATH = '/v1/art';
 /** The point of a picture that goes on its tile: `x,y`. */
 const ANCHOR_HEADER = 'x-uoterm-anchor';
@@ -44,6 +53,22 @@ export interface FeedView {
   postMissing(key: string): void;
 }
 
+/** One request of the feed: what to fetch, and what to do with the answer. */
+interface FeedRequest {
+  path: string;
+  init?: RequestInit;
+  /** The server answered with an OK status and this body. */
+  arrived(body: Blob, headers: Headers): Promise<void>;
+  /** The server has none (any other status), the body does not read, or the server is out of reach. */
+  missing(): void;
+}
+
+/** A request and the tries it failed to reach the server. */
+interface Queued {
+  request: FeedRequest;
+  failedTries: number;
+}
+
 /** The pixels of each picture the view has, by its key. */
 const pictures = new Map<string, ImageBitmap>();
 
@@ -54,7 +79,7 @@ export function pixelsOf(key: string): ImageBitmap | undefined {
 
 export class ArtFeed {
   /** Requests that wait for a place, in the order the view named them. */
-  private readonly waiting: (() => Promise<void>)[] = [];
+  private readonly waiting: Queued[] = [];
   private inFlight = 0;
 
   constructor(private readonly view: FeedView) {}
@@ -62,46 +87,94 @@ export class ArtFeed {
   /** Takes what the view wants now and starts what has a place. Call it once a frame. */
   pump(): void {
     for (const key of this.view.artForgotten()) forget(key);
-    for (const path of this.view.dataWanted()) this.waiting.push(() => this.getData(path));
-    for (const post of this.view.postsWanted()) this.waiting.push(() => this.post(post));
-    for (const want of this.view.artWanted()) this.waiting.push(() => this.getArt(want));
+    for (const path of this.view.dataWanted()) this.queue(this.dataRequest(path));
+    for (const post of this.view.postsWanted()) this.queue(this.postRequest(post));
+    for (const want of this.view.artWanted()) this.queue(this.artRequest(want));
     this.startWaiting();
+  }
+
+  private queue(request: FeedRequest, failedTries = 0): void {
+    this.waiting.push({ request, failedTries });
   }
 
   private startWaiting(): void {
     while (this.inFlight < ART_PARALLEL) {
-      const request = this.waiting.shift();
-      if (!request) return;
+      const next = this.waiting.shift();
+      if (!next) return;
       this.inFlight += 1;
-      void request().finally(() => {
+      void this.run(next).finally(() => {
         this.inFlight -= 1;
         this.startWaiting();
       });
     }
   }
 
-  private async getArt(want: ArtWant): Promise<void> {
-    const arrived = await fetchPicture(want.request);
-    if (!arrived) {
-      this.view.artMissing(want.key);
+  private async run({ request, failedTries }: Queued): Promise<void> {
+    let answer: { response: Response; body: Blob };
+    try {
+      const response = await fetch(request.path, request.init);
+      answer = { response, body: await response.blob() };
+    } catch {
+      const tried = failedTries + 1;
+      if (tried < FETCH_TRIES) this.later(request, tried, backoffWait(failedTries));
+      else request.missing();
       return;
     }
-    forget(want.key);
-    pictures.set(want.key, arrived.picture);
-    const [anchorX, anchorY] = arrived.anchor;
-    this.view.artArrived(want.key, arrived.picture.width, arrived.picture.height, anchorX, anchorY);
+    const { response, body } = answer;
+    if (response.status === STATUS_UNAUTHORIZED) {
+      raiseTokenNeeded();
+      this.later(request, failedTries, LONGEST_BACKOFF_MS);
+      return;
+    }
+    if (!response.ok) {
+      request.missing();
+      return;
+    }
+    try {
+      await request.arrived(body, response.headers);
+    } catch {
+      request.missing();
+    }
   }
 
-  private async getData(path: string): Promise<void> {
-    const text = await fetchText(path);
-    if (text === undefined) this.view.dataMissing(path);
-    else this.view.dataArrived(path, text);
+  /** Queues `request` again after `wait`, without a place while it waits. */
+  private later(request: FeedRequest, failedTries: number, wait: number): void {
+    setTimeout(() => {
+      this.queue(request, failedTries);
+      this.startWaiting();
+    }, wait);
   }
 
-  private async post(want: PostWant): Promise<void> {
-    const text = await fetchText(want.path, jsonInit('POST', want.body));
-    if (text === undefined) this.view.postMissing(want.key);
-    else this.view.postArrived(want.key, text);
+  private artRequest(want: ArtWant): FeedRequest {
+    return {
+      path: ART_PATH,
+      init: jsonInit(METHOD_POST, want.request),
+      arrived: async (body, headers) => {
+        const picture = await createImageBitmap(body);
+        forget(want.key);
+        pictures.set(want.key, picture);
+        const [anchorX, anchorY] = anchorOf(headers.get(ANCHOR_HEADER));
+        this.view.artArrived(want.key, picture.width, picture.height, anchorX, anchorY);
+      },
+      missing: () => this.view.artMissing(want.key),
+    };
+  }
+
+  private dataRequest(path: string): FeedRequest {
+    return {
+      path,
+      arrived: async (body) => this.view.dataArrived(path, await body.text()),
+      missing: () => this.view.dataMissing(path),
+    };
+  }
+
+  private postRequest(want: PostWant): FeedRequest {
+    return {
+      path: want.path,
+      init: jsonInit(METHOD_POST, want.body),
+      arrived: async (body) => this.view.postArrived(want.key, await body.text()),
+      missing: () => this.view.postMissing(want.key),
+    };
   }
 }
 
@@ -109,28 +182,6 @@ export class ArtFeed {
 function forget(key: string): void {
   pictures.get(key)?.close();
   pictures.delete(key);
-}
-
-/** The decoded picture of `request` and its anchor; undefined when the server has none or it does not decode. */
-async function fetchPicture(request: unknown): Promise<{ picture: ImageBitmap; anchor: [number, number] } | undefined> {
-  try {
-    const response = await fetch(ART_PATH, jsonInit('POST', request));
-    if (!response.ok) return undefined;
-    const picture = await createImageBitmap(await response.blob());
-    return { picture, anchor: anchorOf(response.headers.get(ANCHOR_HEADER)) };
-  } catch {
-    return undefined;
-  }
-}
-
-/** The body of `path` as text; undefined when the call fails. */
-async function fetchText(path: string, init?: RequestInit): Promise<string | undefined> {
-  try {
-    const response = await fetch(path, init);
-    return response.ok ? await response.text() : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** The anchor of an `x,y` header; a missing or bad part is 0. */

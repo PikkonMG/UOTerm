@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ArtFeed, ART_PARALLEL, pixelsOf, type FeedView } from '../src/net/art';
+import { whenTokenNeeded } from '../src/net/api';
+import { ArtFeed, ART_PARALLEL, FETCH_TRIES, pixelsOf, type FeedView } from '../src/net/art';
+import { backoffWait, LONGEST_BACKOFF_MS } from '../src/net/backoff';
 
 type FakeView = { [K in keyof FeedView]: ReturnType<typeof vi.fn> };
 
@@ -28,7 +30,11 @@ function bitmap(width: number, height: number) {
   return { width, height, close: vi.fn() };
 }
 
+/** The time a request that never reaches the server takes to be given up. */
+const ALL_RETRY_WAITS_MS = Array.from({ length: FETCH_TRIES - 1 }, (_, retry) => backoffWait(retry)).reduce((a, b) => a + b, 0);
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -105,11 +111,58 @@ describe('ArtFeed', () => {
     expect(fetchSpy).toHaveBeenCalledWith('/v1/text/measure', expect.objectContaining({ method: 'POST', body: JSON.stringify(body) }));
   });
 
-  it('marks_a_post_that_fails_as_missing', async () => {
+  it('marks_a_post_that_never_reaches_the_server_as_missing_after_its_tries', async () => {
+    vi.useFakeTimers();
     const view = viewWanting([], [], [{ key: '6', path: '/v1/map/live', body: {} }]);
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('network'));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('network'));
     new ArtFeed(view as never).pump();
-    await vi.waitFor(() => expect(view.postMissing).toHaveBeenCalledWith('6'));
+    await vi.advanceTimersByTimeAsync(ALL_RETRY_WAITS_MS - 1);
+    expect(view.postMissing).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(view.postMissing).toHaveBeenCalledWith('6');
+    expect(fetchSpy).toHaveBeenCalledTimes(FETCH_TRIES);
+  });
+
+  it('tries_data_again_when_the_server_was_out_of_reach', async () => {
+    vi.useFakeTimers();
+    const view = viewWanting([], ['/v1/data/seasons']);
+    vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new TypeError('network'))
+      .mockResolvedValue(new Response('{"seasons":[]}'));
+    new ArtFeed(view as never).pump();
+    await vi.advanceTimersByTimeAsync(backoffWait(0));
+    expect(view.dataArrived).toHaveBeenCalledWith('/v1/data/seasons', '{"seasons":[]}');
+    expect(view.dataMissing).not.toHaveBeenCalled();
+  });
+
+  it('tries_a_picture_again_when_the_server_was_out_of_reach', async () => {
+    vi.useFakeTimers();
+    const view = viewWanting([{ key: 'again', request: { kind: 'Item', graphic: 2 } }]);
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(bitmap(4, 5)));
+    vi.spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new TypeError('network'))
+      .mockResolvedValue(new Response(new Uint8Array([1]), { status: 200, headers: { 'x-uoterm-anchor': '1,2' } }));
+    new ArtFeed(view as never).pump();
+    await vi.advanceTimersByTimeAsync(backoffWait(0));
+    expect(view.artArrived).toHaveBeenCalledWith('again', 4, 5, 1, 2);
+    expect(view.artMissing).not.toHaveBeenCalled();
+  });
+
+  it('asks_for_the_token_and_tries_again_when_the_api_wants_it', async () => {
+    vi.useFakeTimers();
+    const tokenNeeded = vi.fn();
+    const stop = whenTokenNeeded(tokenNeeded);
+    const view = viewWanting([], ['/v1/data/cliloc']);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{"error":"unauthorized"}', { status: 401 }))
+      .mockResolvedValue(new Response('{"1":"a"}'));
+    new ArtFeed(view as never).pump();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tokenNeeded).toHaveBeenCalledTimes(1);
+    expect(view.dataMissing).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(LONGEST_BACKOFF_MS);
+    expect(view.dataArrived).toHaveBeenCalledWith('/v1/data/cliloc', '{"1":"a"}');
+    stop();
   });
 
   it('starts_a_waiting_request_when_one_ends', async () => {
