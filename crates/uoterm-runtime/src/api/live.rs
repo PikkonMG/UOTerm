@@ -40,7 +40,7 @@ pub const LIVE_POLL_MS: u64 = 33;
 const LIVE_OUTBOX: usize = 32;
 /// A page that takes longer than this to take one message is gone, and the
 /// link closes.
-const LIVE_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const LIVE_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// The largest message a page may send. A script or a book page it saves
 /// fits.
 const LIVE_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -320,21 +320,40 @@ pub(super) mod tests {
     /// for them: one gap between them and two to spare.
     const ACT_WAIT_GAPS: u64 = 3;
 
-    /// An API server on a free port of this machine, with one session on
-    /// the mock shard. Dropping it stops the server; the session and the
-    /// shard stop with the runtime and the mock.
+    /// The task of a test API server. Dropping it stops the server, which
+    /// dropping a `JoinHandle` does not.
+    pub(in crate::api) struct ServerTask(JoinHandle<()>);
+
+    impl Drop for ServerTask {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    /// An API server of `runtime` on a free port of this machine.
+    pub(in crate::api) async fn serve_api(
+        runtime: Runtime,
+        token: Option<String>,
+        local_only: bool,
+    ) -> (SocketAddr, ServerTask) {
+        let listener = tokio::net::TcpListener::bind(ANY_LOCAL_PORT).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router_for(runtime, token, local_only);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (addr, ServerTask(server))
+    }
+
+    /// An API server with one session on the mock shard. Dropping it stops
+    /// the server; the session and the shard stop with the runtime and the
+    /// mock.
     pub(in crate::api) struct LiveTestServer {
         pub addr: SocketAddr,
         pub id: String,
         pub runtime: Runtime,
         pub shard: MockServer,
-        server: JoinHandle<()>,
-    }
-
-    impl Drop for LiveTestServer {
-        fn drop(&mut self) {
-            self.server.abort();
-        }
+        _server: ServerTask,
     }
 
     pub(in crate::api) async fn serve_with_mock_session() -> LiveTestServer {
@@ -352,31 +371,25 @@ pub(super) mod tests {
         let runtime = Runtime::new(TEST_SESSIONS);
         let handle = runtime.connect(mock_opts(&shard)).await.unwrap();
         wait_for_login(&handle).await;
-        let listener = tokio::net::TcpListener::bind(ANY_LOCAL_PORT).await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let app = router_for(runtime.clone(), token, local_only);
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
+        let (addr, server) = serve_api(runtime.clone(), token, local_only).await;
         LiveTestServer {
             addr,
             id: handle.id,
             runtime,
             shard,
-            server,
+            _server: server,
         }
     }
 
-    /// The live link, or the HTTP status of a refused one. `headers` go
-    /// with the request, as a browser adds its cookie and origin.
-    pub(in crate::api) async fn try_connect_live(
+    /// The WebSocket at `path`, or the HTTP status of a refused one.
+    /// `headers` go with the request, as a browser adds its cookie and
+    /// origin.
+    pub(in crate::api) async fn try_connect(
         addr: SocketAddr,
-        id: &str,
+        path: &str,
         headers: &[(&str, &str)],
     ) -> Result<WsClient, u16> {
-        let mut request = format!("ws://{addr}/v1/sessions/{id}/live")
-            .into_client_request()
-            .unwrap();
+        let mut request = format!("ws://{addr}{path}").into_client_request().unwrap();
         for (name, value) in headers {
             request.headers_mut().insert(
                 HeaderName::from_bytes(name.as_bytes()).unwrap(),
@@ -386,15 +399,24 @@ pub(super) mod tests {
         match tokio_tungstenite::connect_async(request).await {
             Ok((ws, _)) => Ok(ws),
             Err(tungstenite::Error::Http(response)) => Err(response.status().as_u16()),
-            Err(other) => panic!("the live link failed: {other}"),
+            Err(other) => panic!("the WebSocket at {path} failed: {other}"),
         }
+    }
+
+    /// The live link of session `id`. See [`try_connect`].
+    pub(in crate::api) async fn try_connect_live(
+        addr: SocketAddr,
+        id: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<WsClient, u16> {
+        try_connect(addr, &format!("/v1/sessions/{id}/live"), headers).await
     }
 
     async fn connect_live(addr: SocketAddr, id: &str) -> WsClient {
         try_connect_live(addr, id, &[]).await.unwrap()
     }
 
-    async fn next_json(ws: &mut WsClient) -> Value {
+    pub(in crate::api) async fn next_json(ws: &mut WsClient) -> Value {
         loop {
             if let PageMessage::Text(text) = ws.next().await.unwrap().unwrap() {
                 return serde_json::from_str(&text).unwrap();
@@ -411,7 +433,7 @@ pub(super) mod tests {
         }
     }
 
-    async fn send_json(ws: &mut WsClient, message: Value) {
+    pub(in crate::api) async fn send_json(ws: &mut WsClient, message: Value) {
         ws.send(PageMessage::Text(message.to_string().into()))
             .await
             .unwrap();

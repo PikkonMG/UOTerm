@@ -1,13 +1,15 @@
-//! The HTTP API of the runtime: sessions, their tools, and the live link
-//! a web page keeps to one session.
+//! The HTTP API of the runtime: sessions, their tools, the live link a
+//! web page keeps to one session, and the login link a web page logs in
+//! with.
 
 mod auth;
 mod live;
+mod login;
 
 pub use auth::{api_token_from_env, bind_is_loopback, checked_api_token, guard_layer, Guard};
 pub use live::LIVE_POLL_MS;
 
-use crate::config::{client_version, era_from_str, ConnectOptions};
+use crate::config::{client_version, era_from_str, load_app_config, AppConfig, ConnectOptions};
 use crate::manager::Runtime;
 use crate::tools::{ToolCall, ToolResult, TOOL_OBSERVE};
 use axum::extract::{Path, State};
@@ -22,23 +24,27 @@ use uoterm_protocol::types::Era;
 
 const HEALTH_PATH: &str = "/health";
 
-/// What every route of the API reads: the sessions, who may call, and the
-/// acts that run on each session.
+/// What every route of the API reads: the sessions, who may call, the
+/// acts that run on each session, and the config file the sessions it
+/// makes take their client files from.
 pub struct ApiState {
     pub runtime: Runtime,
     pub guard: Guard,
     pub acts: live::ActLines,
+    pub config: AppConfig,
 }
 
 /// Every route of the API on `runtime`, behind the guard. `uoterm web`
 /// merges its own routes with these and puts the same guard on them with
-/// [`guard_layer`].
+/// [`guard_layer`]. The sessions the API makes read the client files and
+/// the markers `uoterm.toml` names.
 pub fn router_for(runtime: Runtime, token: Option<String>, local_only: bool) -> Router {
     let guard = Guard { token, local_only };
     let state = Arc::new(ApiState {
         runtime,
         guard: guard.clone(),
         acts: live::ActLines::default(),
+        config: load_app_config(None),
     });
     let routes = Router::new()
         .route("/v1/sessions", get(list_sessions).post(create_session))
@@ -46,6 +52,7 @@ pub fn router_for(runtime: Runtime, token: Option<String>, local_only: bool) -> 
         .route("/v1/sessions/{id}/tools/{name}", post(call_tool))
         .route("/v1/tools/{name}", post(call_runtime_tool))
         .route("/v1/sessions/{id}/live", get(live::live))
+        .route(login::LOGIN_PATH, get(login::login))
         .route(auth::TOKEN_PATH, post(auth::give_token))
         .route(HEALTH_PATH, get(|| async { "ok" }))
         .with_state(state);
@@ -103,9 +110,22 @@ async fn create_session(
     State(st): State<Arc<ApiState>>,
     Json(body): Json<CreateBody>,
 ) -> impl IntoResponse {
+    match st.runtime.connect(create_options(body, &st.config)).await {
+        Ok(h) => (StatusCode::CREATED, Json(json!({ "id": h.id }))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// The options of a session an agent asks for. It picks by name, with no
+/// screen; the client files and the markers are the ones of `cfg`.
+fn create_options(body: CreateBody, cfg: &AppConfig) -> ConnectOptions {
     let era: Era = era_from_str(body.era.as_deref());
-    let version = client_version(body.version.as_deref(), era, None);
-    let opts = ConnectOptions {
+    let version = client_version(body.version.as_deref(), era, cfg.uopath.as_deref());
+    ConnectOptions {
         host: body.host,
         port: body.port,
         account: body.account,
@@ -114,8 +134,8 @@ async fn create_session(
         character: body.character,
         version,
         era,
-        uopath: None,
-        markers: None,
+        uopath: cfg.uopath.clone(),
+        markers: cfg.markers.clone(),
         persona: None,
         next_login_key: uoterm_protocol::types::LOGIN_NEXT_KEY_DEFAULT,
         encryption: Default::default(),
@@ -125,14 +145,6 @@ async fn create_session(
         picker: None,
         reconnect: body.reconnect,
         proxy: body.proxy,
-    };
-    match st.runtime.connect(opts).await {
-        Ok(h) => (StatusCode::CREATED, Json(json!({ "id": h.id }))).into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
     }
 }
 
@@ -200,6 +212,27 @@ async fn call_runtime_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// A session made through the API reads the client files and the
+    /// markers the config file names, as one of `uoterm play` does.
+    #[test]
+    fn a_new_session_gets_the_client_files_of_the_config() {
+        let cfg = AppConfig {
+            uopath: Some(PathBuf::from("/uo")),
+            markers: Some(PathBuf::from("/uo/Waypoints.lua")),
+            ..AppConfig::default()
+        };
+        let body: CreateBody = serde_json::from_value(json!({
+            "host": "127.0.0.1", "port": 2593, "account": "a", "password": "p",
+            "character": "Mara", "era": "t2a",
+        }))
+        .unwrap();
+        let opts = create_options(body, &cfg);
+        assert_eq!(opts.uopath, cfg.uopath);
+        assert_eq!(opts.markers, cfg.markers);
+        assert!(opts.picker.is_none());
+    }
 
     #[tokio::test]
     async fn a_runtime_tool_is_answered_without_a_session() {
@@ -210,6 +243,7 @@ mod tests {
                 local_only: true,
             },
             acts: live::ActLines::default(),
+            config: AppConfig::default(),
         });
         let unknown =
             call_runtime_tool(State(st.clone()), Path("observe".into()), Json(json!({}))).await;

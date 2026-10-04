@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use uoterm_protocol::types::{ClientVersion, Era, Point3, EXIT_OK, EXIT_USAGE};
 use uoterm_runtime::config::{
-    load_app_config, load_persona, load_profile, password_from_env, ConnectOptions,
+    load_app_config, load_persona, load_profile, password_from_env, ConnectOptions, ScreenLogin,
     DEFAULT_PASSWORD_ENV,
 };
 use uoterm_runtime::mock;
@@ -709,16 +709,10 @@ const NEEDS_PASSWORD: &str = "Type the password.";
 /// The era and the client version of a login: the saved login's, or the
 /// era of the config and its version.
 fn login_era_version(cfg: &AppConfig, profile: Option<&Profile>) -> (Era, ClientVersion) {
-    let era: Era = profile
-        .and_then(|p| p.era.as_deref())
-        .and_then(|era| era.parse().ok())
-        .unwrap_or(cfg.era);
-    let version = uoterm_runtime::config::client_version(
+    cfg.era_version(
+        profile.and_then(|p| p.era.as_deref()),
         profile.and_then(|p| p.version.as_deref()),
-        era,
-        cfg.uopath.as_deref(),
-    );
-    (era, version)
+    )
 }
 
 /// A saved login as the login screen lists it. The host, the port and the
@@ -790,28 +784,18 @@ fn play_options(
     } else {
         form.password.clone()
     };
-    let (era, version) = login_era_version(cfg, profile);
-    let shard = form.shard.trim();
-    Ok(ConnectOptions {
+    let login = ScreenLogin {
         host: host.to_string(),
         port,
         account: account.to_string(),
         password,
-        shard: (!shard.is_empty()).then(|| shard.to_string()),
-        character: form.character.trim().to_string(),
-        version,
-        era,
-        uopath: cfg.uopath.clone(),
-        markers: cfg.markers.clone(),
+        shard: Some(form.shard.clone()),
+        character: Some(form.character.clone()),
+        era: profile.and_then(|p| p.era.clone()),
+        version: profile.and_then(|p| p.version.clone()),
         encryption: form.encryption,
-        obey_shard_rules: cfg.obey_shard_rules,
-        answer_when_named: cfg.answer_when_named,
-        play_along: cfg.play_along,
-        picker: Some(picker),
-        reconnect: cfg.reconnect,
-        proxy: cfg.proxy.clone(),
-        ..ConnectOptions::default()
-    })
+    };
+    Ok(ConnectOptions::for_screen(login, cfg, picker))
 }
 
 /// The form `play` starts with: the saved login `--profile` names, by its

@@ -256,6 +256,7 @@ mod tests {
                 local_only: true,
             },
             acts: crate::api::live::ActLines::default(),
+            config: crate::config::AppConfig::default(),
         })
     }
 

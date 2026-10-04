@@ -6,6 +6,7 @@ pub use uoterm_protocol::crypto::EncryptionMode;
 use uoterm_protocol::crypto::{for_mode, StreamCipher};
 use uoterm_protocol::types::{ClientVersion, Era, LOGIN_NEXT_KEY_DEFAULT};
 pub use uoterm_world::login::{CharacterChoices, CharacterRequest, NewCharacterWish};
+use uoterm_world::login::{LoginAsk, LoginReply};
 
 pub const APP_NAME: &str = "uoterm";
 pub const DEFAULT_API_PORT: u16 = 7733;
@@ -104,6 +105,15 @@ pub struct AppConfig {
     /// proxy asks for one.
     #[serde(default)]
     pub proxy: Option<crate::proxy::Proxy>,
+}
+
+impl AppConfig {
+    /// The era and the client version of a login: the ones a saved login or
+    /// a page names, else the era of the config and its version.
+    pub fn era_version(&self, era: Option<&str>, version: Option<&str>) -> (Era, ClientVersion) {
+        let era = era.and_then(|era| era.parse().ok()).unwrap_or(self.era);
+        (era, client_version(version, era, self.uopath.as_deref()))
+    }
 }
 
 impl Default for AppConfig {
@@ -208,6 +218,50 @@ pub enum LoginQuestion {
     },
 }
 
+impl LoginQuestion {
+    /// The question as a screen across the wire reads it.
+    pub fn ask(&self) -> LoginAsk {
+        match self {
+            Self::Shard { names, .. } => LoginAsk::Shard {
+                names: names.clone(),
+            },
+            Self::Characters {
+                names,
+                refused,
+                choices,
+                ..
+            } => LoginAsk::Characters {
+                names: names.clone(),
+                refused: refused.clone(),
+                choices: choices.clone(),
+            },
+            Self::Character { names, .. } => LoginAsk::Character {
+                names: names.clone(),
+            },
+        }
+    }
+
+    /// Gives the reply to the login. A reply of the wrong kind gives the
+    /// question back, still open. A login that stopped waiting takes the
+    /// reply as well: there is nothing left to answer.
+    pub fn answer(self, reply: LoginReply) -> Result<(), LoginQuestion> {
+        match (self, reply) {
+            (
+                Self::Shard { reply, .. } | Self::Character { reply, .. },
+                LoginReply::Pick { index },
+            ) => {
+                let _ = reply.send(index);
+                Ok(())
+            }
+            (Self::Characters { reply, .. }, LoginReply::Request { request }) => {
+                let _ = reply.send(request);
+                Ok(())
+            }
+            (question, _) => Err(question),
+        }
+    }
+}
+
 /// The way from a login to the screen that answers its questions. With no
 /// picker, the login picks by the names in the options, as an agent needs.
 #[derive(Clone, Debug)]
@@ -280,6 +334,30 @@ pub struct ConnectOptions {
     pub proxy: Option<crate::proxy::Proxy>,
 }
 
+/// A login a person asks for on a screen: the login form of the window,
+/// or the login link of a web page. The screen answers the questions of
+/// the login; the config file gives the rest.
+#[derive(Deserialize)]
+pub struct ScreenLogin {
+    pub host: String,
+    pub port: u16,
+    pub account: String,
+    pub password: String,
+    /// The shard of the list to play on. None or blank: the screen picks.
+    #[serde(default)]
+    pub shard: Option<String>,
+    /// The character to play. None or blank: the screen picks.
+    #[serde(default)]
+    pub character: Option<String>,
+    /// The era and the version of the login. None: the ones of the config.
+    #[serde(default)]
+    pub era: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub encryption: EncryptionMode,
+}
+
 impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
@@ -307,6 +385,39 @@ impl Default for ConnectOptions {
 }
 
 impl ConnectOptions {
+    /// The options of a login a person asks for on a screen, which
+    /// `picker` asks the questions of. The client files, the markers and
+    /// the rules of play are the ones of the config file.
+    pub fn for_screen(login: ScreenLogin, cfg: &AppConfig, picker: LoginPicker) -> Self {
+        let (era, version) = cfg.era_version(login.era.as_deref(), login.version.as_deref());
+        let shard = login.shard.as_deref().map(str::trim).unwrap_or_default();
+        Self {
+            host: login.host.trim().to_string(),
+            port: login.port,
+            account: login.account.trim().to_string(),
+            password: login.password,
+            shard: (!shard.is_empty()).then(|| shard.to_string()),
+            character: login
+                .character
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string(),
+            version,
+            era,
+            uopath: cfg.uopath.clone(),
+            markers: cfg.markers.clone(),
+            encryption: login.encryption,
+            obey_shard_rules: cfg.obey_shard_rules,
+            answer_when_named: cfg.answer_when_named,
+            play_along: cfg.play_along,
+            picker: Some(picker),
+            reconnect: cfg.reconnect,
+            proxy: cfg.proxy.clone(),
+            ..Self::default()
+        }
+    }
+
     /// The expansion bits the play-character request carries. They come from
     /// the client version, the same way the reference Classic Client builds
     /// them, so a shard gives the session every map and rule that version has
@@ -1050,6 +1161,145 @@ answer_when_named = false
             LoginTarget::choose(None, None, None, None, &cfg),
             from_config
         );
+    }
+
+    fn typed_login() -> ScreenLogin {
+        ScreenLogin {
+            host: " play.example.com ".into(),
+            port: DEFAULT_LOGIN_PORT,
+            account: " acct ".into(),
+            password: "pw".into(),
+            shard: Some(" ".into()),
+            character: Some(" Mara ".into()),
+            era: None,
+            version: None,
+            encryption: EncryptionMode::Osi,
+        }
+    }
+
+    fn no_screen() -> LoginPicker {
+        LoginPicker(tokio::sync::mpsc::unbounded_channel().0)
+    }
+
+    #[test]
+    fn a_screen_login_takes_the_files_and_the_rules_of_the_config() {
+        let cfg = AppConfig {
+            uopath: Some(PathBuf::from("/uo")),
+            markers: Some(PathBuf::from("/uo/Waypoints.lua")),
+            era: Era::T2a,
+            obey_shard_rules: false,
+            answer_when_named: false,
+            play_along: true,
+            reconnect: false,
+            proxy: Some("socks5://10.0.0.2:1080".parse().unwrap()),
+            ..AppConfig::default()
+        };
+        let opts = ConnectOptions::for_screen(typed_login(), &cfg, no_screen());
+        assert_eq!(opts.host, "play.example.com");
+        assert_eq!(opts.account, "acct");
+        assert_eq!(opts.password, "pw");
+        assert_eq!(opts.shard, None, "a blank shard lets the screen pick");
+        assert_eq!(opts.character, "Mara");
+        assert_eq!(opts.encryption, EncryptionMode::Osi);
+        assert_eq!((opts.era, opts.version), (Era::T2a, ClientVersion::T2A));
+        assert_eq!(opts.uopath, cfg.uopath);
+        assert_eq!(opts.markers, cfg.markers);
+        assert!(!opts.obey_shard_rules && !opts.answer_when_named);
+        assert!(opts.play_along && !opts.reconnect);
+        assert_eq!(opts.proxy, cfg.proxy);
+        assert!(opts.picker.is_some());
+    }
+
+    #[test]
+    fn a_screen_login_names_its_era_and_version_over_the_config() {
+        let named = ScreenLogin {
+            shard: Some(" Atlantic ".into()),
+            character: None,
+            era: Some("modern".into()),
+            version: Some("7.0.50.0".into()),
+            ..typed_login()
+        };
+        let cfg = AppConfig {
+            era: Era::T2a,
+            ..AppConfig::default()
+        };
+        let opts = ConnectOptions::for_screen(named, &cfg, no_screen());
+        assert_eq!(opts.shard.as_deref(), Some("Atlantic"));
+        assert_eq!(opts.character, "");
+        assert_eq!(
+            (opts.era, opts.version),
+            (Era::Modern, ClientVersion::new(7, 0, 50, 0))
+        );
+    }
+
+    #[test]
+    fn a_web_page_login_reads_with_the_optional_fields_left_out() {
+        let login: ScreenLogin = serde_json::from_value(serde_json::json!({
+            "host": "127.0.0.1", "port": 2593, "account": "a", "password": "p",
+            "shard": null, "character": null, "era": "t2a", "version": null,
+        }))
+        .unwrap();
+        assert_eq!((login.port, login.era.as_deref()), (2593, Some("t2a")));
+        assert_eq!((login.shard, login.character), (None, None));
+        assert_eq!(login.encryption, EncryptionMode::None);
+    }
+
+    #[tokio::test]
+    async fn a_question_takes_only_a_reply_of_its_kind() {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let question = LoginQuestion::Characters {
+            names: vec!["Mara".into()],
+            refused: Some("taken".into()),
+            choices: CharacterChoices::default(),
+            reply,
+        };
+        assert_eq!(
+            question.ask(),
+            LoginAsk::Characters {
+                names: vec!["Mara".into()],
+                refused: Some("taken".into()),
+                choices: CharacterChoices::default(),
+            }
+        );
+        let Err(question) = question.answer(LoginReply::Pick { index: 0 }) else {
+            panic!("a pick does not answer the character list");
+        };
+        let play = LoginReply::Request {
+            request: CharacterRequest::Play(0),
+        };
+        assert!(question.answer(play).is_ok());
+        assert_eq!(answer.await.unwrap(), CharacterRequest::Play(0));
+
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let shard = LoginQuestion::Shard {
+            names: vec!["Atlantic".into()],
+            reply,
+        };
+        assert_eq!(
+            shard.ask(),
+            LoginAsk::Shard {
+                names: vec!["Atlantic".into()]
+            }
+        );
+        let leave = LoginReply::Request {
+            request: CharacterRequest::Leave,
+        };
+        let Err(shard) = shard.answer(leave) else {
+            panic!("a request does not answer the shard list");
+        };
+        assert!(shard.answer(LoginReply::Pick { index: 0 }).is_ok());
+        assert_eq!(answer.await.unwrap(), 0);
+    }
+
+    #[test]
+    fn a_question_the_login_stopped_waiting_for_takes_its_reply() {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        drop(answer);
+        let question = LoginQuestion::Character {
+            names: vec!["Mara".into()],
+            reply,
+        };
+        assert!(question.answer(LoginReply::Pick { index: 0 }).is_ok());
     }
 
     #[test]
