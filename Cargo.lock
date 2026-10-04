@@ -4473,6 +4473,7 @@ dependencies = [
  "uoterm-nav",
  "uoterm-protocol",
  "uoterm-runtime",
+ "uoterm-view",
  "uoterm-world",
  "uuid",
 ]
@@ -4539,6 +4540,18 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "uoterm-view"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uoterm-assist",
+ "uoterm-nav",
+ "uoterm-protocol",
+ "uoterm-world",
 ]
 
 [[package]]

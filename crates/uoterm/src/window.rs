@@ -10,6 +10,7 @@ mod actions;
 mod atlas;
 mod audio;
 mod boxes_ui;
+mod bridge;
 mod build_ui;
 mod classic;
 mod client_art;
