@@ -165,11 +165,6 @@ impl ShardGumpState {
             .or_insert_with(|| TextField::new(text).with_max_chars(Some(max)))
     }
 
-    /// The words of a field the human typed in, when he did.
-    pub fn typed(&self, id: u16) -> Option<&str> {
-        self.fields.get(&id).map(TextField::text)
-    }
-
     /// True the first time it is asked: the first field takes the keys
     /// once, when the gump opens.
     pub fn take_focus(&mut self) -> bool {
@@ -268,7 +263,6 @@ mod tests {
         assert_eq!(state.page, 3);
         state.click_box(&layout, &layout.pieces[0]);
         state.field(7, "", Some(2)).set_text("abc");
-        assert_eq!(state.typed(7), Some("ab"), "the limit holds");
         assert_eq!(state.press(&button(Some(1), None)), Some(1));
         assert_eq!(
             state.answer(&layout, 1),
