@@ -48,16 +48,6 @@ egui_colors!(
     NOTO_SELF,
     SELF_FIGURE,
     PLATE_BACK,
-    FLAT_WALK,
-    FLAT_WALK_ALT,
-    FLAT_UNKNOWN,
-    FLAT_WATER,
-    FLAT_BLOCK_TOP,
-    FLAT_BLOCK_LEFT,
-    FLAT_BLOCK_RIGHT,
-    FLAT_DOOR,
-    FLAT_ITEM,
-    CORPSE,
 );
 
 pub const PANEL_RADIUS: u8 = shared::PANEL_RADIUS as u8;

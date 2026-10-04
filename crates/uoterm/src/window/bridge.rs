@@ -97,6 +97,25 @@ mod tests {
         assert_eq!(modifiers(mods(original)), original);
     }
 
+    /// The shared rules fade and lift colors as egui does, so the map they
+    /// build looks the same as when the window built it.
+    #[test]
+    fn shared_colors_fade_and_turn_opaque_as_egui_does() {
+        const SHARES: [f32; 7] = [0.0, 0.05, 0.28, 0.35, 0.5, 0.853_553_4, 1.0];
+        for channel in 0..=u8::MAX {
+            let gray = egui::Color32::from_rgba_premultiplied(channel, channel, channel, channel);
+            assert_eq!(rgba(gray).to_opaque(), rgba(gray.to_opaque()), "{channel}");
+            for share in SHARES {
+                let faded = gray.gamma_multiply(share);
+                assert_eq!(
+                    rgba(gray).with_alpha(share),
+                    rgba(faded),
+                    "{channel} {share}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_color_survives_the_round_trip() {
         let original = egui::Color32::from_rgba_premultiplied(10, 20, 30, 40);

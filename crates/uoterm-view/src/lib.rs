@@ -25,6 +25,7 @@ pub mod map_lay;
 pub mod model;
 pub mod pad;
 pub mod predict;
+pub mod scene;
 pub mod settings;
 pub mod sky;
 pub mod steer;
