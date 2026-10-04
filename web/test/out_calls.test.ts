@@ -30,6 +30,18 @@ describe('sendOut', () => {
     ]);
   });
 
+  it('gives_the_player_a_text_file_to_keep', () => {
+    const made = vi.fn<(blob: Blob) => string>().mockReturnValue('blob:journal');
+    vi.stubGlobal('URL', { createObjectURL: made, revokeObjectURL: vi.fn() });
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    sendOut([{ kind: 'Download', name: 'Mara-20261004-090507.txt', text: 'Bob: hail' }], places());
+    expect(made).toHaveBeenCalledTimes(1);
+    const link = clicked.mock.contexts[0] as HTMLAnchorElement;
+    expect(link.download).toBe('Mara-20261004-090507.txt');
+    expect(link.href).toBe('blob:journal');
+    vi.unstubAllGlobals();
+  });
+
   it('asks_jev_and_gives_the_answer_back', async () => {
     const out = places();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"act":{"calls":[],"words":"x"}}'));

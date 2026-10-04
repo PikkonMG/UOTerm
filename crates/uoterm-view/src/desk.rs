@@ -12,6 +12,8 @@ use crate::ui::layout::{first_place, Spot};
 use crate::ui::places::TITLE_ROW;
 use crate::ui::theme::PANEL_PAD;
 
+/// The carried picture shows this opaque, so the place under it shows.
+pub const CARRY_ALPHA: f32 = 0.85;
 /// The id that keeps the place of the box that asks how many.
 pub const SPLIT_ID: &str = "modern:split";
 pub const SPLIT_WIDTH: f32 = 260.0;

@@ -103,6 +103,13 @@ pub fn wheel_points_per_notch() -> f32 {
     WHEEL_POINTS_PER_NOTCH
 }
 
+/// How far, in points, a button that went down moves before it drags and
+/// makes no click, as egui counts it: a drag of the page starts there.
+#[wasm_bindgen(js_name = clickDistance)]
+pub fn click_distance() -> f32 {
+    input::CLICK_DISTANCE
+}
+
 /// Measures words in the font the page draws the name plates in.
 type Measure = Box<dyn Fn(&str) -> Vector>;
 

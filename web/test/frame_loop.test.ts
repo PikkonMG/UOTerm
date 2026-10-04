@@ -73,8 +73,15 @@ describe('drawFrame', () => {
     expect(buffers.free).toHaveBeenCalled();
   });
 
+  it('gives_back_the_words_over_the_world_of_the_frame_before_it_frees_it', () => {
+    const plate = { name: 'an orc' };
+    const buffers = { free: vi.fn(), plates: () => [plate], floats: () => [] } as unknown as DrawnFrame;
+    const view = { tick: vi.fn().mockReturnValue(buffers) };
+    expect(drawFrame(view, { draw: vi.fn() }, 2, { width: 30, height: 20 }, null)).toEqual({ plates: [plate], floats: [] });
+  });
+
   it('gives_the_view_the_size_and_the_mouse', () => {
-    const buffers = { free: vi.fn() } as unknown as DrawnFrame;
+    const buffers = { free: vi.fn(), plates: () => [], floats: () => [] } as unknown as DrawnFrame;
     const view = { tick: vi.fn().mockReturnValue(buffers) };
     drawFrame(view, { draw: vi.fn() }, 2, { width: 30, height: 20 }, { x: 4, y: 5 });
     expect(view.tick).toHaveBeenCalledWith(2, 30, 20, 4, 5, true);

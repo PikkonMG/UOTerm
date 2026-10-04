@@ -39,7 +39,7 @@ const PLAIN_DELAY_SECONDS: f64 = 0.04;
 const DAMAGE_SECONDS: f64 = 1.5;
 pub const DAMAGE_RISE_PER_SECOND: f32 = 40.0;
 /// The size of damage numbers in the window's own font.
-pub const DAMAGE_SIZE: f32 = 20.0;
+pub const DAMAGE_SIZE: f32 = crate::ui::theme::SIZE_DAMAGE;
 /// The ASCII font of damage numbers, and their hues.
 const DAMAGE_FONT: u8 = 3;
 const OWN_DAMAGE_HUE: u16 = 0x0034;

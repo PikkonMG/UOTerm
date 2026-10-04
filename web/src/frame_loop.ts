@@ -6,6 +6,7 @@
  */
 
 import type { Point } from './input/pointer';
+import type { PlacedPlate, PlacedWords } from './panels/types';
 import type { WorldDraw } from './world/renderer';
 
 /**
@@ -56,7 +57,16 @@ export function startFrames(steps: FrameSteps): FrameLoop {
 
 /** The draw lists of one frame, which the page frees once drawn. */
 export interface DrawnFrame extends WorldDraw {
+  /** The name plates and the words over heads, which the page draws as text. */
+  plates(): PlacedPlate[];
+  floats(): PlacedWords[];
   free(): void;
+}
+
+/** The words over the world of one frame. */
+export interface WorldWords {
+  plates: PlacedPlate[];
+  floats: PlacedWords[];
 }
 
 /** The part of the view that runs a frame. */
@@ -64,17 +74,22 @@ export interface FrameView {
   tick(now: number, width: number, height: number, mouseX: number, mouseY: number, hasMouse: boolean): DrawnFrame;
 }
 
-/** Runs the rules of one frame at `now` and draws it. The draw lists are freed even when the drawing fails. */
+/**
+ * Runs the rules of one frame at `now` and draws it; gives the words over
+ * the world, for the page to draw as text. The draw lists are freed even
+ * when the drawing fails.
+ */
 export function drawFrame(
   view: FrameView,
   renderer: { draw(buffers: WorldDraw): void },
   now: number,
   size: { width: number; height: number },
   mouse: Point | null,
-): void {
+): WorldWords {
   const buffers = view.tick(now, size.width, size.height, mouse?.x ?? 0, mouse?.y ?? 0, mouse !== null);
   try {
     renderer.draw(buffers);
+    return { plates: buffers.plates(), floats: buffers.floats() };
   } finally {
     buffers.free();
   }

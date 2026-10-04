@@ -17,7 +17,6 @@ use uoterm_nav::TileFlagSet;
 use uoterm_view::geom::Point;
 
 const CARRY_SIDE: f32 = 52.0;
-const CARRY_ALPHA: f32 = 0.85;
 
 /// The map of the window under the mouse.
 struct SceneUnder<'a> {

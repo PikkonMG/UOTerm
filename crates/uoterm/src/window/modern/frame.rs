@@ -10,7 +10,9 @@ use super::super::settings::Profile;
 use super::super::theme::{self, title_font};
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{self, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
-use uoterm_view::ui::places as rules;
+use uoterm_view::ui::places::{
+    self as rules, HINT_CLOSE, HINT_FOLD, HINT_LOCK, HINT_MOVE, HINT_SIZE,
+};
 
 pub use uoterm_view::ui::places::{FOLDED_HEIGHT, TITLE_ROW};
 
@@ -38,11 +40,6 @@ const LOCK_SHACKLE_LIFT: f32 = 0.17;
 const LOCK_ARC_PIECES: usize = 12;
 /// The arms of the fold mark reach this share of its side from the middle.
 const CHEVRON_SHARE: f32 = 0.25;
-const HINT_MOVE: &str = "Drag: move.  Double-click: put it back.";
-const HINT_LOCK: &str = "Lock or free the panel.";
-const HINT_CLOSE: &str = "Close.";
-const HINT_SIZE: &str = "Drag: size.";
-const HINT_FOLD: &str = "Fold to the title, or unfold.";
 
 /// What a panel is: its id in the profile, its title, where it stands
 /// before the player moves it, and whether he sizes and closes it.

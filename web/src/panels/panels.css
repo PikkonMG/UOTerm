@@ -1,0 +1,870 @@
+/* The look of the Modern panels over the world. Colors and sizes are the tokens of theme.css; the UI scale and
+   the opacity of the panels come from the profile through --ui-scale and --panel-opacity. */
+
+.panels-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  font-family: 'Barlow', sans-serif;
+  font-size: var(--size-body);
+  color: var(--text);
+}
+
+.panels {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(100% / var(--ui-scale));
+  height: calc(100% / var(--ui-scale));
+  transform: scale(var(--ui-scale));
+  transform-origin: 0 0;
+}
+
+.panels > *,
+.ring-line,
+.ring-away {
+  pointer-events: auto;
+}
+
+.panels p,
+.panels h1,
+.panels h2,
+.panels h3 {
+  margin: 0;
+}
+
+.title-face,
+.panels .title,
+.panels .heading,
+.frame-words {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+}
+
+.small {
+  font-size: var(--size-small);
+}
+
+.number {
+  font-family: monospace;
+}
+
+.shadowed {
+  text-shadow: 0 0 var(--edge-width) var(--text-shadow), var(--edge-width) var(--edge-width) var(--edge-width) var(--text-shadow);
+}
+
+.alarm-words,
+.failed {
+  color: var(--alarm);
+}
+
+/* The glass of a panel, under the opacity of the panels. */
+.panels .panel {
+  position: absolute;
+  box-sizing: border-box;
+  background: none;
+  border: none;
+  box-shadow: none;
+  isolation: isolate;
+}
+
+.panels .panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--glass);
+  border: var(--edge-width) solid var(--edge, var(--glass-edge));
+  border-radius: var(--panel-radius);
+  box-shadow: 0 var(--panel-shadow-drop) var(--panel-shadow-blur) var(--panel-shadow);
+  opacity: var(--panel-opacity);
+}
+
+/* The frame: the title row drags, the marks stand at its right end, the corner sizes. */
+.frame {
+  display: flex;
+  flex-direction: column;
+  padding: var(--panel-pad);
+}
+
+.frame-title {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: calc(var(--panel-pad) * 5);
+  height: calc(var(--size-title) + var(--panel-pad));
+  padding: var(--panel-pad) 0 0 var(--panel-pad);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--row-gap);
+  cursor: grab;
+  box-sizing: content-box;
+}
+
+.frame.locked .frame-title {
+  cursor: default;
+}
+
+.frame-words {
+  flex: 1;
+  font-size: var(--size-title);
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.frame:not(.titled) .frame-words {
+  display: none;
+}
+
+.frame-aside {
+  font-size: var(--size-small);
+}
+
+.frame-marks {
+  position: absolute;
+  top: var(--row-gap);
+  right: var(--row-gap);
+  display: flex;
+  gap: var(--edge-width);
+  z-index: 1;
+}
+
+.mark,
+.fold-arrow,
+.lock {
+  display: inline-grid;
+  place-items: center;
+  width: var(--size-heading);
+  height: var(--size-heading);
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.mark:hover,
+.mark.on,
+.fold-arrow:hover,
+.lock:hover {
+  color: var(--text);
+}
+
+.mark-art,
+.lock-art {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--edge-width);
+}
+
+.lock-art {
+  fill: currentColor;
+  stroke: none;
+}
+
+.frame.titled .frame-body {
+  margin-top: var(--size-title);
+}
+
+.frame-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.frame.folded .frame-body {
+  display: none;
+}
+
+.frame-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: var(--size-body);
+  height: var(--size-body);
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 60%, var(--text-faint) 60%, var(--text-faint) 66%, transparent 66%);
+}
+
+/* The rows of the panels on the map. */
+.rows,
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+}
+
+.detail {
+  flex-direction: row;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--row-gap);
+}
+
+.state-chip {
+  padding: 0 var(--row-gap);
+  border: var(--edge-width) solid currentColor;
+  border-radius: var(--bar-radius);
+  font-size: var(--size-small);
+}
+
+.vital {
+  display: grid;
+  grid-template-columns: 4em 1fr auto;
+  align-items: center;
+  gap: var(--row-gap);
+}
+
+.bar-track {
+  position: relative;
+  display: block;
+  flex: 1;
+  min-width: var(--panel-pad);
+  height: var(--bar-height);
+  background: var(--track);
+  border-radius: var(--bar-radius);
+  overflow: hidden;
+}
+
+.bar-track.main {
+  height: var(--bar-height-main);
+}
+
+.bar-ghost,
+.bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--bar-radius);
+}
+
+.bar-ghost {
+  background: var(--bar-ghost);
+}
+
+.pack-heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--row-gap);
+}
+
+.pack-heading .title {
+  flex: 1;
+}
+
+/* The control bar. */
+.control-bar {
+  padding: var(--row-gap) var(--panel-pad);
+}
+
+.bar-place {
+  display: flex;
+  align-items: center;
+  gap: var(--panel-pad);
+}
+
+.place-words {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  gap: var(--row-gap);
+}
+
+.rule {
+  border: none;
+  border-top: var(--edge-width) solid var(--glass-edge);
+  margin: var(--row-gap) 0;
+}
+
+.bar-status {
+  text-align: center;
+}
+
+.bar-buttons {
+  display: flex;
+  gap: var(--row-gap);
+}
+
+.bar-buttons .segment {
+  flex: 1;
+}
+
+.report {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* The chat line. */
+.chat-line {
+  display: flex;
+  gap: var(--row-gap);
+  align-items: center;
+}
+
+.chat-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-field:focus {
+  outline: var(--edge-width) solid var(--goal);
+}
+
+.frame-foot {
+  margin-top: var(--row-gap);
+}
+
+.chat-strip {
+  padding: var(--panel-pad);
+}
+
+/* The near list and the health bars. */
+.near-rows,
+.health,
+.health-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--edge-width);
+}
+
+.health-lines {
+  gap: var(--row-gap);
+  cursor: pointer;
+}
+
+.near-row {
+  display: flex;
+  align-items: center;
+  gap: var(--row-gap);
+  cursor: pointer;
+}
+
+.near-row .bar-track {
+  flex: 0 0 3em;
+  height: var(--pip-height);
+}
+
+.near-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dot {
+  width: var(--row-gap);
+  height: var(--row-gap);
+  border-radius: 50%;
+}
+
+.popup.menu {
+  position: absolute;
+  z-index: 2;
+}
+
+/* The journal. */
+.journal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--edge-width);
+  height: 100%;
+}
+
+.frame:has(.journal)::before {
+  background: var(--journal-glass);
+  opacity: var(--journal-opacity);
+}
+
+.journal-tabs,
+.journal-tools,
+.journal-filters {
+  display: flex;
+  gap: var(--edge-width);
+}
+
+.journal-tabs .segment,
+.journal-filters .segment {
+  flex: 1;
+}
+
+.journal-tools .field {
+  flex: 1;
+}
+
+.journal-lines {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.journal-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--row-gap);
+}
+
+.journal-back {
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+/* The radar. */
+.radar-field {
+  position: relative;
+  overflow: hidden;
+  background: var(--flat-unknown);
+}
+
+.radar-land {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  image-rendering: pixelated;
+}
+
+.radar-marks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.mark-words {
+  font-size: var(--size-small);
+}
+
+.radar-missing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+/* The hotbar and the picker of a slot. */
+.hotbar {
+  position: relative;
+}
+
+.slots {
+  display: flex;
+  gap: var(--row-gap);
+}
+
+.slot {
+  position: relative;
+  flex: 1;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  padding: var(--cell-art-pad);
+  background: var(--glass);
+  border: var(--edge-width) solid var(--glass-edge);
+  border-radius: var(--bar-radius);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.slot:hover,
+.slot.picking {
+  background: var(--button-hover);
+}
+
+.slot-key {
+  position: absolute;
+  left: var(--cell-art-pad);
+  top: var(--cell-art-pad);
+  font-size: var(--size-small);
+  color: var(--text-faint);
+}
+
+.slot-words {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: var(--size-small);
+}
+
+.picture {
+  max-width: 100%;
+  max-height: 100%;
+  image-rendering: pixelated;
+}
+
+.picker {
+  position: absolute;
+  bottom: calc(100% + var(--panel-pad) * 2);
+  left: 0;
+  right: 0;
+  padding: var(--panel-pad);
+}
+
+.picker-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--row-gap);
+}
+
+/* The sheet. */
+.sheet,
+.sheet-tab,
+.worn,
+.skills,
+.spells,
+.party {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+}
+
+.sheet-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--row-gap);
+}
+
+.sheet > .sheet-choices .segment {
+  flex: 1;
+}
+
+.worn-top {
+  display: flex;
+  gap: var(--panel-pad);
+}
+
+.doll {
+  flex: 0 0 25%;
+  aspect-ratio: 3 / 4;
+  display: grid;
+  place-items: center;
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
+
+.facts {
+  flex: 1;
+}
+
+.fact {
+  display: flex;
+  align-items: center;
+  gap: var(--row-gap);
+}
+
+.fact .dim {
+  flex: 1;
+}
+
+.worn-rows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--edge-width) var(--row-gap);
+}
+
+.worn-row,
+.spell-row,
+.skill-row,
+.skill-group,
+.party-row,
+.party-band,
+.skills-bar,
+.words-field {
+  display: flex;
+  align-items: center;
+  gap: var(--row-gap);
+}
+
+.worn-row,
+.spell-row {
+  cursor: pointer;
+}
+
+.worn-words,
+.skill-name,
+.member,
+.words-field .field {
+  flex: 1;
+}
+
+.cell-art {
+  width: var(--size-title);
+  height: var(--size-title);
+  display: grid;
+  place-items: center;
+}
+
+.status-columns {
+  columns: 2;
+  column-gap: var(--panel-pad);
+}
+
+.skill-head .column {
+  background: none;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.skill-head .column:first-child {
+  flex: 1;
+  text-align: left;
+}
+
+.skill-head .lock-art {
+  width: var(--size-small);
+  height: var(--size-small);
+}
+
+.group-name {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.skill-group.chosen {
+  background: var(--button);
+}
+
+.spell-parts {
+  display: grid;
+  grid-template-columns: 2fr 3fr;
+  gap: var(--panel-pad);
+}
+
+.spell-row.chosen {
+  background: var(--button-hover);
+}
+
+.spell-head {
+  display: flex;
+  gap: var(--row-gap);
+}
+
+.spell-icon {
+  width: calc(var(--size-title) * 2);
+  height: calc(var(--size-title) * 2);
+  display: grid;
+  place-items: center;
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
+
+.member {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pools {
+  display: flex;
+  gap: var(--edge-width);
+}
+
+.pools .bar-track {
+  height: var(--pip-height);
+}
+
+.pools .bar-track:nth-child(1) .bar-fill {
+  background: var(--hits);
+}
+
+.pools .bar-track:nth-child(2) .bar-fill {
+  background: var(--mana);
+}
+
+.pools .bar-track:nth-child(3) .bar-fill {
+  background: var(--stam);
+}
+
+/* The launcher and the box of how many. */
+.launcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--row-gap);
+}
+
+.split {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+}
+
+/* The questions. */
+.guard-question {
+  padding: var(--panel-pad);
+}
+
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  white-space: pre-line;
+  text-align: center;
+}
+
+.question-buttons {
+  justify-content: center;
+}
+
+/* The ring round a right click. */
+.ring-away {
+  position: fixed;
+  inset: 0;
+}
+
+.ring-hub {
+  position: absolute;
+  width: var(--row-gap);
+  height: var(--row-gap);
+  border-radius: 50%;
+  background: var(--goal);
+  transform: translate(-50%, -50%);
+}
+
+.ring-name {
+  position: absolute;
+  transform: translate(-50%, -150%);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: var(--size-plate);
+}
+
+.ring-line {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: var(--row-gap) var(--panel-pad);
+  background: var(--glass);
+  border: var(--edge-width) solid var(--glass-edge);
+  border-radius: var(--panel-radius);
+  color: var(--text);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ring-line:hover:enabled {
+  background: var(--button-hover);
+}
+
+/* The words over the world. */
+.world-words .plate,
+.world-words .float {
+  position: absolute;
+}
+
+.plate {
+  background: var(--plate-back);
+  border-radius: var(--bar-radius);
+}
+
+.plate-name,
+.plate-bar {
+  position: absolute;
+}
+
+.plate-name {
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: var(--size-plate);
+  line-height: 1;
+}
+
+.plate-bar {
+  border-radius: var(--bar-radius);
+}
+
+.plate-bar-back {
+  background: var(--text-shadow);
+}
+
+.float {
+  transform: translate(-50%, -100%);
+  white-space: pre;
+  text-align: center;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: var(--size-plate);
+}
+
+.float.number {
+  font-family: monospace;
+  font-size: var(--size-damage);
+}
+
+/* The dark edge of the map, and the alarm over it. */
+.vignette,
+.alarm-edge {
+  position: absolute;
+  inset: 0;
+}
+
+.vignette {
+  box-shadow: inset 0 0 var(--vignette-depth) var(--vignette);
+}
+
+.alarm-edge {
+  box-shadow: inset 0 0 var(--alarm-depth) var(--alarm);
+}
+
+/* The tooltip and the carried thing at the mouse. */
+.tooltip {
+  position: absolute;
+  transform: translate(var(--panel-pad), var(--panel-pad));
+  padding: var(--row-gap) var(--panel-pad);
+  background: var(--dark-glass);
+  border: var(--edge-width) solid var(--glass-edge);
+  border-radius: var(--bar-radius);
+  pointer-events: none;
+}
+
+.tooltip p {
+  margin: 0;
+}
+
+.tip-name {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: var(--size-plate);
+}
+
+.tip-line,
+.tip-footer {
+  font-size: var(--size-small);
+}
+
+.carried {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.waiting-panel {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: var(--panel-pad);
+}

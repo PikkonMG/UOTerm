@@ -66,6 +66,12 @@ type Touching =
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
+/** The notches a wheel turned, positive away from the player, as one notch of a mouse wheel is one. */
+export function wheelNotches(event: WheelEvent): number {
+  const perNotch = event.deltaMode === DELTA_PIXEL ? PIXELS_PER_NOTCH : event.deltaMode === DELTA_LINE ? LINES_PER_NOTCH : PAGES_PER_NOTCH;
+  return -event.deltaY / perNotch;
+}
+
 /** Sends the pointer of `target` to the view. */
 export function attachPointer(target: HTMLElement, send: (event: InputEvent) => void, options: PointerOptions): PointerInput {
   let mouse: Point | null = null;
@@ -76,7 +82,7 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
     const box = target.getBoundingClientRect();
     return { x: client.clientX - box.left, y: client.clientY - box.top };
   };
-  const press = (button: PointerButton, held: Mods, double = false) => send({ kind: 'PointerDown', button, mods: held, double });
+  const press = (button: PointerButton, held: Mods, at: Point, double = false) => send({ kind: 'PointerDown', button, mods: held, double, ...at });
   const release = (button: PointerButton, point: Point, held: Mods) => send({ kind: 'PointerUp', ...point, button, mods: held });
 
   const mouseDown = (event: MouseEvent) => {
@@ -85,7 +91,7 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
     // The middle button would start the browser's own scrolling.
     if (button === 'Middle') event.preventDefault();
     mouse = at(event);
-    press(button, mods(event), event.detail === DOUBLE_CLICK_DETAIL);
+    press(button, mods(event), mouse, event.detail === DOUBLE_CLICK_DETAIL);
   };
   const mouseUp = (event: MouseEvent) => {
     const button = MOUSE_BUTTONS[event.button];
@@ -103,8 +109,7 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
     // The wheel turns over the map where the mouse is, even before it moved.
     mouse = at(event);
     if (event.deltaY === NO_TURN) return;
-    const perNotch = event.deltaMode === DELTA_PIXEL ? PIXELS_PER_NOTCH : event.deltaMode === DELTA_LINE ? LINES_PER_NOTCH : PAGES_PER_NOTCH;
-    send({ kind: 'Wheel', notches: -event.deltaY / perNotch, mods: mods(event) });
+    send({ kind: 'Wheel', notches: wheelNotches(event), mods: mods(event) });
   };
 
   const fingersApart = (touches: TouchList) => distance(at(touches[0]), at(touches[1]));
@@ -121,7 +126,7 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
     mouse = from;
     const timer = setTimeout(() => {
       touching = { kind: 'held', button: 'Secondary' };
-      press('Secondary', NO_MODS);
+      press('Secondary', NO_MODS, from);
     }, LONG_PRESS_MS);
     touching = { kind: 'tap', from, timer };
   };
@@ -139,9 +144,11 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
     if (touches.length === 0) return;
     mouse = at(touches[0]);
     if (touching.kind === 'tap' && distance(mouse, touching.from) > TOUCH_SLOP) {
-      clearTimeout(touching.timer);
+      const { from, timer } = touching;
+      clearTimeout(timer);
       touching = { kind: 'held', button: 'Primary' };
-      press('Primary', NO_MODS);
+      // The finger went down where the drag began.
+      press('Primary', NO_MODS, from);
     }
   };
   /** The fingers lifted: a tap clicks, a held button comes up. */
@@ -161,7 +168,7 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
       const now = performance.now();
       const double = now - lastTap <= DOUBLE_TAP_MS;
       lastTap = double ? -Infinity : now;
-      press('Primary', NO_MODS, double);
+      press('Primary', NO_MODS, lifted, double);
       release('Primary', lifted, NO_MODS);
     } else if (ended.kind === 'held') {
       release(ended.button, lifted, NO_MODS);

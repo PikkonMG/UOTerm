@@ -9,6 +9,7 @@ import { api, jsonInit, METHOD_POST, METHOD_PUT } from './net/api';
 import type { LiveOut, PageCall } from './net/live';
 
 const KEPT_PATH = '/v1/kept/';
+const TEXT_FILE = 'text/plain';
 const SAVE_FAILED = 'UOTerm could not keep';
 
 export type OutCall =
@@ -18,6 +19,7 @@ export type OutCall =
   | { kind: 'SaveProfile'; profile: unknown }
   | { kind: 'SaveKept'; name: string; data: unknown }
   | { kind: 'Screenshot' }
+  | { kind: 'Download'; name: string; text: string }
   | { kind: 'Window'; command: unknown };
 
 /** Where the calls of one session go. */
@@ -38,6 +40,16 @@ function wordsOf(error: unknown): string {
 /** Puts `value` at `path`; a refusal goes to the console, as the window logs a file it could not write. */
 function keep(path: string, value: unknown): void {
   api<void>(path, jsonInit(METHOD_PUT, value)).catch((error: unknown) => console.error(`${SAVE_FAILED} ${path}: ${wordsOf(error)}`));
+}
+
+/** Gives the player a text file to keep, as the browser downloads one. */
+function download(name: string, text: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: TEXT_FILE }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -66,6 +78,9 @@ export function sendOut(calls: OutCall[], places: OutPlaces): void {
         break;
       case 'SaveKept':
         keep(`${KEPT_PATH}${encodeURIComponent(call.name)}`, call.data);
+        break;
+      case 'Download':
+        download(call.name, call.text);
         break;
       case 'Screenshot':
       case 'Window':

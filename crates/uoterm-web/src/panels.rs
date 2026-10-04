@@ -42,7 +42,9 @@ use serde_json::Value;
 use uoterm_view::geom::{Area, Point, Vector};
 use uoterm_view::model::places;
 use uoterm_view::scene::WHEEL_POINTS_PER_NOTCH;
-use uoterm_view::ui::places::{place, PANEL_WHEEL_POINTS};
+use uoterm_view::ui::places::{
+    place, HINT_CLOSE, HINT_FOLD, HINT_LOCK, HINT_MOVE, HINT_SIZE, PANEL_WHEEL_POINTS,
+};
 
 /// The names the page gives its panels in a `Panel` event.
 pub const PANEL_BAR: &str = "bar";
@@ -71,6 +73,8 @@ const PERCENT: f32 = 100.0;
 pub struct PanelData {
     /// The UI scale and the opacity of the panels, from the profile.
     pub look: Look,
+    /// What the title and the marks of a frame do.
+    pub hints: FrameHints,
     /// The title of the page.
     pub title: String,
     /// The message in the middle while no picture of the session shows.
@@ -114,6 +118,24 @@ pub struct Look {
     /// The opacity of the glass of the panels, 0 to 1.
     pub opacity: f32,
 }
+
+/// The tips of the title and the marks of every frame.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct FrameHints {
+    pub drag: &'static str,
+    pub lock: &'static str,
+    pub close: &'static str,
+    pub size: &'static str,
+    pub fold: &'static str,
+}
+
+const HINTS: FrameHints = FrameHints {
+    drag: HINT_MOVE,
+    lock: HINT_LOCK,
+    close: HINT_CLOSE,
+    size: HINT_SIZE,
+    fold: HINT_FOLD,
+};
 
 /// A place on the page, in the points of the panel layer: its left, its
 /// top, its width and its height.
@@ -272,6 +294,7 @@ impl WebView {
         let Some(frame) = self.frame.clone().filter(|frame| frame.error.is_empty()) else {
             return PanelData {
                 look,
+                hints: HINTS,
                 title: uoterm_view::model::info_bar::WINDOW_TITLE.to_string(),
                 waiting: Some(self.waiting_data()),
                 alarm: 0.0,
@@ -298,6 +321,7 @@ impl WebView {
         };
         PanelData {
             look,
+            hints: HINTS,
             title: uoterm_view::model::info_bar::window_title(&frame, &self.profile.interface),
             waiting: None,
             alarm: uoterm_view::ui::hud::alarm_share(frame.danger(), time),

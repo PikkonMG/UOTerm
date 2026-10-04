@@ -111,6 +111,8 @@ sizes! {
     pub SIZE_BODY = 14.0;
     pub SIZE_SMALL = 12.0;
     pub SIZE_PLATE = 15.0;
+    /// The numbers of damage over heads.
+    pub SIZE_DAMAGE = 20.0;
 }
 
 /// Small pictures grow to this, so a coin is not a dot. More would blur.

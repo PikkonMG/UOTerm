@@ -5,7 +5,7 @@
  * frame. The frames come at the pace of the Video page of the profile.
  */
 
-import { drawFrame, followSize, startFrames } from './frame_loop';
+import { drawFrame, followSize, startFrames, type WorldWords } from './frame_loop';
 import type { InputEvent } from './input/events';
 import { PadReader } from './input/gamepad';
 import { attachKeys } from './input/keys';
@@ -13,11 +13,17 @@ import { attachPointer } from './input/pointer';
 import { ArtFeed } from './net/art';
 import { LiveLink } from './net/live';
 import { sendOut, type OutCall, type OutPlaces } from './out_calls';
+import { setDragDistance } from './panels/drag';
+import { plateMeasure } from './panels/measure';
+import type { CoveredArea } from './panels/Panels';
+import type { PanelAction, PanelData } from './panels/types';
 import { tearDown } from './teardown';
-import init, { atlasSide, wheelPointsPerNotch, WebView, whiteSide } from './wasm/uoterm_web.js';
+import init, { atlasSide, clickDistance, wheelPointsPerNotch, WebView, whiteSide } from './wasm/uoterm_web.js';
 import { WorldRenderer } from './world/renderer';
 
 const MS_PER_SECOND = 1000;
+/** `Date.getMonth()` counts from 0; the journal counts months from 1. */
+const FIRST_MONTH = 1;
 
 /** The profile the view starts with, and the path it is kept at (`profilePath` of `screens/login_state`). */
 export interface GameProfile {
@@ -33,6 +39,23 @@ export interface GameHandle {
   readonly ended: Promise<void>;
   /** Stops the game: no more frames, no link, no input. */
   stop(): void;
+  /** Gives the view an action of the panel `panel`. */
+  panel(panel: string, action: PanelAction): void;
+  /** Gives the view an input event of a panel. */
+  input(event: InputEvent): void;
+  /** Tells the view where the panels lie, so the map takes no click there. */
+  covered(areas: CoveredArea[]): void;
+}
+
+/** What the page shows over the world after a frame: the panels and the words over the world. */
+export interface Shown extends WorldWords {
+  panels: PanelData;
+}
+
+/** Gives the view the clock of the computer, for the times of the journal. */
+function tellLocalTime(view: WebView): void {
+  const now = new Date();
+  view.setLocalTime(now.getFullYear(), now.getMonth() + FIRST_MONTH, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
 }
 
 let loading: Promise<unknown> | undefined;
@@ -46,9 +69,15 @@ export async function loadView(): Promise<void> {
 /** The clock of the page, in seconds: the one clock of every call of the view. */
 const clock = () => performance.now() / MS_PER_SECOND;
 
-/** Plays `session` on `canvas`, which the page sizes; its size in CSS pixels is the size of the view in points. */
-export function startGame(session: string, canvas: HTMLCanvasElement, profile: GameProfile): GameHandle {
+/**
+ * Plays `session` on `canvas`, which the page sizes; its size in CSS pixels
+ * is the size of the view in points. After each frame `show` gets what the
+ * page draws over the world.
+ */
+export function startGame(session: string, canvas: HTMLCanvasElement, profile: GameProfile, show: (shown: Shown) => void): GameHandle {
   const view = new WebView(JSON.stringify(profile.value));
+  view.setTextMeasure(plateMeasure());
+  setDragDistance(clickDistance());
   let stopped = false;
   let endGame = () => {};
   let failGame: (error: unknown) => void = () => {};
@@ -95,8 +124,10 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
       const padNow = pad.read();
       if (padNow) send(padNow);
       feed.pump();
-      drawFrame(view, renderer, clock(), size, pointer.mouse());
+      tellLocalTime(view);
+      const words = drawFrame(view, renderer, clock(), size, pointer.mouse());
       out(view.takeOut());
+      show({ panels: view.panels(clock()) as PanelData, ...words });
     },
     fault: (error) => {
       failGame(error);
@@ -124,5 +155,13 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
     ]);
   }
 
-  return { ended, stop };
+  return {
+    ended,
+    stop,
+    panel: (panel, action) => send({ kind: 'Panel', panel, action }),
+    input: send,
+    covered: (areas) => {
+      if (!stopped) view.setCovered(JSON.stringify(areas));
+    },
+  };
 }

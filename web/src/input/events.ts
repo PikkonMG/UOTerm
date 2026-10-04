@@ -41,8 +41,8 @@ export type InputEvent =
   | { kind: 'Key'; key: string; mods: Mods; pressed: boolean; repeat: boolean }
   /** The characters a key types. */
   | { kind: 'Text'; text: string }
-  /** `double` is the second press of a double click. */
-  | { kind: 'PointerDown'; button: PointerButton; mods: Mods; double: boolean }
+  /** A button went down at `x`, `y` of the view; `double` is the second press of a double click. */
+  | { kind: 'PointerDown'; button: PointerButton; mods: Mods; double: boolean; x: number; y: number }
   /** A button came up at `x`, `y` of the view, in points. */
   | { kind: 'PointerUp'; x: number; y: number; button: PointerButton; mods: Mods }
   /** Notches of a wheel, positive when it turns away from the player. */
@@ -50,4 +50,8 @@ export type InputEvent =
   /** The controller now: the buttons down in the order they went down. */
   | { kind: 'Pad'; sticks: Sticks; buttons: PadButton[] }
   /** Which field has the keys: the view reads the keys by it. */
-  | { kind: 'Focus'; chat_focused: boolean; other_field_focused: boolean };
+  | { kind: 'Focus'; chat_focused: boolean; other_field_focused: boolean }
+  /** The words in the field of the chat line now. */
+  | { kind: 'ChatWords'; text: string }
+  /** A small action of a panel. */
+  | { kind: 'Panel'; panel: string; action: unknown };

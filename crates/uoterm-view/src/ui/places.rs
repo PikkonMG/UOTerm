@@ -11,6 +11,12 @@ use crate::settings::Profile;
 pub const TITLE_ROW: f32 = 28.0;
 /// A panel is at least this wide, so its title and marks fit.
 pub const PANEL_MIN_WIDTH: f32 = 170.0;
+/// What the title and the marks of a frame do, as their tips say.
+pub const HINT_MOVE: &str = "Drag: move.  Double-click: put it back.";
+pub const HINT_LOCK: &str = "Lock or free the panel.";
+pub const HINT_CLOSE: &str = "Close.";
+pub const HINT_SIZE: &str = "Drag: size.";
+pub const HINT_FOLD: &str = "Fold to the title, or unfold.";
 /// The wheel over the lines or the map of a panel turns it one notch for
 /// this many points of scroll.
 pub const PANEL_WHEEL_POINTS: f32 = 50.0;

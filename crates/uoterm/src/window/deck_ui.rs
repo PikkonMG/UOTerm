@@ -34,6 +34,7 @@ use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::spells::School;
 use uoterm_view::art::Sprite;
+use uoterm_view::desk::CARRY_ALPHA;
 use uoterm_view::input::KeyName;
 use uoterm_view::ui::deck::{
     self, hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
@@ -60,7 +61,6 @@ const SKILL_LOCK_DOWN: u8 = 1;
 const HOTBAR_GAP: f32 = 10.0;
 /// The dragged picture on its way to the hotbar.
 const CARRY_SIDE: f32 = 40.0;
-const CARRY_ALPHA: f32 = 0.85;
 /// The picker of an empty slot: its columns and the height of a choice.
 const PICKER_COLUMNS: usize = 2;
 const PICKER_ROW: f32 = 28.0;

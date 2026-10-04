@@ -177,6 +177,17 @@ export function mods(event: ModifierKeys): Mods {
   };
 }
 
+/** The attribute that marks the field of the chat line, whose keys the view reads its own way. */
+export const CHAT_ATTRIBUTE = 'data-chat';
+
+/** Which field has the keys: none, the chat line, or another field. */
+type FieldFocus = 'none' | 'chat' | 'other';
+
+function focusOf(target: EventTarget | null): FieldFocus {
+  if (!isField(target)) return 'none';
+  return (target as HTMLElement).hasAttribute(CHAT_ATTRIBUTE) ? 'chat' : 'other';
+}
+
 /** True when `target` is a field that types the keys itself. */
 export function isField(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement);
@@ -208,14 +219,14 @@ function typed(event: KeyboardEvent): string | null {
  */
 export function attachKeys(target: Window, send: (event: InputEvent) => void): () => void {
   const held = new Set<string>();
-  let inField = false;
-  const focus = (field: boolean) => {
+  let inField: FieldFocus = 'none';
+  const focus = (field: FieldFocus) => {
     if (field === inField) return;
     inField = field;
-    send({ kind: 'Focus', chat_focused: false, other_field_focused: field });
+    send({ kind: 'Focus', chat_focused: field === 'chat', other_field_focused: field === 'other' });
   };
-  const focusIn = (event: FocusEvent) => focus(isField(event.target));
-  const focusOut = (event: FocusEvent) => focus(isField(event.relatedTarget));
+  const focusIn = (event: FocusEvent) => focus(focusOf(event.target));
+  const focusOut = (event: FocusEvent) => focus(focusOf(event.relatedTarget));
   const down = (event: KeyboardEvent) => {
     if (event.isComposing) return;
     const typing = isField(event.target);

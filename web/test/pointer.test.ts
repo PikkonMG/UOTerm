@@ -58,7 +58,7 @@ describe('pointer', () => {
     el.dispatchEvent(touch('touchend', [], [finger(5, 6)]));
     vi.advanceTimersByTime(LONG_PRESS_MS);
     expect(events).toEqual([
-      { kind: 'PointerDown', button: 'Primary', mods: NO_MODS, double: false },
+      { kind: 'PointerDown', button: 'Primary', mods: NO_MODS, double: false, x: 5, y: 6 },
       { kind: 'PointerUp', x: 5, y: 6, button: 'Primary', mods: NO_MODS },
     ]);
   });
@@ -86,8 +86,8 @@ describe('pointer', () => {
     el.dispatchEvent(new MouseEvent('mousedown', { button: 2 }));
     el.dispatchEvent(new MouseEvent('mousedown', { button: 0, detail: 2 }));
     expect(events).toEqual([
-      { kind: 'PointerDown', button: 'Secondary', mods: NO_MODS, double: false },
-      { kind: 'PointerDown', button: 'Primary', mods: NO_MODS, double: true },
+      { kind: 'PointerDown', button: 'Secondary', mods: NO_MODS, double: false, x: 0, y: 0 },
+      { kind: 'PointerDown', button: 'Primary', mods: NO_MODS, double: true, x: 0, y: 0 },
     ]);
   });
 

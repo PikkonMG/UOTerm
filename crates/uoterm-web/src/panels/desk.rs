@@ -12,8 +12,8 @@ use uoterm_nav::TileFlagSet;
 use uoterm_view::act::Act;
 use uoterm_view::art::WorldArt;
 use uoterm_view::desk::{
-    split_first_place, split_title, Desk, DeskMouse, Landing, MapUnder, Split, Zone, SPLIT_ID,
-    WORDS_MOVE,
+    split_first_place, split_title, Desk, DeskMouse, Landing, MapUnder, Split, Zone, CARRY_ALPHA,
+    SPLIT_ID, WORDS_MOVE,
 };
 use uoterm_view::frame::{WatchFrame, WatchPackItem};
 use uoterm_view::geom::{Area, Point, Vector};
@@ -38,6 +38,8 @@ pub(crate) struct DeskState {
 pub struct CarriedData {
     pub picture: Option<String>,
     pub words: String,
+    /// How opaque the carried picture shows.
+    pub alpha: f32,
 }
 
 /// The box that asks how many of a pile to move.
@@ -146,6 +148,7 @@ impl WebView {
             return Some(CarriedData {
                 picture: self.slot_picture_key(&slot, &frame),
                 words: slot.words(&frame),
+                alpha: CARRY_ALPHA,
             });
         }
         let item = self.panels.desk.desk.carried()?.clone();
@@ -153,6 +156,7 @@ impl WebView {
         Some(CarriedData {
             picture: Some(self.picture_key(&request)),
             words: item.name,
+            alpha: CARRY_ALPHA,
         })
     }
 

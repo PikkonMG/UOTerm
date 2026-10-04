@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InputEvent } from '../src/input/events';
-import { attachKeys, keyName, mods } from '../src/input/keys';
+import { attachKeys, CHAT_ATTRIBUTE, keyName, mods } from '../src/input/keys';
 
 const press = (key: string, code: string, init: KeyboardEventInit = {}) => new KeyboardEvent('keydown', { key, code, ...init });
 
@@ -109,6 +109,24 @@ describe('attachKeys', () => {
     expect(events).toEqual([
       { kind: 'Focus', chat_focused: false, other_field_focused: true },
       { kind: 'Focus', chat_focused: false, other_field_focused: false },
+    ]);
+  });
+
+  it('tells_the_view_when_the_chat_line_has_the_keys', () => {
+    const events: InputEvent[] = [];
+    const detach = attachKeys(window, (event) => events.push(event));
+    const chat = document.createElement('input');
+    chat.setAttribute(CHAT_ATTRIBUTE, '');
+    const other = document.createElement('input');
+    document.body.append(chat, other);
+    chat.focus();
+    other.focus();
+    chat.focus();
+    detach();
+    expect(events).toEqual([
+      { kind: 'Focus', chat_focused: true, other_field_focused: false },
+      { kind: 'Focus', chat_focused: false, other_field_focused: true },
+      { kind: 'Focus', chat_focused: true, other_field_focused: false },
     ]);
   });
 
