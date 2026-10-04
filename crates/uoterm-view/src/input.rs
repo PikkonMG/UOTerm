@@ -3,8 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The modifier keys held during an input event.
+/// The modifier keys held during an input event. A key left out of the
+/// words of a client is not held.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Mods {
     pub ctrl: bool,
     pub alt: bool,

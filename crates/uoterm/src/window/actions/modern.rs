@@ -106,8 +106,8 @@ impl ModernWindows<'_> {
                     .close_health_bars(self.frame, *inactive_only, self.profile);
             }
             WindowCommand::UseCounterSlot(slot) => {
-                if let Some(item) = counters::slot_item(self.frame, &self.profile.counters, *slot) {
-                    self.act(Act::Use(item));
+                if let Some(act) = counters::slot_act(self.frame, &self.profile.counters, *slot) {
+                    self.act(act);
                 }
             }
             WindowCommand::ToggleChat => self.control.toggle_chat(),

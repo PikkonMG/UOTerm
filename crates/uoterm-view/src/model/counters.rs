@@ -2,6 +2,7 @@
 //! the bags in it that are open, and when an amount is low; and the cells
 //! the player fills by dropping an item on them, and empties.
 
+use crate::act::Act;
 use crate::frame::{WatchContainer, WatchFrame, WatchPackItem};
 use crate::settings::{CounterItem, CounterOptions, NO_HUE};
 use std::collections::HashMap;
@@ -90,6 +91,12 @@ pub fn cells(options: &CounterOptions) -> usize {
 pub fn slot_item(frame: &WatchFrame, options: &CounterOptions, slot: u8) -> Option<u32> {
     let item = options.items.get(usize::from(slot).checked_sub(1)?)?;
     first_counted(&backpack_containers(frame), item).map(|pack| pack.serial)
+}
+
+/// What a key for a cell of the counter bar does: it uses the first item
+/// of the cell in the backpack. None when the cell or the pack has none.
+pub fn slot_act(frame: &WatchFrame, options: &CounterOptions, slot: u8) -> Option<Act> {
+    slot_item(frame, options, slot).map(Act::Use)
 }
 
 /// The counter of an item dropped on the bar: its name, graphic and hue.
@@ -270,6 +277,8 @@ mod tests {
         assert_eq!(slot_item(&frame(), &options, 1), Some(1));
         assert_eq!(slot_item(&frame(), &options, 2), None);
         assert_eq!(slot_item(&frame(), &options, 0), None);
+        assert_eq!(slot_act(&frame(), &options, 1), Some(Act::Use(1)));
+        assert_eq!(slot_act(&frame(), &options, 2), None);
         let mut changes = Changes::default();
         assert_eq!(changes.observe(0, 30, 1.0), None);
         assert_eq!(changes.observe(0, 30, 2.0), None);

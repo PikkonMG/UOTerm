@@ -31,7 +31,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use uoterm_view::act::Act;
 use uoterm_view::actions::controls::{ControlHost, Controls, FrameIn};
-use uoterm_view::actions::{LocalAim, PointerClick};
+use uoterm_view::actions::{LocalAim, PointerClick, WindowCommand};
 use uoterm_view::art::{hue_color, ArtRequest, ItemPaint, TextLook, WorldArt};
 use uoterm_view::clicks::{act_for_click, escape_on_map, ChatMode, EscapeOnMap, GroundClicks};
 use uoterm_view::floats::{self, Floats, SPEECH_LINE};
@@ -43,6 +43,7 @@ use uoterm_view::input::KeyPress;
 use uoterm_view::keys::chat::{ChatKey, ChatLine, ChatOut, Said};
 use uoterm_view::keys::Focus;
 use uoterm_view::model::asked::asked_commands;
+use uoterm_view::model::counters::slot_act;
 use uoterm_view::model::game_view::ShardReports;
 use uoterm_view::pad::PadState;
 use uoterm_view::scene::plates::lay_out;
@@ -402,7 +403,7 @@ impl WebView {
             &mut host,
         );
         for command in controls.style {
-            self.hand.push(OutCall::Window { command });
+            self.style_command(frame, command);
         }
         match controls.history_older {
             Some(true) => self.chat.older(),
@@ -492,6 +493,21 @@ impl WebView {
         buffers.uploads = self.art.take_uploads();
         buffers.atlas_reset = self.art.take_atlas_reset();
         buffers
+    }
+
+    /// Does a command of the windows of the Modern style. The chat line
+    /// and the counter bar are the view's; the page does the others.
+    fn style_command(&mut self, frame: &WatchFrame, command: WindowCommand) {
+        match command {
+            WindowCommand::ToggleChat => self.chat.toggle_hidden(),
+            WindowCommand::UseCounterSlot(slot) => {
+                let act = slot_act(frame, &self.profile.counters, slot);
+                if let Some(act) = act.filter(|_| frame.human_control) {
+                    self.hand.act(act);
+                }
+            }
+            command => self.hand.push(OutCall::Window { command }),
+        }
     }
 
     /// The world, the marks over it and the name plates; the death screen
@@ -1258,6 +1274,34 @@ pub(crate) mod tests {
         let walked = acts(&view.take_out_native());
         assert_eq!(walked.len(), 1);
         assert_eq!(walked[0].calls[0].tool, uoterm_world::tool_names::TOOL_WALK);
+    }
+
+    #[test]
+    fn the_view_hides_its_chat_line_and_the_page_closes_the_corpses() {
+        let mut profile = Profile::default();
+        for (key, action) in [("F7", "toggle_chat"), ("F8", "close_corpses")] {
+            profile.macros.key_bindings.push(KeyBinding {
+                name: action.into(),
+                chord: Some(key.parse::<KeyChord>().unwrap()),
+                pad: None,
+                steps: vec![MacroStep::new(action, "")],
+            });
+        }
+        let mut view = WebView::new(&serde_json::to_string(&profile).unwrap());
+        view.frame(&fixture_watch_with_backpack(), 0.0);
+        // One macro runs at a time, so each key has a frame of its own.
+        for (at, key) in ["F7", "F8"].into_iter().enumerate() {
+            let now = at as f64;
+            view.input_native(
+                &event(json!({"kind": "Key", "key": key, "pressed": true})),
+                now,
+            );
+            view.tick_native(now, VIEW, None);
+        }
+        assert!(view.panel_data(0.0).chat.hidden);
+        assert!(view.take_out_native().contains(&OutCall::Window {
+            command: WindowCommand::CloseCorpses
+        }));
     }
 
     #[test]

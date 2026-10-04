@@ -43,8 +43,6 @@ pub enum OutCall {
     Screenshot,
     /// A command for the windows of the style.
     Window { command: WindowCommand },
-    /// Leave the world and close the page.
-    Quit,
 }
 
 /// What a call the page makes for the view answers.
