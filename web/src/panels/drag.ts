@@ -40,6 +40,11 @@ export interface DragSteps {
   dropped?(at: Point): void;
 }
 
+/** True when a press at `from` that came up at `to` moved no farther than a click may. */
+export function isClick(from: Point, to: Point): boolean {
+  return Math.hypot(to.x - from.x, to.y - from.y) <= dragDistance;
+}
+
 /** Follows a press at `from` until its button comes up. */
 export function followDrag(from: { clientX: number; clientY: number }, steps: DragSteps): void {
   let started = false;

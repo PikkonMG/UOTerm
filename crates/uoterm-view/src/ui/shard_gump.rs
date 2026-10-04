@@ -19,6 +19,8 @@ use uoterm_world::{GumpLayout, GumpPiece, GumpPieceKind, GumpTileArt};
 pub const ENTRY_MAX_CHARS: usize = u8::MAX as usize;
 /// Words under a `checkertrans` show at this share of their opacity.
 pub const UNDER_VEIL: f32 = 0.5;
+/// A `checkertrans` is black glass this opaque.
+pub const VEIL_ALPHA: f32 = 0.5;
 /// Half the room round an item of a `buttontileart`.
 const HALF: i32 = 2;
 

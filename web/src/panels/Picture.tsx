@@ -43,3 +43,26 @@ export function Picture({ picture, words, most }: { picture: string | null; word
   });
   return <canvas ref={canvas} class="picture" role={words ? 'img' : undefined} aria-label={words} />;
 }
+
+/**
+ * A picture laid side by side over a box of `size`, as a tiled gump
+ * picture or the sides of a gump frame: drawn once its pixels came.
+ */
+export function TiledPicture({ picture, size }: { picture: string; size: { x: number; y: number } }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const [, cameAgain] = useState(0);
+  useEffect(() => whenPixels(picture, () => cameAgain((times) => times + 1)), [picture]);
+  useLayoutEffect(() => {
+    const target = canvas.current;
+    const bitmap = pixelsOf(picture);
+    if (!target || !bitmap) return;
+    target.width = Math.round(size.x);
+    target.height = Math.round(size.y);
+    const context = target.getContext('2d');
+    const pattern = context?.createPattern(bitmap, 'repeat');
+    if (!context || !pattern) return;
+    context.fillStyle = pattern;
+    context.fillRect(0, 0, target.width, target.height);
+  });
+  return <canvas ref={canvas} class="picture" />;
+}

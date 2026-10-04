@@ -25,6 +25,7 @@ use std::hash::Hash;
 use uoterm_view::art::Sprite;
 use uoterm_view::ui::gump_frame::{frame_part_ids, frame_parts, FRAME_PARTS};
 use uoterm_view::ui::html::{HtmlBox, HTML_BACKGROUND, HTML_BAR_ROOM};
+use uoterm_view::ui::shard_gump::VEIL_ALPHA;
 use uoterm_world::GumpScroll;
 
 // The scroll bar of the classic client.
@@ -77,7 +78,6 @@ const EXPANDER_GAP: i32 = 2;
 const EXPANDABLE_PARTS: u16 = 4;
 // Looks.
 const HIGHLIGHT_ALPHA: f32 = 0.25;
-const CHECKER_ALPHA: f32 = 0.5;
 const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(16, 48, 80, 64);
 const CARET: &str = "_";
 const CHECKBOX_TEXT_GAP: i32 = 2;
@@ -511,7 +511,7 @@ impl<'a> Canvas<'a> {
 
     /// Half-dark glass over a part of a gump, as a shard's `checkertrans`.
     pub fn checker_trans(&mut self, x: i32, y: i32, w: i32, h: i32) {
-        let color = Color32::BLACK.gamma_multiply(CHECKER_ALPHA);
+        let color = Color32::BLACK.gamma_multiply(VEIL_ALPHA);
         let rect = self.area(x, y, Vec2::new(w as f32, h as f32));
         self.ui.painter().with_clip_rect(self.clip).rect_filled(
             rect,

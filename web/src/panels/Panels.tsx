@@ -4,6 +4,8 @@ import type { InputEvent } from '../input/events';
 import { Activity } from './Activity';
 import { Board } from './Board';
 import { Book } from './Book';
+import { Build } from './Build';
+import { Chat } from './Chat';
 import { ChatLine } from './ChatLine';
 import { ControlBar } from './ControlBar';
 import { Dye } from './Dye';
@@ -16,16 +18,21 @@ import { Hotbar } from './Hotbar';
 import { Journal } from './Journal';
 import { Launcher } from './Launcher';
 import { Loot } from './Loot';
+import { MapItem } from './MapItem';
+import { Markers } from './Markers';
 import { Near } from './Near';
 import { OldMenu } from './OldMenu';
 import { Pack } from './Pack';
 import { Paperdoll } from './Paperdoll';
 import { Picture } from './Picture';
+import { Profile } from './Profile';
+import { QuestArrow } from './QuestArrow';
 import { Question } from './Question';
 import { Race } from './Race';
 import { Radar } from './Radar';
 import { Report } from './Report';
 import { Ring } from './Ring';
+import { ShardGump } from './ShardGump';
 import { Sheet } from './Sheet';
 import { Shop } from './Shop';
 import { Split } from './Split';
@@ -36,6 +43,7 @@ import { Tooltip } from './Tooltip';
 import { Trade } from './Trade';
 import type { CarriedData, Framed, PanelAction, PanelData, Place, Point, TooltipData } from './types';
 import { Vitals } from './Vitals';
+import { WorldMap } from './WorldMap';
 import './panels.css';
 
 /** An area of the view the panels cover, as the view reads it. */
@@ -61,6 +69,8 @@ const sameData = <P extends { data: unknown }>(before: P, after: P) => JSON.stri
 const QuietSheet = memo(Sheet, sameData);
 const QuietJournal = memo(Journal, sameData);
 const QuietGrid = memo(Grid, sameData);
+const QuietWorldMap = memo(WorldMap, sameData);
+const QuietGump = memo(ShardGump, (before, after) => before.scale === after.scale && sameData(before, after));
 
 /**
  * The tooltip and the carried thing at the mouse: the one part of the
@@ -266,6 +276,40 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
             <Entry data={data.entry.body} send={to('entry')} />
           </Frame>
         )}
+        {data.world_map && (
+          <Frame {...frameOf(data.world_map)}>
+            <QuietWorldMap data={data.world_map.body} send={to('world_map')} />
+          </Frame>
+        )}
+        {data.markers && (
+          <Frame {...frameOf(data.markers)}>
+            <Markers data={data.markers.body} send={to('markers')} />
+          </Frame>
+        )}
+        {data.map_items.map((map) => (
+          <Frame {...frameOf(map)} key={map.frame.panel}>
+            <MapItem data={map.body} send={to(map.frame.panel)} />
+          </Frame>
+        ))}
+        {data.build && (
+          <Frame {...frameOf(data.build)}>
+            <Build data={data.build.body} send={to('build')} />
+          </Frame>
+        )}
+        {data.channels && (
+          <Frame {...frameOf(data.channels)}>
+            <Chat data={data.channels.body} send={to('channels')} />
+          </Frame>
+        )}
+        {data.profile && (
+          <Frame {...frameOf(data.profile)}>
+            <Profile data={data.profile.body} send={to('profile')} />
+          </Frame>
+        )}
+        {data.gumps.map((gump) => (
+          <QuietGump data={gump} scale={scale} send={to(gump.panel)} hover={hover} key={gump.panel} />
+        ))}
+        {data.quest_arrow && <QuestArrow data={data.quest_arrow} send={to('quest_arrow')} />}
         {data.launcher && (
           <Frame {...frameOf(data.launcher)}>
             <Launcher data={data.launcher.body} send={to('launcher')} />

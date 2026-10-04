@@ -579,6 +579,191 @@ export interface CarriedData {
   alpha: number;
 }
 
+/** Words under a panel for a while, and whether they tell of a failure. */
+export interface NoteData {
+  words: string;
+  failed: boolean;
+}
+
+/** A picture laid at a place of a gump of the shard, in gump pixels. */
+export interface GumpPicture {
+  at: Point;
+  size: Point;
+  picture: string;
+  tiled: boolean;
+}
+
+/** One run of HTML words of a gump, in one look. */
+export interface HtmlSpan {
+  words: string;
+  color: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  size: number;
+}
+
+export interface HtmlLine {
+  left: number;
+  spans: HtmlSpan[];
+}
+
+/** One piece of a gump of the shard (`GumpPieceData`), in gump pixels. */
+export type GumpPieceData =
+  | { kind: 'pictures'; pictures: GumpPicture[]; alpha: number; tip: TipKey | null }
+  | {
+      kind: 'html';
+      at: Point;
+      size: Point;
+      paper: GumpPicture[];
+      pad: number;
+      width: number;
+      scroll: boolean;
+      background: string | null;
+      line_height: number;
+      lines: HtmlLine[];
+      alpha: number;
+      tip: TipKey | null;
+    }
+  | {
+      kind: 'button';
+      piece: number;
+      at: Point;
+      size: Point;
+      normal: string;
+      pressed: string | null;
+      item: GumpPicture | null;
+      alpha: number;
+      tip: TipKey | null;
+    }
+  | { kind: 'choice'; piece: number; at: Point; size: Point; picture: string; alpha: number; tip: TipKey | null }
+  | { kind: 'entry'; id: number; at: Point; size: Point; words: string; color: string; most: number | null; focus: boolean; alpha: number }
+  | { kind: 'veil'; at: Point; size: Point; color: string };
+
+/** A gump of the shard in its own layout. */
+export interface ShardGumpData {
+  panel: string;
+  at: Point;
+  size: Point;
+  movable: boolean;
+  closable: boolean;
+  live: boolean;
+  pieces: GumpPieceData[];
+}
+
+export interface DesignButtons {
+  remove: Choice;
+  changes: string[];
+  kept: string[];
+  pick: Choice;
+  pick_tip: string;
+  floor_words: string;
+  floors: Choice[];
+  storeys: { words: string; look: number; tip: string }[];
+}
+
+/** The house designer. */
+export interface BuildData {
+  kinds: Choice[];
+  styles: Choice[];
+  no_parts: string | null;
+  pieces: { picture: string | null; chosen: boolean }[];
+  wish_hint: string;
+  find: string;
+  buttons: DesignButtons | null;
+  counts: { words: string; alarm: boolean }[];
+  counts_tip: string | null;
+  note: NoteData | null;
+}
+
+export interface ChannelsData {
+  rows: { name: string; picked: boolean; here: boolean; locked: string | null }[];
+  row_hint: string;
+  buttons: string[];
+  asking: { label: string; hides: boolean; words: string; okay: string; cancel: string } | null;
+  lines: { who: string; words: string }[];
+  say_hint: string;
+  wish_hint: string;
+  find: string;
+}
+
+/** The chat of the shard. */
+export interface ChatPanelData {
+  live: boolean;
+  channels: ChannelsData | null;
+  name_box: { words: string; most: number; okay: string } | null;
+  turn_on: string | null;
+  note: NoteData | null;
+}
+
+/** The world map: its tool rows and its field, in the points of the field. */
+export interface WorldMapData {
+  live: boolean;
+  view_words: string;
+  goto_hint: string;
+  go: string;
+  walk: string | null;
+  place: string | null;
+  buttons: { words: string; hint: string }[];
+  side: Point;
+  land: RadarData['land'] | null;
+  tiles: { path: string; place: Place }[];
+  marks: MarkData[];
+  no_files: string;
+  hint: string;
+  pan: string;
+  mouse: string | null;
+  zone: string | null;
+  note: NoteData | null;
+}
+
+/** The markers manager. */
+export interface MarkersData {
+  files: Choice[];
+  search: string;
+  search_hint: string;
+  rows: { at: number; words: string; buttons: string[] }[];
+  nothing: string | null;
+  read_only: string;
+}
+
+/** A map item, in the points of its land. */
+export interface MapItemData {
+  live: boolean;
+  path: string;
+  paper: Point;
+  land: Point;
+  edge: number;
+  pins: { number: string; at: Point }[];
+  pin_radius: number;
+  pin_ring: number;
+  course_width: number;
+  plotting: boolean;
+  pin_hint: string;
+  pin_move_hint: string;
+  no_files: string;
+  wish_hint: string;
+  mark: string;
+  buttons: { words: string; waiting: boolean }[];
+  note: NoteData | null;
+}
+
+/** The profile of a character. */
+export interface ProfileData {
+  title: string;
+  words: string;
+  writing: string | null;
+  hint: string;
+  write: string | null;
+  close: string;
+}
+
+/** The box round the quest arrow that takes clicks. */
+export interface QuestArrowData {
+  place: Place;
+  hint: string | null;
+}
+
 export interface PanelData {
   look: Look;
   hints: FrameHints;
@@ -610,6 +795,14 @@ export interface PanelData {
   race: Framed<RaceData> | null;
   tip: Framed<TipData> | null;
   dye: Framed<DyeData> | null;
+  gumps: ShardGumpData[];
+  build: Framed<BuildData> | null;
+  channels: Framed<ChatPanelData> | null;
+  world_map: Framed<WorldMapData> | null;
+  markers: Framed<MarkersData> | null;
+  map_items: Framed<MapItemData>[];
+  profile: Framed<ProfileData> | null;
+  quest_arrow: QuestArrowData | null;
   ring: RingData | null;
   report: ReportData | null;
   question: QuestionData | null;

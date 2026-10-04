@@ -2,8 +2,8 @@ import { useState } from 'preact/hooks';
 import { wheelNotches } from '../input/pointer';
 import type { MarkData, RadarData, Send } from './types';
 
-/** One mark of the radar, as an SVG shape where the view laid it. */
-function Mark({ mark }: { mark: MarkData }) {
+/** One mark of a map, as an SVG shape where the view laid it. */
+export function Mark({ mark }: { mark: MarkData }) {
   switch (mark.kind) {
     case 'line':
       return <line x1={mark.from.x} y1={mark.from.y} x2={mark.to.x} y2={mark.to.y} stroke={mark.color} stroke-width={mark.width} />;

@@ -41,6 +41,14 @@ function data(): PanelData {
     race: null,
     tip: null,
     dye: null,
+    gumps: [],
+    build: null,
+    channels: null,
+    world_map: null,
+    markers: null,
+    map_items: [],
+    profile: null,
+    quest_arrow: null,
     ring: null,
     report: null,
     question: null,
@@ -161,5 +169,32 @@ describe('Panels', () => {
     const { getByText } = render(<Panels data={panels} send={send} input={vi.fn()} covered={vi.fn()} />);
     fireEvent.click(getByText('Fav'));
     expect(send).toHaveBeenCalledWith('grid:9', { favorite: true });
+  });
+
+  it('names_the_actions_of_a_gump_and_a_map_item_by_their_names', () => {
+    const send = vi.fn();
+    const panels = data();
+    panels.gumps = [
+      {
+        panel: 'gump:77',
+        at: { x: 50, y: 60 },
+        size: { x: 100, y: 100 },
+        movable: true,
+        closable: true,
+        live: true,
+        pieces: [{ kind: 'button', piece: 4, at: { x: 0, y: 0 }, size: { x: 20, y: 20 }, normal: '1', pressed: null, item: null, alpha: 1, tip: null }],
+      },
+    ];
+    panels.profile = {
+      frame: frameAt('profile', 'Mara', { x: 300, y: 10, w: 200, h: 200 }),
+      body: { title: '', words: 'Hi', writing: null, hint: '', write: null, close: 'Close' },
+    };
+    const { container, getByText } = render(<Panels data={panels} send={send} input={vi.fn()} covered={vi.fn()} />);
+    const gump = container.querySelector('[data-panel="gump:77"]') as HTMLElement;
+    expect(gump.style.left).toBe('50px');
+    fireEvent.click(container.querySelector('[data-piece="4"]') as HTMLElement);
+    expect(send).toHaveBeenCalledWith('gump:77', { button: 4 });
+    fireEvent.click(getByText('Close'));
+    expect(send).toHaveBeenCalledWith('profile', { close: true });
   });
 });

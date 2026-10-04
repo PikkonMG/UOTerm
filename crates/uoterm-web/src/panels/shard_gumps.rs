@@ -23,7 +23,7 @@ use uoterm_view::ui::html::{
     HTML_BACKGROUND, HTML_BAR_ROOM, HTML_FONT, HTML_LINE_HEIGHT,
 };
 use uoterm_view::ui::shard_gump::{
-    gump_first_place, tile_art_place, veiled, PieceArt, ShardGumpState, UNDER_VEIL,
+    gump_first_place, tile_art_place, veiled, PieceArt, ShardGumpState, UNDER_VEIL, VEIL_ALPHA,
 };
 use uoterm_view::ui::theme::{css_color, SIZE_BODY};
 use uoterm_world::{GumpLayout, GumpPiece, GumpPieceKind};
@@ -158,8 +158,12 @@ pub enum GumpPieceData {
         focus: bool,
         alpha: f32,
     },
-    /// Half-dark glass over a part of the gump.
-    Veil { at: Point, size: Vector },
+    /// Half-dark glass over a part of the gump, in its color.
+    Veil {
+        at: Point,
+        size: Vector,
+        color: String,
+    },
 }
 
 /// The words of a field of the gump.
@@ -532,6 +536,7 @@ impl WebView {
             GumpPieceKind::Veil { w, h } => GumpPieceData::Veil {
                 at,
                 size: size_of(*w, *h),
+                color: css_color(Rgba::from_rgb(0, 0, 0).with_alpha(VEIL_ALPHA)),
             },
         }
     }
@@ -684,7 +689,7 @@ fn piece_far(piece: &GumpPieceData) -> Vector {
         | GumpPieceData::Button { at, size, .. }
         | GumpPieceData::Choice { at, size, .. }
         | GumpPieceData::Entry { at, size, .. }
-        | GumpPieceData::Veil { at, size } => far(*at, *size),
+        | GumpPieceData::Veil { at, size, .. } => far(*at, *size),
     }
 }
 

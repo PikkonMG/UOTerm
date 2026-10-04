@@ -16,9 +16,9 @@ use uoterm_view::geom::{Area, Point, Vector};
 use uoterm_view::model::map_item::{map_item_path, pixel_at, point_of};
 use uoterm_view::ui::map_item::{
     map_item_first_place, map_item_id, map_item_land, place_ask, plotting, profile_first_place,
-    profile_words, take_place_answer, MapItemButton, PinDeed, ProfilePanel, HINT_PIN,
-    HINT_PIN_MOVE, HINT_PROFILE, HINT_WISH, MAP_ITEM_BUTTONS, WORDS_ASKING, WORDS_CLOSE,
-    WORDS_MARK, WORDS_NO_FILES, WORDS_TITLE,
+    profile_words, take_place_answer, MapItemButton, PinDeed, ProfilePanel, COURSE_WIDTH, HINT_PIN,
+    HINT_PIN_MOVE, HINT_PROFILE, HINT_WISH, MAP_ITEM_BUTTONS, PIN_RADIUS, PIN_RING, WORDS_ASKING,
+    WORDS_CLOSE, WORDS_MARK, WORDS_NO_FILES, WORDS_TITLE,
 };
 use uoterm_view::ui::places::TITLE_ROW;
 use uoterm_view::ui::theme::PANEL_PAD;
@@ -58,6 +58,9 @@ pub struct MapItemData {
     pub land: Vector,
     pub edge: f32,
     pub pins: Vec<PinData>,
+    pub pin_radius: f32,
+    pub pin_ring: f32,
+    pub course_width: f32,
     /// The player may put, move and take off pins.
     pub plotting: bool,
     pub pin_hint: &'static str,
@@ -196,6 +199,9 @@ impl WebView {
                             at: point_of(map, on_land, *pixel),
                         })
                         .collect(),
+                    pin_radius: PIN_RADIUS,
+                    pin_ring: PIN_RING,
+                    course_width: COURSE_WIDTH,
                     plotting: plotting(frame, map),
                     pin_hint: HINT_PIN,
                     pin_move_hint: HINT_PIN_MOVE,
