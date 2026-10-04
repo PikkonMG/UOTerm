@@ -11,8 +11,9 @@ const STEREO: usize = 2;
 /// The synth makes this many frames at a time.
 const RENDER_FRAMES: usize = 2048;
 /// A track is cut after this long, so a broken file cannot fill the memory
-/// of the page.
-const MOST_SECONDS: usize = 600;
+/// of the page: at 48 000 samples a second, two ears of four bytes, five
+/// minutes is 115 MB of samples at the most.
+const MOST_SECONDS: usize = 300;
 
 /// The samples of a MIDI file played once with a SoundFont at
 /// `sample_rate`: left and right in turn. Empty when the file, the font or

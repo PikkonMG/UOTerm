@@ -6,7 +6,7 @@
 //! and the web client share. Each call says `human: true`. The session lets
 //! those through while it refuses the agent.
 
-use super::actions::guard::{load_grab_bags, save_grab_bags, Checked, Guard, NOTE_GRAB_BAG_SET};
+use super::actions::guard::{load_grab_bags, save_grab_bags, Guard, HandStep};
 use super::actions::LocalAim;
 use super::link::Link;
 use super::orders::{self, ORDER_OFF};
@@ -137,13 +137,11 @@ impl Hand {
     /// Sends one act, after the guard checked it.
     pub fn act(&self, act: Act) {
         let checked = self.guard.borrow_mut().check(act);
-        match checked {
-            Checked::Send(acts) => acts.into_iter().for_each(|act| self.send(act)),
-            Checked::Asked => {}
-            Checked::Aimed(words) => self.report(words),
-            Checked::GrabBagSet(grab_bags) => {
-                save_grab_bags(&grab_bags);
-                self.report(NOTE_GRAB_BAG_SET);
+        for step in checked.steps() {
+            match step {
+                HandStep::Send(act) => self.send(act),
+                HandStep::Report(words) => self.report(words),
+                HandStep::KeepGrabBags(grab_bags) => save_grab_bags(&grab_bags),
             }
         }
     }

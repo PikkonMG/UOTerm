@@ -9,6 +9,7 @@
 //! methods only turn JavaScript values into Rust ones and back.
 
 mod buffers;
+mod frame_flow;
 mod input;
 mod out;
 mod panels;
@@ -23,54 +24,40 @@ pub use panels::{
     PANEL_QUESTION,
 };
 pub use synth::{render, render_midi};
-pub use web_art::{Post, Upload, Wanted, WebArt, BLOCK_KEEP_RADIUS};
+pub use web_art::{Post, Upload, Wanted, WebArt, BLOCK_KEEP_FRAMES, MEASURES_KEPT};
 
-use buffers::MeshArrays;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
-use uoterm_view::act::Act;
-use uoterm_view::actions::controls::{ControlHost, Controls, FrameIn};
-use uoterm_view::actions::{LocalAim, PointerClick, WindowCommand};
-use uoterm_view::art::{hue_color, ArtRequest, ItemPaint, TextLook, WorldArt};
-use uoterm_view::clicks::{act_for_click, escape_on_map, ChatMode, EscapeOnMap, GroundClicks};
-use uoterm_view::floats::{self, Floats, SPEECH_LINE};
+use uoterm_view::actions::controls::Controls;
+use uoterm_view::actions::PointerClick;
+use uoterm_view::art::{ArtRequest, WorldArt};
+use uoterm_view::clicks::ChatMode;
+use uoterm_view::floats::Floats;
 use uoterm_view::frame::WatchFrame;
-use uoterm_view::geom::{Area, Point, Rgba, Vector};
+use uoterm_view::geom::{Area, Point, Vector};
 use uoterm_view::guard::KeptGrabBags;
 use uoterm_view::guard::GRAB_BAGS_FILE;
-use uoterm_view::input::KeyPress;
-use uoterm_view::keys::chat::{ChatKey, ChatLine, ChatOut, Said};
-use uoterm_view::keys::Focus;
-use uoterm_view::model::asked::asked_commands;
-use uoterm_view::model::counters::slot_act;
+use uoterm_view::keys::chat::ChatLine;
 use uoterm_view::model::game_view::ShardReports;
 use uoterm_view::pad::PadState;
-use uoterm_view::scene::plates::lay_out;
-use uoterm_view::scene::{
-    overlays, SceneDraw, SceneInput, SceneState, DEATH_FONT, DEATH_HUE, DEATH_WORDS,
-};
-use uoterm_view::settings::{CombatOptions, Profile, UiStyle};
-use uoterm_view::sky::{
-    drop_color, effect_area, lightning_bolt, lit_effects, shown_effects, storm_tint, weather_drops,
-    Drop, ShownEffect, Sky, LIGHTNING_WIDTH, RAIN_WIDTH, SNOW_RADIUS,
-};
-use uoterm_view::steer::{Movement, Steer, SteerInput};
+use uoterm_view::scene::SceneState;
+use uoterm_view::settings::{Profile, UiStyle};
+use uoterm_view::sky::Sky;
+use uoterm_view::steer::Steer;
 use uoterm_view::tips::Tips;
-use uoterm_view::ui::deck::{hotbar_key_slot, KeptHotbars, HOTBAR_FILE};
+use uoterm_view::ui::deck::{KeptHotbars, HOTBAR_FILE};
 use uoterm_view::video::frame_interval;
 use wasm_bindgen::prelude::*;
 
 /// The kept files of the config folder the view reads, under this path.
 pub(crate) const KEPT_PREFIX: &str = "/v1/kept/";
-const ESCAPE_KEY: &str = "Escape";
-const ENTER_KEY: &str = "Enter";
 const MS_PER_SECOND: f64 = 1000.0;
 
 /// The profile as it is kept: with the UI style the Rust window keeps in
 /// it. The browser shows the Modern style only, so the view holds its
 /// profile in that style.
-fn kept(profile: &Profile, kept_style: UiStyle) -> Cow<'_, Profile> {
+pub(crate) fn kept(profile: &Profile, kept_style: UiStyle) -> Cow<'_, Profile> {
     if profile.interface.ui_style == kept_style {
         Cow::Borrowed(profile)
     } else {
@@ -80,58 +67,13 @@ fn kept(profile: &Profile, kept_style: UiStyle) -> Cow<'_, Profile> {
     }
 }
 
-/// A list for the page, as plain JavaScript values.
-fn to_js<T: Serialize>(value: &T) -> JsValue {
+/// A value for the page, as plain JavaScript values: objects, arrays,
+/// numbers, and null for a None (never undefined, never a Map). Every
+/// value the view gives the page goes through here.
+pub(crate) fn to_js<T: Serialize>(value: &T) -> JsValue {
     value
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .unwrap_or(JsValue::NULL)
-}
-
-/// The view as the shared controls see it for one frame.
-struct WebHost<'a> {
-    hand: &'a mut Hand,
-    scene: &'a mut SceneState,
-    kept_style: UiStyle,
-}
-
-impl ControlHost for WebHost<'_> {
-    fn act(&mut self, act: Act) {
-        self.hand.act(act);
-    }
-
-    fn aim(&mut self, aim: LocalAim) {
-        self.hand.aim(aim);
-    }
-
-    fn watch_over(&mut self, frame: &WatchFrame, combat: &CombatOptions) {
-        self.hand.watch_over(frame, combat);
-    }
-
-    fn take_notes(&mut self) -> Vec<String> {
-        self.hand.take_notes()
-    }
-
-    fn zoom(&self) -> f32 {
-        self.scene.zoom()
-    }
-
-    fn set_zoom(&mut self, zoom: f32) {
-        self.scene.set_zoom(zoom);
-    }
-
-    fn set_peek(&mut self, peek: Vector) {
-        self.scene.set_peek(peek);
-    }
-
-    fn ask_screenshot(&mut self) {
-        self.hand.push(OutCall::Screenshot);
-    }
-
-    fn save_profile(&mut self, profile: &Profile) {
-        if let Ok(profile) = serde_json::to_value(kept(profile, self.kept_style)) {
-            self.hand.push(OutCall::SaveProfile { profile });
-        }
-    }
 }
 
 /// Measures words in the font the page draws the name plates in.
@@ -371,428 +313,6 @@ impl WebView {
             ..DrawBuffers::default()
         }
     }
-
-    /// One frame with a picture of the session, in the order of the frame
-    /// of the Rust window: the controls, the map, the shard reports, the
-    /// sky, the floats, then the clicks on the map and the chat line.
-    fn run_frame(
-        &mut self,
-        frame: &WatchFrame,
-        now: f64,
-        view: Area,
-        mouse: Option<Point>,
-        input: FrameInput,
-    ) -> DrawBuffers {
-        let focus = self.inputs.focus(self.chat.text.is_empty());
-        let mut host = WebHost {
-            hand: &mut self.hand,
-            scene: &mut self.scene,
-            kept_style: self.kept_style,
-        };
-        let controls = self.controls.frame(
-            FrameIn {
-                frame,
-                profile: &mut self.profile,
-                time: now,
-                presses: &input.presses,
-                focus,
-                mouse,
-                view,
-                pad_note: "",
-            },
-            &mut host,
-        );
-        for command in controls.style {
-            self.style_command(frame, command);
-        }
-        match controls.history_older {
-            Some(true) => self.chat.older(),
-            Some(false) => self.chat.newer(),
-            None => {}
-        }
-        let unused: Vec<KeyPress> = input
-            .presses
-            .iter()
-            .filter(|press| press.pressed)
-            .filter(|press| {
-                !controls
-                    .used
-                    .iter()
-                    .any(|(mods, key)| *key == press.key && *mods == press.mods)
-            })
-            .cloned()
-            .collect();
-        // A key that fired something types nothing, as egui drops the
-        // letters of a frame whose key was used.
-        let texts: &[String] = if controls.used.is_empty() {
-            &input.texts
-        } else {
-            &[]
-        };
-        let mods = self.inputs.mods();
-        let scene_input = SceneInput {
-            mouse,
-            scroll: input.scroll,
-            zoom_delta: input.zoom_delta,
-            ctrl: mods.ctrl,
-            shift: mods.shift,
-            pixels_per_point: self.pixels_per_point,
-        };
-        let draw = self
-            .scene
-            .build(&mut self.art, view, frame, now, &self.profile, &scene_input);
-        let mut world = Shapes::new(self.art.white_uv());
-        let mut overlay = Shapes::new(self.art.white_uv());
-        let mut buffers = DrawBuffers {
-            moving: draw.moving,
-            ..DrawBuffers::default()
-        };
-        self.lay_world(view, draw, &mut world, &mut buffers);
-        let arrivals = self.scene.take_arrivals();
-        for act in self.reports.acts(frame, &self.profile, arrivals, view, now) {
-            self.hand.act(act);
-        }
-        buffers.moving |= self.lay_sky(frame, now, view, &mut world, &mut buffers);
-        buffers.floats = self.lay_floats(frame, now, view);
-        buffers.moving |= !self.floats.live().is_empty();
-        self.tips.begin(self.hand.take_tips(), now);
-        self.hand.begin(now);
-        if let Some((arrow, _)) = overlays::quest_arrow(&self.scene.projection(view), frame) {
-            overlay.overlay(arrow);
-        }
-        self.tooltip = None;
-        // The hotbar, the chat line, then the map, as the Rust window draws
-        // them.
-        if frame.human_control {
-            if focus == Focus::Free {
-                for slot in unused
-                    .iter()
-                    .filter_map(|press| hotbar_key_slot(&press.key))
-                {
-                    self.press_slot(frame, slot);
-                }
-            }
-            if !self.chat.is_hidden() {
-                self.chat_keys(frame, &unused, texts);
-            }
-            let escape = unused.iter().any(|press| press.key.0 == ESCAPE_KEY);
-            let on_map = MapInput {
-                view,
-                mouse,
-                escape,
-                movement: &controls.movement,
-            };
-            self.act_on_map(frame, now, &input, on_map, &mut overlay);
-            buffers.moving |= self.steer.walks();
-        }
-        self.hand.ask_due();
-        self.scene.set_panels(self.covered.clone());
-        self.art.keep_near(frame.map, frame.x, frame.y);
-        buffers.world = MeshArrays::from(world.into_mesh());
-        buffers.overlay = MeshArrays::from(overlay.into_mesh());
-        buffers.uploads = self.art.take_uploads();
-        buffers.atlas_reset = self.art.take_atlas_reset();
-        buffers
-    }
-
-    /// Does a command of the windows of the Modern style. The chat line
-    /// and the counter bar are the view's; the page does the others.
-    fn style_command(&mut self, frame: &WatchFrame, command: WindowCommand) {
-        match command {
-            WindowCommand::ToggleChat => self.chat.toggle_hidden(),
-            WindowCommand::UseCounterSlot(slot) => {
-                let act = slot_act(frame, &self.profile.counters, slot);
-                if let Some(act) = act.filter(|_| frame.human_control) {
-                    self.hand.act(act);
-                }
-            }
-            command => self.hand.push(OutCall::Window { command }),
-        }
-    }
-
-    /// The world, the marks over it and the name plates; the death screen
-    /// in their place while it shows.
-    fn lay_world(
-        &mut self,
-        view: Area,
-        draw: SceneDraw,
-        world: &mut Shapes,
-        buffers: &mut DrawBuffers,
-    ) {
-        buffers.steps = draw.steps;
-        if draw.death.is_some() {
-            world.fill(view, BLACK);
-            let words = ArtRequest::Text {
-                text: DEATH_WORDS.to_string(),
-                look: TextLook::ascii(DEATH_FONT, DEATH_HUE),
-            };
-            if let Some(sprite) = self.art.sprite(&words).ready() {
-                let size = Vector::new(sprite.width, sprite.height);
-                world.picture(
-                    Area::from_center_size(view.center(), size),
-                    sprite.uv,
-                    Rgba::WHITE,
-                );
-            }
-            buffers.moving = true;
-            return;
-        }
-        world.append(draw.mesh);
-        for shape in draw.overlays {
-            world.overlay(shape);
-        }
-        let combat = &self.profile.combat;
-        if combat.range_circle {
-            let color = hue_color(&self.art, combat.range_circle_hue);
-            let projection = self.scene.projection(view);
-            world.overlay(overlays::range_diamond(
-                &projection,
-                combat.range_circle_tiles,
-                color,
-            ));
-        }
-        if let Some(measure) = &self.measure {
-            let keep_clear = self.scene.character_area(view);
-            buffers.plates = lay_out(draw.plates, keep_clear, self.scene.zoom(), measure.as_ref());
-        }
-    }
-
-    /// The pictures of spells and the weather under the light, and the
-    /// light map. True while something of the sky still moves.
-    fn lay_sky(
-        &mut self,
-        frame: &WatchFrame,
-        now: f64,
-        view: Area,
-        world: &mut Shapes,
-        buffers: &mut DrawBuffers,
-    ) -> bool {
-        self.sky.take_in(frame, now);
-        let scene = &self.scene;
-        let shown = shown_effects(&self.sky, now, |serial| scene.place_of(frame, serial));
-        for effect in &shown {
-            match *effect {
-                ShownEffect::Bolt { struck, born } => {
-                    let struck = self.scene.screen_of(view, struck);
-                    let bolt = lightning_bolt(view, struck, born);
-                    world.line(&bolt, false, LIGHTNING_WIDTH, Rgba::WHITE);
-                }
-                ShownEffect::Picture {
-                    place,
-                    graphic,
-                    hue,
-                } => {
-                    let paint = ItemPaint {
-                        hue,
-                        ..ItemPaint::default()
-                    };
-                    let picture = self.scene.item_sprite(&mut self.art, graphic, paint, true);
-                    if let Some(sprite) = picture.ready() {
-                        let foot = self.scene.screen_of(view, place);
-                        let zoom = self.scene.zoom();
-                        let area = effect_area(foot, sprite.width, sprite.height, zoom);
-                        world.picture(area, sprite.uv, Rgba::WHITE);
-                    }
-                }
-            }
-        }
-        let weather = frame.weather.filter(|_| self.profile.video.weather_effects);
-        if let Some((kind, count)) = weather {
-            if let Some(tint) = storm_tint(kind) {
-                world.fill(view, tint);
-            }
-            let color = drop_color(kind);
-            for drop in weather_drops(view, kind, count, now) {
-                match drop {
-                    Drop::Flake(middle) => world.disc(middle, SNOW_RADIUS, color),
-                    Drop::Streak(tail, head) => world.segment(tail, head, RAIN_WIDTH, color),
-                }
-            }
-        }
-        buffers.light = self
-            .scene
-            .light_cells(&mut self.art, view, frame, &lit_effects(&shown));
-        !self.sky.live().is_empty() || weather.is_some()
-    }
-
-    /// The words and numbers over heads, laid out for the page to draw.
-    fn lay_floats(&mut self, frame: &WatchFrame, now: f64, view: Area) -> Vec<PlacedWords> {
-        let art = &self.art;
-        self.floats.take_in(
-            frame,
-            now,
-            &self.profile,
-            |words, look| art.text_lines(words, look),
-            |hue| hue_color(art, hue),
-        );
-        let live = self.floats.live();
-        let heads: Vec<Option<Point>> = live
-            .iter()
-            .map(|float| self.scene.head_of(view, frame, float.serial))
-            .collect();
-        let fading = self.profile.general.text_fading;
-        floats::lay_out(live, now, fading, |at| heads[at], |_| SPEECH_LINE)
-            .into_iter()
-            .map(|place| {
-                let float = &live[place.index];
-                PlacedWords {
-                    words: float.words.clone(),
-                    x: place.bottom.x,
-                    y: place.bottom.y,
-                    color: float.color,
-                    alpha: place.alpha,
-                    number: float.number,
-                }
-            })
-            .collect()
-    }
-
-    /// The keys and the clicks of the human on the map: Escape, walking,
-    /// a building that waits for its place, the tooltip, and the act of a
-    /// click.
-    fn act_on_map(
-        &mut self,
-        frame: &WatchFrame,
-        now: f64,
-        input: &FrameInput,
-        on_map: MapInput<'_>,
-        overlay: &mut Shapes,
-    ) {
-        let MapInput {
-            view,
-            mouse,
-            escape,
-            movement,
-        } = on_map;
-        match escape_on_map(self.hand.aiming().is_some(), frame.target_cursor).filter(|_| escape) {
-            Some(EscapeOnMap::CancelAim) => self.hand.cancel_aim(),
-            Some(EscapeOnMap::Act(act)) => self.hand.act(act),
-            None => {}
-        }
-        let covered = self.covered.clone();
-        let on_map =
-            |at: &Point| view.contains(*at) && !covered.iter().any(|area| area.contains(*at));
-        let mouse_on_map = mouse.filter(on_map);
-        let character = self
-            .scene
-            .place_of(frame, frame.serial)
-            .map_or(view.center(), |place| self.scene.screen_of(view, place));
-        let steer_input = SteerInput {
-            shift: self.inputs.mods().shift,
-            right_down: self.inputs.secondary_down(),
-            right_pressed: input.secondary_pressed,
-            left_pressed: input.primary_pressed,
-            mouse_way: mouse_on_map.map(|mouse| (character, mouse)),
-        };
-        let keys_down = self.inputs.keys_down().to_vec();
-        for act in self.steer.decide(&keys_down, steer_input, now, movement) {
-            self.hand.act(act);
-        }
-        let Some(mouse) = mouse_on_map else {
-            return;
-        };
-        // The house designer takes the clicks on the house while it is open.
-        if self.steer.by_mouse() || frame.designing.is_some() {
-            return;
-        }
-        if let Some(shapes) = self
-            .scene
-            .placing_preview(&mut self.art, view, frame, mouse)
-        {
-            for shape in shapes {
-                overlay.overlay(shape);
-            }
-            if !input.clicks.is_empty() {
-                let (x, y, z) = self.scene.tile_at(&mut self.art, view, frame, mouse);
-                self.hand.act(Act::TargetGround { x, y, z });
-            }
-            return;
-        }
-        let thing = self.scene.thing_at(mouse).cloned();
-        self.tooltip = match (self.hand.aiming(), &thing) {
-            (Some(aim), _) => Some(TooltipData {
-                lines: vec![uoterm_view::guard::aim_words(aim).to_string()],
-                footer: "",
-            }),
-            (None, Some(thing)) => {
-                let hand = &mut self.hand;
-                self.tips
-                    .rest_on(thing.serial, now, |serial| hand.want_tip(serial));
-                Some(TooltipData {
-                    lines: self
-                        .tips
-                        .shown(thing.serial, &thing.name, &[])
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
-                    footer: uoterm_view::clicks::hint_for(frame, thing.kind),
-                })
-            }
-            (None, None) => None,
-        };
-        // A click acts on what lies where its button came up.
-        for click in input.clicks.iter().filter(|click| on_map(&click.at)) {
-            let picked = self
-                .scene
-                .thing_at(click.at)
-                .map(|thing| (thing.serial, thing.kind));
-            let tile = self.scene.tile_at(&mut self.art, view, frame, click.at);
-            let ground = GroundClicks::of(&self.profile.general, click.mods);
-            if let Some(act) = act_for_click(frame, picked, tile, click.double, ground) {
-                self.hand.act(act);
-            }
-        }
-    }
-
-    /// The keys of the chat line, as the Speech page says: the line that
-    /// has the keys takes Escape and Enter; one that has not opens on a
-    /// prefix key or on Enter.
-    fn chat_keys(&mut self, frame: &WatchFrame, unused: &[KeyPress], texts: &[String]) {
-        let speech = &self.profile.speech;
-        if self.inputs.chat_focused() {
-            for press in unused {
-                let out = match press.key.0.as_str() {
-                    ESCAPE_KEY => self.chat.key(ChatKey::Escape, speech),
-                    ENTER_KEY => self.chat.key(
-                        ChatKey::Enter {
-                            shift: press.mods.shift,
-                        },
-                        speech,
-                    ),
-                    _ => ChatOut::None,
-                };
-                if let ChatOut::Sent(words) = out {
-                    let said = self
-                        .chat_mode
-                        .said(&words, asked_commands(frame), frame, speech);
-                    match said {
-                        Some(Said::Act(act)) => self.hand.act(act),
-                        Some(Said::Note(words)) => self.hand.note(&words),
-                        None => {}
-                    }
-                }
-            }
-        } else if !self.inputs.other_field_focused() {
-            for text in texts {
-                self.chat.open_on(text, speech);
-            }
-            if unused.iter().any(|press| press.key.0 == ENTER_KEY) {
-                self.chat.enter_outside(speech);
-            }
-        }
-    }
-}
-
-/// Black, for the death screen.
-const BLACK: Rgba = Rgba::from_rgb(0, 0, 0);
-
-/// What the map reads of one frame.
-struct MapInput<'a> {
-    view: Area,
-    mouse: Option<Point>,
-    /// Escape was pressed and fired nothing else.
-    escape: bool,
-    movement: &'a Movement,
 }
 
 /// The tooltip of the thing under the mouse on the map: the shard's words
@@ -906,6 +426,14 @@ impl WebView {
         self.data_missing_native(path);
     }
 
+    /// The keys of the pictures the view forgot: `string[]`. The page may
+    /// drop their pixels; a picture forgotten comes again in `artWanted`
+    /// when it is needed.
+    #[wasm_bindgen(js_name = artForgotten)]
+    pub fn art_forgotten(&mut self) -> JsValue {
+        to_js(&self.art.take_forgotten())
+    }
+
     /// The bodies to post, each one time: `{key, path, body}[]`.
     #[wasm_bindgen(js_name = postsWanted)]
     pub fn posts_wanted(&mut self) -> JsValue {
@@ -1003,6 +531,9 @@ impl WebView {
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;
+    use uoterm_view::act::Act;
+    use uoterm_view::actions::WindowCommand;
+    use uoterm_view::art::Cell;
     use uoterm_view::input::Mods;
     use uoterm_view::settings::{KeyBinding, KeyChord, MacroStep};
 
@@ -1148,6 +679,68 @@ pub(crate) mod tests {
             walked[0].calls[0].tool,
             uoterm_world::tool_names::TOOL_MOVE_TO
         );
+    }
+
+    #[test]
+    fn a_building_goes_where_a_click_on_the_map_came_up() {
+        let mut view = WebView::new("{}");
+        let mut watch: Value = serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
+        watch["placing"] = json!({ "multi_id": 1 });
+        view.frame(&watch.to_string(), 0.0);
+        view.tick_native(0.0, VIEW, None);
+        view.take_out_native();
+        let panel = Area::from_min_size(Point::new(0.0, 0.0), Vector::new(100.0, 100.0));
+        view.set_covered(&serde_json::to_string(&[panel]).unwrap());
+        let click = |view: &mut WebView, at: Point| {
+            view.input_native(
+                &event(json!({"kind": "PointerDown", "button": "Primary"})),
+                0.1,
+            );
+            let up = json!({"kind": "PointerUp", "x": at.x, "y": at.y, "button": "Primary"});
+            view.input_native(&event(up), 0.1);
+            view.tick_native(0.1, VIEW, Some(VIEW.center()));
+            acts(&view.take_out_native())
+        };
+        assert!(
+            click(&mut view, panel.center()).is_empty(),
+            "a click on a panel"
+        );
+        let placed = click(&mut view, VIEW.center());
+        assert_eq!(placed.len(), 1);
+        assert_eq!(
+            placed[0].calls[0].tool,
+            uoterm_world::tool_names::TOOL_TARGET
+        );
+    }
+
+    #[test]
+    fn a_block_in_a_wide_view_at_the_lowest_zoom_is_not_asked_for_again() {
+        const WIDE: Area = Area {
+            min: Point { x: 0.0, y: 0.0 },
+            max: Point {
+                x: 1920.0,
+                y: 1080.0,
+            },
+        };
+        const LOWEST_ZOOM: f32 = 0.1;
+        const FRAMES: usize = 5;
+        let mut profile = Profile::default();
+        profile.video.default_zoom = LOWEST_ZOOM;
+        let mut view = WebView::new(&serde_json::to_string(&profile).unwrap());
+        view.frame(&fixture_watch_with_backpack(), 0.0);
+        view.data_arrived_native("/v1/data/tiledata", &json!(uoterm_nav::TileData::default()));
+        let cells = json!(vec![Cell::default(); 64]);
+        let mut asked = 0;
+        for at in 0..FRAMES {
+            view.tick_native(at as f64 / 10.0, WIDE, None);
+            for path in view.data_wanted_native() {
+                if path.starts_with("/v1/map/") {
+                    asked += usize::from(at > 0);
+                    view.data_arrived_native(&path, &cells);
+                }
+            }
+        }
+        assert_eq!(asked, 0, "every block came in the first frame and stays");
     }
 
     #[test]

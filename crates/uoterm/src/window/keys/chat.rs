@@ -7,6 +7,7 @@ use crate::view::WatchFrame;
 use crate::window::control::Hand;
 use crate::window::settings::SpeechOptions;
 use eframe::egui::{self, Id, Key};
+use uoterm_view::keys::Focus;
 
 /// Sends a line of the chat line, or prints what the client answers
 /// itself.
@@ -34,26 +35,40 @@ pub fn take_keys(
     speech: &SpeechOptions,
 ) -> bool {
     let focused = ctx.memory(|m| m.focused());
-    if focused == Some(key) {
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            line.key(ChatKey::Escape, speech);
-            ctx.memory_mut(|m| m.surrender_focus(key));
+    let focus = if focused == Some(key) {
+        Focus::ChatTyping
+    } else if focused.is_some_and(|id| super::is_word_field(ctx, id)) {
+        Focus::OtherField
+    } else {
+        Focus::Free
+    };
+    // The field types the words itself, and its Enter sends when it lets
+    // the keys go; here it takes Escape.
+    let keys = ctx.input(|i| {
+        let mut keys = Vec::new();
+        if focus != Focus::Free {
+            if i.key_pressed(Key::Escape) {
+                keys.push(LineKey::Escape);
+            }
+            return keys;
         }
-        return false;
-    }
-    if focused.is_some_and(|id| super::is_word_field(ctx, id)) {
-        return false;
-    }
-    let typed = ctx.input(|i| {
-        i.events.iter().find_map(|event| match event {
+        let typed = i.events.iter().find_map(|event| match event {
             egui::Event::Text(text) => Some(text.clone()),
             _ => None,
-        })
+        });
+        keys.extend(typed.map(LineKey::Typed));
+        if i.key_pressed(Key::Enter) {
+            keys.push(LineKey::Enter { shift: false });
+        }
+        keys
     });
-    if let Some(text) = typed {
-        line.open_on(&text, speech);
+    let out = line.take_keys(focus, &keys, speech);
+    if out.closed {
+        ctx.memory_mut(|m| m.surrender_focus(key));
     }
-    let opened = ctx.input(|i| i.key_pressed(Key::Enter)) && line.enter_outside(speech);
+    if focus != Focus::Free {
+        return false;
+    }
     let paste = line.take_paste();
     if line.is_open(speech) {
         ctx.memory_mut(|m| m.request_focus(key));
@@ -61,5 +76,5 @@ pub fn take_keys(
     if paste {
         ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
     }
-    opened
+    out.opened
 }

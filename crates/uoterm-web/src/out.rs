@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use uoterm_view::act::{tip_lines, Act, PageAct, Report, Tip};
 use uoterm_view::actions::WindowCommand;
 use uoterm_view::frame::WatchFrame;
-use uoterm_view::guard::{
-    Checked, Guard, KeptGrabBags, LocalAim, GRAB_BAGS_FILE, NOTE_GRAB_BAG_SET,
-};
+use uoterm_view::guard::{Guard, HandStep, KeptGrabBags, LocalAim, GRAB_BAGS_FILE};
 use uoterm_view::model::reads::{ReadCache, ReadKey};
 use uoterm_view::settings::CombatOptions;
 use uoterm_view::tips::{TIP_RETRY_SECONDS, TIP_TRIES};
@@ -122,13 +120,11 @@ impl Hand {
 
     /// Sends one act, after the guard checked it.
     pub fn act(&mut self, act: Act) {
-        match self.guard.check(act) {
-            Checked::Send(acts) => acts.into_iter().for_each(|act| self.send(act)),
-            Checked::Asked => {}
-            Checked::Aimed(words) => self.report(words),
-            Checked::GrabBagSet(grab_bags) => {
-                self.save_grab_bags(&grab_bags);
-                self.report(NOTE_GRAB_BAG_SET);
+        for step in self.guard.check(act).steps() {
+            match step {
+                HandStep::Send(act) => self.send(act),
+                HandStep::Report(words) => self.report(words),
+                HandStep::KeepGrabBags(grab_bags) => self.save_grab_bags(&grab_bags),
             }
         }
     }

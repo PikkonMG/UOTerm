@@ -25,12 +25,8 @@ use std::collections::BTreeMap;
 
 pub const HOTBAR_SLOTS: usize = 10;
 /// The keys that press the slots while no field takes the keys, by their
-/// egui names, and the words each slot shows for its key.
-pub const HOTBAR_KEY_NAMES: [&str; HOTBAR_SLOTS] = [
-    "Num1", "Num2", "Num3", "Num4", "Num5", "Num6", "Num7", "Num8", "Num9", "Num0",
-];
-pub const HOTBAR_KEY_WORDS: [&str; HOTBAR_SLOTS] =
-    ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+/// egui names. Each slot shows the name of its key.
+pub const HOTBAR_KEYS: [&str; HOTBAR_SLOTS] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
 /// A slot with no picture shows this many letters of its words.
 pub const SLOT_WORD_CHARS: usize = 6;
 /// The file of the config folder that keeps the hotbars.
@@ -128,7 +124,7 @@ impl Slot {
 
 /// The slot a key presses, while no field takes the keys.
 pub fn hotbar_key_slot(key: &KeyName) -> Option<usize> {
-    HOTBAR_KEY_NAMES.iter().position(|name| *name == key.0)
+    HOTBAR_KEYS.iter().position(|name| *name == key.0)
 }
 
 /// The picture a slot shows.
@@ -309,9 +305,9 @@ mod tests {
 
     #[test]
     fn the_number_keys_press_the_slots_and_a_slot_shows_its_picture() {
-        assert_eq!(hotbar_key_slot(&KeyName("Num1".into())), Some(0));
+        assert_eq!(hotbar_key_slot(&KeyName("1".into())), Some(0));
         assert_eq!(
-            hotbar_key_slot(&KeyName("Num0".into())),
+            hotbar_key_slot(&KeyName("0".into())),
             Some(HOTBAR_SLOTS - 1)
         );
         assert_eq!(hotbar_key_slot(&KeyName("A".into())), None);

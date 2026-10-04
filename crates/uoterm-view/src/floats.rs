@@ -61,6 +61,10 @@ pub struct Float {
     pub seconds: f64,
     /// A number of hits lost, which rises as it floats.
     pub number: bool,
+    /// Its time follows the lines of its words. False while the font has
+    /// not measured them: a client that asks for the measure keeps one
+    /// line's time until it comes.
+    pub measured: bool,
 }
 
 #[derive(Default)]
@@ -162,15 +166,16 @@ impl Floats {
                 };
                 let words = shortened(&text);
                 let look = speech_look(&profile.fonts, hue);
-                let count = lines(&words, &look).len().max(1);
+                let count = lines(&words, &look).len();
                 self.live.push(Float {
                     serial: line.serial,
                     color: color(hue),
                     words,
                     look,
                     born: time,
-                    seconds: speech_seconds(&profile.speech, count),
+                    seconds: speech_seconds(&profile.speech, count.max(1)),
                     number: false,
+                    measured: count > 0,
                 });
             }
         }
@@ -198,10 +203,18 @@ impl Floats {
                     born: time,
                     seconds: DAMAGE_SECONDS,
                     number: true,
+                    measured: true,
                 });
             }
         }
         self.last_cue = newest_cue.or(self.last_cue).or(Some(0));
+        for float in self.live.iter_mut().filter(|float| !float.measured) {
+            let count = lines(&float.words, &float.look).len();
+            if count > 0 {
+                float.seconds = speech_seconds(&profile.speech, count);
+                float.measured = true;
+            }
+        }
         self.live.retain(|float| time - float.born < float.seconds);
         for taken in self.damage.values_mut() {
             taken.retain(|(at, _)| time - at < DPS_SECONDS);
@@ -377,6 +390,7 @@ mod tests {
             born,
             seconds: 5.0,
             number,
+            measured: true,
         };
         let live = [
             float("old", 0.0, false),
@@ -401,6 +415,23 @@ mod tests {
         );
         assert_eq!(bottom_of(3), None, "no head drawn, no float");
         assert_eq!(placed[0].index, 2, "the newest first");
+    }
+
+    #[test]
+    fn words_measured_late_stay_as_long_as_their_lines() {
+        let mut profile = modern();
+        profile.speech.scale_speech_delay = true;
+        let mut floats = Floats::default();
+        let mut frame = WatchFrame::default();
+        let lines = |count: usize| move |_: &str, _: &TextLook| vec![String::new(); count];
+        floats.take_in(&frame, 0.0, &profile, lines(0), |_| theme::TEXT);
+        frame.speech.push(said(1, KIND_SAY, "a long line"));
+        floats.take_in(&frame, 1.0, &profile, lines(0), |_| theme::TEXT);
+        let one_line = speech_seconds(&profile.speech, 1);
+        assert_eq!(floats.live()[0].seconds, one_line, "not measured yet");
+        floats.take_in(&frame, 1.1, &profile, lines(3), |_| theme::TEXT);
+        assert_eq!(floats.live()[0].seconds, speech_seconds(&profile.speech, 3));
+        assert_eq!(floats.live()[0].born, 1.0, "it keeps its start");
     }
 
     #[test]

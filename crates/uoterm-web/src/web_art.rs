@@ -23,8 +23,12 @@ use uoterm_view::atlas::{ShelfPacker, ATLAS_SIDE};
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::{Point, Vector};
 
-/// Blocks farther than this many blocks from the character are dropped.
-pub const BLOCK_KEEP_RADIUS: u16 = 6;
+/// A block the scene has not read for this many frames is dropped. The
+/// scene reads each block it draws in each frame, whatever the size of the
+/// view and the zoom.
+pub const BLOCK_KEEP_FRAMES: u64 = 120;
+/// At most this many measures of words are kept; then they start again.
+pub const MEASURES_KEPT: usize = 1024;
 /// The side of a map block, in tiles, and its tiles.
 const BLOCK_SIDE: u16 = 8;
 const BLOCK_CELLS: usize = (BLOCK_SIDE * BLOCK_SIDE) as usize;
@@ -254,6 +258,11 @@ fn measure_key(text: &str, look: &TextLook) -> u64 {
 pub struct WebArt {
     packer: ShelfPacker,
     pictures: HashMap<u64, Picture>,
+    /// The pictures the scene asked for since the texture last started
+    /// again.
+    used: HashSet<u64>,
+    /// The pictures forgotten, whose pixels the page may drop.
+    forgotten: Vec<String>,
     wanted: Vec<Wanted>,
     uploads: Vec<Upload>,
     /// Every picture lost its place this frame: the page clears its
@@ -271,6 +280,10 @@ pub struct WebArt {
     text_colors: HashMap<u16, Table<[u8; 3]>>,
     masks: HashMap<u16, Table<GumpMask>>,
     blocks: HashMap<BlockKey, Table<Vec<Cell>>>,
+    /// The frame each block was last read in.
+    block_read: HashMap<BlockKey, u64>,
+    /// The frames that ended.
+    frames_ended: u64,
     measures: RefCell<HashMap<u64, Table<TextMeasure>>>,
     /// The words to measure, by their key.
     to_measure: RefCell<Vec<(u64, String, TextLook)>>,
@@ -288,6 +301,8 @@ impl Default for WebArt {
         let art = Self {
             packer: ShelfPacker::new(ATLAS_SIDE),
             pictures: HashMap::new(),
+            used: HashSet::new(),
+            forgotten: Vec::new(),
             wanted: Vec::new(),
             uploads: Vec::new(),
             atlas_reset: true,
@@ -303,6 +318,8 @@ impl Default for WebArt {
             text_colors: HashMap::new(),
             masks: HashMap::new(),
             blocks: HashMap::new(),
+            block_read: HashMap::new(),
+            frames_ended: 0,
             measures: RefCell::new(HashMap::new()),
             to_measure: RefCell::new(Vec::new()),
             posts: Vec::new(),
@@ -369,6 +386,13 @@ impl WebArt {
         std::mem::take(&mut self.uploads)
     }
 
+    /// The keys of the pictures forgotten since the last call: the page
+    /// may drop their pixels. A picture forgotten is fetched again when the
+    /// scene asks for it.
+    pub fn take_forgotten(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.forgotten)
+    }
+
     /// True once after the texture started again.
     pub fn take_atlas_reset(&mut self) -> bool {
         std::mem::take(&mut self.atlas_reset)
@@ -411,33 +435,36 @@ impl WebArt {
         } else {
             Table::Missing
         };
-        self.blocks.insert((map, bx, by), table);
+        let key = (map, bx, by);
+        self.blocks.insert(key, table);
+        self.block_read.insert(key, self.frames_ended);
     }
 
-    /// Drops the blocks of other maps, and those farther than
-    /// [`BLOCK_KEEP_RADIUS`] blocks from the tile `x`, `y` of `map`. They
-    /// are asked for again when the scene needs them.
-    pub fn keep_near(&mut self, map: u8, x: u16, y: u16) {
-        let (_, center_x, center_y) = block_of(map, x, y);
-        let far = |(block_map, bx, by): &BlockKey| {
-            *block_map != map
-                || bx.abs_diff(center_x) > BLOCK_KEEP_RADIUS
-                || by.abs_diff(center_y) > BLOCK_KEEP_RADIUS
-        };
-        let dropped: Vec<BlockKey> = self.blocks.keys().filter(|key| far(key)).copied().collect();
-        for key in dropped {
+    /// Ends a frame: drops the blocks not read for [`BLOCK_KEEP_FRAMES`]
+    /// frames. They are asked for again when the scene needs them.
+    pub fn end_frame(&mut self) {
+        self.frames_ended += 1;
+        let now = self.frames_ended;
+        let stale: Vec<BlockKey> = self
+            .block_read
+            .iter()
+            .filter(|(_, read)| now - **read > BLOCK_KEEP_FRAMES)
+            .map(|(key, _)| *key)
+            .collect();
+        self.drop_block_keys(stale);
+    }
+
+    fn drop_block_keys(&mut self, keys: impl IntoIterator<Item = BlockKey>) {
+        for key in keys {
             self.blocks.remove(&key);
+            self.block_read.remove(&key);
             self.wants.forget(&DataPath::Block(key).path());
         }
     }
 
     /// Drops changed blocks, so they are asked for again.
     fn drop_blocks(&mut self, changed: &[MapBlockAt]) {
-        for block in changed {
-            let key = (block.map, block.bx, block.by);
-            self.blocks.remove(&key);
-            self.wants.forget(&DataPath::Block(key).path());
-        }
+        self.drop_block_keys(changed.iter().map(|block| (block.map, block.bx, block.by)));
     }
 
     /// The live map of a picture, the `live_map` value of the `watch`
@@ -568,17 +595,25 @@ impl WebArt {
         true
     }
 
-    /// Forgets every place in the texture. The pictures that are here are
-    /// placed again when the scene next asks for them.
+    /// Forgets every place in the texture. The pictures used since the
+    /// last start are placed again when the scene next asks for them, with
+    /// the pixels the page keeps; the others are forgotten, so the page
+    /// keeps no more pixels than the texture holds.
     fn start_again(&mut self) {
         self.packer.reset();
         self.uploads.clear();
         self.atlas_reset = true;
-        for picture in self.pictures.values_mut() {
-            if let Picture::Arrived { sprite, .. } = picture {
-                *sprite = None;
+        let used = std::mem::take(&mut self.used);
+        let forgotten = &mut self.forgotten;
+        self.pictures.retain(|key, picture| {
+            let kept = used.contains(key);
+            match picture {
+                Picture::Arrived { sprite, .. } if kept => *sprite = None,
+                Picture::Arrived { .. } => forgotten.push(key.to_string()),
+                Picture::Asked | Picture::Missing => {}
             }
-        }
+            kept
+        });
     }
 
     /// Gives a picture that came a place in the texture. None when it is
@@ -594,6 +629,7 @@ impl WebArt {
                 self.packer.place(width, height)?
             }
         };
+        self.used.insert(key);
         self.uploads.push(Upload {
             key: key.to_string(),
             x: placement.x,
@@ -611,6 +647,7 @@ impl WebArt {
 
     fn cells(&mut self, map: u8, x: u16, y: u16) -> Art<&Vec<Cell>> {
         let key = block_of(map, x, y);
+        self.block_read.insert(key, self.frames_ended);
         asked_for(&mut self.blocks, &self.wants, key, DataPath::Block).art()
     }
 
@@ -630,6 +667,7 @@ impl WorldArt for WebArt {
 
     fn sprite(&mut self, request: &ArtRequest) -> Art<Sprite> {
         let key = request.key();
+        self.used.insert(key);
         match self.pictures.get(&key).copied() {
             None => {
                 self.pictures.insert(key, Picture::Asked);
@@ -724,7 +762,10 @@ impl WorldArt for WebArt {
     }
 
     fn radar_rgb(&mut self, map: u8, x: u16, y: u16) -> Option<[u8; 3]> {
-        let cell = self.cell(map, x, y).ready()?.clone();
+        // Asks for the block the first time.
+        self.cell(map, x, y).ready()?;
+        let cells = self.blocks.get(&block_of(map, x, y))?.art().ready()?;
+        let cell = cells.get(cell_index(x, y))?;
         let radar = table_art(&self.radar).ready()?;
         match radar_item(cell.statics.iter().map(|item| (item.graphic, item.z))) {
             Some(graphic) => radar.item(graphic),
@@ -805,6 +846,9 @@ impl WebArt {
         match measures.get(&key) {
             Some(table) => table.art().ready().cloned(),
             None => {
+                if measures.len() >= MEASURES_KEPT {
+                    measures.clear();
+                }
                 measures.insert(key, Table::Asked);
                 self.to_measure
                     .borrow_mut()
@@ -849,11 +893,69 @@ mod tests {
     }
 
     #[test]
-    fn a_far_block_is_dropped() {
+    fn a_block_not_read_for_a_while_is_dropped() {
         let mut art = WebArt::default();
         art.block_arrived(0, 0, 0, vec![Cell::default(); 64]);
-        art.keep_near(0, 100 * 8, 100 * 8);
+        for _ in 0..=BLOCK_KEEP_FRAMES {
+            art.end_frame();
+        }
         assert!(matches!(art.cell(0, 0, 0), Art::Pending));
+        assert!(art
+            .take_data_wanted()
+            .contains(&"/v1/map/0/0/0".to_string()));
+    }
+
+    #[test]
+    fn a_block_read_each_frame_stays() {
+        let mut art = WebArt::default();
+        art.block_arrived(0, 0, 0, vec![Cell::default(); 64]);
+        for _ in 0..BLOCK_KEEP_FRAMES * 2 {
+            assert!(matches!(art.cell(0, 0, 0), Art::Ready(_)));
+            art.end_frame();
+        }
+    }
+
+    #[test]
+    fn a_picture_not_used_since_the_last_restart_is_forgotten() {
+        const SIDE: usize = 2000;
+        /// Four of this side fill the texture with the white square.
+        const FILL: u16 = 4;
+        let mut art = WebArt::default();
+        let land = |land_id: u16| ArtRequest::Land { land_id, hue: 0 };
+        let show = |art: &mut WebArt, land_id: u16| {
+            let request = land(land_id);
+            if matches!(art.sprite(&request), Art::Pending) {
+                art.arrived(request.key(), SIDE, SIDE, 0.0, 0.0);
+            }
+            assert!(matches!(art.sprite(&request), Art::Ready(_)));
+        };
+        for land_id in 0..=FILL {
+            show(&mut art, land_id);
+        }
+        assert!(art.take_forgotten().is_empty(), "all were used");
+        show(&mut art, 0);
+        for land_id in FILL + 1..FILL * 2 + 1 {
+            show(&mut art, land_id);
+        }
+        let forgotten = art.take_forgotten();
+        // The picture that started the texture again took a place in it,
+        // so it counts as used.
+        let gone: Vec<String> = (1..FILL).map(|id| land(id).key().to_string()).collect();
+        assert_eq!(forgotten.len(), gone.len(), "{forgotten:?}");
+        assert!(gone.iter().all(|key| forgotten.contains(key)));
+        art.take_wanted();
+        assert!(matches!(art.sprite(&land(1)), Art::Pending), "asked again");
+        assert_eq!(art.take_wanted().len(), 1);
+    }
+
+    #[test]
+    fn the_measures_kept_stay_few() {
+        let art = WebArt::default();
+        let look = TextLook::unicode(1, 0);
+        for line in 0..=MEASURES_KEPT {
+            art.text_lines(&line.to_string(), &look);
+        }
+        assert!(art.measures.borrow().len() <= MEASURES_KEPT);
     }
 
     #[test]

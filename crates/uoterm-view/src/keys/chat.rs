@@ -11,6 +11,7 @@
 //! the character is not in, give the line the reference client prints in
 //! the journal.
 
+use super::Focus;
 use crate::act::{Act, Channel};
 use crate::frame::WatchFrame;
 use crate::model::party::{leads, ACCEPT_COMMAND, DECLINE_COMMAND, INVITE_COMMAND, PARTY_PLACES};
@@ -213,6 +214,28 @@ pub enum ChatOut {
     Sent(String),
 }
 
+/// A key of one frame, as the chat line takes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LineKey {
+    /// Words a key typed.
+    Typed(String),
+    Escape,
+    Enter {
+        shift: bool,
+    },
+}
+
+/// What the keys of one frame did to the chat line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LineKeys {
+    /// The line let the keys go: its field gives up the focus.
+    pub closed: bool,
+    /// Enter opened the line; that Enter sends nothing.
+    pub opened: bool,
+    /// The lines to send.
+    pub sent: Vec<String>,
+}
+
 /// The chat line: the words in it, whether it takes the keys, and the
 /// lines sent before.
 #[derive(Default)]
@@ -278,6 +301,37 @@ impl ChatLine {
                 .enter(shift, speech)
                 .map_or(ChatOut::None, ChatOut::Sent),
         }
+    }
+
+    /// Takes the keys of one frame by the field that has them. The field
+    /// of the line types the words itself, and takes Escape and Enter
+    /// here; while no field has the keys, typed words open the line on a
+    /// prefix key and Enter opens it; another field keeps its keys.
+    pub fn take_keys(
+        &mut self,
+        focus: Focus,
+        keys: &[LineKey],
+        speech: &SpeechOptions,
+    ) -> LineKeys {
+        let mut out = LineKeys::default();
+        for key in keys {
+            match (focus, key) {
+                (Focus::ChatEmpty | Focus::ChatTyping, LineKey::Escape) => {
+                    self.key(ChatKey::Escape, speech);
+                    out.closed = true;
+                }
+                (Focus::ChatEmpty | Focus::ChatTyping, LineKey::Enter { shift }) => {
+                    if let ChatOut::Sent(words) = self.key(ChatKey::Enter { shift: *shift }, speech)
+                    {
+                        out.sent.push(words);
+                    }
+                }
+                (Focus::Free, LineKey::Typed(typed)) => self.open_on(typed, speech),
+                (Focus::Free, LineKey::Enter { .. }) => out.opened |= self.enter_outside(speech),
+                _ => {}
+            }
+        }
+        out
     }
 
     /// Typed words open a closed line when the first one is a prefix key
@@ -625,5 +679,30 @@ mod key_tests {
             line.key(ChatKey::Enter { shift: false }, &speech),
             ChatOut::None
         );
+    }
+
+    #[test]
+    fn the_keys_of_a_frame_go_to_the_line_by_the_field_that_has_them() {
+        let speech = SpeechOptions {
+            chat_on_enter: true,
+            chat_prefix_keys: true,
+            ..SpeechOptions::default()
+        };
+        let mut line = ChatLine::default();
+        let typed = |text: &str| LineKey::Typed(text.into());
+        let enter = LineKey::Enter { shift: false };
+        let out = line.take_keys(Focus::OtherField, &[typed("!"), enter.clone()], &speech);
+        assert_eq!(out, LineKeys::default(), "another field has the keys");
+        assert!(!line.is_open(&speech));
+        let out = line.take_keys(Focus::Free, std::slice::from_ref(&enter), &speech);
+        assert!(out.opened && line.is_open(&speech));
+        line.text = "hail".into();
+        let out = line.take_keys(Focus::ChatTyping, &[enter], &speech);
+        assert_eq!(out.sent, ["hail"]);
+        line.key(ChatKey::Escape, &speech);
+        line.take_keys(Focus::Free, &[typed("!")], &speech);
+        assert!(line.is_open(&speech), "a prefix key opens it");
+        let out = line.take_keys(Focus::ChatEmpty, &[LineKey::Escape], &speech);
+        assert!(out.closed && !line.is_open(&speech));
     }
 }

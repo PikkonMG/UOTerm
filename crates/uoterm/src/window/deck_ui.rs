@@ -37,8 +37,7 @@ use uoterm_view::art::Sprite;
 use uoterm_view::input::KeyName;
 use uoterm_view::ui::deck::{
     self, hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
-    SlotPicture, WearChoice, HOTBAR_FILE, HOTBAR_KEY_NAMES, HOTBAR_KEY_WORDS, HOTBAR_SLOTS,
-    SLOT_ROW, WORN_COLUMNS,
+    SlotPicture, WearChoice, HOTBAR_FILE, HOTBAR_KEYS, HOTBAR_SLOTS, SLOT_ROW, WORN_COLUMNS,
 };
 
 const SHEET_ID: &str = "modern:sheet";
@@ -967,7 +966,7 @@ impl DeckUi {
         let bar = Rect::from_min_size(body.left_top(), Vec2::new(width, side));
         let typing = ui.ctx().wants_keyboard_input();
         let mut cells = Vec::with_capacity(HOTBAR_SLOTS);
-        for slot in 0..HOTBAR_SLOTS {
+        for (slot, key) in HOTBAR_KEYS.into_iter().enumerate() {
             let cell = Rect::from_min_size(
                 bar.left_top() + Vec2::new(slot as f32 * (side + CELL_GAP), 0.0),
                 Vec2::splat(side),
@@ -985,13 +984,13 @@ impl DeckUi {
             ui.painter().text(
                 cell.left_top() + Vec2::splat(theme::CELL_ART_PAD),
                 Align2::LEFT_TOP,
-                HOTBAR_KEY_WORDS[slot],
+                key,
                 number_font(theme::SIZE_SMALL),
                 theme::TEXT_FAINT,
             );
             let Some(what) = self.hotbars.slot(&frame.name, slot).cloned() else {
                 if response.hovered() && !tools.desk.carries() && self.dragging.is_none() {
-                    tips::label(ui, HOTBAR_KEY_WORDS[slot], HINT_EMPTY_SLOT);
+                    tips::label(ui, key, HINT_EMPTY_SLOT);
                 }
                 if response.clicked() {
                     self.picking = if self.picking == Some(slot) {
@@ -1013,10 +1012,10 @@ impl DeckUi {
                     other => tips::label(ui, &other.words(frame), HINT_SLOT),
                 }
             }
-            let key_name = KeyName(HOTBAR_KEY_NAMES[slot].to_string());
-            let key = !typing
-                && bridge::egui_key(&key_name).is_some_and(|key| ui.input(|i| i.key_pressed(key)));
-            if response.clicked() || key {
+            let key_pressed = !typing
+                && bridge::egui_key(&KeyName(key.to_string()))
+                    .is_some_and(|key| ui.input(|i| i.key_pressed(key)));
+            if response.clicked() || key_pressed {
                 self.press(&what, frame, tools, profile);
             } else if response.secondary_clicked() {
                 self.set_slot(&frame.name, slot, None);
@@ -1112,7 +1111,7 @@ impl DeckUi {
         let body = frame::draw(
             ui.painter(),
             panel,
-            &format!("{WORDS_PICK_FOR} {}", HOTBAR_KEY_WORDS[slot]),
+            &format!("{WORDS_PICK_FOR} {}", HOTBAR_KEYS[slot]),
         );
         let mut top = body.top();
         if !has_macros {
@@ -1189,6 +1188,15 @@ mod tests {
     use crate::window::model::abilities::AbilitySlot;
 
     const MARA: &str = "Mara";
+
+    #[test]
+    fn every_hotbar_key_is_a_key_of_egui() {
+        for name in HOTBAR_KEYS {
+            let key = bridge::egui_key(&KeyName(name.to_string()));
+            assert!(key.is_some(), "{name}");
+            assert_eq!(bridge::key_name(key.unwrap()), KeyName(name.to_string()));
+        }
+    }
 
     #[test]
     fn a_hotbar_comes_back_from_its_file() {

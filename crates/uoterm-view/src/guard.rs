@@ -92,6 +92,31 @@ pub enum Checked {
     GrabBagSet(KeptGrabBags),
 }
 
+/// One thing a hand does with a checked act.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HandStep {
+    Send(Act),
+    /// Tell the player, as the report of an act.
+    Report(&'static str),
+    /// Keep the grab bags where the client keeps them.
+    KeepGrabBags(KeptGrabBags),
+}
+
+impl Checked {
+    /// What the hand does, in order.
+    pub fn steps(self) -> Vec<HandStep> {
+        match self {
+            Checked::Send(acts) => acts.into_iter().map(HandStep::Send).collect(),
+            Checked::Asked => Vec::new(),
+            Checked::Aimed(words) => vec![HandStep::Report(words)],
+            Checked::GrabBagSet(grab_bags) => vec![
+                HandStep::KeepGrabBags(grab_bags),
+                HandStep::Report(NOTE_GRAB_BAG_SET),
+            ],
+        }
+    }
+}
+
 pub struct Guard {
     seen: Seen,
     aim: Option<LocalAim>,
@@ -441,5 +466,26 @@ mod tests {
         kept.characters.insert(NAME.into(), CHEST);
         guard.keep_grab_bags(kept);
         assert_eq!(guard.grab_bag(), Some(CHEST));
+    }
+
+    #[test]
+    fn each_outcome_of_a_check_is_a_step_of_the_hand() {
+        assert_eq!(
+            Checked::Send(vec![Act::Look(COIN)]).steps(),
+            [HandStep::Send(Act::Look(COIN))]
+        );
+        assert!(Checked::Asked.steps().is_empty());
+        assert_eq!(
+            Checked::Aimed(NOTE_PLAYER_PICKED).steps(),
+            [HandStep::Report(NOTE_PLAYER_PICKED)]
+        );
+        let bags = KeptGrabBags::default();
+        assert_eq!(
+            Checked::GrabBagSet(bags.clone()).steps(),
+            [
+                HandStep::KeepGrabBags(bags),
+                HandStep::Report(NOTE_GRAB_BAG_SET)
+            ]
+        );
     }
 }

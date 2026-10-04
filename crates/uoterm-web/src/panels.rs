@@ -11,7 +11,7 @@ use uoterm_view::art::{ArtRequest, ItemPaint};
 use uoterm_view::clicks::report_shows;
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::ui::deck::{
-    slot_picture, KeptHotbars, Press, SlotPicture, HOTBAR_FILE, HOTBAR_KEY_WORDS, HOTBAR_SLOTS,
+    slot_picture, KeptHotbars, Press, SlotPicture, HOTBAR_FILE, HOTBAR_KEYS, HOTBAR_SLOTS,
 };
 
 /// The names the page gives its panels in a `Panel` event.
@@ -105,7 +105,7 @@ impl WebView {
     fn hotbar_data(&mut self, frame: &WatchFrame) -> HotbarData {
         let slots = (0..HOTBAR_SLOTS)
             .map(|slot| {
-                let key = HOTBAR_KEY_WORDS[slot];
+                let key = HOTBAR_KEYS[slot];
                 let Some(what) = self.hotbars.slot(&frame.name, slot).cloned() else {
                     return HotbarSlot {
                         words: String::new(),
@@ -262,7 +262,7 @@ mod tests {
         view.tick_native(0.0, crate::tests::VIEW, None);
         view.take_out_native();
         view.input_native(
-            &json!({"kind": "Key", "key": "Num1", "pressed": true}).to_string(),
+            &json!({"kind": "Key", "key": "1", "pressed": true}).to_string(),
             0.0,
         );
         view.tick_native(0.0, crate::tests::VIEW, None);

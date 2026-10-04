@@ -4,6 +4,7 @@
 //! here and drawn by the page as text. The shapes of the overlays turn into
 //! triangles here, as egui turns them in the Rust window.
 
+use crate::to_js;
 use crate::web_art::Upload;
 use serde::Serialize;
 use uoterm_view::audio::Step;
@@ -136,7 +137,8 @@ impl Shapes {
     pub fn dashed(&mut self, from: Point, to: Point, width: f32, color: Rgba, dash: f32, gap: f32) {
         let along = to - from;
         let length = along.length();
-        if length <= 0.0 || dash <= 0.0 {
+        // Each dash and gap must move along, or the line never ends.
+        if length <= 0.0 || dash <= 0.0 || dash + gap <= 0.0 {
             return;
         }
         let step = along / length;
@@ -289,11 +291,6 @@ impl DrawBuffers {
             })
             .unwrap_or_default()
     }
-}
-
-/// A list for the page, as plain JavaScript values.
-fn to_js<T: Serialize>(value: &T) -> JsValue {
-    serde_wasm_bindgen::to_value(value).unwrap_or(JsValue::NULL)
 }
 
 #[wasm_bindgen]
@@ -462,6 +459,15 @@ mod tests {
             shapes.mesh.indices[dashes * 6..],
             [start, start + 1, start + 2]
         );
+    }
+
+    #[test]
+    fn dashes_that_do_not_move_along_draw_nothing() {
+        let mut shapes = Shapes::new(WHITE);
+        let (from, to) = (Point::new(0.0, 0.0), Point::new(10.0, 0.0));
+        shapes.dashed(from, to, 1.0, Rgba::WHITE, 2.0, -2.0);
+        shapes.dashed(from, to, 1.0, Rgba::WHITE, 0.0, 3.0);
+        assert!(shapes.into_mesh().is_empty());
     }
 
     #[test]
