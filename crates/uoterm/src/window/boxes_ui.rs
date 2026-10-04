@@ -8,7 +8,7 @@ use super::desk::Desk;
 use super::model::clicks::ClickDelay;
 use super::model::compare::ItemLayers;
 use super::model::places;
-use super::model::reads::Readings;
+use super::model::reads::ReadCache;
 use super::modern::frame::{self, FrameEvent, PanelSpec};
 use super::modern::layout::{self, Spot};
 use super::modern::GridUi;
@@ -48,7 +48,7 @@ pub struct Tools<'a> {
     /// Where the profile is kept.
     pub profile_home: &'a ProfileHome,
     /// The session read for the panels: agents, the meter, properties.
-    pub readings: &'a mut Readings,
+    pub readings: &'a mut ReadCache,
     /// The layer each wearable graphic is worn on.
     pub layers: &'a ItemLayers,
 }

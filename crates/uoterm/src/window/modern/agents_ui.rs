@@ -5,13 +5,15 @@
 
 use super::super::boxes_ui::Tools;
 use super::super::control::Act;
-use super::super::deck_ui::{is_worn_layer, layer_words};
+use super::super::deck_ui::layer_words;
 use super::super::model::agents::{
     set_field, AgentPanel, AgentsView, Lists, RuleRow, AUTOLOOT, BANDAGE, BANDAGE_WHOM,
     BONE_CUTTER, CARVER, DRESS, FRIENDS, HEAL_SPELLS, KEY_ACTIVE, KEY_BLADE, KEY_DESTINATION,
     KEY_HEAL_SPELL, KEY_ITEMS, KEY_LAYER, KEY_MOUNT, KEY_SERIAL, KEY_SOURCE, KEY_WHOM, ORGANIZER,
     REMOUNT, SELF_HEAL, UNDRESS,
 };
+use super::super::model::durability::is_worn_layer;
+use super::super::model::reads::ReadKey;
 use super::super::model::{counters, places};
 use super::super::settings::Profile;
 use super::super::theme;
@@ -183,7 +185,7 @@ impl AgentsUi {
         }
         let view = tools
             .readings
-            .want(TOOL_AGENTS, json!({}), AGENTS_MAX_AGE)
+            .want(ReadKey::new(TOOL_AGENTS, &json!({})), AGENTS_MAX_AGE)
             .map(AgentsView::new);
         if chooser {
             covered.push(self.chooser(ui, rect, frame, tools, profile, view.as_ref()));
@@ -325,7 +327,9 @@ impl AgentsUi {
             let mut rows = Rows::new(ui, body, &id, self.scroll_of(&id));
             match view {
                 None => {
-                    let failure = tools.readings.failure(TOOL_AGENTS, &json!({}));
+                    let failure = tools
+                        .readings
+                        .failure(&ReadKey::new(TOOL_AGENTS, &json!({})));
                     rows.words(failure.unwrap_or(WORDS_NOT_READ), theme::TEXT_FAINT);
                 }
                 Some(view) => {

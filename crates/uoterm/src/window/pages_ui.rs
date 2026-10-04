@@ -8,10 +8,11 @@
 
 use super::boxes_ui::{ask_waiting_name, scrolled, single_or_double, Tools, CELL_RADIUS};
 use super::control::Act;
-use super::deck_ui::{is_worn_layer, layer_words};
+use super::deck_ui::layer_words;
 use super::desk::Zone;
 use super::model::clicks::ClickDelay;
 use super::model::dolls::{self, DollWatch, GUILD_COMMAND, QUESTS_COMMAND};
+use super::model::durability::is_worn_layer;
 use super::model::pages::{
     fitted, last_left, page_count, shown_depth, threaded, turned, BookDraft, PAGES_SHOWN,
 };

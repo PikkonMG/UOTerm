@@ -9,6 +9,7 @@
 //! own while the journal is shut.
 
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
+use super::super::model::host;
 use super::super::model::journal::{self, Entry, JournalLog, Origin};
 use super::super::model::places;
 use super::super::settings::{Choice, JournalKind, JournalOptions, Profile};
@@ -104,7 +105,7 @@ impl JournalUi {
     /// Keeps the new lines of the frame. Call it once in each frame.
     pub fn take(&mut self, frame: &WatchFrame, profile: &Profile) {
         let max = usize::from(profile.journal.max_lines);
-        self.log.take(frame, &journal::stamp_now(), max);
+        self.log.take(frame, &host::journal::stamp_now(), max);
     }
 
     /// Draws the journal, or the chat strip while it is shut.
@@ -231,7 +232,12 @@ impl JournalUi {
         let with_stamp = !profile.journal.hide_timestamps;
         if save_pressed {
             self.note = Some(
-                match journal::save(&journal::journals_dir(), &frame.name, &shown, with_stamp) {
+                match host::journal::save(
+                    &host::journal::journals_dir(),
+                    &frame.name,
+                    &shown,
+                    with_stamp,
+                ) {
                     Ok(file) => (
                         format!("{WORDS_SAVED} {}", file.display()),
                         false,

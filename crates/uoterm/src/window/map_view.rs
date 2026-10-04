@@ -5,7 +5,8 @@
 //! the land. The Modern map panel and the Classic world map gump each draw
 //! their own frame round it.
 
-use super::model::reads::Readings;
+use super::model::host;
+use super::model::reads::{ReadCache, ReadKey};
 use super::model::world_map::{self, Marker, MarkerFile, ZoneFile};
 use super::scene::Scene;
 use super::settings::{Profile, WorldMapOptions};
@@ -178,16 +179,13 @@ fn landmarks(answer: &Value, map: u8) -> Vec<Marker> {
 
 /// The named places of the session on a map, while the World Map page
 /// shows markers. The session is read again now and then.
-pub fn session_markers(readings: &mut Readings, profile: &Profile, map: u8) -> Vec<Marker> {
+pub fn session_markers(reads: &mut ReadCache, profile: &Profile, map: u8) -> Vec<Marker> {
     if !profile.world_map.show_markers {
         return Vec::new();
     }
-    readings
-        .want(
-            TOOL_FIND_LANDMARKS,
-            json!({ "map": map }),
-            LANDMARKS_MAX_AGE,
-        )
+    let key = ReadKey::new(TOOL_FIND_LANDMARKS, &json!({ "map": map }));
+    reads
+        .want(key, LANDMARKS_MAX_AGE)
         .map(|answer| landmarks(answer, map))
         .unwrap_or_default()
 }
@@ -408,10 +406,10 @@ impl MapFilesCache {
             self.files = None;
         }
         self.files.get_or_insert_with(|| {
-            let dir = world_map::map_dir();
+            let dir = host::world_map::map_dir();
             MapFiles {
-                markers: world_map::load_markers(&dir, &options.hidden_marker_files),
-                zones: world_map::load_zones(&dir, &options.hidden_zone_files),
+                markers: host::world_map::load_markers(&dir, &options.hidden_marker_files),
+                zones: host::world_map::load_zones(&dir, &options.hidden_zone_files),
                 hidden_markers: options.hidden_marker_files.clone(),
                 hidden_zones: options.hidden_zone_files.clone(),
             }

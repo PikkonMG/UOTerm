@@ -10,7 +10,7 @@ use crate::window::desk::Desk;
 use crate::window::keys::{self, Focus};
 use crate::window::link::Link;
 use crate::window::model::journal::JournalLog;
-use crate::window::model::reads::Readings;
+use crate::window::model::reads::ReadCache;
 use crate::window::scene::Scene;
 use crate::window::settings::Profile;
 use crate::window::tips::Tips;
@@ -145,7 +145,7 @@ fn draw_in(
         api: NO_API.into(),
         session: String::new(),
     };
-    let mut readings = Readings::start(link.clone());
+    let mut readings = ReadCache::default();
     let hand = Hand::start(link, ctx.clone());
     let journal = JournalLog::default();
     let mut tips = Tips::default();

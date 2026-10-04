@@ -9,6 +9,7 @@ use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpR
 use super::text::TextLook;
 use super::text_field::TextField;
 use super::world_map::{ANSWER_GO_X, ANSWER_GO_Y, ANSWER_RELOAD};
+use crate::window::model::host;
 use crate::window::model::world_map::{
     self, Marker, MarkerFields, MarkerFile, MARKER_COLORS, USER_MARKERS,
 };
@@ -212,7 +213,7 @@ impl Default for MarkersManager {
 
 impl MarkersManager {
     fn load(&mut self) {
-        self.files = world_map::load_markers(&world_map::map_dir(), &[]);
+        self.files = host::world_map::load_markers(&host::world_map::map_dir(), &[]);
         self.file = self.file.min(self.files.len().saturating_sub(1));
         self.loaded = true;
     }
@@ -303,7 +304,7 @@ impl MarkersManager {
             shown.len() as i32 * ROW_HEIGHT
         });
         if let Some(at) = removed {
-            match world_map::remove_user_marker(&world_map::map_dir(), at) {
+            match host::world_map::remove_user_marker(&host::world_map::map_dir(), at) {
                 Ok(()) => markers_changed(cx),
                 Err(error) => self.error = Some(error.to_string()),
             }
@@ -428,7 +429,7 @@ impl UserMarker {
         let Some(marker) = self.marker() else {
             return false;
         };
-        match world_map::keep_user_marker(&world_map::map_dir(), self.editing, marker) {
+        match host::world_map::keep_user_marker(&host::world_map::map_dir(), self.editing, marker) {
             Ok(()) => {
                 markers_changed(cx);
                 true

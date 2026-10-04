@@ -24,11 +24,12 @@ use super::macros_ui::MacrosUi;
 use super::map_ui::MapUi;
 use super::mapitem_ui::ProfileUi;
 use super::model::asked::asked_commands;
+use super::model::health_bars::MapDrag;
 use super::modern::layout::{self, Spot};
 use super::modern::{ModernUi, WORDS_LAUNCHER};
 use super::options_ui::OptionsUi;
 use super::ring_ui::{opens_menu, Subject};
-use super::scene::{MapDrag, PickKind, Scene};
+use super::scene::{PickKind, Scene};
 use super::settings::{Profile, SpeechOptions};
 use super::steer::{self, Movement, Steer};
 use super::theme::{self, number_font, text_font};
@@ -451,6 +452,7 @@ fn act_on_map(
     });
     if let Some(mobile) = drag_from.filter(|_| dragging) {
         let from = ui.input(|i| i.pointer.press_origin()).unwrap_or(mouse);
+        let from = bridge::point(from);
         tools.scene.start_map_drag(MapDrag { from, mobile });
         return;
     }

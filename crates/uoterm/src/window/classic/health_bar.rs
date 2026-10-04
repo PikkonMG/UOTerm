@@ -640,19 +640,21 @@ impl WorldBars {
         }
         self.follow_target(manager, frame, profile);
         let pointer = ui.input(|i| Pointer {
-            at: i.pointer.hover_pos(),
+            at: i.pointer.hover_pos().map(bridge::point),
             down: i.pointer.primary_down(),
-            modifiers: i.modifiers,
+            mods: bridge::mods(i.modifiers),
         });
         let drag = scene.take_map_drag();
         match self.map.follow(drag, pointer, &profile.general) {
             Some(MapAsk::Pull { serial, mouse }) => {
                 let id = GumpId::of(well_known::HEALTH_BAR, serial);
                 manager.close(&id, profile);
-                manager.open_body(id, Box::new(HealthBar::pulled(serial, mouse)), profile);
+                let middle = bridge::pos2(mouse);
+                manager.open_body(id, Box::new(HealthBar::pulled(serial, middle)), profile);
                 manager.drag_with_pointer(id);
             }
             Some(MapAsk::Selecting(area)) => {
+                let area = bridge::rect(area);
                 let painter = ui.painter();
                 painter.rect_filled(area, CornerRadius::ZERO, SELECTION_FILL);
                 painter.rect_stroke(
@@ -663,7 +665,9 @@ impl WorldBars {
                 );
                 ui.ctx().request_repaint();
             }
-            Some(MapAsk::Selected(area)) => select(area, screen, manager, scene, frame, profile),
+            Some(MapAsk::Selected(area)) => {
+                select(bridge::rect(area), screen, manager, scene, frame, profile);
+            }
             None => {}
         }
     }
@@ -703,21 +707,23 @@ fn select(
     let chosen = health_bars::selected_mobiles(scene.mobiles_in(area), frame, general, |serial| {
         manager.is_open(&GumpId::of(well_known::HEALTH_BAR, serial))
     });
+    let screen = bridge::area(screen);
     let start = health_bars::select_start(screen, general);
     let joined = general.drag_select_anchored;
-    let size = new_bar_size(scene, profile);
-    let bars = manager.drawn_in_group(well_known::HEALTH_BAR_GROUP);
+    let size = bridge::vector(new_bar_size(scene, profile));
+    let bars = manager
+        .drawn_in_group(well_known::HEALTH_BAR_GROUP)
+        .into_iter()
+        .map(|(id, drawn)| (id, bridge::area(drawn)))
+        .collect();
     let places =
         health_bars::select_layout(chosen.len(), start, size, screen, joined, bars, |at| {
             GumpId::of(well_known::HEALTH_BAR, chosen[at])
         });
     for (serial, (place, join)) in chosen.iter().zip(places) {
         let id = GumpId::of(well_known::HEALTH_BAR, *serial);
-        manager.open_body(
-            id,
-            Box::new(HealthBar::placed(*serial, place, join)),
-            profile,
-        );
+        let bar = HealthBar::placed(*serial, bridge::pos2(place), join);
+        manager.open_body(id, Box::new(bar), profile);
     }
 }
 

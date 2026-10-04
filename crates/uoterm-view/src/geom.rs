@@ -75,6 +75,14 @@ impl Area {
         }
     }
 
+    /// The smallest area that holds both points, whichever corners they are.
+    pub fn from_two_points(a: Point, b: Point) -> Self {
+        Self {
+            min: Point::new(a.x.min(b.x), a.y.min(b.y)),
+            max: Point::new(a.x.max(b.x), a.y.max(b.y)),
+        }
+    }
+
     pub const fn from_center_size(center: Point, size: Vector) -> Self {
         let half = Vector::new(size.x * 0.5, size.y * 0.5);
         Self {
@@ -166,6 +174,13 @@ mod tests {
         let area = Area::from_min_size(Point::new(1.0, 2.0), Vector::new(3.0, 4.0));
         assert!(area.contains(Point::new(4.0, 6.0)));
         assert!(!area.contains(Point::new(4.1, 6.0)));
+    }
+
+    #[test]
+    fn two_points_make_an_area_whichever_corners_they_are() {
+        let area = Area::from_two_points(Point::new(5.0, 1.0), Point::new(2.0, 4.0));
+        assert_eq!(area.min, Point::new(2.0, 1.0));
+        assert_eq!(area.max, Point::new(5.0, 4.0));
     }
 
     #[test]

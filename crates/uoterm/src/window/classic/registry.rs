@@ -22,7 +22,7 @@ use crate::window::control::{Act, Hand};
 use crate::window::desk::Desk;
 use crate::window::gump_ui;
 use crate::window::model::journal::JournalLog;
-use crate::window::model::reads::Readings;
+use crate::window::model::reads::ReadCache;
 use crate::window::settings::{MacroStep, Profile};
 use crate::window::tips::Tips;
 use eframe::egui::{Pos2, Vec2};
@@ -337,7 +337,7 @@ pub struct GumpContext<'a> {
     /// Every journal line the window kept, for the journal gumps.
     pub journal: &'a JournalLog,
     /// The session read for the gumps, such as the named places of a map.
-    pub readings: &'a mut Readings,
+    pub readings: &'a mut ReadCache,
     pub(super) commands: &'a mut Vec<GumpCommand>,
     pub(super) macros: &'a mut Vec<Vec<MacroStep>>,
     pub(super) sounds: &'a mut Vec<u16>,

@@ -25,6 +25,7 @@ use super::creation_ui::{self, Art, Asked as CreationAsked};
 use super::link::Link;
 use super::map_view::MapPictures;
 use super::model::creation::{can_make, Creation, CreationFiles};
+use super::model::host::creation::read_creation_files;
 use super::orders;
 use super::scene::Scene;
 use super::theme::{self, text_font, title_font};
@@ -367,7 +368,7 @@ impl LoginFlow {
             delete_asked: None,
             played: None,
             creating: None,
-            files: CreationFiles::read(start.uopath),
+            files: read_creation_files(start.uopath),
             version: start.version,
         }
     }

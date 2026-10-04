@@ -12,7 +12,7 @@ use super::text::TextLook;
 use crate::view::{WatchFrame, WatchMap};
 use crate::window::atlas::Sprite;
 use crate::window::control::Act;
-use crate::window::model::map_item::LandPicture;
+use crate::window::model::host::map_item::LandPicture;
 use eframe::egui::{Color32, Pos2, Rect, Vec2};
 
 pub const MAP_ITEM: GumpKind = GumpKind {

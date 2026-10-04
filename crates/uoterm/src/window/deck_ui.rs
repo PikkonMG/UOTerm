@@ -19,7 +19,7 @@ use super::model::abilities::{
     ability_of, icon_of, race_of, racial_command, slot_hue, toggle_command, AbilitySlot,
 };
 use super::model::clicks::ClickDelay;
-use super::model::durability::{worn_wear, Wear};
+use super::model::durability::{is_worn_layer, worn_wear, Wear};
 use super::model::key_macros;
 use super::model::places;
 use super::model::spell_data::{book_spell, icon_hue};
@@ -41,7 +41,6 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sen
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uoterm_assist::spells::School;
-use uoterm_protocol::types::{LAYER_BACKPACK, LAYER_BEARD, LAYER_HAIR, LAYER_LEGS};
 
 const SHEET_ID: &str = "modern:sheet";
 /// The hotbar is a panel of its own the player moves and locks.
@@ -58,10 +57,6 @@ const LOCK_MARK: f32 = 5.0;
 pub(super) const USE_WIDTH: f32 = 40.0;
 const ROW_BUTTON_INSET: f32 = 2.0;
 pub(super) const PIN_WIDTH: f32 = 36.0;
-
-/// The last layer that is clothes or arms. Above it are the mount and the
-/// boxes of a shopkeeper and the bank.
-const LAYER_LAST_WORN: u8 = LAYER_LEGS;
 
 const SKILL_LOCK_UP: u8 = 0;
 const SKILL_LOCK_DOWN: u8 = 1;
@@ -353,13 +348,6 @@ impl DeckUi {
             macros: Vec::new(),
         }
     }
-}
-
-pub(super) fn is_worn_layer(layer: u8) -> bool {
-    layer != LAYER_BACKPACK
-        && layer != LAYER_HAIR
-        && layer != LAYER_BEARD
-        && (1..=LAYER_LAST_WORN).contains(&layer)
 }
 
 /// What the human pressed at the right end of a row.
@@ -1433,6 +1421,7 @@ fn slot_face(ui: &egui::Ui, cell: Rect, what: &Slot, frame: &WatchFrame, tools: 
 mod tests {
     use super::*;
     use crate::window::settings::KeyBinding;
+    use uoterm_protocol::types::LAYER_BACKPACK;
 
     /// The worn list takes only the rows that fit, and the wheel reaches the
     /// rest: twelve worn items in two columns of four rows scroll two rows.
@@ -1497,15 +1486,6 @@ mod tests {
         assert_eq!(words[1], "right hand (worn now)");
         // The backpack itself is no part of the body.
         assert!(!words.iter().any(|w| w.starts_with("layer 21")));
-    }
-
-    #[test]
-    fn hair_a_backpack_and_a_mount_are_not_on_the_sheet() {
-        assert!(is_worn_layer(1));
-        assert!(is_worn_layer(LAYER_LAST_WORN));
-        assert!(!is_worn_layer(LAYER_BACKPACK));
-        assert!(!is_worn_layer(LAYER_HAIR));
-        assert!(!is_worn_layer(0x19));
     }
 
     #[test]
@@ -1677,7 +1657,7 @@ mod tests {
             "it first stands where the plan puts it"
         );
         let moved = first.translate(Vec2::new(-100.0, -200.0));
-        places::remember(&mut profile, HOTBAR_ID, moved, false);
+        places::remember(&mut profile, HOTBAR_ID, bridge::area(moved), false);
         let mut shown = Rect::NOTHING;
         draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
             shown = *deck

@@ -139,8 +139,9 @@ use super::desk::Desk;
 use super::gump_ui;
 use super::keys::chat::ChatLine;
 use super::model::dolls::DollWatch;
-use super::model::journal::{stamp_now, JournalLog};
-use super::model::reads::Readings;
+use super::model::host::journal::stamp_now;
+use super::model::journal::JournalLog;
+use super::model::reads::ReadCache;
 use super::scene::Scene;
 use super::settings::{Profile, VideoOptions};
 use super::tips::Tips;
@@ -169,7 +170,7 @@ pub struct ClassicInputs<'a> {
     pub tips: &'a mut Tips,
     pub profile: &'a mut Profile,
     pub desk: &'a mut Desk,
-    pub readings: &'a mut Readings,
+    pub readings: &'a mut ReadCache,
     pub time: f64,
     pub sound_note: &'a str,
     /// The Classic style shows every gump; the Modern one only the gumps

@@ -4,6 +4,7 @@
 use super::super::boxes_ui::Tools;
 use super::super::control::Act;
 use super::super::model::dps::DamageReport;
+use super::super::model::reads::ReadKey;
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
@@ -43,7 +44,7 @@ pub fn draw(
 ) -> (Rect, bool) {
     let report = tools
         .readings
-        .want(TOOL_DAMAGE_METER, json!({}), REPORT_MAX_AGE)
+        .want(ReadKey::new(TOOL_DAMAGE_METER, &json!({})), REPORT_MAX_AGE)
         .map(DamageReport::read)
         .unwrap_or_default();
     let rows = report.mobiles.len().clamp(1, MAX_ROWS) + 1;

@@ -6,9 +6,8 @@
 use super::super::boxes_ui::Tools;
 use super::super::classic::testing::idle_hand;
 use super::super::desk::Desk;
-use super::super::link::Link;
 use super::super::model::compare::ItemLayers;
-use super::super::model::reads::Readings;
+use super::super::model::reads::ReadCache;
 use super::super::ring_ui::RingUi;
 use super::super::scene::Scene;
 use super::super::settings::{Profile, ProfileHome};
@@ -19,8 +18,6 @@ use eframe::egui::{
 };
 use std::collections::HashMap;
 
-/// An address no session answers.
-const NO_API: &str = "http://127.0.0.1:1";
 pub const SCREEN: Vec2 = Vec2::new(1280.0, 800.0);
 /// The folder a test saves its pictures in, when it is set.
 pub const ENV_PICTURES: &str = "UOTERM_TEST_PICTURES";
@@ -45,10 +42,7 @@ pub fn draw_frames(
     // test's own, never in the player's profiles.
     let home_dir = std::env::temp_dir().join(format!("uoterm-panels-{}", uuid::Uuid::new_v4()));
     let home = ProfileHome::in_dir(&home_dir);
-    let mut readings = Readings::start(Link::Http {
-        api: NO_API.into(),
-        session: String::new(),
-    });
+    let mut readings = ReadCache::default();
     let layers = ItemLayers::default();
     let screen = Rect::from_min_size(Pos2::ZERO, SCREEN);
     for (at, events) in frames.iter().enumerate() {

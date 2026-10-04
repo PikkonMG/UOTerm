@@ -9,8 +9,10 @@
 //! to a new place, and a double click takes it off.
 
 use super::boxes_ui::{Tools, CELL_RADIUS};
+use super::bridge;
 use super::control::{Act, Answer, Ask, Asker, Hand};
-use super::model::map_item::{pixel_at, pixel_of, point_of, LandPicture, UNKNOWN};
+use super::model::host::map_item::LandPicture;
+use super::model::map_item::{pixel_at, pixel_of, point_of, UNKNOWN};
 use super::modern::frame::{self, FrameEvent, PanelSpec};
 use super::modern::layout::{self, Spot};
 use super::settings::Profile;
@@ -159,8 +161,11 @@ impl MapItemUi {
             Vec2::new(body.width(), FIELD_ROW),
         );
         let picture = Rect::from_min_max(body.min, Pos2::new(body.right(), wish_row.top() - GAP));
-        ui.painter()
-            .rect_filled(picture, CornerRadius::same(CELL_RADIUS), UNKNOWN);
+        ui.painter().rect_filled(
+            picture,
+            CornerRadius::same(CELL_RADIUS),
+            bridge::color(UNKNOWN),
+        );
         let land = picture.shrink(PAPER_EDGE);
         let scene = &mut *tools.scene;
         let texture =
@@ -197,7 +202,7 @@ impl MapItemUi {
                 .interact_pointer_pos()
                 .filter(|_| response.clicked())
             {
-                let (x, y) = pixel_at(map, land, at);
+                let (x, y) = pixel_at(map, bridge::area(land), bridge::point(at));
                 tools.hand.act(Act::MapPin { x, y });
             }
         } else {
@@ -256,7 +261,7 @@ impl MapItemUi {
             .enumerate()
             .map(|(at, pixel)| match &self.dragging {
                 Some(drag) if drag.map == map.serial && drag.pin == at => drag.at,
-                _ => point_of(map, land, *pixel),
+                _ => bridge::pos2(point_of(map, bridge::area(land), *pixel)),
             })
             .collect();
         for pair in spots.windows(2) {
@@ -307,7 +312,8 @@ impl MapItemUi {
                     );
                 }
                 if response.drag_stopped() {
-                    deed = Some(PinDeed::Moved(at, pixel_at(map, land, drag.at)));
+                    let pixel = pixel_at(map, bridge::area(land), bridge::point(drag.at));
+                    deed = Some(PinDeed::Moved(at, pixel));
                     self.dragging = None;
                 }
             } else if response.double_clicked() {

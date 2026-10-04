@@ -33,6 +33,7 @@ use eframe::egui::{
     self, text::LayoutJob, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke,
     StrokeKind, TextFormat, Vec2,
 };
+use uoterm_view::geom::{Area, Point};
 
 pub const NEAR_ID: &str = "modern:near";
 const BAR_ID_PREFIX: &str = "modern:bar:";
@@ -311,14 +312,15 @@ impl BarsUi {
         profile: &mut Profile,
     ) {
         let pointer = ui.input(|i| Pointer {
-            at: i.pointer.hover_pos(),
+            at: i.pointer.hover_pos().map(bridge::point),
             down: i.pointer.primary_down(),
-            modifiers: i.modifiers,
+            mods: bridge::mods(i.modifiers),
         });
         let drag = tools.scene.take_map_drag();
         match self.map.follow(drag, pointer, &profile.general) {
             Some(MapAsk::Pull { serial, .. }) => self.pull(serial, profile),
             Some(MapAsk::Selecting(area)) => {
+                let area = bridge::rect(area);
                 let painter = ui.painter();
                 painter.rect_filled(
                     area,
@@ -333,7 +335,9 @@ impl BarsUi {
                 );
                 ui.ctx().request_repaint();
             }
-            Some(MapAsk::Selected(area)) => self.select(area, rect, frame, tools, profile),
+            Some(MapAsk::Selected(area)) => {
+                self.select(bridge::rect(area), rect, frame, tools, profile);
+            }
             None => {}
         }
         let Some(serial) = self.pulling else {
@@ -342,8 +346,8 @@ impl BarsUi {
         let id = bar_id(serial);
         match pointer.at.filter(|_| pointer.down) {
             Some(at) => {
-                let size = bar_size(&health_bars::facts(frame, serial));
-                places::remember(profile, &id, Rect::from_center_size(at, size), false);
+                let size = bridge::vector(bar_size(&health_bars::facts(frame, serial)));
+                places::remember(profile, &id, Area::from_center_size(at, size), false);
                 ui.ctx().request_repaint();
             }
             None => {
@@ -375,20 +379,21 @@ impl BarsUi {
             health_bars::selected_mobiles(tools.scene.mobiles_in(area), frame, general, |serial| {
                 self.has_bar(serial)
             });
-        let size = bar_size(&BarFacts::default());
-        let open: Vec<(u32, Rect)> = self
+        let size = bridge::vector(bar_size(&BarFacts::default()));
+        let open: Vec<(u32, Area)> = self
             .bars
             .iter()
             .filter_map(|bar| match bar.subject {
                 Subject::Mobile(serial) => places::kept(profile, &bar_id(serial)).map(|place| {
                     (
                         serial,
-                        Rect::from_min_size(Pos2::new(place.x, place.y), size),
+                        Area::from_min_size(Point::new(place.x, place.y), size),
                     )
                 }),
                 _ => None,
             })
             .collect();
+        let screen = bridge::area(screen);
         let start = health_bars::select_start(screen, general);
         let joined = general.drag_select_anchored;
         let placed =
@@ -400,7 +405,7 @@ impl BarsUi {
             places::remember(
                 profile,
                 &bar_id(*serial),
-                Rect::from_min_size(place, size),
+                Area::from_min_size(place, size),
                 false,
             );
         }

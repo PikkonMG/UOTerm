@@ -51,7 +51,7 @@ pub use tip_ui::TipUi;
 use super::boxes_ui::Tools;
 use super::model::agents::AgentPanel;
 use super::model::info_bar::title_words;
-use super::model::{fonts, journal, places};
+use super::model::{host, journal, places};
 use super::settings::{
     Profile, UiStyle, DEFAULT_GUMP_OPACITY, DEFAULT_TRUETYPE_SIZE, DEFAULT_UI_SCALE,
 };
@@ -233,10 +233,10 @@ impl ModernUi {
         ctx.set_zoom_factor(look.ui_scale);
         theme::set_panel_opacity(look.opacity);
         let font = look.font.as_deref().and_then(|chosen| {
-            let dir = fonts::fonts_dir();
-            let bytes = fonts::load(&dir, chosen);
+            let dir = host::fonts::fonts_dir();
+            let bytes = host::fonts::load(&dir, chosen);
             if bytes.is_none() {
-                let there: Vec<String> = fonts::fonts_in(&dir)
+                let there: Vec<String> = host::fonts::fonts_in(&dir)
                     .iter()
                     .map(|font| font.display().to_string())
                     .collect();

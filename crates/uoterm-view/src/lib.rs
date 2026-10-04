@@ -13,6 +13,7 @@ pub mod geom;
 pub mod guard;
 pub mod input;
 pub mod keys;
+pub mod look;
 pub mod model;
 pub mod pad;
 pub mod settings;

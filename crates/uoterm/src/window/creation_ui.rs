@@ -414,7 +414,7 @@ pub fn draw(
     if back {
         return creation.back().then_some(Asked::Leave);
     }
-    (next && creation.next()).then_some(Asked::Finish)
+    (next && creation.next_page()).then_some(Asked::Finish)
 }
 
 /// The title, and the row of steps with the one that shows picked.
@@ -1753,6 +1753,7 @@ mod tests {
     use super::super::{save_png, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
     use super::*;
     use crate::window::model::creation::{sample_choices, Blocker, NameFault};
+    use crate::window::model::host::creation::read_creation_files;
     use uoterm_protocol::ClientVersion;
     use uoterm_runtime::CharacterChoices;
 
@@ -1867,7 +1868,7 @@ mod tests {
         let mut trade = profession.clone();
         let custom = files.professions.top().last().copied().expect("Advanced");
         trade.pick_profession(custom, files);
-        trade.next();
+        trade.next_page();
         let skills: Vec<u8> = trade
             .skill_menu(files)
             .iter()
@@ -2072,7 +2073,7 @@ mod tests {
             return;
         };
         let out = std::path::PathBuf::from(out);
-        let files = CreationFiles::read(Some(&dir));
+        let files = read_creation_files(Some(&dir));
         let mut scene = Scene::new(Some(&dir));
         // One context for all: the art of the scene is in its textures.
         let mut screen = Screen::new();

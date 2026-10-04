@@ -4,6 +4,7 @@
 //! folded to its title.
 
 use super::super::boxes_ui::Tools;
+use super::super::bridge;
 use super::super::model::places;
 use super::super::settings::Profile;
 use super::super::theme::{self, title_font};
@@ -70,12 +71,12 @@ pub fn with_title_room(size: Vec2) -> Vec2 {
 
 /// Where the panel stands now.
 pub fn place(window: Rect, spec: &PanelSpec<'_>, profile: &Profile) -> Rect {
-    places::placed_rect(
-        window,
-        spec.default,
+    bridge::rect(places::placed_rect(
+        bridge::area(window),
+        bridge::area(spec.default),
         places::kept(profile, spec.id),
-        spec.min_size,
-    )
+        spec.min_size.map(bridge::vector),
+    ))
 }
 
 /// The place a panel takes: its title alone when it is folded.
@@ -300,7 +301,7 @@ pub fn controls_leaving(
         super::super::tips::label(ui, HINT_LOCK, "");
     }
     if response.clicked() {
-        places::set_locked(profile, spec.id, rect, sized, !locked);
+        places::set_locked(profile, spec.id, bridge::area(rect), sized, !locked);
         tools.keep_profile(profile);
     }
     if locked {
@@ -322,7 +323,8 @@ pub fn controls_leaving(
         places::forget(profile, spec.id);
         tools.keep_profile(profile);
     } else if mover.dragged() {
-        places::remember(profile, spec.id, rect.translate(mover.drag_delta()), sized);
+        let moved = bridge::area(rect.translate(mover.drag_delta()));
+        places::remember(profile, spec.id, moved, sized);
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     } else if mover.hovered() {
         super::super::tips::label(ui, HINT_MOVE, "");
@@ -342,7 +344,8 @@ pub fn controls_leaving(
         let sizer = ui.interact(grip, Id::new(("panel-size", spec.id)), Sense::drag());
         if sizer.dragged() {
             let size = (rect.size() + sizer.drag_delta()).max(min);
-            places::remember(profile, spec.id, Rect::from_min_size(rect.min, size), true);
+            let sized_area = bridge::area(Rect::from_min_size(rect.min, size));
+            places::remember(profile, spec.id, sized_area, true);
         }
         if sizer.hovered() || sizer.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);

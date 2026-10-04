@@ -31,7 +31,6 @@ mod keys;
 mod lights;
 mod link;
 mod login_ui;
-mod look;
 mod macros_ui;
 mod map_ui;
 mod map_view;
@@ -71,6 +70,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uoterm_protocol::ClientVersion;
 use uoterm_runtime::tools::TOOL_WATCH;
+use uoterm_view::look;
 
 /// A snapshot waits this long after the first picture, so the bars and the
 /// camera are at rest in it.
@@ -276,9 +276,9 @@ struct WatchApp {
     world_map: map_ui::MapUi,
     /// The extras of the Modern style, and what they read of the session.
     modern: modern::ModernUi,
-    readings: model::reads::Readings,
+    readings: model::host::reads::Readings,
     /// The journal file of the Speech page, in both styles.
-    journal_file: model::journal::JournalFile,
+    journal_file: model::host::journal::JournalFile,
     layers: model::compare::ItemLayers,
     macros: macros_ui::MacrosUi,
     map_items: mapitem_ui::MapItemUi,
@@ -315,8 +315,8 @@ impl WatchApp {
             WINDOW_RADAR_SIZE
         };
         let hand = Hand::start(link.clone(), ctx.clone());
-        let readings = model::reads::Readings::start(link.clone());
-        let layers = model::compare::ItemLayers::load(options.uopath.as_deref());
+        let readings = model::host::reads::Readings::start(link.clone());
+        let layers = model::host::compare::load_item_layers(options.uopath.as_deref());
         let clock = Clock::start();
         thread::spawn(move || poll_loop(link, radar_size, clock, tx, ctx));
         let profile_home = ProfileHome::new(options.shard);
@@ -327,7 +327,7 @@ impl WatchApp {
             video,
             house_content_sent: None,
             game_view: model::game_view::GameViewReport::default(),
-            journal_file: model::journal::JournalFile::default(),
+            journal_file: model::host::journal::JournalFile::default(),
             rx,
             clock,
             frame: None,
@@ -666,7 +666,7 @@ impl eframe::App for WatchApp {
                                     tips: &mut self.tips,
                                     profile: &mut self.profile,
                                     desk: &mut self.desk,
-                                    readings: &mut self.readings,
+                                    readings: self.readings.cache(),
                                     time,
                                     sound_note: self.audio.note(),
                                     classic: classic_style,
@@ -696,7 +696,7 @@ impl eframe::App for WatchApp {
                             ring: &mut self.ring,
                             time,
                             profile_home: &self.profile_home,
-                            readings: &mut self.readings,
+                            readings: self.readings.cache(),
                             layers: &self.layers,
                         };
                         let mut chat_row = None;
@@ -852,6 +852,7 @@ impl eframe::App for WatchApp {
                         if let Some((place, serial)) = self.ring.take_classic_ask() {
                             self.classic.open_popup(place, serial, &mut self.profile);
                         }
+                        self.readings.ask_due();
                         self.scene.set_panels(covered);
                         if self.profile.interface.ui_style == settings::UiStyle::Classic {
                             cursor::draw(ui.ctx(), &mut self.scene, frame, view);

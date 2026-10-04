@@ -16,6 +16,7 @@ use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpR
 use crate::view::WatchFrame;
 use crate::window::control::Act;
 use crate::window::map_view::{self, Lay, MapFilesCache, MapPictures, MarkLook, Marks};
+use crate::window::model::host;
 use crate::window::model::world_map::{self, Marker};
 use crate::window::settings::{Profile, WorldMapOptions};
 use crate::window::theme;
@@ -670,7 +671,7 @@ impl GumpBody for WorldMap {
         self.clicks(g, cx, inner, lay, middle);
         if g.right_click() {
             if let Some(at) = g.ctx().pointer_latest_pos() {
-                self.file_names = world_map::file_names(&world_map::map_dir());
+                self.file_names = host::world_map::file_names(&host::world_map::map_dir());
                 self.menu.open_at(at);
             }
         }

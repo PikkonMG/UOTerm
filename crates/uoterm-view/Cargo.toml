@@ -16,5 +16,9 @@ uoterm-assist.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[features]
+# Sample data for the tests of the crates that use this one.
+test-fixtures = []
+
 [dev-dependencies]
 toml.workspace = true

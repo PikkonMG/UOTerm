@@ -23,6 +23,7 @@ use super::super::theme;
 use super::bars_ui::NEAR_WIDTH;
 use super::journal_ui::JOURNAL_LEAST;
 use super::radar_ui::panel_size as radar_size;
+use crate::window::bridge;
 use eframe::egui::{Align2, Pos2, Rect, Vec2};
 
 /// The room between two panels of the plan.
@@ -272,7 +273,7 @@ pub fn first_place(window: Rect, spot: Spot, size: Vec2) -> Rect {
     } else {
         plan.below_bar
     };
-    held_inside(rect, room)
+    bridge::rect(held_inside(bridge::area(rect), bridge::area(room)))
 }
 
 #[cfg(test)]

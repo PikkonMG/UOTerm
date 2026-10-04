@@ -20,11 +20,12 @@ use super::registry::{
 };
 use super::text::{TextKit, TextLook};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use crate::window::control::Hand;
 use crate::window::desk::Desk;
 use crate::window::model::journal::JournalLog;
 use crate::window::model::places;
-use crate::window::model::reads::Readings;
+use crate::window::model::reads::ReadCache;
 use crate::window::scene::Scene;
 use crate::window::settings::{AnchorCell, GumpPlace, MacroStep, Profile};
 use crate::window::tips::Tips;
@@ -94,7 +95,7 @@ pub struct ManagerInputs<'a> {
     pub profile: &'a mut Profile,
     pub desk: &'a mut Desk,
     pub journal: &'a JournalLog,
-    pub readings: &'a mut Readings,
+    pub readings: &'a mut ReadCache,
     pub time: f64,
     pub sound_note: &'a str,
     /// Draw only the gumps that show in both styles.
@@ -660,7 +661,8 @@ impl GumpManager {
                     // the window, as far as it fits, once its size is known.
                     let gump = &mut self.shown[at];
                     if let Some(whole) = whole.filter(|_| gump.unheld) {
-                        gump.place += places::held_inside(whole, screen).min - whole.min;
+                        let held = places::held_inside(bridge::area(whole), bridge::area(screen));
+                        gump.place += bridge::pos2(held.min) - whole.min;
                         gump.unheld = false;
                         changed |= self.keep(at, profile);
                     }

@@ -1,7 +1,12 @@
-//! Which panels are open, shut or folded, and the places the profile
-//! keeps for them. The window holds each panel inside itself; that part
-//! stays with the drawing.
+//! Where each panel stands: the place and size the player gave it, kept
+//! in the profile, held inside the window however the window changed, and
+//! whether it is locked, open or folded to its title. The gump places of
+//! the profile hold the places, the Interface page the panels that are
+//! open, and the folded list the folded ones, as the Classic gumps keep
+//! theirs. A panel that shows until the player shuts it, as the journal
+//! does, keeps that it is shut among the open panels.
 
+use crate::geom::{Area, Point, Vector};
 use crate::settings::{GumpPlace, Profile};
 use std::borrow::Cow;
 
@@ -24,6 +29,62 @@ pub fn for_saving(profile: &Profile) -> Cow<'_, Profile> {
         kept.gumps.clear();
         kept.anchored.clear();
         Cow::Owned(kept)
+    }
+}
+
+/// The place of a panel now: the kept one, or else `default`, sized by the
+/// kept size of a panel the player can size, and held inside `window`.
+pub fn placed_rect(
+    window: Area,
+    default: Area,
+    kept: Option<&GumpPlace>,
+    min_size: Option<Vector>,
+) -> Area {
+    let size = match (kept.and_then(|place| place.size), min_size) {
+        (Some((width, height)), Some(min)) => Vector::new(width.max(min.x), height.max(min.y)),
+        _ => default.size(),
+    };
+    let left_top = kept.map_or(default.min, |place| Point::new(place.x, place.y));
+    held_inside(Area::from_min_size(left_top, size), window)
+}
+
+/// `area` moved, and made smaller when it must be, so it lies inside
+/// `room`.
+pub fn held_inside(area: Area, room: Area) -> Area {
+    let size = Vector::new(
+        area.width().min(room.width()),
+        area.height().min(room.height()),
+    );
+    let left = area
+        .min
+        .x
+        .clamp(room.min.x, (room.max.x - size.x).max(room.min.x));
+    let top = area
+        .min
+        .y
+        .clamp(room.min.y, (room.max.y - size.y).max(room.min.y));
+    Area::from_min_size(Point::new(left, top), size)
+}
+
+/// Keeps where a panel is and its size, with its lock.
+pub fn remember(profile: &mut Profile, id: &str, area: Area, sized: bool) {
+    let locked = is_locked(profile, id);
+    profile.gumps.insert(
+        id.to_string(),
+        GumpPlace {
+            x: area.min.x,
+            y: area.min.y,
+            size: sized.then(|| (area.width(), area.height())),
+            locked,
+        },
+    );
+}
+
+/// Locks a panel where it is, or frees it.
+pub fn set_locked(profile: &mut Profile, id: &str, area: Area, sized: bool, locked: bool) {
+    remember(profile, id, area, sized);
+    if let Some(place) = profile.gumps.get_mut(id) {
+        place.locked = locked;
     }
 }
 
@@ -83,8 +144,71 @@ pub fn set_folded(profile: &mut Profile, id: &str, folded: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::AnchorCell;
 
     const ID: &str = "journal";
+
+    fn window() -> Area {
+        Area::from_min_size(Point::default(), Vector::new(1000.0, 800.0))
+    }
+
+    fn default() -> Area {
+        Area::from_min_size(Point::new(10.0, 20.0), Vector::new(300.0, 200.0))
+    }
+
+    fn holds(room: Area, area: Area) -> bool {
+        room.contains(area.min) && room.contains(area.max)
+    }
+
+    #[test]
+    fn a_panel_stands_where_it_was_kept_and_inside_the_window() {
+        let mut profile = Profile::default();
+        assert_eq!(
+            placed_rect(window(), default(), kept(&profile, ID), None),
+            default()
+        );
+        let moved = Area::from_min_size(Point::new(900.0, 700.0), Vector::new(400.0, 300.0));
+        remember(&mut profile, ID, moved, true);
+        let min = Some(Vector::new(100.0, 100.0));
+        let placed = placed_rect(window(), default(), kept(&profile, ID), min);
+        assert_eq!(
+            placed.size(),
+            Vector::new(400.0, 300.0),
+            "a sized panel keeps its size"
+        );
+        assert!(holds(window(), placed), "and stays in the window");
+        let fixed = placed_rect(window(), default(), kept(&profile, ID), None);
+        assert_eq!(
+            fixed.size(),
+            default().size(),
+            "a fixed panel keeps its own size"
+        );
+        assert!(for_saving(&profile).gumps.contains_key(ID));
+        profile.anchored.insert(
+            ID.into(),
+            AnchorCell {
+                group: 1,
+                column: 0,
+                row: 0,
+            },
+        );
+        assert!(!for_saving(&profile).anchored.is_empty());
+        profile.interface.remember_gump_places = false;
+        assert!(kept(&profile, ID).is_some(), "the place stays for this run");
+        assert!(for_saving(&profile).gumps.is_empty(), "but it is not kept");
+        assert!(for_saving(&profile).anchored.is_empty(), "nor its group");
+    }
+
+    #[test]
+    fn a_lock_stays_with_the_place_and_forgetting_clears_both() {
+        let mut profile = Profile::default();
+        set_locked(&mut profile, ID, default(), false, true);
+        assert!(is_locked(&profile, ID));
+        remember(&mut profile, ID, default(), false);
+        assert!(is_locked(&profile, ID), "a move keeps the lock");
+        forget(&mut profile, ID);
+        assert!(!is_locked(&profile, ID) && profile.gumps.is_empty());
+    }
 
     #[test]
     fn a_shut_panel_and_a_folded_one_are_kept_apart_from_the_open_ones() {

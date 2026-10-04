@@ -13,6 +13,7 @@ use super::filters::{self, Seat};
 use super::lights::{flicker, shown_light_color, world_light, LightMap, LightRules, LightSource};
 use super::link::POLL_MS_SAME_PROGRAM;
 use super::look::{self, HitsShown, MobileState, PlateOf, WorldLook};
+use super::model::health_bars::MapDrag;
 use super::model::house_design::{kind_of, piece_look, PieceLook, StoreyLook, STOREYS};
 use super::predict::WalkPrediction;
 use super::settings::{CircleStyle, FieldStyle, Profile};
@@ -318,15 +319,6 @@ pub struct Scene {
     arrivals: Vec<u32>,
     /// A drag the human started on the map, until the gumps take it.
     map_drag: Option<MapDrag>,
-}
-
-/// A left drag the human started on the map: where it started, and the
-/// mobile it started on. The classic gumps take it to open a health bar
-/// or to select health bars by a box.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MapDrag {
-    pub from: Pos2,
-    pub mobile: Option<u32>,
 }
 
 /// One thing on the map that the mouse can point at.

@@ -6,6 +6,7 @@
 //! them.
 
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
+use super::super::model::host;
 use super::super::model::world_map::{
     self, Marker, MarkerFields, MarkerFile, MARKER_COLORS, USER_MARKERS,
 };
@@ -108,7 +109,7 @@ impl MarkersUi {
         let mut asks = Vec::new();
         if self.open {
             if !self.loaded {
-                self.files = world_map::load_markers(&world_map::map_dir(), &[]);
+                self.files = host::world_map::load_markers(&host::world_map::map_dir(), &[]);
                 self.file = self.file.min(self.files.len().saturating_sub(1));
                 self.loaded = true;
             }
@@ -241,7 +242,7 @@ impl MarkersUi {
                     error: None,
                 });
             }
-            _ => match world_map::remove_user_marker(&world_map::map_dir(), at) {
+            _ => match host::world_map::remove_user_marker(&host::world_map::map_dir(), at) {
                 Ok(()) => asks.push(MarkersAsk::Changed),
                 Err(error) => self.error = Some(error.to_string()),
             },
@@ -283,8 +284,8 @@ impl MarkersUi {
             match marker_box.fields.marker() {
                 None => marker_box.error = Some(WORDS_BAD_FIELDS.to_string()),
                 Some(marker) => {
-                    let dir = world_map::map_dir();
-                    match world_map::keep_user_marker(&dir, marker_box.editing, marker) {
+                    let dir = host::world_map::map_dir();
+                    match host::world_map::keep_user_marker(&dir, marker_box.editing, marker) {
                         Ok(()) => {
                             asks.push(MarkersAsk::Changed);
                             closed = true;

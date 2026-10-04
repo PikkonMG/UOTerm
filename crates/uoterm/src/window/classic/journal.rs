@@ -17,6 +17,7 @@ use super::message_box::{BoxLook, MessageBox};
 use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpRules};
 use super::text::TextLook;
 use super::text_field::TextField;
+use crate::window::model::host;
 use crate::window::model::journal::{self, Entry};
 use crate::window::settings::{
     Choice, FontOptions, GameFontKind, JournalKind, JournalTab, Profile,
@@ -439,7 +440,12 @@ impl ResizableJournal {
     fn save(&mut self, shown: &[&Entry], cx: &GumpContext<'_>, time: f64) {
         let with_stamp = !cx.profile.journal.hide_timestamps;
         self.note = Some(
-            match journal::save(&journal::journals_dir(), &cx.frame.name, shown, with_stamp) {
+            match host::journal::save(
+                &host::journal::journals_dir(),
+                &cx.frame.name,
+                shown,
+                with_stamp,
+            ) {
                 Ok(file) => Note {
                     words: format!("{WORDS_SAVED} {}", file.display()),
                     failed: false,

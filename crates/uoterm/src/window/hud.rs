@@ -691,11 +691,12 @@ mod tests {
 
     #[test]
     fn the_panels_stand_where_the_player_left_them() {
+        use crate::window::bridge;
         use crate::window::model::places;
         let window = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
         let kept = Rect::from_min_size(Pos2::new(600.0, 300.0), Vec2::new(10.0, 10.0));
         let mut profile = Profile::default();
-        places::remember(&mut profile, VITALS_ID, kept, false);
+        places::remember(&mut profile, VITALS_ID, bridge::area(kept), false);
         let ctx = egui::Context::default();
         theme::install(&ctx);
         let mut hud = Hud::default();
