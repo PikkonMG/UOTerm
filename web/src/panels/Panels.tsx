@@ -49,14 +49,6 @@ const sameData = <P extends { data: unknown }>(before: P, after: P) => JSON.stri
 const QuietSheet = memo(Sheet, sameData);
 const QuietJournal = memo(Journal, sameData);
 
-/** What decides where the panels lie: their names, places and folds, and the panels with no frame. */
-function placesKey(data: PanelData): string {
-  const frames = [data.launcher, data.activity, data.vitals, data.pack, data.near, data.journal, data.radar, data.hotbar, data.sheet, data.split, ...data.bars]
-    .filter((panel) => panel !== null)
-    .map((panel) => [panel.frame.panel, panel.frame.area, panel.frame.folded]);
-  return JSON.stringify([frames, data.bar?.place, data.bar?.folded, data.chat.strip, data.question?.place, data.picker !== null]);
-}
-
 /**
  * The tooltip and the carried thing at the mouse: the one part of the
  * panels that follows the mouse, so a move draws only it.
@@ -99,7 +91,6 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
   const lastCovered = useRef('');
   const carried = useRef(data.carried);
   carried.current = data.carried;
-  const key = placesKey(data);
   const scale = data.look.ui_scale;
   const to = (panel: string) => (action: PanelAction) => send(panel, action);
   const hover: Hover = (tip) => send('tips', { over: tip });
@@ -115,7 +106,9 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
     return () => window.removeEventListener('pointerup', up);
   }, []);
 
-  // The page is measured only when the places of the panels changed.
+  // The page is measured when the view gave new panel data (its places,
+  // its UI scale, or words that change a height), and not on other frames:
+  // the game gives new data only when it changed.
   useLayoutEffect(() => {
     if (!root.current) return;
     const areas = coveredAreas(root.current);
@@ -123,7 +116,7 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
     if (json === lastCovered.current) return;
     lastCovered.current = json;
     covered(areas);
-  }, [key]);
+  }, [data]);
 
   const chat = <ChatLine data={data.chat} send={to('chat')} input={input} />;
   const { journal, question } = data;

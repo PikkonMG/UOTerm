@@ -1,6 +1,6 @@
 import { fireEvent, render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
-import { ChatLine } from '../../src/panels/ChatLine';
+import { askChatFocus, ChatLine } from '../../src/panels/ChatLine';
 import type { ChatData } from '../../src/panels/types';
 
 const data: ChatData = {
@@ -38,5 +38,13 @@ describe('ChatLine', () => {
     const { getByText, queryByRole } = render(<ChatLine data={{ ...data, live: false }} send={vi.fn()} input={vi.fn()} />);
     expect(getByText('Take control to talk.')).toBeTruthy();
     expect(queryByRole('textbox')).toBeNull();
+  });
+
+  it('takes_the_keys_asked_for_before_the_field_was_drawn', () => {
+    askChatFocus(true);
+    const { getByPlaceholderText } = render(<ChatLine data={data} send={vi.fn()} input={vi.fn()} />);
+    expect(document.activeElement).toBe(getByPlaceholderText(data.hint));
+    askChatFocus(false);
+    expect(document.activeElement).not.toBe(getByPlaceholderText(data.hint));
   });
 });

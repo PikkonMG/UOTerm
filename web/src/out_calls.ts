@@ -8,6 +8,7 @@
 import { api, jsonInit, METHOD_POST, METHOD_PUT } from './net/api';
 import type { InputEvent } from './input/events';
 import { CHAT_ATTRIBUTE } from './input/keys';
+import { askChatFocus } from './panels/ChatLine';
 import type { LiveOut, PageCall } from './net/live';
 
 const KEPT_PATH = '/v1/kept/';
@@ -100,8 +101,7 @@ export function sendOut(calls: OutCall[], places: OutPlaces): void {
         download(call.name, call.text);
         break;
       case 'ChatFocus':
-        if (call.take) chatField()?.focus();
-        else chatField()?.blur();
+        askChatFocus(call.take);
         break;
       case 'ChatPaste':
         paste(places.input);

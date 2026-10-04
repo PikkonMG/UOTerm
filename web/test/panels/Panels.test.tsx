@@ -89,4 +89,33 @@ describe('Panels', () => {
     fireEvent.pointerLeave(slot);
     expect(send).toHaveBeenLastCalledWith('tips', { over: null });
   });
+
+  it('tells_the_view_where_the_panels_lie_again_when_the_scale_or_the_bar_changes', () => {
+    // A box as the page draws it: as tall as its buttons, grown by the UI scale.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const scale = Number((this.closest('.panels') as HTMLElement | null)?.style.getPropertyValue('--ui-scale') || 1);
+      const height = Math.max(this.querySelectorAll('button').length, 1) * 10 * scale;
+      return { left: 0, top: 0, right: 100 * scale, bottom: height, width: 100 * scale, height, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    const covered = vi.fn();
+    const bar = {
+      place: { x: 0, y: 0, w: 880, h: 60 },
+      location: { numbers: '1, 2, 0', map_words: 'map', map: '0', faces_words: 'faces', facing: '' },
+      folded: false,
+      launcher_words: 'Panels',
+      launcher_shows: false,
+      status: null,
+      buttons: ['Take control'],
+    };
+    const first = { ...data(), hotbar: null, bar };
+    const { rerender } = render(<Panels data={first} send={vi.fn()} input={vi.fn()} covered={covered} />);
+    const bottoms = () => covered.mock.calls.at(-1)?.[0].map((area: { max: { y: number } }) => area.max.y);
+    const before = bottoms();
+    rerender(<Panels data={{ ...first, bar: { ...bar, buttons: ['Bag', 'Sheet', 'War', 'Stop'] } }} send={vi.fn()} input={vi.fn()} covered={covered} />);
+    const taller = bottoms();
+    expect(taller[0]).toBeGreaterThan(before[0]);
+    rerender(<Panels data={{ ...first, look: { ui_scale: 2, opacity: 1 } }} send={vi.fn()} input={vi.fn()} covered={covered} />);
+    expect(covered.mock.calls.at(-1)?.[0][0].max.x).toBe(200);
+    vi.restoreAllMocks();
+  });
 });
