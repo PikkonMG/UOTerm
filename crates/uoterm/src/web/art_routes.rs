@@ -2,6 +2,7 @@
 //! goes on the tile in a header.
 
 use super::{kept, on_art, WebState};
+use crate::art::client_art::ArtTooLarge;
 use crate::art::png::encode;
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode};
@@ -21,15 +22,18 @@ pub(super) fn routes() -> Router<WebState> {
 }
 
 /// The picture a request asks for. Its ETag holds the key of the request,
-/// which names the picture only on this server.
+/// which names the picture only on this server. A bad request for a
+/// picture too large.
 async fn art(State(state): State<WebState>, Json(request): Json<ArtRequest>) -> Response {
     let etag = format!("{}-{:x}", state.files_tag, request.key());
     on_art(
         &state,
-        move |art| art.picture(&request),
+        move |art| art.checked_picture(&request),
         move |picture| {
-            let Some(picture) = picture else {
-                return StatusCode::NOT_FOUND.into_response();
+            let picture = match picture {
+                Ok(Some(picture)) => picture,
+                Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+                Err(ArtTooLarge) => return StatusCode::BAD_REQUEST.into_response(),
             };
             let anchor = format!("{},{}", picture.anchor.x, picture.anchor.y);
             let (Some(png), Ok(anchor)) = (encode(&picture), HeaderValue::from_str(&anchor)) else {
@@ -93,6 +97,17 @@ mod tests {
         let one = send(state.clone(), post_art(&item(0))).await;
         let two = send(state, post_art(&item(1))).await;
         assert_ne!(one.headers()["etag"], two.headers()["etag"]);
+    }
+
+    #[tokio::test]
+    async fn words_too_long_for_a_picture_are_a_bad_request() {
+        let (state, _files) = test_state();
+        let request = ArtRequest::Text {
+            text: "a".repeat(crate::art::client_art::TEXT_MAX_CHARS + 1),
+            look: uoterm_view::art::TextLook::unicode(1, 0),
+        };
+        let answer = send(state, post_art(&request)).await;
+        assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

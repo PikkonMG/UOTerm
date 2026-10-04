@@ -2,7 +2,7 @@
 //! corner. An UltimaLive shard changes the map while it runs, so the
 //! browser does not keep a block.
 
-use super::{on_art, WebState};
+use super::{on_art_mut, WebState};
 use axum::extract::{Path, State};
 use axum::http::header::CACHE_CONTROL;
 use axum::http::StatusCode;
@@ -21,7 +21,7 @@ async fn block(
     State(state): State<WebState>,
     Path((map, block_x, block_y)): Path<(u8, u16, u16)>,
 ) -> Response {
-    on_art(
+    on_art_mut(
         &state,
         move |art| art.cell_block(map, block_x, block_y),
         |cells| {
@@ -69,10 +69,22 @@ mod tests {
     #[tokio::test]
     async fn a_block_past_the_edge_of_the_map_is_not_found() {
         const FAR_EAST: u16 = u16::MAX / 8;
+        const FIRST_TOO_FAR: u16 = FAR_EAST + 1;
         let (state, _files) = test_state();
-        let path = format!("/v1/map/0/{FAR_EAST}/0");
-        let answer = send(state, Request::get(path).body(Body::empty()).unwrap()).await;
-        assert_eq!(answer.status(), StatusCode::NOT_FOUND);
+        for (x, y) in [
+            (FAR_EAST, 0),
+            (FIRST_TOO_FAR, 0),
+            (0, FIRST_TOO_FAR),
+            (u16::MAX, u16::MAX),
+        ] {
+            let path = format!("/v1/map/0/{x}/{y}");
+            let answer = send(
+                state.clone(),
+                Request::get(&path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(answer.status(), StatusCode::NOT_FOUND, "{path}");
+        }
     }
 
     #[tokio::test]

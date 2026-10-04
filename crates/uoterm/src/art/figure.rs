@@ -59,12 +59,29 @@ type Frames = Arc<Vec<Option<AnimFrame>>>;
 /// Which frames: the body, the way it faces, what it does, and if it rides.
 type FramesOf = (u16, Facing, Action, bool);
 
+/// How many sets of frames the cache holds before it starts again. A web
+/// page can ask for any body, so the cache must not grow without end.
+const FRAME_CACHE_CAP: usize = 1024;
+
 /// Each set of frames the window or the web server has asked for. None
-/// marks a body with no pictures. The web server reads the art from more
-/// than one thread.
+/// marks a body with no pictures. The web server lets many threads make
+/// pictures from one `ClientArt` at a time, each with a shared borrow, so
+/// the cache has its own lock.
 #[derive(Default)]
 pub struct FrameCache {
     known: Mutex<HashMap<FramesOf, Option<Frames>>>,
+}
+
+impl FrameCache {
+    /// The frames kept under `key`, read with `read` the first time. A
+    /// full cache is emptied first.
+    fn get_or_read(&self, key: FramesOf, read: impl FnOnce() -> Option<Frames>) -> Option<Frames> {
+        let mut known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        if known.len() >= FRAME_CACHE_CAP && !known.contains_key(&key) {
+            known.clear();
+        }
+        known.entry(key).or_insert_with(read).clone()
+    }
 }
 
 pub struct Source<'a> {
@@ -86,17 +103,11 @@ struct Part {
 
 impl Source<'_> {
     fn frames(&self, body: u16, facing: Facing, action: Action, mounted: bool) -> Option<Frames> {
-        self.cache
-            .known
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry((body, facing, action, mounted))
-            .or_insert_with(|| {
-                self.anim
-                    .frames(body, facing, action, mounted)
-                    .map(Arc::new)
-            })
-            .clone()
+        self.cache.get_or_read((body, facing, action, mounted), || {
+            self.anim
+                .frames(body, facing, action, mounted)
+                .map(Arc::new)
+        })
     }
 
     /// The frame of a body for a pose. None when the body has no picture, or
@@ -318,6 +329,21 @@ mod tests {
     use uoterm_view::settings::WORN_LAYERS;
 
     const WEST: u8 = 6;
+
+    #[test]
+    fn the_frame_cache_starts_again_once_it_is_full() {
+        let cache = FrameCache::default();
+        let key = |body: usize| (body as u16, Facing::from_direction(0), Action::Stand, false);
+        for body in 0..=FRAME_CACHE_CAP {
+            assert!(cache.get_or_read(key(body), || None).is_none());
+        }
+        let known = cache.known.lock().unwrap();
+        assert!(known.len() <= FRAME_CACHE_CAP);
+        assert!(
+            known.contains_key(&key(FRAME_CACHE_CAP)),
+            "the last set is kept"
+        );
+    }
 
     #[test]
     fn real_files_draw_every_ghost_body() {

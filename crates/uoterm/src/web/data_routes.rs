@@ -2,16 +2,17 @@
 //! client files. The browser keeps each one for as long as the client
 //! files do not change.
 
-use super::{on_art, table, WebState};
+use super::{on_art, on_art_mut, table, WebState};
 use crate::art::client_art::ClientArt;
-use crate::window::model::host::creation::read_creation_tables;
+use crate::creation_files::read_creation_tables;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use serde::Deserialize;
-use uoterm_nav::Action;
+use std::collections::BTreeMap;
+use uoterm_nav::{frames_question_fits, Action};
 use uoterm_view::model::compare::ItemLayers;
 
 /// Separates the text numbers of the start towns in a query.
@@ -36,70 +37,104 @@ pub(super) fn routes() -> Router<WebState> {
         .route("/v1/data/hues-text/{hue}", get(text_rgb))
 }
 
-/// The answer `answer` makes from the client files, on a blocking thread.
-/// It gets the files tag for the ETag.
-async fn from_files(
+/// Reads with `read` from the client files on a blocking thread, then
+/// makes the answer with `answer` once they are unlocked. It gets the files
+/// tag for the ETag.
+async fn from_files<T: Send + 'static>(
     state: &WebState,
-    answer: impl FnOnce(&mut ClientArt, &str) -> Response + Send + 'static,
+    read: impl FnOnce(&ClientArt) -> T + Send + 'static,
+    answer: impl FnOnce(T, &str) -> Response + Send + 'static,
 ) -> Response {
     let files_tag = state.files_tag.clone();
-    on_art(
-        state,
-        move |art| answer(art, &files_tag),
-        std::convert::identity,
-    )
-    .await
+    on_art(state, read, move |value| answer(value, &files_tag)).await
 }
 
 async fn tiledata(State(state): State<WebState>) -> Response {
-    from_files(&state, |art, tag| table(art.tiledata_tables(), tag)).await
+    from_files(&state, ClientArt::tiledata_tables, |tiles, tag| {
+        table(tiles.as_deref(), tag)
+    })
+    .await
 }
 
 /// The pieces of a house or a boat. Empty for a multi the files do not
 /// hold.
 async fn multi(State(state): State<WebState>, Path(id): Path<u16>) -> Response {
-    from_files(&state, move |art, tag| {
-        table(Some(art.multi_pieces(id)), tag)
+    from_files(
+        &state,
+        move |art| Some(art.multi_pieces(id).to_vec()),
+        table,
+    )
+    .await
+}
+
+/// The picture cycle of each item graphic that has one, by graphic.
+async fn art_cycles(State(state): State<WebState>) -> Response {
+    from_files(&state, ClientArt::art_cycles_table, |cycles, tag| {
+        let by_graphic = cycles
+            .as_deref()
+            .map(|cycles| cycles.entries().collect::<BTreeMap<_, _>>());
+        table(by_graphic, tag)
     })
     .await
 }
 
-async fn art_cycles(State(state): State<WebState>) -> Response {
-    from_files(&state, |art, tag| table(art.art_cycles_table(), tag)).await
-}
-
 async fn anim_rules(State(state): State<WebState>) -> Response {
-    from_files(&state, |art, tag| table(art.anim_rules(), tag)).await
+    from_files(&state, |art| art.anim_rules().cloned(), table).await
 }
 
 async fn radar(State(state): State<WebState>) -> Response {
-    from_files(&state, |art, tag| table(art.radar_tables(), tag)).await
+    from_files(&state, ClientArt::radar_tables, table).await
 }
 
 async fn seasons(State(state): State<WebState>) -> Response {
-    from_files(&state, |art, tag| table(Some(art.season_tables()), tag)).await
+    from_files(&state, ClientArt::season_tables, |seasons, tag| {
+        table(Some(&*seasons), tag)
+    })
+    .await
 }
 
+/// A light shape is read from the files the first time it is asked for, so
+/// it takes the client art alone.
 async fn light(State(state): State<WebState>, Path(id): Path<u8>) -> Response {
-    from_files(&state, move |art, tag| table(art.light_shape(id), tag)).await
+    let files_tag = state.files_tag.clone();
+    on_art_mut(
+        &state,
+        move |art| art.light_shape(id).cloned(),
+        move |shape| table(shape, &files_tag),
+    )
+    .await
 }
 
+/// Every message of the text database by its number.
 async fn cliloc(State(state): State<WebState>) -> Response {
-    from_files(&state, |art, tag| table(art.cliloc_table(), tag)).await
+    from_files(&state, ClientArt::cliloc_table, |words, tag| {
+        let by_number = words
+            .as_deref()
+            .map(|words| words.entries().collect::<BTreeMap<_, _>>());
+        table(by_number, tag)
+    })
+    .await
 }
 
 /// How many frames a body has for an action, facing a direction, on a
-/// mount or not. The action is `stand`, `walk`, `run` or a group number.
+/// mount or not. The action is `stand`, `walk`, `run` or a group number. A
+/// bad request for a question the animation files cannot hold.
 async fn frames(
     State(state): State<WebState>,
     Path((body, action, direction, mounted)): Path<(u16, String, u8, bool)>,
 ) -> Response {
-    let Ok(action) = action.parse::<Action>() else {
+    let action = action
+        .parse::<Action>()
+        .ok()
+        .filter(|action| frames_question_fits(body, direction, *action));
+    let Some(action) = action else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    from_files(&state, move |art, tag| {
-        table(art.body_frame_count(body, direction, action, mounted), tag)
-    })
+    from_files(
+        &state,
+        move |art| art.body_frame_count(body, direction, action, mounted),
+        table,
+    )
     .await
 }
 
@@ -111,7 +146,8 @@ struct CreationQuery {
     towns: String,
 }
 
-/// What the character creation reads, with only the words it reads.
+/// What the character creation reads, with only the words it reads. The
+/// small creation files are read once the client art is unlocked.
 async fn creation(State(state): State<WebState>, Query(query): Query<CreationQuery>) -> Response {
     let towns: Result<Vec<u32>, _> = query
         .towns
@@ -122,23 +158,27 @@ async fn creation(State(state): State<WebState>, Query(query): Query<CreationQue
     let Ok(towns) = towns else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    from_files(&state, move |art, tag| {
-        let files = read_creation_tables(art.uopath()).with_needed_words(art.cliloc(), &towns);
-        table(Some(files), tag)
-    })
+    from_files(
+        &state,
+        |art| (art.uopath().to_path_buf(), art.cliloc_table()),
+        move |(uopath, words), tag| {
+            let files = read_creation_tables(&uopath).with_needed_words(words.as_deref(), &towns);
+            table(Some(files), tag)
+        },
+    )
     .await
 }
 
 async fn item_layers(State(state): State<WebState>) -> Response {
-    from_files(&state, |art, tag| {
-        table(art.tiledata_tables().map(ItemLayers::of_tiles), tag)
+    from_files(&state, ClientArt::tiledata_tables, |tiles, tag| {
+        table(tiles.as_deref().map(ItemLayers::of_tiles), tag)
     })
     .await
 }
 
 /// The color of words written in a hue, as red, green and blue.
 async fn text_rgb(State(state): State<WebState>, Path(hue): Path<u16>) -> Response {
-    from_files(&state, move |art, tag| table(art.text_rgb(hue), tag)).await
+    from_files(&state, move |art| art.text_rgb(hue), table).await
 }
 
 #[cfg(test)]
@@ -211,10 +251,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_action_with_no_name_is_a_bad_request() {
+    async fn a_frame_question_the_files_cannot_hold_is_a_bad_request() {
         let (state, _files) = test_state();
-        let answer = send(state, get("/v1/data/frames/400/fly/2/false")).await;
-        assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+        for path in [
+            "/v1/data/frames/400/fly/2/false",
+            "/v1/data/frames/2048/walk/2/false",
+            "/v1/data/frames/400/walk/8/false",
+            "/v1/data/frames/400/80/2/false",
+        ] {
+            let answer = send(state.clone(), get(path)).await;
+            assert_eq!(answer.status(), StatusCode::BAD_REQUEST, "{path}");
+        }
     }
 
     #[tokio::test]

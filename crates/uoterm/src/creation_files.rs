@@ -1,7 +1,8 @@
 //! What the character creation reads from the client files: the
 //! professions, the skill names, the words about the start towns and the
-//! text numbers. The pages use them through
-//! `uoterm_view::model::creation`.
+//! text numbers. The pages of the window use them through
+//! `uoterm_view::model::creation`, and the web server sends them to the
+//! browser.
 
 use std::path::Path;
 use uoterm_nav::ClilocData;

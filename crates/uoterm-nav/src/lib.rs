@@ -35,7 +35,10 @@ mod tiles;
 mod unifont;
 mod uop;
 
-pub use anim::{Action, AnimData, AnimFrame, AnimRules, Deed, EquipConv, Facing, Stance};
+pub use anim::{
+    frames_question_fits, Action, AnimData, AnimFrame, AnimRules, Deed, EquipConv, Facing, Stance,
+    ANIM_BODY_COUNT, ANIM_DIRECTIONS, ANIM_GROUP_COUNT,
+};
 pub use animdata::{ArtCycle, ArtCycles, TILE_ANIMATED};
 pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
 pub use client_program::{client_program_version, CLIENT_PROGRAM_NAME};

@@ -4,7 +4,6 @@
 //! rules of `uoterm_view::model`.
 
 pub mod compare;
-pub mod creation;
 pub mod fonts;
 pub mod journal;
 pub mod map_item;

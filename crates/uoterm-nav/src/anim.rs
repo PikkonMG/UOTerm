@@ -114,6 +114,24 @@ impl std::str::FromStr for Action {
     }
 }
 
+/// The ways a body can face, as the wire counts them.
+pub const ANIM_DIRECTIONS: u8 = 8;
+/// The most bodies and the most action groups of a body the animation
+/// files hold, as the reference client counts them.
+pub const ANIM_BODY_COUNT: u16 = 2048;
+pub const ANIM_GROUP_COUNT: u8 = 80;
+
+/// True when the animation files can hold the frames of this body, facing
+/// `direction`, for this action. A question from a web page is checked
+/// with this before the files are read.
+pub fn frames_question_fits(body: u16, direction: u8, action: Action) -> bool {
+    let group_fits = match action {
+        Action::Shown(group) => group < ANIM_GROUP_COUNT,
+        Action::Stand | Action::Walk | Action::Run => true,
+    };
+    body < ANIM_BODY_COUNT && direction < ANIM_DIRECTIONS && group_fits
+}
+
 impl Action {
     /// The group of the action, from the three groups of the kind of body.
     fn group(self, groups: [u32; 3]) -> u32 {
@@ -720,6 +738,29 @@ mod tests {
     const BODY_OGRE: u16 = 1;
     const SOUTH: u8 = 4;
     const EAST: u8 = 2;
+
+    #[test]
+    fn a_frame_question_names_a_body_a_direction_and_a_group_the_files_can_hold() {
+        const LAST_GROUP: u8 = ANIM_GROUP_COUNT - 1;
+        const LAST_DIRECTION: u8 = ANIM_DIRECTIONS - 1;
+        assert!(frames_question_fits(
+            BODY_MAN,
+            LAST_DIRECTION,
+            Action::Shown(LAST_GROUP)
+        ));
+        assert!(frames_question_fits(BODY_MAN, 0, Action::Run));
+        assert!(!frames_question_fits(ANIM_BODY_COUNT, 0, Action::Stand));
+        assert!(!frames_question_fits(
+            BODY_MAN,
+            ANIM_DIRECTIONS,
+            Action::Stand
+        ));
+        assert!(!frames_question_fits(
+            BODY_MAN,
+            0,
+            Action::Shown(ANIM_GROUP_COUNT)
+        ));
+    }
 
     #[test]
     fn an_action_is_read_from_its_word_or_its_group() {

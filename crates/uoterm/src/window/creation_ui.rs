@@ -1752,8 +1752,8 @@ mod tests {
     use super::super::modern::testing::{click, typing, Canvas, ENV_PICTURES, SCREEN};
     use super::super::{save_png, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
     use super::*;
+    use crate::creation_files::read_creation_files;
     use crate::window::model::creation::{sample_choices, Blocker, NameFault};
-    use crate::window::model::host::creation::read_creation_files;
     use uoterm_protocol::ClientVersion;
     use uoterm_runtime::CharacterChoices;
 

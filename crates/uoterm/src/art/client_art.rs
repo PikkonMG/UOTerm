@@ -5,14 +5,14 @@
 
 use super::figure::{self, FrameCache, Source};
 use super::text::UoFonts;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use uoterm_nav::{
-    land_is_ignored, Action, AnimData, AnimRules, ArtCycle, ArtCycles, ArtData, ArtPixels,
-    ClilocData, CursorSet, GumpArt, HueData, HueRamp, ItemTile, LandTile, LightData, LightShape,
-    MulMap, MultiData, MultiPiece, RadarColors, RadarTables, SeasonArt, TexmapData, TextPicture,
-    TileData, TileFlagSet, TileQuery, TILE_ANIMATED, TILE_PARTIAL_HUE,
+    land_is_ignored, Action, AnimData, AnimRules, ArtCycles, ArtData, ArtPixels, ClilocData,
+    CursorSet, GumpArt, HueData, HueRamp, ItemTile, LandTile, LightData, LightShape, MulMap,
+    MultiData, MultiPiece, RadarColors, RadarTables, SeasonArt, TexmapData, TextPicture, TileData,
+    TileFlagSet, TileQuery, GUMP_MAX_SIDE, TILE_ANIMATED, TILE_PARTIAL_HUE,
 };
 use uoterm_view::art::{
     is_drawn, mount_item, ArtRequest, Cell, CellStatic, Picture, Stretch, TextLook,
@@ -34,6 +34,17 @@ const NORMAL_HALF_TILE: f32 = 22.0;
 /// The sides of a black border round a cave wall.
 const BORDER_RGBA: [u8; 4] = [0, 0, 0, u8::MAX];
 const RGBA_BYTES: usize = 4;
+/// The most characters words in a picture may have. A label, a line of
+/// speech or a page of a gump is far shorter.
+pub const TEXT_MAX_CHARS: usize = 4096;
+/// The widest and the tallest a picture of words may be: as large as the
+/// largest picture the client files hold.
+pub const PICTURE_MAX_SIDE: usize = GUMP_MAX_SIDE;
+
+/// A request for a picture larger than any the client shows. A web page
+/// can send any request, and a picture of gigabytes would stop UOTerm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArtTooLarge;
 
 /// The normal of the land at one corner from the heights of the tile of
 /// that corner and of the four tiles round it. None for flat land.
@@ -86,13 +97,13 @@ pub struct ClientArt {
     frames: FrameCache,
     hues: Option<HueData>,
     /// None when the client files hold no picture cycles.
-    cycles: Option<ArtCycles>,
+    cycles: Option<Arc<ArtCycles>>,
     /// None when the client files hold no houses and boats.
     multis: Option<MultiData>,
     /// None when the client files hold no gump pictures.
     gumps: Option<GumpArt>,
     /// The art that each season swaps.
-    seasons: SeasonArt,
+    seasons: Arc<SeasonArt>,
     /// None when the client files hold no colors for a world map.
     radar: Option<RadarColors>,
     /// None marks a map the client files do not hold.
@@ -102,7 +113,7 @@ pub struct ClientArt {
     /// changes it was laid at.
     live_blocks: HashMap<(u8, u32), u64>,
     /// None when the client files hold no tiledata.
-    tiles: Option<TileData>,
+    tiles: Option<Arc<TileData>>,
     /// None when the client files hold no land textures.
     textures: Option<TexmapData>,
     /// None when the client files hold no light shapes.
@@ -114,7 +125,7 @@ pub struct ClientArt {
     /// The text database, read the first time it is asked for: it is
     /// large, and the window does not read it. None inside when the client
     /// files hold none.
-    cliloc: OnceLock<Option<ClilocData>>,
+    cliloc: OnceLock<Option<Arc<ClilocData>>>,
 }
 
 /// The map files of a facet, opened the first time they are asked for.
@@ -138,15 +149,15 @@ impl ClientArt {
             anim: AnimData::open(uopath).ok(),
             frames: FrameCache::default(),
             hues: HueData::open(uopath).ok(),
-            cycles: ArtCycles::open(uopath).ok(),
+            cycles: ArtCycles::open(uopath).ok().map(Arc::new),
             multis: MultiData::open(uopath).ok(),
             radar: RadarColors::open(uopath).ok(),
             gumps: GumpArt::open(uopath).ok(),
-            seasons: SeasonArt::open(&uoterm_runtime::config::config_dir()),
+            seasons: Arc::new(SeasonArt::open(&uoterm_runtime::config::config_dir())),
             maps: HashMap::new(),
             cells: HashMap::new(),
             live_blocks: HashMap::new(),
-            tiles: TileData::open(uopath).ok(),
+            tiles: TileData::open(uopath).ok().map(Arc::new),
             textures: TexmapData::open(uopath).ok(),
             lights: LightData::open(uopath).ok(),
             light_shapes: HashMap::new(),
@@ -218,11 +229,16 @@ impl ClientArt {
         let Some(map) = facet_files(&mut self.maps, &self.uopath, map_index) else {
             return Vec::new();
         };
-        let (left, top) = (block_x * BLOCK_SIDE, block_y * BLOCK_SIDE);
+        let (Some(left), Some(top)) = (
+            block_x.checked_mul(BLOCK_SIDE),
+            block_y.checked_mul(BLOCK_SIDE),
+        ) else {
+            return Vec::new();
+        };
         if !map.in_bounds(left, top) {
             return Vec::new();
         }
-        let tiles = self.tiles.as_ref();
+        let tiles = self.tiles.as_deref();
         (0..BLOCK_SIDE)
             .flat_map(|row| (0..BLOCK_SIDE).map(move |column| (left + column, top + row)))
             .map(|(x, y)| read_cell(map, tiles, x, y))
@@ -230,8 +246,40 @@ impl ClientArt {
     }
 
     /// The picture a request asks for, made from the client files. None
-    /// when the files do not hold it.
+    /// when the files do not hold it, or when it is too large.
     pub fn picture(&self, request: &ArtRequest) -> Option<Picture> {
+        self.checked_picture(request).ok().flatten()
+    }
+
+    /// The picture a request asks for, or why it is refused. Only words
+    /// have a size the request sets: every other picture is as large as
+    /// the client files make it, and they hold none too large. Ok(None)
+    /// when the files do not hold the picture.
+    pub fn checked_picture(&self, request: &ArtRequest) -> Result<Option<Picture>, ArtTooLarge> {
+        if let ArtRequest::Text { text, look } = request {
+            self.check_words(text, look)?;
+        }
+        Ok(self.make_picture(request))
+    }
+
+    /// Refuses words with too many characters, a width too large, or lines
+    /// that would make a picture too large.
+    fn check_words(&self, text: &str, look: &TextLook) -> Result<(), ArtTooLarge> {
+        let too_wide = look
+            .width
+            .is_some_and(|width| width as usize > PICTURE_MAX_SIDE);
+        if too_wide || text.chars().count() > TEXT_MAX_CHARS {
+            return Err(ArtTooLarge);
+        }
+        match self.fonts.as_ref() {
+            Some(fonts) if !fits_a_picture(fonts, text, &fitted(fonts, text, *look)) => {
+                Err(ArtTooLarge)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn make_picture(&self, request: &ArtRequest) -> Option<Picture> {
         match request {
             ArtRequest::Land { land_id, hue } => {
                 let art = self.art.land(*land_id)?;
@@ -287,7 +335,7 @@ impl ClientArt {
         Some(Source {
             anim: self.anim.as_ref()?,
             hues: self.hues.as_ref(),
-            tiledata: self.tiles.as_ref()?,
+            tiledata: self.tiles.as_deref()?,
             cache: &self.frames,
         })
     }
@@ -324,8 +372,8 @@ impl ClientArt {
     }
 
     /// The whole tiledata file. None when the client files hold none.
-    pub fn tiledata_tables(&self) -> Option<&TileData> {
-        self.tiles.as_ref()
+    pub fn tiledata_tables(&self) -> Option<Arc<TileData>> {
+        self.tiles.clone()
     }
 
     /// Every color of a map of the world. None when the client files hold
@@ -335,26 +383,22 @@ impl ClientArt {
     }
 
     /// The art each season swaps.
-    pub fn season_tables(&self) -> &SeasonArt {
-        &self.seasons
+    pub fn season_tables(&self) -> Arc<SeasonArt> {
+        Arc::clone(&self.seasons)
     }
 
     /// The text database of the client files, read the first time it is
     /// asked for. None when the client files hold none.
-    pub fn cliloc(&self) -> Option<&ClilocData> {
+    pub fn cliloc_table(&self) -> Option<Arc<ClilocData>> {
         self.cliloc
-            .get_or_init(|| ClilocData::open(&self.uopath).ok())
-            .as_ref()
+            .get_or_init(|| ClilocData::open(&self.uopath).ok().map(Arc::new))
+            .clone()
     }
 
-    /// Every message of the text database by its number.
-    pub fn cliloc_table(&self) -> Option<BTreeMap<u32, &str>> {
-        Some(self.cliloc()?.entries().collect())
-    }
-
-    /// The picture cycle of each item graphic that has one.
-    pub fn art_cycles_table(&self) -> Option<BTreeMap<u16, &ArtCycle>> {
-        Some(self.cycles.as_ref()?.entries().collect())
+    /// The picture cycles of the items. None when the client files hold
+    /// none.
+    pub fn art_cycles_table(&self) -> Option<Arc<ArtCycles>> {
+        self.cycles.clone()
     }
 
     /// The tiledata record of an item graphic.
@@ -463,7 +507,7 @@ impl ClientArt {
     /// The picture an item shows now. A fire or a fountain goes through
     /// the pictures of its cycle.
     pub fn shown_graphic(&self, graphic: u16, time_ms: u64) -> u16 {
-        match &self.cycles {
+        match self.cycles.as_deref() {
             Some(cycles) if self.item_flags(graphic) & TILE_ANIMATED != 0 => {
                 cycles.graphic_at(graphic, time_ms)
             }
@@ -536,6 +580,22 @@ fn read_cell(map: &MulMap, tiles: Option<&TileData>, x: u16, y: u16) -> Cell {
         stretch,
         wet: land.is_some_and(|land| land.flags.contains(TileFlagSet::WET)),
     }
+}
+
+/// True when the words of a look make a picture no wider and no taller
+/// than [`PICTURE_MAX_SIDE`]. Each line is measured before any is drawn.
+fn fits_a_picture(fonts: &UoFonts, text: &str, look: &TextLook) -> bool {
+    let lines = fonts.lines(text, look);
+    let widest = || {
+        lines
+            .iter()
+            .map(|line| fonts.width(look.font, line))
+            .max()
+            .unwrap_or(0)
+    };
+    let width = look.width.unwrap_or_else(widest) as usize;
+    let height = lines.len().saturating_mul(fonts.line_height(look) as usize);
+    width <= PICTURE_MAX_SIDE && height <= PICTURE_MAX_SIDE
 }
 
 /// The look words take: words that wrap take no more width than they
@@ -617,6 +677,55 @@ mod tests {
         assert!(client.picture(&item(2)).is_none(), "no entry");
     }
 
+    fn words(text: String, look: TextLook) -> ArtRequest {
+        ArtRequest::Text { text, look }
+    }
+
+    #[test]
+    fn words_too_long_or_too_wide_for_a_picture_are_refused() {
+        let dir =
+            std::env::temp_dir().join(format!("uoterm-client-art-words-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_two_items(&dir);
+        let client = ClientArt::open(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let plain = TextLook::unicode(1, 0);
+        let too_long = words("a".repeat(TEXT_MAX_CHARS + 1), plain);
+        assert_eq!(client.checked_picture(&too_long), Err(ArtTooLarge));
+        assert!(client.picture(&too_long).is_none());
+        let too_wide = PICTURE_MAX_SIDE as u32 + 1;
+        for look in [plain.cropped(too_wide), plain.wrap(too_wide)] {
+            assert_eq!(
+                client.checked_picture(&words("Hail".into(), look)),
+                Err(ArtTooLarge)
+            );
+        }
+        assert_eq!(
+            client.checked_picture(&words("Hail".into(), plain)),
+            Ok(None),
+            "words that fit, with no fonts in the files"
+        );
+    }
+
+    #[test]
+    fn a_block_past_the_last_block_a_map_can_have_is_empty() {
+        const FIRST_TOO_FAR: u16 = u16::MAX / BLOCK_SIDE + 1;
+        let dir =
+            std::env::temp_dir().join(format!("uoterm-client-art-far-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_two_items(&dir);
+        uoterm_nav::fixtures::write_mini_client(&dir);
+        let mut client = ClientArt::open(&dir).unwrap();
+        assert_eq!(
+            client.cell_block(0, 0, 0).len(),
+            usize::from(BLOCK_SIDE * BLOCK_SIDE)
+        );
+        assert!(client.cell_block(0, FIRST_TOO_FAR, 0).is_empty());
+        assert!(client.cell_block(0, 0, FIRST_TOO_FAR).is_empty());
+        assert!(client.cell_block(0, u16::MAX, u16::MAX).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn flat_land_has_no_normal_and_a_slope_leans_away_from_its_high_side() {
         assert!(land_normal(5, 5, 5, 5, 5).is_none());
@@ -666,6 +775,15 @@ mod tests {
         let words = client.picture(&text(look)).unwrap();
         assert!(words.width > 0 && words.height > 0);
         let wrapped = client.picture(&text(look.wrap(200))).unwrap();
+        let many_lines = ArtRequest::Text {
+            text: "\n".repeat(TEXT_MAX_CHARS),
+            look,
+        };
+        assert_eq!(
+            client.checked_picture(&many_lines),
+            Err(ArtTooLarge),
+            "too many lines for a picture"
+        );
         assert_eq!(wrapped.width, words.width, "short words take no more room");
         assert_eq!(client.text_lines("Hail", &look.wrap(200)), ["Hail"]);
         let arrow = ArtRequest::Cursor {

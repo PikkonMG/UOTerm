@@ -21,12 +21,13 @@ use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::SystemTime;
 use uoterm_nav::SEASONS_NAME;
 
 /// The browser keeps a picture or a table for a year and never asks again:
-/// other client files have another tag, so another ETag.
+/// other client files, or another build of UOTerm, have another tag, so
+/// another ETag.
 const KEEP_FOREVER: &str = "public, max-age=31536000, immutable";
 const CONTENT_JSON: &str = "application/json";
 
@@ -34,15 +35,17 @@ const CONTENT_JSON: &str = "application/json";
 #[derive(Clone)]
 pub struct WebState {
     /// None when there are no client files: every route answers that it is
-    /// unavailable. The lock is held only on a blocking thread.
-    pub art: Option<Arc<Mutex<ClientArt>>>,
-    /// Names the version of the client files in every ETag.
+    /// unavailable. The lock is held only on a blocking thread: pictures
+    /// and tables share it, a map block or a light shape takes it alone.
+    pub art: Option<Arc<RwLock<ClientArt>>>,
+    /// Names the version of the client files and of UOTerm in every ETag.
     pub files_tag: String,
 }
 
 impl WebState {
     /// The client files of `uopath`, and the season table of the config
-    /// folder.
+    /// folder. The tag also names this build of UOTerm by the time its
+    /// program file was last changed.
     pub fn open(uopath: Option<&Path>) -> Self {
         let art = uopath.and_then(|path| {
             ClientArt::open(path)
@@ -50,10 +53,11 @@ impl WebState {
                 .ok()
         });
         let config_dir = uoterm_runtime::config::config_dir();
+        let program = std::env::current_exe().unwrap_or_default();
         Self {
-            art: art.map(|art| Arc::new(Mutex::new(art))),
+            art: art.map(|art| Arc::new(RwLock::new(art))),
             files_tag: uopath
-                .map(|path| files_tag(path, &config_dir))
+                .map(|path| files_tag(path, &config_dir, &program))
                 .unwrap_or_default(),
         }
     }
@@ -68,10 +72,10 @@ pub fn router(state: WebState) -> Router {
         .with_state(state)
 }
 
-/// A hex number that changes when a file of the client files changes, or
-/// the season table of the config folder: the name and the time each was
-/// last changed.
-fn files_tag(uopath: &Path, config_dir: &Path) -> String {
+/// The version of UOTerm and a hex number that changes when a file of the
+/// client files changes, the season table of the config folder, or the
+/// program file of UOTerm: the name and the time each was last changed.
+fn files_tag(uopath: &Path, config_dir: &Path, program: &Path) -> String {
     let changed = |path: &Path| {
         std::fs::metadata(path)
             .ok()
@@ -86,25 +90,56 @@ fn files_tag(uopath: &Path, config_dir: &Path) -> String {
         .collect();
     files.sort();
     let seasons: Option<Option<SystemTime>> = changed(&config_dir.join(SEASONS_NAME));
+    let build: Option<Option<SystemTime>> = changed(program);
     let mut hasher = DefaultHasher::new();
     files.hash(&mut hasher);
     seasons.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    build.hash(&mut hasher);
+    format!("{}-{:x}", env!("CARGO_PKG_VERSION"), hasher.finish())
 }
 
-/// Runs `read` on the client files on a blocking thread, then `answer` on
-/// what it read once the files are unlocked. Unavailable with no client
-/// files.
+/// Runs `read` with a shared borrow of the client files on a blocking
+/// thread, then `answer` on what it read once the files are unlocked.
 async fn on_art<T: 'static>(
     state: &WebState,
+    read: impl FnOnce(&ClientArt) -> T + Send + 'static,
+    answer: impl FnOnce(T) -> Response + Send + 'static,
+) -> Response {
+    on_locked_art(
+        state,
+        |art| read(&art.read().unwrap_or_else(PoisonError::into_inner)),
+        answer,
+    )
+    .await
+}
+
+/// [`on_art`] for a read that changes the client art: a map block or a
+/// light shape read for the first time.
+async fn on_art_mut<T: 'static>(
+    state: &WebState,
     read: impl FnOnce(&mut ClientArt) -> T + Send + 'static,
+    answer: impl FnOnce(T) -> Response + Send + 'static,
+) -> Response {
+    on_locked_art(
+        state,
+        |art| read(&mut art.write().unwrap_or_else(PoisonError::into_inner)),
+        answer,
+    )
+    .await
+}
+
+/// Runs `read` on the lock of the client files on a blocking thread, then
+/// `answer` on what it read. Unavailable with no client files.
+async fn on_locked_art<T: 'static>(
+    state: &WebState,
+    read: impl FnOnce(&RwLock<ClientArt>) -> T + Send + 'static,
     answer: impl FnOnce(T) -> Response + Send + 'static,
 ) -> Response {
     let Some(art) = state.art.clone() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     tokio::task::spawn_blocking(move || {
-        let read = read(&mut art.lock().unwrap_or_else(PoisonError::into_inner));
+        let read = read(&art);
         answer(read)
     })
     .await
@@ -192,27 +227,46 @@ mod tests {
         }
     }
 
+    /// Marks a file as changed a second from now.
+    fn touch(path: &std::path::Path) {
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(later).unwrap();
+    }
+
     #[test]
     fn the_files_tag_changes_when_a_file_changes() {
         let uopath = fixture_uopath();
         let config = fixture_uopath();
-        let before = files_tag(&uopath.0, &config.0);
-        assert_eq!(before, files_tag(&uopath.0, &config.0), "the same files");
-        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
-        let file = std::fs::File::options()
-            .write(true)
-            .open(uopath.0.join(uoterm_nav::TILEDATA_NAME))
-            .unwrap();
-        file.set_modified(later).unwrap();
-        assert_ne!(before, files_tag(&uopath.0, &config.0));
+        let program_folder = fixture_uopath();
+        let program = program_folder.0.join(uoterm_nav::TILEDATA_NAME);
+        let tag = || files_tag(&uopath.0, &config.0, &program);
+        let before = tag();
+        assert_eq!(before, tag(), "the same files");
+        touch(&uopath.0.join(uoterm_nav::TILEDATA_NAME));
+        assert_ne!(before, tag());
     }
 
     #[test]
     fn a_season_table_of_the_shard_changes_the_files_tag() {
         let uopath = fixture_uopath();
         let config = fixture_uopath();
-        let before = files_tag(&uopath.0, &config.0);
+        let program = uopath.0.join(uoterm_nav::TILEDATA_NAME);
+        let before = files_tag(&uopath.0, &config.0, &program);
         std::fs::write(config.0.join(uoterm_nav::SEASONS_NAME), "").unwrap();
-        assert_ne!(before, files_tag(&uopath.0, &config.0));
+        assert_ne!(before, files_tag(&uopath.0, &config.0, &program));
+    }
+
+    /// A browser that kept answers of an older UOTerm asks again.
+    #[test]
+    fn the_files_tag_names_the_build_of_uoterm() {
+        let uopath = fixture_uopath();
+        let config = fixture_uopath();
+        let program_folder = fixture_uopath();
+        let program = program_folder.0.join(uoterm_nav::TILEDATA_NAME);
+        let before = files_tag(&uopath.0, &config.0, &program);
+        assert!(before.starts_with(env!("CARGO_PKG_VERSION")), "{before}");
+        touch(&program);
+        assert_ne!(before, files_tag(&uopath.0, &config.0, &program));
     }
 }
