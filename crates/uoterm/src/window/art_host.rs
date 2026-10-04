@@ -55,12 +55,6 @@ impl NativeArt {
         self.atlas.as_ref().map(Atlas::texture_id)
     }
 
-    /// A point of the texture that is plain white. A shape with no picture
-    /// takes its color from its vertices alone when it reads this point.
-    pub fn white_uv(&self) -> Point {
-        self.packer.white_uv()
-    }
-
     /// The pixels of a gump picture as the files hold them, for a gump that
     /// draws into its own picture, as the minimap does.
     pub fn gump_pixels(&self, gump: u16) -> Option<ArtPixels> {
@@ -114,9 +108,16 @@ impl WorldArt for NativeArt {
         self.client.is_some()
     }
 
+    fn has_anim(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_some_and(|client| client.anim_rules().is_some())
+    }
+
     fn sprite(&mut self, request: &ArtRequest) -> Art<Sprite> {
+        // The picture waits for the texture it goes into.
         if self.atlas.is_none() {
-            return Art::Missing;
+            return Art::Pending;
         }
         let key = request.key();
         if let Some(known) = self.sprites.get(&key) {
@@ -129,6 +130,10 @@ impl WorldArt for NativeArt {
         let sprite = picture.and_then(|picture| self.place(&picture));
         self.sprites.insert(key, sprite);
         sprite.into()
+    }
+
+    fn white_uv(&self) -> Point {
+        self.packer.white_uv()
     }
 
     fn cell(&mut self, map: u8, x: u16, y: u16) -> Art<&Cell> {
@@ -230,5 +235,37 @@ impl WorldArt for NativeArt {
 
     fn has_gump_art(&self) -> bool {
         self.client.as_ref().is_some_and(ClientArt::has_gump_art)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uoterm_nav::{ART_IDX_NAME, ART_MUL_NAME};
+
+    /// A body the default tables take for a person.
+    const MAN: u16 = 0x0190;
+
+    #[test]
+    fn client_files_without_animation_files_have_no_real_tables() {
+        let dir = std::env::temp_dir().join(format!("uoterm-art-host-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [ART_MUL_NAME, ART_IDX_NAME] {
+            std::fs::write(dir.join(name), []).unwrap();
+        }
+        let client = ClientArt::open(&dir).unwrap();
+        let art = NativeArt::new(Some(client));
+        assert!(art.has_art());
+        assert!(!art.has_anim());
+        assert!(art.anim().is_person(MAN), "the default tables guess");
+        assert!(!NativeArt::new(None).has_anim());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_picture_waits_for_the_texture() {
+        let mut art = NativeArt::new(None);
+        let request = ArtRequest::Land { land_id: 3, hue: 0 };
+        assert_eq!(art.sprite(&request), Art::Pending);
     }
 }

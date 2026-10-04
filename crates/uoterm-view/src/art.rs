@@ -4,7 +4,7 @@
 //! [`WorldArt`] trait is every question the scene asks of the art.
 
 use crate::frame::{WatchEquip, WatchLiveMap, WatchLook};
-use crate::geom::{Area, Rgba, Vector};
+use crate::geom::{Area, Point, Rgba, Vector};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -351,7 +351,13 @@ pub struct Cell {
 pub trait WorldArt {
     /// True when there are client files at all.
     fn has_art(&self) -> bool;
+    /// True when the client files hold the animation files, so the tables
+    /// of [`WorldArt::anim`] are the real ones.
+    fn has_anim(&self) -> bool;
     fn sprite(&mut self, request: &ArtRequest) -> Art<Sprite>;
+    /// A point of the texture that is plain white. A shape with no picture
+    /// takes its color from its vertices alone when it reads this point.
+    fn white_uv(&self) -> Point;
     fn cell(&mut self, map: u8, x: u16, y: u16) -> Art<&Cell>;
     /// Lays the map blocks an UltimaLive shard changed over the map.
     fn take_live_map(&mut self, live: &WatchLiveMap);

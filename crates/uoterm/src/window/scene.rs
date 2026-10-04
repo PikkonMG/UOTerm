@@ -2719,7 +2719,7 @@ impl Scene {
 
     /// True when the body is a person.
     fn is_person(&self, body: u16) -> bool {
-        self.art.has_art() && self.art.anim().is_person(body)
+        self.art.has_anim() && self.art.anim().is_person(body)
     }
 
     /// The ring round a figure in the Modern style. The Classic style draws

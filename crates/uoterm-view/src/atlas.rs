@@ -25,7 +25,7 @@ pub struct Placement {
 /// Puts pictures on shelves in a square texture. The first place is a plain
 /// white square: a shape with no picture takes its color from its vertices
 /// alone when it reads that square.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct ShelfPacker {
     side: usize,
     shelf_x: usize,
@@ -67,15 +67,18 @@ impl ShelfPacker {
         self.white
     }
 
-    /// True when a picture of this size fits an empty texture.
+    /// True when a picture of this size fits a texture that holds the
+    /// white square alone, as it does after [`ShelfPacker::reset`].
     pub fn fits(&self, width: usize, height: usize) -> bool {
-        width + GUTTER <= self.side && height + GUTTER <= self.side
+        let mut emptied = *self;
+        emptied.reset();
+        emptied.place(width, height).is_some()
     }
 
     /// The place of the next picture. None when it does not fit in the room
     /// left: then the texture is full until [`ShelfPacker::reset`].
     pub fn place(&mut self, width: usize, height: usize) -> Option<Placement> {
-        if !self.fits(width, height) {
+        if width + GUTTER > self.side {
             return None;
         }
         let (mut x, mut y) = (self.shelf_x, self.shelf_y);
@@ -141,6 +144,18 @@ mod packer_tests {
         assert!(packer.place(8, 8).is_none(), "the room is used up");
         packer.reset();
         assert!(packer.place(8, 8).is_some());
+    }
+
+    #[test]
+    fn a_picture_fits_only_where_the_white_square_leaves_room() {
+        const SIDE: usize = 16;
+        let packer = ShelfPacker::new(SIDE);
+        // Narrow enough to stand beside the white square: the whole height.
+        assert!(packer.fits(8, SIDE - GUTTER));
+        // Too wide for that shelf, so it goes under the white square.
+        assert!(!packer.fits(12, SIDE - GUTTER));
+        assert!(packer.fits(12, SIDE - WHITE_SIDE - 2 * GUTTER));
+        assert!(!packer.fits(SIDE, 1));
     }
 
     #[test]
