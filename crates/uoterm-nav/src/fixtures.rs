@@ -6,13 +6,15 @@ use std::path::Path;
 
 use crate::art::{ART_IDX_NAME, ART_MUL_NAME, ITEM_ART_BASE, PIXEL_DRAWN};
 use crate::fonts::{glyph_index, ASCII_GLYPH_COUNT, FONTS_NAME};
+use crate::gumpart::{GUMP_IDX_NAMES, GUMP_MUL_NAMES};
 use crate::hues::HUES_NAME;
 use crate::mul::{
     block_index, BLOCK_BYTES, BLOCK_HEADER, CELL_BYTES, GROUP_HEADER, IDX_EMPTY, IDX_RECORD,
-    LAND_COUNT, LAND_GROUP, LAND_NAME_AFTER_FLAGS, LAND_RECORD_OLD, STAIDX_RECORD,
+    IDX_WIDTH_SHIFT, LAND_COUNT, LAND_GROUP, LAND_NAME_AFTER_FLAGS, LAND_RECORD_OLD, STAIDX_RECORD,
     STATIC_HEIGHT_BYTES_AFTER_FLAGS, STATIC_RECORD, STATIC_RECORD_OLD, TILEDATA_FLAGS_OLD,
     TILEDATA_NAME, TILE_NAME_LEN,
 };
+use crate::sound::{SOUND_HEADER_BYTES, SOUND_IDX_NAME, SOUND_MUL_NAME};
 use crate::tiles::{TILE_IMPASSABLE, TILE_SURFACE};
 use crate::unifont::UNIFONT_NAME;
 
@@ -45,6 +47,15 @@ pub const SMALL_FONT_WIDTH: u8 = 3;
 /// The one drawn pixel of item 1 of [`write_two_items`], as an
 /// [`crate::ArtPixels`] holds it.
 pub const TWO_ITEMS_RED: u16 = RED | PIXEL_DRAWN;
+
+/// The one sound of [`write_one_sound`]: its number and its samples.
+pub const FIXTURE_SOUND_ID: u16 = 1;
+pub const FIXTURE_SOUND_SAMPLES: [i16; 2] = [1000, -2];
+/// The one gump of [`write_one_gump`]: its id, its size, and the pixels it
+/// draws, as `(x, y)`.
+pub const FIXTURE_GUMP_ID: u16 = 0;
+pub const FIXTURE_GUMP_SIZE: (usize, usize) = (3, 2);
+pub const FIXTURE_GUMP_DRAWN: [(usize, usize); 4] = [(0, 0), (1, 0), (1, 1), (2, 1)];
 
 const MAP_NAME: &str = "map0.mul";
 const STATICS_NAME: &str = "statics0.mul";
@@ -223,4 +234,60 @@ pub fn write_small_fonts(dir: &Path) {
     fs::write(dir.join(FONTS_NAME), ascii_font_bytes(SMALL_FONT_WIDTH)).unwrap();
     fs::write(dir.join(UNIFONT_NAME), []).unwrap();
     fs::write(dir.join(HUES_NAME), []).unwrap();
+}
+
+/// One index record: where a record starts, how long it is, and the extra
+/// number.
+fn idx_record(offset: u32, len: u32, extra: u32) -> Vec<u8> {
+    [offset, len, extra]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+/// Writes a `sound.mul` and a `soundidx.mul` that hold one sound, number
+/// [`FIXTURE_SOUND_ID`], of [`FIXTURE_SOUND_SAMPLES`].
+pub fn write_one_sound(dir: &Path) {
+    let mut record = vec![0u8; SOUND_HEADER_BYTES];
+    record.extend(FIXTURE_SOUND_SAMPLES.iter().flat_map(|s| s.to_le_bytes()));
+    let mut idx = Vec::new();
+    for id in 0..=FIXTURE_SOUND_ID {
+        idx.extend(if id == FIXTURE_SOUND_ID {
+            idx_record(0, record.len() as u32, 0)
+        } else {
+            idx_record(IDX_EMPTY, 0, 0)
+        });
+    }
+    fs::write(dir.join(SOUND_MUL_NAME), record).unwrap();
+    fs::write(dir.join(SOUND_IDX_NAME), idx).unwrap();
+}
+
+/// The rows of a gump record: one offset for each row, in steps of four
+/// bytes, then the runs of each row as color and length.
+pub fn gump_rows(rows: &[&[(u16, u16)]]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut offset = rows.len() as u32;
+    for row in rows {
+        data.extend(offset.to_le_bytes());
+        offset += row.len() as u32;
+    }
+    for (color, run) in rows.iter().flat_map(|row| row.iter()) {
+        data.extend(color.to_le_bytes());
+        data.extend(run.to_le_bytes());
+    }
+    data
+}
+
+/// Writes a `gumpart.mul` and a `gumpidx.mul` that hold one gump,
+/// [`FIXTURE_GUMP_ID`], that draws [`FIXTURE_GUMP_DRAWN`] in red.
+pub fn write_one_gump(dir: &Path) {
+    let (width, height) = FIXTURE_GUMP_SIZE;
+    let data = gump_rows(&[&[(RED, 2), (0, 1)], &[(0, 1), (RED, 2)]]);
+    let size = ((width as u32) << IDX_WIDTH_SHIFT) | height as u32;
+    fs::write(dir.join(GUMP_MUL_NAMES[0]), &data).unwrap();
+    fs::write(
+        dir.join(GUMP_IDX_NAMES[0]),
+        idx_record(0, data.len() as u32, size),
+    )
+    .unwrap();
 }

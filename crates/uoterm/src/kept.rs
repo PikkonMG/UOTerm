@@ -1,5 +1,5 @@
-//! What the window keeps between runs, as small TOML files in the config
-//! folder: the profiles of the options, the hotbar.
+//! What the window and the web client keep between runs, as small TOML
+//! files in the config folder: the profiles of the options, the hotbar.
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::Path;
@@ -21,14 +21,24 @@ pub fn save<T: Serialize>(file: &str, value: &T) {
     save_to(&config_dir().join(file), value);
 }
 
-pub fn save_to<T: Serialize>(path: &Path, value: &T) {
-    let Ok(text) = toml::to_string(value) else {
-        return;
+/// Writes `value` to `path`, and its folder when there is none. False when
+/// it was not written; the reason goes to the log.
+pub fn save_to<T: Serialize>(path: &Path, value: &T) -> bool {
+    let text = match toml::to_string(value) {
+        Ok(text) => text,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "settings not saved");
+            return false;
+        }
     };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Err(e) = std::fs::write(path, text) {
-        tracing::warn!(error = %e, path = %path.display(), "settings not saved");
+    match std::fs::write(path, text) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "settings not saved");
+            false
+        }
     }
 }

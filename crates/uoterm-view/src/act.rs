@@ -7,6 +7,7 @@
 //! through while it refuses the agent.
 
 use crate::frame::WatchFrame;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 use uoterm_world::tool_names::{
@@ -786,6 +787,37 @@ impl Act {
     pub fn is_two_step(&self) -> bool {
         matches!(self.calls().as_slice(), [(TOOL_LIFT, _), (TOOL_DROP, _)])
     }
+
+    /// The act as a web page sends it on its live link: its calls, each
+    /// marked as the human's, and its words.
+    pub fn for_page(&self) -> PageAct {
+        PageAct {
+            calls: self
+                .calls()
+                .into_iter()
+                .map(|(tool, args)| ToolCallOut {
+                    tool: tool.to_string(),
+                    args: with_human(args),
+                })
+                .collect(),
+            words: self.words(),
+        }
+    }
+}
+
+/// One tool call as it goes on the live link of a web page.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallOut {
+    pub tool: String,
+    pub args: Value,
+}
+
+/// An act as the calls that make it, in order, and the words that tell the
+/// human what was done.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PageAct {
+    pub calls: Vec<ToolCallOut>,
+    pub words: String,
 }
 
 /// The arguments of a call, marked as the human's.
@@ -890,6 +922,22 @@ mod moved_tests {
         assert_eq!(act.calls().len(), 1);
         assert_eq!(act.calls()[0].0, TOOL_USE);
         assert!(!act.is_two_step());
+    }
+
+    #[test]
+    fn an_act_for_the_page_is_its_human_calls_and_its_words() {
+        let act = Act::Use(BAG);
+        let out = act.for_page();
+        assert_eq!(
+            out.calls,
+            [ToolCallOut {
+                tool: TOOL_USE.into(),
+                args: json!({ "serial": BAG, ARG_HUMAN: true }),
+            }]
+        );
+        assert_eq!(out.words, act.words());
+        let wire = serde_json::to_value(&out).unwrap();
+        assert_eq!(wire["calls"][0]["tool"], TOOL_USE);
     }
 
     #[test]

@@ -142,7 +142,7 @@ impl ModernUi {
         ctx.set_zoom_factor(look.ui_scale);
         theme::set_panel_opacity(look.opacity);
         let font = look.font.as_deref().and_then(|chosen| {
-            let dir = host::fonts::fonts_dir();
+            let dir = host::fonts::fonts_dir(&uoterm_runtime::config::config_dir());
             let bytes = host::fonts::load(&dir, chosen);
             if bytes.is_none() {
                 let there: Vec<String> = host::fonts::fonts_in(&dir)

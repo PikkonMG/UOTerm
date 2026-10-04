@@ -6,4 +6,4 @@ pub use uoterm_view::settings::*;
 
 mod store;
 
-pub use store::{shard_address, ProfileHome};
+pub use store::{shard_address, CharacterKey, ProfileHome, ProfileStore};

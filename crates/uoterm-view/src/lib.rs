@@ -23,6 +23,7 @@ pub mod lights;
 pub mod look;
 pub mod map_lay;
 pub mod model;
+pub mod orders;
 pub mod pad;
 pub mod predict;
 pub mod scene;

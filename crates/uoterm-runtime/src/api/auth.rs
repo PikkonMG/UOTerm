@@ -87,6 +87,16 @@ pub fn checked_api_token(bind: &str, token: Option<String>) -> Result<Option<Str
     Ok(token)
 }
 
+/// Who may call an API that listens on `bind`: the token of the
+/// environment, checked as [`checked_api_token`] checks it, and only this
+/// machine when `bind` is on this machine.
+pub fn guard_for(bind: &str) -> Result<Guard> {
+    Ok(Guard {
+        token: checked_api_token(bind, api_token_from_env())?,
+        local_only: bind_is_loopback(bind),
+    })
+}
+
 /// True when a cookie can carry `token` as its value.
 fn fits_cookie(token: &str) -> bool {
     token
@@ -516,6 +526,18 @@ mod tests {
                 checked_api_token(LOCAL_HOST, Some(bad.into())).is_err(),
                 "{bad:?}"
             );
+        }
+    }
+
+    /// An API on this machine answers only this machine. One that other
+    /// machines reach answers them only with a token.
+    #[test]
+    fn the_guard_of_a_bind_follows_the_loopback_rule() {
+        assert!(guard_for(LOCAL_HOST).unwrap().local_only);
+        let wide = guard_for("0.0.0.0:7733");
+        match api_token_from_env() {
+            Some(_) => assert!(wide.is_ok_and(|guard| !guard.local_only)),
+            None => assert!(wide.is_err()),
         }
     }
 

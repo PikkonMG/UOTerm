@@ -257,6 +257,67 @@ pub struct Picture {
     pub anchor: Vector,
 }
 
+/// The lines words break into in a UO font, and the height of one line, as
+/// a picture of the words is drawn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextMeasure {
+    pub lines: Vec<String>,
+    pub line_height: u32,
+}
+
+/// The bits of a byte of a [`GumpMask`].
+const MASK_BYTE_BITS: usize = 8;
+
+/// Which pixels of a gump picture are drawn, for a click that must fall on
+/// what a gump shows, not on its box. One bit for each pixel, row by row
+/// from the top left, the lowest bit of each byte first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GumpMask {
+    pub width: usize,
+    pub height: usize,
+    pub bits: Vec<u8>,
+}
+
+impl GumpMask {
+    /// The mask of a picture whose pixel at `x`, `y` is drawn when `drawn`
+    /// says so.
+    pub fn from_drawn(width: usize, height: usize, drawn: impl Fn(usize, usize) -> bool) -> Self {
+        let mut bits = vec![0u8; (width * height).div_ceil(MASK_BYTE_BITS)];
+        for y in 0..height {
+            for x in 0..width {
+                if drawn(x, y) {
+                    let at = y * width + x;
+                    bits[at / MASK_BYTE_BITS] |= 1 << (at % MASK_BYTE_BITS);
+                }
+            }
+        }
+        Self {
+            width,
+            height,
+            bits,
+        }
+    }
+
+    /// True when the pixel at `x`, `y` is drawn. False past the edge.
+    pub fn drawn_at(&self, x: usize, y: usize) -> bool {
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let at = y * self.width + x;
+        self.bits
+            .get(at / MASK_BYTE_BITS)
+            .is_some_and(|byte| byte & (1 << (at % MASK_BYTE_BITS)) != 0)
+    }
+}
+
+/// One block of a map, by its column and its row of blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapBlockAt {
+    pub map: u8,
+    pub bx: u16,
+    pub by: u16,
+}
+
 /// Where one picture lies in the texture of a window, and its size in
 /// pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -408,6 +469,22 @@ mod request_tests {
         let text = serde_json::to_string(&request).unwrap();
         assert!(text.contains("\"kind\":\"Item\""));
         assert_eq!(serde_json::from_str::<ArtRequest>(&text).unwrap(), request);
+    }
+
+    #[test]
+    fn a_gump_mask_keeps_each_drawn_pixel_as_one_bit() {
+        const WIDTH: usize = 5;
+        const HEIGHT: usize = 3;
+        let drawn = |x: usize, y: usize| (x + y).is_multiple_of(2);
+        let mask = GumpMask::from_drawn(WIDTH, HEIGHT, drawn);
+        assert_eq!(mask.bits.len(), (WIDTH * HEIGHT).div_ceil(8));
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                assert_eq!(mask.drawn_at(x, y), drawn(x, y), "{x},{y}");
+            }
+        }
+        assert!(!mask.drawn_at(WIDTH, 0), "past the edge");
+        assert!(!mask.drawn_at(0, HEIGHT), "past the edge");
     }
 
     #[test]

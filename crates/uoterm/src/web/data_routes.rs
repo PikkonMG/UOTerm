@@ -183,7 +183,7 @@ async fn text_rgb(State(state): State<WebState>, Path(hue): Path<u16>) -> Respon
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture_uopath, send, test_state};
+    use super::super::tests::{fixture_uopath, send, state_in, test_state};
     use super::super::WebState;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -287,7 +287,11 @@ mod tests {
         let mut colors = vec![0u8; (ITEM_BASE + ITEMS) * 2];
         colors[..2].copy_from_slice(&PURE_RED.to_le_bytes());
         std::fs::write(files.0.join(RADARCOL_NAME), colors).unwrap();
-        let radar = json(WebState::open(Some(&files.0)), "/v1/data/radarcol").await;
+        let radar = json(
+            state_in(Some(files.path()), files.path().join("config")),
+            "/v1/data/radarcol",
+        )
+        .await;
         assert_eq!(radar["land"][0], serde_json::json!([255, 0, 0]));
         assert_eq!(radar["items"].as_array().unwrap().len(), ITEMS);
     }
@@ -296,7 +300,11 @@ mod tests {
     async fn the_text_database_comes_by_number() {
         let files = fixture_uopath();
         write_cliloc(&files.0.join(CLILOC_NAME), &[(REFUSAL, "No.")]);
-        let words = json(WebState::open(Some(&files.0)), "/v1/data/cliloc").await;
+        let words = json(
+            state_in(Some(files.path()), files.path().join("config")),
+            "/v1/data/cliloc",
+        )
+        .await;
         assert_eq!(words, serde_json::json!({ REFUSAL.to_string(): "No." }));
     }
 
@@ -311,7 +319,7 @@ mod tests {
                 (REFUSAL, "No."),
             ],
         );
-        let state = WebState::open(Some(&files.0));
+        let state = state_in(Some(files.path()), files.path().join("config"));
         let path = format!("/v1/data/creation?towns={BRITAIN_WORDS}");
         let creation: CreationFiles =
             serde_json::from_value(json(state.clone(), &path).await).unwrap();

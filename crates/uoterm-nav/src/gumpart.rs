@@ -135,26 +135,12 @@ fn decode_rows(rows: &[u8], width: usize, height: usize) -> Option<ArtPixels> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures::gump_rows as rows;
     use crate::mul::{IDX_EMPTY, IDX_WIDTH_SHIFT};
     use crate::tests::scratch;
     use std::fs;
 
     const RED: u16 = 0x7C00;
-
-    /// The rows of a gump: one offset for each row, then the runs.
-    fn rows(rows: &[&[(u16, u16)]]) -> Vec<u8> {
-        let mut data = Vec::new();
-        let mut offset = rows.len() as u32;
-        for row in rows {
-            data.extend(offset.to_le_bytes());
-            offset += row.len() as u32;
-        }
-        for (color, run) in rows.iter().flat_map(|row| row.iter()) {
-            data.extend(color.to_le_bytes());
-            data.extend(run.to_le_bytes());
-        }
-        data
-    }
 
     fn record(width: u32, height: u32, runs: &[&[(u16, u16)]]) -> Vec<u8> {
         let mut data = Vec::new();
@@ -214,6 +200,23 @@ mod tests {
         assert!(art.gump(GUMP_ID + 1).is_none());
         assert!(art.gump_size(GUMP_ID + 1).is_none());
         assert!(art.gump(u16::MAX).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_written_gump_draws_its_pixels() {
+        use crate::fixtures::{
+            write_one_gump, FIXTURE_GUMP_DRAWN, FIXTURE_GUMP_ID, FIXTURE_GUMP_SIZE,
+        };
+        let dir = scratch("gumpfixture");
+        write_one_gump(&dir);
+        let picture = GumpArt::open(&dir).unwrap().gump(FIXTURE_GUMP_ID).unwrap();
+        assert_eq!((picture.width, picture.height), FIXTURE_GUMP_SIZE);
+        let drawn: Vec<(usize, usize)> = (0..picture.height)
+            .flat_map(|y| (0..picture.width).map(move |x| (x, y)))
+            .filter(|(x, y)| picture.is_drawn(*x, *y))
+            .collect();
+        assert_eq!(drawn, FIXTURE_GUMP_DRAWN);
         let _ = fs::remove_dir_all(&dir);
     }
 

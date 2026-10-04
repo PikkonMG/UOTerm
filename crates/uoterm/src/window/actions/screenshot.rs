@@ -21,8 +21,13 @@ pub struct Screenshots {
     asked: bool,
 }
 
+/// The folder of the screenshots in the config folder `config`.
+pub fn screenshots_dir(config: &Path) -> PathBuf {
+    config.join(SCREENSHOTS_DIR)
+}
+
 /// The file of a screenshot taken now.
-fn new_file(folder: &Path) -> PathBuf {
+pub fn new_file(folder: &Path) -> PathBuf {
     let time = chrono::Local::now().format(FILE_TIME).to_string();
     folder.join(file_name(&time))
 }
@@ -54,7 +59,7 @@ impl Screenshots {
             })
         })?;
         self.asked = false;
-        let folder = config_dir().join(SCREENSHOTS_DIR);
+        let folder = screenshots_dir(&config_dir());
         let path = new_file(&folder);
         let saved = std::fs::create_dir_all(&folder)
             .map_err(|e| e.to_string())

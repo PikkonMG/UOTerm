@@ -110,7 +110,7 @@ const FIRST_CLIENT_MUSIC: [(&str, bool); 67] = [
 pub const SOUND_SAMPLE_RATE: u32 = 22_050;
 /// A record starts with the name of the sound and some numbers no reader
 /// needs. The samples come after them.
-const SOUND_HEADER_BYTES: usize = 40;
+pub(crate) const SOUND_HEADER_BYTES: usize = 40;
 const SAMPLE_BYTES: usize = 2;
 
 pub struct SoundData {
@@ -344,6 +344,20 @@ mod tests {
         assert_eq!(samples_of(&record), Some(vec![1000, -2]));
         assert_eq!(samples_of(&record[..SOUND_HEADER_BYTES]), None);
         assert_eq!(samples_of(&[0u8; 8]), None);
+    }
+
+    #[test]
+    fn a_sound_of_the_mul_files_reads_back() {
+        use crate::fixtures::{write_one_sound, FIXTURE_SOUND_ID, FIXTURE_SOUND_SAMPLES};
+        let uopath = crate::tests::scratch("sound");
+        write_one_sound(&uopath);
+        let sounds = SoundData::open(&uopath).unwrap();
+        assert_eq!(
+            sounds.samples(FIXTURE_SOUND_ID),
+            Some(FIXTURE_SOUND_SAMPLES.to_vec())
+        );
+        assert_eq!(sounds.samples(FIXTURE_SOUND_ID + 1), None);
+        let _ = std::fs::remove_dir_all(&uopath);
     }
 
     #[test]

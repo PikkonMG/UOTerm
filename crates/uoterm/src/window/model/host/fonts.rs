@@ -7,9 +7,9 @@ use uoterm_view::model::fonts;
 
 const FONTS_DIR: &str = "Fonts";
 
-/// The folder of the player's fonts.
-pub fn fonts_dir() -> PathBuf {
-    uoterm_runtime::config::config_dir().join(FONTS_DIR)
+/// The folder of the player's fonts in the config folder `config`.
+pub fn fonts_dir(config: &Path) -> PathBuf {
+    config.join(FONTS_DIR)
 }
 
 fn file_name(path: &Path) -> Option<&str> {
@@ -34,17 +34,21 @@ pub fn fonts_in(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// The file names of the font files of a folder, by name.
+pub fn font_names(dir: &Path) -> Vec<String> {
+    fonts_in(dir)
+        .iter()
+        .filter_map(|path| file_name(path).map(str::to_string))
+        .collect()
+}
+
 /// The bytes of the chosen font. A bare file name lies in `dir`. None when
 /// it is not a font file that reads.
 pub fn load(dir: &Path, chosen: &Path) -> Option<Vec<u8>> {
     let path = if chosen.is_absolute() || chosen.components().count() > 1 {
         chosen.to_path_buf()
     } else {
-        let names: Vec<String> = fonts_in(dir)
-            .iter()
-            .filter_map(|path| file_name(path).map(str::to_string))
-            .collect();
-        dir.join(fonts::resolve(&names, chosen.to_str()?)?)
+        dir.join(fonts::resolve(&font_names(dir), chosen.to_str()?)?)
     };
     is_font(&path).then(|| std::fs::read(path).ok()).flatten()
 }
@@ -61,6 +65,7 @@ mod tests {
         std::fs::write(dir.join("readme.txt"), b"words").unwrap();
         let found = fonts_in(&dir);
         assert_eq!(found, vec![dir.join("Avadonian.TTF")]);
+        assert_eq!(font_names(&dir), ["Avadonian.TTF"]);
         assert_eq!(
             load(&dir, Path::new("Avadonian.TTF")),
             Some(b"font".to_vec())

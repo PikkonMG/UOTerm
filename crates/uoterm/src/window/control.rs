@@ -9,7 +9,7 @@
 use super::actions::guard::{load_grab_bags, save_grab_bags, Checked, Guard, NOTE_GRAB_BAG_SET};
 use super::actions::LocalAim;
 use super::link::Link;
-use super::orders;
+use super::orders::{self, ORDER_OFF};
 use super::settings::CombatOptions;
 use crate::view::WatchFrame;
 use eframe::egui;
@@ -28,7 +28,6 @@ pub use uoterm_view::act::*;
 const NOT_SURE: &str = "Jev is not sure which one you mean. Pick it from the list.";
 const NO_PLACE_ON_MAP: &str = "The marker file names no place on this map.";
 const NO_SUCH_PLACE: &str = "Jev is not sure which place you mean. Click the map instead.";
-const ORDER_OFF: &str = "Orders need a TypeSafe key. Put TYPESAFE_API_KEY in the environment.";
 
 /// The answers that came, kept for their askers. A panel that takes its
 /// answers leaves the answers of the other panels in the box.

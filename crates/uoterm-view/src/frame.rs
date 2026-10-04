@@ -1430,7 +1430,8 @@ fn hex_field(obj: &Value, key: &str) -> Option<Vec<u8>> {
     obj.get(key).and_then(Value::as_str).and_then(hex_bytes)
 }
 
-fn watch_live_map(live: &Value) -> WatchLiveMap {
+/// The live map of a watch picture, from its `live_map` value.
+pub fn watch_live_map(live: &Value) -> WatchLiveMap {
     WatchLiveMap {
         map: num_field(Some(live), "map") as u8,
         revision: live.get("revision").and_then(Value::as_u64).unwrap_or(0),

@@ -1,6 +1,8 @@
 mod art;
 mod creation_files;
+mod kept;
 mod mcp;
+mod orders;
 mod remote;
 mod view;
 mod web;
@@ -31,6 +33,8 @@ const ENCRYPTION_OSI: &str = "osi";
 const ERA_T2A: &str = "t2a";
 const ERA_MODERN: &str = "modern";
 const TERM_CLEAR_HOME: &str = "\x1b[2J\x1b[H";
+/// Where `npm run build` puts the page of the web client.
+const WEB_DIR_DEFAULT: &str = "web/dist";
 
 /// Stream codec for the login and game sockets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -205,6 +209,18 @@ enum Commands {
         /// Log in at once with the saved login of --profile, with no click on Connect
         #[arg(long, requires = "profile")]
         go: bool,
+    },
+    /// Serve the web client: the HTTP API, the client files and the page
+    Web {
+        /// Where to listen. The default is `api_bind` in uoterm.toml.
+        #[arg(long)]
+        bind: Option<String>,
+        /// The folder of the built page. The default is `web/dist`.
+        #[arg(long = "web-dir")]
+        web_dir: Option<PathBuf>,
+        /// The client files. The default is `uopath` in uoterm.toml.
+        #[arg(long)]
+        uopath: Option<PathBuf>,
     },
     /// Watch a running session: a 2D window, or --text for the terminal
     Watch {
@@ -420,6 +436,11 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
             api_bind,
             go,
         } => play(profile, encryption, uopath, api_bind, go),
+        Commands::Web {
+            bind,
+            web_dir,
+            uopath,
+        } => web_client(bind, web_dir, uopath).await,
         Commands::Watch {
             text,
             uopath,
@@ -883,6 +904,45 @@ fn play(
     Ok(EXIT_OK as u8)
 }
 
+/// `uoterm web`: the runtime API, the routes of the web client and the
+/// page, behind one guard, until Ctrl+C. The sessions the page starts take
+/// their client files from `uopath`, else from the config file.
+async fn web_client(
+    bind: Option<String>,
+    web_dir: Option<PathBuf>,
+    uopath: Option<PathBuf>,
+) -> Result<u8, RuntimeError> {
+    let mut cfg = load_app_config(None);
+    cfg.uopath = uopath.or(cfg.uopath.take());
+    let bind = bind.unwrap_or_else(|| cfg.api_bind.clone());
+    let guard = uoterm_runtime::api::guard_for(&bind)?;
+    let runtime = Runtime::new(cfg.max_sessions);
+    let files = cfg.uopath.clone();
+    let state_runtime = runtime.clone();
+    let state = tokio::task::spawn_blocking(move || {
+        web::WebState::open(
+            files.as_deref(),
+            uoterm_runtime::config::config_dir(),
+            state_runtime,
+            orders::api_key(),
+        )
+    })
+    .await
+    .map_err(|e| RuntimeError::Network(e.to_string()))?;
+    let web_dir = web_dir.unwrap_or_else(|| PathBuf::from(WEB_DIR_DEFAULT));
+    let app = web::app(runtime, cfg, state, web_dir, guard);
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .map_err(|e| RuntimeError::Network(e.to_string()))?;
+    println!("Open http://{bind}/");
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!(error = %e, "web client ended");
+        }
+    });
+    wait_ctrl_c().await
+}
+
 /// Serves the API in the background. Its sessions take their client files
 /// from `cfg`, with the overrides of the command line in it.
 fn start_api(rt: Runtime, bind: String, cfg: AppConfig) {
@@ -985,6 +1045,27 @@ mod tests {
             }
             _ => panic!("expected walk"),
         }
+    }
+
+    #[test]
+    fn web_takes_a_bind_and_a_page_folder() {
+        let cli = Cli::try_parse_from([
+            "uoterm",
+            "web",
+            "--bind",
+            "0.0.0.0:7733",
+            "--web-dir",
+            "/tmp/page",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Web {
+                bind: Some(_),
+                web_dir: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]

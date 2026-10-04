@@ -2,11 +2,11 @@
 //! of each shard. A character with no profile of its own starts from the
 //! global default.
 
-use super::super::kept;
 use super::Profile;
+use crate::kept;
 use serde::Deserialize;
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uoterm_runtime::config::{config_dir, file_safe};
 
 const PROFILES_DIR: &str = "profiles";
@@ -58,12 +58,15 @@ pub struct ProfileStore {
 impl ProfileStore {
     /// The profiles in the config folder of UOTerm.
     pub fn in_config() -> Self {
-        let config = config_dir();
-        Self::at(config.join(PROFILES_DIR), config.join(OLD_AUDIO_FILE))
+        Self::in_folder(&config_dir())
     }
 
-    fn at(dir: PathBuf, old_audio: PathBuf) -> Self {
-        Self { dir, old_audio }
+    /// The profiles in the config folder `config`.
+    pub fn in_folder(config: &Path) -> Self {
+        Self {
+            dir: config.join(PROFILES_DIR),
+            old_audio: config.join(OLD_AUDIO_FILE),
+        }
     }
 
     fn default_path(&self) -> PathBuf {
@@ -107,12 +110,14 @@ impl ProfileStore {
         }
     }
 
-    pub fn save_default(&self, profile: &Profile) {
-        kept::save_to(&self.default_path(), profile);
+    /// False when the file was not written.
+    pub fn save_default(&self, profile: &Profile) -> bool {
+        kept::save_to(&self.default_path(), profile)
     }
 
-    pub fn save_character(&self, key: &CharacterKey, profile: &Profile) {
-        kept::save_to(&self.character_path(key), profile);
+    /// False when the file was not written.
+    pub fn save_character(&self, key: &CharacterKey, profile: &Profile) -> bool {
+        kept::save_to(&self.character_path(key), profile)
     }
 }
 
@@ -136,11 +141,8 @@ impl ProfileHome {
     /// A home whose profiles lie in `dir`, so a test never writes the
     /// player's own profiles.
     #[cfg(test)]
-    pub fn in_dir(dir: &std::path::Path) -> Self {
-        Self::with_store(
-            ProfileStore::at(dir.join(PROFILES_DIR), dir.join(OLD_AUDIO_FILE)),
-            None,
-        )
+    pub fn in_dir(dir: &Path) -> Self {
+        Self::with_store(ProfileStore::in_folder(dir), None)
     }
 
     fn with_store(store: ProfileStore, shard: Option<String>) -> Self {
@@ -176,7 +178,7 @@ impl ProfileHome {
         match &self.character {
             Some(key) => self.store.save_character(key, profile),
             None => self.store.save_default(profile),
-        }
+        };
     }
 
     /// Makes the profile the global default, the start of each new
@@ -190,7 +192,6 @@ impl ProfileHome {
 mod tests {
     use super::*;
     use crate::window::settings::{GumpPlace, KeyBinding, MacroStep, UiStyle};
-    use std::path::Path;
 
     const SHARD: &str = "play.example.com:2593";
 
@@ -200,7 +201,7 @@ mod tests {
     }
 
     fn test_store(dir: &Path) -> ProfileStore {
-        ProfileStore::at(dir.join(PROFILES_DIR), dir.join(OLD_AUDIO_FILE))
+        ProfileStore::in_folder(dir)
     }
 
     #[test]

@@ -24,7 +24,6 @@ mod desk;
 mod floats;
 mod gump_ui;
 mod hud;
-mod kept;
 mod keys;
 mod lights;
 mod link;
@@ -36,7 +35,6 @@ mod mapitem_ui;
 mod model;
 mod modern;
 mod options_ui;
-mod orders;
 mod pad;
 mod pages_ui;
 mod ring_ui;
@@ -48,6 +46,8 @@ mod theme;
 mod tips;
 mod video;
 
+use crate::kept;
+use crate::orders;
 use crate::view::{WatchFrame, WINDOW_RADAR_SIZE, WINDOW_RADAR_SIZE_WITH_ART, WINDOW_TITLE};
 use audio::Audio;
 use boxes_ui::BoxesUi;
@@ -103,10 +103,12 @@ pub struct Shown {
     pub open: Vec<Panel>,
 }
 
+pub use actions::screenshot;
 pub use login_ui::{Connect, KeepLogin, KeepLogins, LoginForm, SavedLogin};
 #[cfg(test)]
 pub use login_ui::{BAD_PORT, NEEDS_ACCOUNT, NEEDS_HOST};
-pub use settings::shard_address;
+pub use model::host::fonts;
+pub use settings::{shard_address, CharacterKey, ProfileStore};
 
 /// What `uoterm play` starts with: the login screens, then the game.
 pub struct PlayOptions {

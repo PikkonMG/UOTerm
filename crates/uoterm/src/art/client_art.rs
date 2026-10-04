@@ -15,7 +15,8 @@ use uoterm_nav::{
     TileFlagSet, TileQuery, GUMP_MAX_SIDE, TILE_ANIMATED, TILE_PARTIAL_HUE,
 };
 use uoterm_view::art::{
-    is_drawn, mount_item, ArtRequest, Cell, CellStatic, Picture, Stretch, TextLook,
+    is_drawn, mount_item, ArtRequest, Cell, CellStatic, GumpMask, MapBlockAt, Picture, Stretch,
+    TextLook, TextMeasure,
 };
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::Vector;
@@ -172,19 +173,21 @@ impl ClientArt {
 
     /// Lays the map blocks an UltimaLive shard changed over the map files.
     /// A block is laid again only when it changed again, and the tiles read
-    /// before a change are read anew.
-    pub fn take_live_map(&mut self, live: &WatchLiveMap) {
+    /// before a change are read anew. Gives the blocks laid now.
+    pub fn take_live_map(&mut self, live: &WatchLiveMap) -> Vec<MapBlockAt> {
         let fresh: Vec<_> = live
             .blocks
             .iter()
             .filter(|block| self.live_blocks.get(&(live.map, block.block)) != Some(&block.changed))
             .collect();
         if fresh.is_empty() {
-            return;
+            return Vec::new();
         }
         let Some(map) = facet_files(&mut self.maps, &self.uopath, live.map) else {
-            return;
+            return Vec::new();
         };
+        let high = u32::from(map.blocks_high());
+        let mut laid = Vec::with_capacity(fresh.len());
         for block in fresh {
             let number = u64::from(block.block);
             let land = block
@@ -200,8 +203,17 @@ impl ClientArt {
             }
             self.live_blocks
                 .insert((live.map, block.block), block.changed);
+            let (bx, by) = (block.block / high, block.block % high);
+            if let (Ok(bx), Ok(by)) = (u16::try_from(bx), u16::try_from(by)) {
+                laid.push(MapBlockAt {
+                    map: live.map,
+                    bx,
+                    by,
+                });
+            }
         }
         self.cells.retain(|(map, _, _), _| *map != live.map);
+        laid
     }
 
     /// One tile of a facet. The tiles are read a block at a time.
@@ -443,6 +455,21 @@ impl ClientArt {
             .unwrap_or_default()
     }
 
+    /// The lines of words and the height of one, for a web page that lays
+    /// out words it draws. Refused as a picture of the words is. Ok(None)
+    /// when the files hold no UO fonts.
+    pub fn measured_text(
+        &self,
+        text: &str,
+        look: &TextLook,
+    ) -> Result<Option<TextMeasure>, ArtTooLarge> {
+        self.check_words(text, look)?;
+        Ok(self.line_height(look).map(|line_height| TextMeasure {
+            lines: self.text_lines(text, look),
+            line_height,
+        }))
+    }
+
     fn item_flags(&self, graphic: u16) -> u32 {
         self.item_tile(graphic)
             .map_or(0, |tile| tile.flags.low_bits())
@@ -487,6 +514,16 @@ impl ClientArt {
         let map = facet_files(&mut self.maps, &self.uopath, map_index)?;
         map.in_bounds(x, y)
             .then(|| map.column(x, y).land.north_west)
+    }
+
+    /// The pixels a gump draws, for a web page that must know where a
+    /// click falls on what a gump shows. A gump of the files is never wider
+    /// or taller than `GUMP_MAX_SIDE`, so its mask is small.
+    pub fn gump_mask(&self, gump: u16) -> Option<GumpMask> {
+        let art = self.gump_pixels(gump)?;
+        Some(GumpMask::from_drawn(art.width, art.height, |x, y| {
+            art.is_drawn(x, y)
+        }))
     }
 
     /// The pixels of a gump picture as the files hold them, for a gump that
