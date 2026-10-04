@@ -1453,6 +1453,7 @@ Expected: PASS.
 ```bash
 git add crates/uoterm crates/uoterm-nav
 git commit -m "feat(web): serve art, map blocks and tables"
+```
 
 ---
 
