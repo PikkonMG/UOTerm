@@ -6,16 +6,16 @@
  * The view takes "missing" as final, so only an answer of the server says
  * it: a request that does not reach the server is tried again, after the
  * waits of `BACKOFF_MS`, up to `FETCH_TRIES` times. A request the API
- * refuses for want of its token raises `TokenNeeded` to the page and is
- * tried again, every `LONGEST_BACKOFF_MS`, until the token is given.
+ * refuses for want of its token raises `TokenNeeded` to the page and waits
+ * until the page gives the token, then it is tried again.
  *
  * Browsers do not cache the answers of `POST /v1/art`, so the feed keeps
  * the pixels of each picture by the key the view gave, until the view
  * forgets the picture.
  */
 
-import { jsonInit, METHOD_POST, raiseTokenNeeded, STATUS_UNAUTHORIZED } from './api';
-import { backoffWait, LONGEST_BACKOFF_MS } from './backoff';
+import { jsonInit, METHOD_POST, raiseTokenNeeded, STATUS_UNAUTHORIZED, whenTokenGiven } from './api';
+import { backoffWait } from './backoff';
 
 export const ART_PARALLEL = 8;
 /** Tries of a request that does not reach the server, before it counts as missing. */
@@ -25,6 +25,12 @@ const ART_PATH = '/v1/art';
 const ANCHOR_HEADER = 'x-uoterm-anchor';
 const ANCHOR_SEPARATOR = ',';
 const NO_ANCHOR = 0;
+/**
+ * How the pixels of a picture are kept: with the color times the alpha, as
+ * the view's colors are, and as the server made them, with no color
+ * profile applied.
+ */
+const PICTURE_OPTIONS: ImageBitmapOptions = { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'none' };
 
 /** A picture to post to `/v1/art`: the request is an `ArtRequest`. */
 export interface ArtWant {
@@ -69,6 +75,8 @@ interface Queued {
   failedTries: number;
 }
 
+type Timer = ReturnType<typeof setTimeout>;
+
 /** The pixels of each picture the view has, by its key. */
 const pictures = new Map<string, ImageBitmap>();
 
@@ -80,12 +88,22 @@ export function pixelsOf(key: string): ImageBitmap | undefined {
 export class ArtFeed {
   /** Requests that wait for a place, in the order the view named them. */
   private readonly waiting: Queued[] = [];
+  /** Requests the API refused for want of its token: they wait for it. */
+  private readonly parked: Queued[] = [];
+  /** The waits of the requests to try again. */
+  private readonly timers = new Set<Timer>();
   private inFlight = 0;
+  /** True once the page closed the feed: nothing more goes to the view. */
+  private closed = false;
+  private readonly stopHearingToken: () => void;
 
-  constructor(private readonly view: FeedView) {}
+  constructor(private readonly view: FeedView) {
+    this.stopHearingToken = whenTokenGiven(() => this.unpark());
+  }
 
   /** Takes what the view wants now and starts what has a place. Call it once a frame. */
   pump(): void {
+    if (this.closed) return;
     for (const key of this.view.artForgotten()) forget(key);
     for (const path of this.view.dataWanted()) this.queue(this.dataRequest(path));
     for (const post of this.view.postsWanted()) this.queue(this.postRequest(post));
@@ -93,12 +111,25 @@ export class ArtFeed {
     this.startWaiting();
   }
 
+  /**
+   * Stops the feed for good: no request starts or is tried again, and the
+   * answers still on their way are let go. Call it before the view goes.
+   */
+  close(): void {
+    this.closed = true;
+    this.stopHearingToken();
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
+    this.waiting.length = 0;
+    this.parked.length = 0;
+  }
+
   private queue(request: FeedRequest, failedTries = 0): void {
     this.waiting.push({ request, failedTries });
   }
 
   private startWaiting(): void {
-    while (this.inFlight < ART_PARALLEL) {
+    while (!this.closed && this.inFlight < ART_PARALLEL) {
       const next = this.waiting.shift();
       if (!next) return;
       this.inFlight += 1;
@@ -109,21 +140,24 @@ export class ArtFeed {
     }
   }
 
-  private async run({ request, failedTries }: Queued): Promise<void> {
+  private async run(queued: Queued): Promise<void> {
+    const { request, failedTries } = queued;
     let answer: { response: Response; body: Blob };
     try {
       const response = await fetch(request.path, request.init);
       answer = { response, body: await response.blob() };
     } catch {
+      if (this.closed) return;
       const tried = failedTries + 1;
       if (tried < FETCH_TRIES) this.later(request, tried, backoffWait(failedTries));
       else request.missing();
       return;
     }
+    if (this.closed) return;
     const { response, body } = answer;
     if (response.status === STATUS_UNAUTHORIZED) {
       raiseTokenNeeded();
-      this.later(request, failedTries, LONGEST_BACKOFF_MS);
+      this.parked.push(queued);
       return;
     }
     if (!response.ok) {
@@ -133,16 +167,24 @@ export class ArtFeed {
     try {
       await request.arrived(body, response.headers);
     } catch {
-      request.missing();
+      if (!this.closed) request.missing();
     }
   }
 
   /** Queues `request` again after `wait`, without a place while it waits. */
   private later(request: FeedRequest, failedTries: number, wait: number): void {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
       this.queue(request, failedTries);
       this.startWaiting();
     }, wait);
+    this.timers.add(timer);
+  }
+
+  /** The token came: the requests that waited for it go again. */
+  private unpark(): void {
+    this.waiting.push(...this.parked.splice(0));
+    this.startWaiting();
   }
 
   private artRequest(want: ArtWant): FeedRequest {
@@ -150,7 +192,11 @@ export class ArtFeed {
       path: ART_PATH,
       init: jsonInit(METHOD_POST, want.request),
       arrived: async (body, headers) => {
-        const picture = await createImageBitmap(body);
+        const picture = await createImageBitmap(body, PICTURE_OPTIONS);
+        if (this.closed) {
+          picture.close();
+          return;
+        }
         forget(want.key);
         pictures.set(want.key, picture);
         const [anchorX, anchorY] = anchorOf(headers.get(ANCHOR_HEADER));
@@ -163,7 +209,10 @@ export class ArtFeed {
   private dataRequest(path: string): FeedRequest {
     return {
       path,
-      arrived: async (body) => this.view.dataArrived(path, await body.text()),
+      arrived: async (body) => {
+        const text = await body.text();
+        if (!this.closed) this.view.dataArrived(path, text);
+      },
       missing: () => this.view.dataMissing(path),
     };
   }
@@ -172,7 +221,10 @@ export class ArtFeed {
     return {
       path: want.path,
       init: jsonInit(METHOD_POST, want.body),
-      arrived: async (body) => this.view.postArrived(want.key, await body.text()),
+      arrived: async (body) => {
+        const text = await body.text();
+        if (!this.closed) this.view.postArrived(want.key, text);
+      },
       missing: () => this.view.postMissing(want.key),
     };
   }

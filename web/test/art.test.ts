@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { whenTokenNeeded } from '../src/net/api';
+import { giveToken, whenTokenNeeded } from '../src/net/api';
 import { ArtFeed, ART_PARALLEL, FETCH_TRIES, pixelsOf, type FeedView } from '../src/net/art';
 import { backoffWait, LONGEST_BACKOFF_MS } from '../src/net/backoff';
 
@@ -148,21 +148,47 @@ describe('ArtFeed', () => {
     expect(view.artMissing).not.toHaveBeenCalled();
   });
 
-  it('asks_for_the_token_and_tries_again_when_the_api_wants_it', async () => {
+  it('asks_for_the_token_and_waits_for_it_before_it_tries_again', async () => {
     vi.useFakeTimers();
     const tokenNeeded = vi.fn();
     const stop = whenTokenNeeded(tokenNeeded);
     const view = viewWanting([], ['/v1/data/cliloc']);
-    vi.spyOn(globalThis, 'fetch')
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('{"error":"unauthorized"}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValue(new Response('{"1":"a"}'));
     new ArtFeed(view as never).pump();
     await vi.advanceTimersByTimeAsync(0);
     expect(tokenNeeded).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(LONGEST_BACKOFF_MS * FETCH_TRIES);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(view.dataMissing).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(LONGEST_BACKOFF_MS);
+    await giveToken('right');
+    await vi.advanceTimersByTimeAsync(0);
     expect(view.dataArrived).toHaveBeenCalledWith('/v1/data/cliloc', '{"1":"a"}');
     stop();
+  });
+
+  it('stops_its_tries_and_tells_the_view_nothing_once_closed', async () => {
+    vi.useFakeTimers();
+    const view = viewWanting([], ['/v1/data/seasons', '/v1/data/tiledata']);
+    let answer: (response: Response) => void = () => {};
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new TypeError('network'))
+      .mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    const feed = new ArtFeed(view as never);
+    feed.pump();
+    await vi.advanceTimersByTimeAsync(0);
+    feed.close();
+    answer(new Response('{"land":[]}'));
+    await vi.advanceTimersByTimeAsync(LONGEST_BACKOFF_MS * FETCH_TRIES);
+    feed.pump();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(view.dataArrived).not.toHaveBeenCalled();
+    expect(view.dataMissing).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('starts_a_waiting_request_when_one_ends', async () => {

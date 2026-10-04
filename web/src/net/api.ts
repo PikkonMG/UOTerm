@@ -3,6 +3,7 @@
 export const STATUS_UNAUTHORIZED = 401;
 const STATUS_NO_CONTENT = 204;
 export const METHOD_POST = 'POST';
+export const METHOD_PUT = 'PUT';
 /** The running sessions. Any screen may call it to learn whether the API wants its token. */
 export const SESSIONS_PATH = '/v1/sessions';
 /** Where the page trades the token for the cookie that carries it. */
@@ -31,7 +32,22 @@ export class ApiFailed extends Error {
   }
 }
 
-const tokenListeners = new Set<() => void>();
+/** The listeners of one happening: each hears it until it stops. */
+function happening() {
+  const listeners = new Set<() => void>();
+  return {
+    listen(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    tell(): void {
+      for (const listener of [...listeners]) listener();
+    },
+  };
+}
+
+const tokenNeeded = happening();
+const tokenGiven = happening();
 
 /**
  * Calls `listener` each time the API wants its token, whoever learned it:
@@ -39,13 +55,20 @@ const tokenListeners = new Set<() => void>();
  * stops the calls.
  */
 export function whenTokenNeeded(listener: () => void): () => void {
-  tokenListeners.add(listener);
-  return () => tokenListeners.delete(listener);
+  return tokenNeeded.listen(listener);
 }
 
 /** Tells the page that the API wants its token. */
 export function raiseTokenNeeded(): void {
-  for (const listener of tokenListeners) listener();
+  tokenNeeded.tell();
+}
+
+/**
+ * Calls `listener` each time the API took a token, so what waited for it
+ * goes on. Gives the function that stops the calls.
+ */
+export function whenTokenGiven(listener: () => void): () => void {
+  return tokenGiven.listen(listener);
 }
 
 /** The options of a call that sends `body` as JSON. */
@@ -76,6 +99,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export async function giveToken(token: string): Promise<boolean> {
   try {
     await api<void>(TOKEN_PATH, jsonInit(METHOD_POST, { token }));
+    tokenGiven.tell();
     return true;
   } catch (error) {
     if (error instanceof TokenNeeded) return false;

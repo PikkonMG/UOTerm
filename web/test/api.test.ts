@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiFailed, giveToken, jsonInit, readMessage, TokenNeeded, whenTokenNeeded } from '../src/net/api';
+import { api, ApiFailed, giveToken, jsonInit, readMessage, TokenNeeded, whenTokenGiven, whenTokenNeeded } from '../src/net/api';
 import { BACKOFF_MS, backoffWait, LONGEST_BACKOFF_MS } from '../src/net/backoff';
 
 afterEach(() => vi.restoreAllMocks());
@@ -60,6 +60,21 @@ describe('whenTokenNeeded', () => {
     stop();
     await api('/v1/sessions').catch(() => undefined);
     expect(tokenNeeded).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('whenTokenGiven', () => {
+  it('hears_a_token_the_server_took_and_not_a_wrong_one', async () => {
+    const tokenGiven = vi.fn();
+    const stop = whenTokenGiven(tokenGiven);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('{"error":"unauthorized"}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await giveToken('wrong');
+    expect(tokenGiven).not.toHaveBeenCalled();
+    await giveToken('right');
+    expect(tokenGiven).toHaveBeenCalledTimes(1);
+    stop();
   });
 });
 
