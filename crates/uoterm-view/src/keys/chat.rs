@@ -620,6 +620,7 @@ mod key_tests {
         );
         line.key(ChatKey::Text("bank".into()), &speech);
         assert_eq!(line.key(ChatKey::Escape, &speech), ChatOut::Close);
+        assert_eq!(line.text, "bank", "Escape keeps the typed words");
         assert_eq!(
             line.key(ChatKey::Enter { shift: false }, &speech),
             ChatOut::None

@@ -15,9 +15,6 @@ use crate::settings::{Choice, Profile, SpeechOptions};
 use std::time::Duration;
 use uoterm_world::hotkeys;
 
-/// A potion hotkey is this and the potion name.
-const HOTKEY_POTION: &str = "Potion ";
-
 const COMMAND_OPEN_DOOR: &str = "opendoor";
 const COMMAND_GUILD: &str = "guildbutton";
 const COMMAND_QUESTS: &str = "questsbutton";
@@ -166,7 +163,7 @@ fn gump(op: GumpOp, kind: GumpKind, frame: &WatchFrame) -> Vec<Effect> {
 }
 
 fn use_object(object: UsableObject, frame: &WatchFrame) -> Vec<Effect> {
-    let potion = |name: &str| vec![hotkey(&format!("{HOTKEY_POTION}{name}"))];
+    let potion = |name: &str| vec![hotkey(&format!("{}{name}", hotkeys::POTION_HOTKEY_PREFIX))];
     match object {
         UsableObject::BestHealPotion => potion("heal"),
         UsableObject::BestCurePotion => potion("cure"),
@@ -190,6 +187,15 @@ fn use_object(object: UsableObject, frame: &WatchFrame) -> Vec<Effect> {
                 || vec![note(NOTE_NO_TRAPPED_BOX)],
                 |item| vec![Effect::Act(Act::Use(item.serial))],
             ),
+    }
+}
+
+/// The session hotkey that invokes a virtue.
+fn virtue_hotkey(virtue: Virtue) -> &'static str {
+    match virtue {
+        Virtue::Honor => hotkeys::HONOR,
+        Virtue::Sacrifice => hotkeys::SACRIFICE,
+        Virtue::Valor => hotkeys::VALOR,
     }
 }
 
@@ -307,7 +313,7 @@ pub fn resolve(action: ActionId, argument: &str, context: &Context<'_>) -> Vec<E
         ActionId::BandageSelf => vec![hotkey(hotkeys::BANDAGE_SELF)],
         ActionId::BandageTarget => vec![hotkey(hotkeys::BANDAGE_LAST)],
         ActionId::InvokeVirtue => {
-            with_choice::<Virtue>(words, |virtue| vec![hotkey(Virtue::LABELS[virtue.index()])])
+            with_choice::<Virtue>(words, |virtue| vec![hotkey(virtue_hotkey(virtue))])
         }
         ActionId::TargetSystem => toggle(Switch::NewTargetSystem),
         ActionId::UseSkill => vec![command(format!("useskill {}", quoted(words)))],
@@ -342,7 +348,7 @@ pub fn resolve(action: ActionId, argument: &str, context: &Context<'_>) -> Vec<E
         ActionId::SetGrabBag => vec![window(WindowCommand::Aim(LocalAim::SetGrabBag))],
         ActionId::LastObject => vec![hotkey(hotkeys::USE_LAST_ITEM)],
         ActionId::UseItemInHand => vec![command(COMMAND_USE_IN_HAND.to_string())],
-        ActionId::UsePotion => vec![hotkey(&format!("{HOTKEY_POTION}{words}"))],
+        ActionId::UsePotion => vec![hotkey(&format!("{}{words}", hotkeys::POTION_HOTKEY_PREFIX))],
         ActionId::UseObject => with_choice(words, |object| use_object(object, frame)),
         ActionId::Delay => milliseconds(words, 0).map_or_else(
             || {
@@ -519,6 +525,27 @@ mod tests {
                 &context(&frame, &profile)
             ),
             vec![Effect::Act(Act::Use(BAG))]
+        );
+    }
+
+    #[test]
+    fn a_virtue_and_a_potion_press_the_hotkeys_of_the_session() {
+        let frame = WatchFrame::default();
+        let profile = Profile::default();
+        let context = context(&frame, &profile);
+        for (virtue, name) in [
+            ("Honor", hotkeys::HONOR),
+            ("Sacrifice", hotkeys::SACRIFICE),
+            ("Valor", hotkeys::VALOR),
+        ] {
+            assert_eq!(
+                resolve(ActionId::InvokeVirtue, virtue, &context),
+                vec![Effect::Act(Act::Hotkey(name.into()))]
+            );
+        }
+        assert_eq!(
+            resolve(ActionId::UsePotion, "Heal", &context),
+            vec![Effect::Act(Act::Hotkey("Potion Heal".into()))]
         );
     }
 

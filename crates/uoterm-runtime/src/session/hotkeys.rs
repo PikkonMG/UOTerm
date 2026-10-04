@@ -167,7 +167,7 @@ fn all(inner: &Inner) -> Vec<Hotkey> {
     keys.extend(POTIONS.iter().map(|p| {
         lines(
             POTION_GROUP,
-            format!("Potion {}", title(p.name)),
+            format!("{}{}", names::POTION_HOTKEY_PREFIX, title(p.name)),
             format!("drinkpotion {}", quoted(p.name)),
         )
     }));

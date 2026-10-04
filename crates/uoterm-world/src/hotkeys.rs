@@ -3,6 +3,9 @@
 //! Each name is written once, here: the list and the session tables use
 //! the same constants.
 
+/// A potion hotkey is this and the potion name, as "Potion Heal".
+pub const POTION_HOTKEY_PREFIX: &str = "Potion ";
+
 /// Makes a constant for each name and the list of them all from one
 /// table, so a name cannot be in the list and not have a constant.
 macro_rules! fixed_hotkeys {

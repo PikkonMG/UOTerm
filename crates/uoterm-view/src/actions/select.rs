@@ -11,7 +11,7 @@ use uoterm_protocol::types::{NOTO_ATTACKABLE, NOTO_ENEMY, NOTO_INVULNERABLE};
 const NOTO_NOT_FOLLOWING: [u8; 2] = [NOTO_INVULNERABLE, NOTO_ENEMY];
 
 /// The things of a kind in view, nearest first, with their names.
-fn candidates(frame: &WatchFrame, kind: SelectKind) -> Vec<(u32, String)> {
+pub fn candidates(frame: &WatchFrame, kind: SelectKind) -> Vec<(u32, String)> {
     let here = (frame.x, frame.y);
     let away = |x: u16, y: u16| here.0.abs_diff(x).max(here.1.abs_diff(y));
     let in_party = |serial: u32| frame.party_members.iter().any(|m| m.serial == serial);

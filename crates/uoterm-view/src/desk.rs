@@ -44,7 +44,10 @@ pub enum Landing {
     Nothing,
     /// The item stays on the mouse: its picture goes here.
     Carried(Point),
-    /// The pile asks how many to move.
+    /// The pile asks how many to move. The caller gives the split back
+    /// to the desk with `ask_amount`, where the box that asks takes it with
+    /// `take_split`. A drop on a hotbar slot is no landing: the desk keeps
+    /// it in `slotted`.
     AskAmount(Split),
     Act(Act),
 }
