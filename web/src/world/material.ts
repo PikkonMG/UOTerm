@@ -3,7 +3,10 @@
  * in points, a u, v in a texture and a premultiplied color; a pixel is the
  * texture times the color, laid over what is under it by its alpha
  * (premultiplied blending). Colors stay as they are: no color space
- * conversion, as egui blends in the colors it is given.
+ * conversion, as egui blends in the colors it is given. Both sides of a
+ * triangle paint, as egui culls nothing: the camera turns y down, which
+ * mirrors the view, so the quads the view lays clockwise on the screen
+ * face away from it.
  */
 
 import * as THREE from 'three';
@@ -44,6 +47,7 @@ export function paintMaterial(texture: THREE.Texture): THREE.RawShaderMaterial {
     vertexShader: VERTEX_SHADER,
     fragmentShader: FRAGMENT_SHADER,
     uniforms: { picture: { value: texture } },
+    side: THREE.DoubleSide,
     transparent: true,
     depthTest: false,
     depthWrite: false,

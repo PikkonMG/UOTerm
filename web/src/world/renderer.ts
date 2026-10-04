@@ -23,10 +23,8 @@ const OPAQUE = 1;
 /** The camera sees from just in front of the flat world to just behind it. */
 const NEAR = -1;
 const FAR = 1;
-/** The paint order of the layers. */
-const WORLD_ORDER = 0;
-const LIGHT_ORDER = 1;
-const OVERLAY_ORDER = 2;
+/** Before the first resize the view is one point square. */
+const NO_SIZE = 1;
 
 /** What one frame draws: the `DrawBuffers` of the view. */
 export interface WorldDraw {
@@ -52,10 +50,9 @@ class MeshLayer {
   private vertexRoom = 0;
   private indexRoom = 0;
 
-  constructor(material: THREE.Material, order: number) {
+  constructor(material: THREE.Material) {
     this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = order;
     this.grow(0, 0);
   }
 
@@ -99,42 +96,41 @@ class MeshLayer {
   }
 }
 
-export class WorldRenderer {
-  private readonly renderer: THREE.WebGLRenderer;
-  private readonly camera = new THREE.OrthographicCamera(0, 1, 0, 1, NEAR, FAR);
-  private readonly scene = new THREE.Scene();
-  private readonly atlas: AtlasTexture;
+/** The canvas size in whole device pixels for a view of `width` by `height` points, so the viewport fills it exactly. */
+export function deviceSize(width: number, height: number, pixelRatio: number): { width: number; height: number } {
+  return { width: Math.round(width * pixelRatio), height: Math.round(height * pixelRatio) };
+}
+
+/**
+ * The layers of the world and the camera that sees them, with no GPU: the
+ * world mesh, the light layer, then the overlay mesh, painted in that
+ * order (the scene order; the renderer does not sort).
+ */
+export class WorldScene {
+  readonly scene = new THREE.Scene();
+  readonly camera = new THREE.OrthographicCamera(0, NO_SIZE, 0, NO_SIZE, NEAR, FAR);
   private readonly material: THREE.RawShaderMaterial;
   private readonly world: MeshLayer;
   private readonly lights = new LightLayer();
   private readonly overlay: MeshLayer;
 
-  /** A renderer on `canvas`, with a texture of the pictures `atlasSide` square and its white square of `whiteSide`. */
-  constructor(canvas: HTMLCanvasElement, atlasSide: number, whiteSide: number) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, alpha: false, antialias: false, premultipliedAlpha: true });
-    this.atlas = new AtlasTexture(this.renderer, atlasSide, whiteSide);
-    this.material = paintMaterial(this.atlas.texture);
-    this.world = new MeshLayer(this.material, WORLD_ORDER);
-    this.overlay = new MeshLayer(this.material, OVERLAY_ORDER);
-    this.lights.mesh.renderOrder = LIGHT_ORDER;
+  /** The layers, with the pictures of `atlas`. */
+  constructor(atlas: THREE.Texture) {
+    this.material = paintMaterial(atlas);
+    this.world = new MeshLayer(this.material);
+    this.overlay = new MeshLayer(this.material);
     this.scene.add(this.world.mesh, this.lights.mesh, this.overlay.mesh);
   }
 
-  /** Draws one frame: the pictures placed this frame go into the texture first. */
-  draw(buffers: WorldDraw): void {
-    if (buffers.atlasReset()) this.atlas.reset();
-    this.atlas.upload(buffers.uploads(), pixelsOf);
+  /** Takes the triangles and the light of one frame. */
+  update(buffers: WorldDraw): void {
     this.world.update(buffers.positions(), buffers.uvs(), buffers.colors(), buffers.indices());
     this.lights.draw(buffers.lightWidth(), buffers.lightHeight(), buffers.lightCells(), buffers.lightCell());
     this.overlay.update(buffers.overlayPositions(), buffers.overlayUvs(), buffers.overlayColors(), buffers.overlayIndices());
-    this.renderer.setClearColor(BACKGROUND, OPAQUE);
-    this.renderer.render(this.scene, this.camera);
   }
 
-  /** The view is `width` by `height` points, with `pixelRatio` device pixels to a point. */
-  resize(width: number, height: number, pixelRatio: number): void {
-    this.renderer.setPixelRatio(pixelRatio);
-    this.renderer.setSize(width, height, false);
+  /** The camera sees `width` by `height` points from the top left, y down. */
+  resize(width: number, height: number): void {
     this.camera.right = width;
     this.camera.bottom = height;
     this.camera.updateProjectionMatrix();
@@ -145,6 +141,47 @@ export class WorldRenderer {
     this.overlay.dispose();
     this.lights.dispose();
     this.material.dispose();
+  }
+}
+
+export class WorldRenderer {
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly atlas: AtlasTexture;
+  private readonly world: WorldScene;
+
+  /** A renderer on `canvas`, with a texture of the pictures `atlasSide` square and its white square of `whiteSide`. */
+  constructor(canvas: HTMLCanvasElement, atlasSide: number, whiteSide: number) {
+    this.renderer = new THREE.WebGLRenderer({ canvas, alpha: false, antialias: false, premultipliedAlpha: true });
+    // The layers paint in the order the view gives; sorting would also ask
+    // each 2D mesh for a 3D bounding sphere it does not have.
+    this.renderer.sortObjects = false;
+    this.atlas = new AtlasTexture(this.renderer, atlasSide, whiteSide);
+    this.world = new WorldScene(this.atlas.texture);
+  }
+
+  /** Draws one frame: the pictures placed this frame go into the texture first. */
+  draw(buffers: WorldDraw): void {
+    if (buffers.atlasReset()) this.atlas.reset();
+    this.atlas.upload(buffers.uploads(), pixelsOf);
+    this.world.update(buffers);
+    this.renderer.setClearColor(BACKGROUND, OPAQUE);
+    this.renderer.render(this.world.scene, this.world.camera);
+  }
+
+  /**
+   * The view is `width` by `height` points, with `pixelRatio` device pixels
+   * to a point. The canvas takes whole device pixels and the viewport fills
+   * it to the pixel.
+   */
+  resize(width: number, height: number, pixelRatio: number): void {
+    const device = deviceSize(width, height, pixelRatio);
+    this.renderer.setPixelRatio(1);
+    this.renderer.setSize(device.width, device.height, false);
+    this.world.resize(width, height);
+  }
+
+  dispose(): void {
+    this.world.dispose();
     this.atlas.dispose();
     this.renderer.dispose();
   }
