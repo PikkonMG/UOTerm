@@ -3,11 +3,10 @@ import { act } from 'preact/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LoginForm } from '../src/net/login';
 import { Characters } from '../src/screens/Characters';
-import { Login, type SavedLogin } from '../src/screens/Login';
+import { Login, type KeptLogin, type SavedLogin } from '../src/screens/Login';
 import { leave, play, remove } from '../src/screens/login_state';
 import { Picking } from '../src/screens/Picking';
 import { LOGIN_WORDS as WORDS, rules } from './fake_login';
-
 
 const CEDRIC: SavedLogin = {
   name: 'cedric',
@@ -53,11 +52,10 @@ function type(field: HTMLInputElement, words: string) {
   });
 }
 
-
 describe('Login', () => {
   it('has_the_fields_of_the_window_in_its_order_and_hides_the_password', () => {
     const root = mount(
-      <Login saved={[]} blank={{ host: '127.0.0.1', port: 2593 }} words={WORDS} rules={rules()} note={null} onConnect={vi.fn()} onSave={vi.fn()} />,
+      <Login kept={null} saved={[]} blank={{ host: '127.0.0.1', port: 2593 }} words={WORDS} rules={rules()} note={null} onConnect={vi.fn()} onSave={vi.fn()} />,
     );
     const labels = [...root.querySelectorAll('label')].map((each) => each.textContent);
     expect(labels.slice(0, WORDS.labels.length)).toEqual(WORDS.labels);
@@ -69,9 +67,9 @@ describe('Login', () => {
 
   it('connects_with_the_form_and_keeps_the_password_nowhere', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem');
-    const onConnect = vi.fn<(form: LoginForm) => void>();
+    const onConnect = vi.fn<(form: LoginForm, kept: KeptLogin) => void>();
     const root = mount(
-      <Login saved={[CEDRIC]} blank={{ host: '', port: 2593 }} words={WORDS} rules={rules()} note={null} onConnect={onConnect} onSave={vi.fn()} />,
+      <Login kept={null} saved={[CEDRIC]} blank={{ host: '', port: 2593 }} words={WORDS} rules={rules()} note={null} onConnect={onConnect} onSave={vi.fn()} />,
     );
     act(() => root.querySelector<HTMLButtonElement>('.saved-login')?.click());
     expect(root.textContent).toContain('acct2 @ play.example.com:2594');
@@ -79,7 +77,7 @@ describe('Login', () => {
     expect(fieldOf(root, 'Password').value).toBe('');
     type(fieldOf(root, 'Password'), 'hunter2');
     act(() => button(root, WORDS.connect).click());
-    expect(onConnect).toHaveBeenCalledWith({
+    expect(onConnect.mock.calls[0][0]).toEqual({
       host: 'play.example.com',
       port: 2594,
       account: 'acct2',
@@ -90,6 +88,9 @@ describe('Login', () => {
       era: null,
       version: null,
     });
+    const [, kept] = onConnect.mock.calls[0];
+    expect(kept.picked).toBe(CEDRIC);
+    expect(kept.fields).not.toContain('hunter2');
     expect(setItem).not.toHaveBeenCalled();
     expect(location.search).not.toContain('hunter2');
   });
@@ -97,7 +98,7 @@ describe('Login', () => {
   it('shows_the_fault_of_a_form_and_does_not_connect', () => {
     const onConnect = vi.fn();
     const root = mount(
-      <Login saved={[]} blank={{ host: '', port: 2593 }} words={WORDS} rules={rules('Type the host.')} note={null} onConnect={onConnect} onSave={vi.fn()} />,
+      <Login kept={null} saved={[]} blank={{ host: '', port: 2593 }} words={WORDS} rules={rules('Type the host.')} note={null} onConnect={onConnect} onSave={vi.fn()} />,
     );
     act(() => button(root, WORDS.connect).click());
     expect(root.textContent).toContain('Type the host.');
@@ -107,7 +108,7 @@ describe('Login', () => {
   it('saves_the_form_under_a_name_without_the_password', async () => {
     const onSave = vi.fn().mockResolvedValue([CEDRIC]);
     const root = mount(
-      <Login saved={[]} blank={{ host: '10.0.0.7', port: 2593 }} words={WORDS} rules={rules()} note={null} onConnect={vi.fn()} onSave={onSave} />,
+      <Login kept={null} saved={[]} blank={{ host: '10.0.0.7', port: 2593 }} words={WORDS} rules={rules()} note={null} onConnect={vi.fn()} onSave={onSave} />,
     );
     type(fieldOf(root, 'Account'), 'mara');
     type(fieldOf(root, 'Password'), 'hunter2');

@@ -491,8 +491,6 @@ impl ClientArt {
             .is_some_and(|art| art.is_drawn(x, y))
     }
 
-    /// The color of one tile on a map of the world: the color of its
-    /// highest item, or of its land. None past the edge of the map.
     /// The picture of the land round `middle` in its radar colors, as the
     /// map of a start town shows it. None when no tile round it has a
     /// color.
@@ -506,6 +504,8 @@ impl ClientArt {
         })
     }
 
+    /// The color of one tile on a map of the world: the color of its
+    /// highest item, or of its land. None past the edge of the map.
     pub fn radar_rgb(&mut self, map_index: u8, x: u16, y: u16) -> Option<[u8; 3]> {
         let radar = self.radar.as_ref()?;
         let map = facet_files(&mut self.maps, &self.uopath, map_index)?;

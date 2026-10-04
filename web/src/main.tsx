@@ -2,7 +2,7 @@ import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import './app.css';
 import { loadView, type GameProfile } from './game';
-import { api, SESSIONS_PATH, TokenNeeded, whenTokenNeeded } from './net/api';
+import { api, SESSIONS_PATH, TokenNeeded, whenTokenNeeded, type Sessions } from './net/api';
 import { SESSION_ENDED } from './net/live';
 import { login } from './net/login';
 import type { CreationWords } from './screens/creation_model';
@@ -32,11 +32,6 @@ type Screen =
   | { kind: 'fault'; words: string };
 
 const CHECKING: Screen = { kind: 'checking' };
-
-/** The running sessions, as `GET /v1/sessions` gives them. */
-interface Sessions {
-  sessions: string[];
-}
 
 /** The rules of the login screens, as the view runs them. */
 const VIEW_RULES: LoginRules = {

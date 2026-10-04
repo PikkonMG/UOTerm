@@ -13,6 +13,10 @@ use uoterm_protocol::crypto::EncryptionMode;
 use uoterm_runtime::{LoginStore, LoginTarget, Profile, StoredLogin};
 use uoterm_view::model::login::{account_name, host_name, NEEDS_NAME};
 
+/// The words of a save that failed. The fault, which names the folder,
+/// goes to the log only.
+const NOT_WRITTEN: &str = "the saved login could not be written";
+
 pub(super) fn routes() -> Router<WebState> {
     Router::new()
         .route("/v1/logins", get(list))
@@ -128,7 +132,10 @@ async fn save(
     };
     on_blocking(move || match state.logins.save_over(&name, profile) {
         Ok(_) => Json(logins(&state.logins, &state)).into_response(),
-        Err(error) => refused(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+        Err(error) => {
+            tracing::warn!(%error, "a saved login was not written");
+            refused(StatusCode::INTERNAL_SERVER_ERROR, NOT_WRITTEN)
+        }
     })
     .await
 }
@@ -139,7 +146,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::{json, Value};
-    use uoterm_runtime::config::LOGINS_DIR;
+    use uoterm_runtime::config::{LOGINS_DIR, PROFILES_DIR};
     use uoterm_runtime::{AppConfig, LoginStore, Profile};
 
     const SECRET: &str = "hunter2";
@@ -231,5 +238,36 @@ mod tests {
         let answer = send(state, put_json("/v1/logins/%20", &form())).await;
         assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
         assert!(!home.path().join(LOGINS_DIR).exists(), "nothing was saved");
+    }
+
+    #[tokio::test]
+    async fn a_save_that_cannot_be_written_names_no_folder() {
+        let home = temp_folder();
+        std::fs::write(home.path().join(LOGINS_DIR), "a file where the folder goes").unwrap();
+        let state = state_in(None, home.path().to_path_buf());
+        let answer = send(state, put_json("/v1/logins/mara", &form())).await;
+        assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let words = json_of(answer).await["error"].to_string();
+        assert_eq!(words, format!("\"{}\"", super::NOT_WRITTEN));
+        assert!(
+            !words.contains(&home.path().display().to_string()),
+            "{words}"
+        );
+    }
+
+    /// The tests keep the older saved logins in their own folder too.
+    #[tokio::test]
+    async fn the_older_saved_logins_are_listed_as_well() {
+        let home = temp_folder();
+        let old = home.path().join(PROFILES_DIR);
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("cedric.toml"), "account = \"acct2\"\n").unwrap();
+        let state = state_in(None, home.path().to_path_buf());
+        let answer = send(
+            state,
+            Request::get("/v1/logins").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(json_of(answer).await["logins"][0]["name"], "cedric");
     }
 }

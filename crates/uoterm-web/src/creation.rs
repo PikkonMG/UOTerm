@@ -5,11 +5,12 @@
 //! puts them together for the page.
 //!
 //! The view also asks for what the page fetches, as the play view does:
-//! the creation files, the color of each hue, and the pictures of the
-//! figure and of the professions. The art feed of the page fetches them.
+//! the creation files (with the color of each hue of the palettes), and
+//! the pictures of the figure and of the professions. The art feed of the
+//! page fetches them.
 
 use crate::to_js;
-use crate::web_art::{text_rgb_of, text_rgb_path, Wanted};
+use crate::web_art::Wanted;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -20,16 +21,13 @@ use uoterm_view::geom::Vector;
 use uoterm_view::map_lay::{near_map_path, SPAN};
 use uoterm_view::model::creation::{
     card_short, creation_files_path, facet_name, name_rules, paint_words, profession_about,
-    profession_name, race_words, skill_rule, stat_rule, total_words, Creation, CreationFiles,
-    Paint, Progress, Race, SkillChoice, Stage, Step, SummaryRow, SKILL_RANGE, STAT_RANGE,
-    STAT_WORDS, TOWN_MAP_TILES, WORDS_PICK_SKILL,
+    profession_name, profession_picture, race_words, skill_rule, stat_rule, total_words, Creation,
+    CreationFiles, Paint, Progress, Race, SkillChoice, Stage, Step, SummaryRow, SKILL_RANGE,
+    STAT_RANGE, STAT_WORDS, TOWN_MAP_TILES, WORDS_PICK_SKILL,
 };
 use uoterm_view::model::creation::{preview_scale, CREATION_WORDS};
 use uoterm_world::login::{CharacterChoices, NewCharacterWish};
 use wasm_bindgen::prelude::*;
-
-/// The profession pictures show in their own colors.
-const NO_HUE: u16 = 0;
 
 /// What the page has of a thing it fetches: asked for, here, or not on
 /// the server.
@@ -217,7 +215,6 @@ pub struct CreationView {
     files_path: String,
     files: Fetched<CreationFiles>,
     pictures: HashMap<u64, Fetched<ShownPicture>>,
-    colors: HashMap<u16, Fetched<[u8; 3]>>,
     wanted: Vec<Wanted>,
     data: Vec<String>,
 }
@@ -233,7 +230,6 @@ impl CreationView {
             files_path,
             files: Fetched::Asked,
             pictures: HashMap::new(),
-            colors: HashMap::new(),
             wanted: Vec::new(),
         }
     }
@@ -315,18 +311,12 @@ impl CreationView {
         if path == self.files_path {
             self.files =
                 serde_json::from_value(answer.clone()).map_or(Fetched::Missing, Fetched::Here);
-        } else if let Some(hue) = text_rgb_of(path) {
-            let color = serde_json::from_value(answer.clone());
-            self.colors
-                .insert(hue, color.map_or(Fetched::Missing, Fetched::Here));
         }
     }
 
     pub fn data_missing(&mut self, path: &str) {
         if path == self.files_path {
             self.files = Fetched::Missing;
-        } else if let Some(hue) = text_rgb_of(path) {
-            self.colors.insert(hue, Fetched::Missing);
         }
     }
 
@@ -342,20 +332,6 @@ impl CreationView {
                     key: key.to_string(),
                     request: request.clone(),
                 });
-                None
-            }
-        }
-    }
-
-    /// The color of words in a hue, once it came; asked for the first
-    /// time.
-    fn color(&mut self, hue: u16) -> Option<[u8; 3]> {
-        match self.colors.get(&hue) {
-            Some(Fetched::Here(rgb)) => Some(*rgb),
-            Some(Fetched::Asked | Fetched::Missing) => None,
-            None => {
-                self.colors.insert(hue, Fetched::Asked);
-                self.data.push(text_rgb_path(hue));
                 None
             }
         }
@@ -385,7 +361,7 @@ impl CreationView {
             next: self.creation.next_words(),
         };
         let page = match self.creation.step {
-            Step::Look => self.look_page(),
+            Step::Look => self.look_page(files),
             Step::Profession(_) => self.profession_page(files),
             Step::Trade => self.trade_page(files),
             Step::Town => self.town_page(files),
@@ -407,7 +383,7 @@ impl CreationView {
         }
     }
 
-    fn look_page(&mut self) -> Page {
+    fn look_page(&self, files: &CreationFiles) -> Page {
         let creation = &self.creation;
         let races = creation
             .races_shown()
@@ -450,7 +426,11 @@ impl CreationView {
                 words: paint_words(paint, race),
                 rows: palette.rows,
                 columns: palette.columns,
-                cells: palette.hues.iter().map(|hue| self.color(*hue)).collect(),
+                cells: palette
+                    .hues
+                    .iter()
+                    .map(|hue| files.hue_colors.get(hue).copied())
+                    .collect(),
                 picked,
             })
             .collect();
@@ -480,11 +460,7 @@ impl CreationView {
                     .profession
                     .as_ref()
                     .is_some_and(|known| known.true_name == profession.true_name);
-                let request = ArtRequest::Gump {
-                    gump: profession.gump,
-                    hue: NO_HUE,
-                    partial: false,
-                };
+                let request = profession_picture(profession);
                 Card {
                     true_name: profession.true_name.clone(),
                     name: profession_name(profession, files),
@@ -583,18 +559,14 @@ impl CreationView {
         }
     }
 
-    fn name_page(&mut self, files: &CreationFiles) -> Page {
-        let paints = self.creation.shown_paints();
-        let race = self.creation.race;
-        let hues: Vec<(Paint, u16)> = paints
+    fn name_page(&self, files: &CreationFiles) -> Page {
+        let creation = &self.creation;
+        let swatches = creation
+            .shown_paints()
             .into_iter()
-            .map(|paint| (paint, self.creation.hue(paint)))
-            .collect();
-        let swatches = hues
-            .into_iter()
-            .map(|(paint, hue)| Swatch {
-                words: paint_words(paint, race),
-                color: self.color(hue),
+            .map(|paint| Swatch {
+                words: paint_words(paint, creation.race),
+                color: files.hue_colors.get(&creation.hue(paint)).copied(),
             })
             .collect();
         let creation = &self.creation;
@@ -800,7 +772,7 @@ impl CreationView {
         to_js(&Vec::<String>::new())
     }
 
-    /// The paths to get, each once: the creation files and the hue colors.
+    /// The paths to get, each once: the creation files.
     #[wasm_bindgen(js_name = dataWanted)]
     pub fn data_wanted(&mut self) -> JsValue {
         to_js(&self.take_data())
@@ -837,7 +809,6 @@ impl CreationView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use uoterm_view::model::creation::{sample_choices, NameFault};
 
     fn sample_view() -> CreationView {
@@ -861,30 +832,38 @@ mod tests {
     }
 
     #[test]
-    fn the_look_page_asks_for_the_figure_and_each_hue_once() {
-        let mut view = sample_view();
+    fn the_look_page_asks_for_the_figure_and_colors_its_hues_from_the_files() {
+        const SKIN: [u8; 3] = [10, 20, 30];
+        let mut view = CreationView::new(ClientVersion::MODERN, sample_choices());
+        let path = view.take_data().remove(0);
+        let first_skin = view.creation_mut().palette(Paint::Skin).hues[0];
+        let mut files = CreationFiles::sample();
+        files.hue_colors.insert(first_skin, SKIN);
+        view.data_arrived(&path, &serde_json::to_value(files).unwrap());
         let screen = view.screen();
         assert!(screen.ready);
         assert_eq!(screen.stages[0].progress, Progress::Current);
         assert_eq!(screen.preview.figure, None);
         let wanted = view.take_wanted();
         assert_eq!(wanted.len(), 1, "the figure");
-        let hues = view.take_data();
-        assert!(hues
-            .iter()
-            .all(|path| path.starts_with("/v1/data/hues-text/")));
-        assert!(!hues.is_empty());
+        assert!(
+            view.take_data().is_empty(),
+            "no hue is asked for on its own"
+        );
         view.screen();
-        assert!(view.take_wanted().is_empty() && view.take_data().is_empty());
+        assert!(view.take_wanted().is_empty());
         view.picture_arrived(&wanted[0].key, 40, 70, Vector::new(20.0, 66.0));
-        view.data_arrived(&hues[0], &json!([10, 20, 30]));
         let screen = view.screen();
         assert_eq!(screen.preview.figure.unwrap().width, 40);
         let Page::Look { colors, races, .. } = screen.page else {
             panic!("the look page");
         };
         assert_eq!(colors[0].paint, Paint::Skin);
-        assert_eq!(colors[0].cells[0], Some([10, 20, 30]));
+        assert_eq!(colors[0].cells[0], Some(SKIN));
+        assert_eq!(
+            colors[0].cells[1], None,
+            "a hue the server has no color for"
+        );
         assert!(races
             .iter()
             .any(|race| race.race == Race::Elf && !race.locked));

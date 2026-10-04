@@ -21,6 +21,7 @@ use crate::frame::{WatchEquip, WatchLook};
 use crate::geom::{Rgba, Vector};
 use crate::scene::{standing_figure, DOLL_FACING};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use uoterm_nav::{ClilocData, Profession, ProfessionKind, ProfessionList};
 use uoterm_protocol::types::{
     LAYER_BEARD, LAYER_HAIR, LAYER_PANTS, LAYER_ROBE, LAYER_SHIRT, LAYER_SHOES, LAYER_SKIRT,
@@ -107,6 +108,8 @@ const CLOTH_ROWS: usize = 10;
 const CLOTH_COLUMNS: usize = 20;
 const CLOTH_FIRST_HUE: u16 = 3;
 const CLOTH_HUE_STEP: u16 = 5;
+/// The profession pictures show in their own colors.
+const PROFESSION_HUE: u16 = 0;
 /// A new character starts with the second hair style and no beard.
 const FIRST_HAIR: usize = 1;
 /// The ways a figure can face. The preview turns through them.
@@ -375,6 +378,10 @@ pub struct CreationFiles {
     /// The text numbers of the client, for the names and the words of the
     /// professions and of the newer start towns.
     pub words: Option<ClilocData>,
+    /// The color of each hue of [`every_palette_hue`], for a page that has
+    /// no hue files: the server fills it. The window reads the hues itself.
+    #[serde(default)]
+    pub hue_colors: BTreeMap<u16, [u8; 3]>,
 }
 
 impl CreationFiles {
@@ -455,6 +462,7 @@ impl CreationFiles {
             skill_names,
             town_texts: vec!["<b>Yew</b> is a town.".into()],
             words: None,
+            hue_colors: BTreeMap::new(),
         }
     }
 }
@@ -528,6 +536,34 @@ pub fn creation_files_path(towns: &[StartTown]) -> String {
         "{CREATION_FILES_PATH}?towns={}",
         numbers.join(&TOWNS_SEPARATOR.to_string())
     )
+}
+
+/// The picture of a profession on its card.
+pub fn profession_picture(profession: &Profession) -> ArtRequest {
+    ArtRequest::Gump {
+        gump: profession.gump,
+        hue: PROFESSION_HUE,
+        partial: false,
+    }
+}
+
+/// Every hue a palette of the look offers, for any race and sex, once
+/// each and in order: the colors a page needs to show every palette.
+pub fn every_palette_hue() -> Vec<u16> {
+    let mut look = Creation::new(ClientVersion::MODERN, CharacterChoices::default());
+    let mut hues = Vec::new();
+    for race in Race::ALL {
+        for female in [false, true] {
+            look.set_race(race);
+            look.set_female(female);
+            for paint in Paint::ALL {
+                hues.extend(look.palette(paint).hues);
+            }
+        }
+    }
+    hues.sort_unstable();
+    hues.dedup();
+    hues
 }
 
 /// True when the account has room for one more character.
@@ -1466,6 +1502,36 @@ mod tests {
             "/v1/data/creation?towns=0,0,1075074"
         );
         assert_eq!(creation_files_path(&[]), "/v1/data/creation?towns=");
+    }
+
+    #[test]
+    fn every_palette_hue_holds_each_palette_of_each_race_and_sex_once() {
+        let hues = every_palette_hue();
+        let mut gargoyle = creation(NEW);
+        gargoyle.set_race(Race::Gargoyle);
+        gargoyle.set_female(true);
+        for look in [creation(NEW), gargoyle] {
+            for paint in Paint::ALL {
+                assert!(look
+                    .palette(paint)
+                    .hues
+                    .iter()
+                    .all(|hue| hues.contains(hue)));
+            }
+        }
+        assert!(
+            hues.windows(2).all(|pair| pair[0] < pair[1]),
+            "once each, in order"
+        );
+        let card = profession_picture(CreationFiles::sample().professions.top()[0]);
+        assert!(matches!(
+            card,
+            ArtRequest::Gump {
+                hue: PROFESSION_HUE,
+                partial: false,
+                ..
+            }
+        ));
     }
 
     #[test]

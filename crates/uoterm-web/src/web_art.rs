@@ -229,12 +229,12 @@ impl DataPath {
 }
 
 /// The path of the color of words in a hue.
-pub(crate) fn text_rgb_path(hue: u16) -> String {
+fn text_rgb_path(hue: u16) -> String {
     format!("{TEXT_RGB_PREFIX}{hue}")
 }
 
 /// The hue whose color a path names. None for another path.
-pub(crate) fn text_rgb_of(path: &str) -> Option<u16> {
+fn text_rgb_of(path: &str) -> Option<u16> {
     path.strip_prefix(TEXT_RGB_PREFIX)?.parse().ok()
 }
 

@@ -178,7 +178,7 @@ export function mods(event: ModifierKeys): Mods {
 }
 
 /** True when `target` is a field that types the keys itself. */
-function isField(target: EventTarget | null): boolean {
+export function isField(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement);
 }
 

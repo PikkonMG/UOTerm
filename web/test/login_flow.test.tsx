@@ -25,8 +25,14 @@ function listThenReady(replies: LoginReply[]): StartLogin {
   };
 }
 
-async function showForm(start: StartLogin, onReady = vi.fn(), newCreation = vi.fn(), firstNote: string | null = null): Promise<HTMLElement> {
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(NO_LOGINS)));
+async function showForm(
+  start: StartLogin,
+  onReady = vi.fn(),
+  newCreation = vi.fn(),
+  firstNote: string | null = null,
+  logins: unknown = NO_LOGINS,
+): Promise<HTMLElement> {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(logins)));
   const root = document.createElement('div');
   document.body.append(root);
   render(
@@ -101,5 +107,38 @@ describe('LoginScreens', () => {
   it('shows_why_the_page_came_back_to_the_login', async () => {
     const root = await showForm(listThenReady([]), vi.fn(), vi.fn(), 'the session ended');
     expect(root.textContent).toContain('the session ended');
+  });
+
+  it('keeps_the_form_and_the_saved_login_after_a_failed_login_but_not_the_password', async () => {
+    const cedric = { ...NO_LOGINS, logins: [{ name: 'cedric', host: 'play.example.com', port: 2594, account: 'acct2', shard: '', character: '', encryption: 'osi', era: 't2a', version: '5.0.9.1' }] };
+    const tries: LoginForm[] = [];
+    const start: StartLogin = (form) => {
+      tries.push(form);
+      return Promise.reject(new LoginFailed('bad password'));
+    };
+    const root = await showForm(start, vi.fn(), vi.fn(), null, cedric);
+    const field = (label: string) => {
+      const id = [...root.querySelectorAll('label')].find((each) => each.textContent === label)?.htmlFor;
+      const found = id ? root.querySelector<HTMLInputElement>(`#${id}`) : null;
+      if (!found) throw new Error(`no field ${label}`);
+      return found;
+    };
+    act(() => root.querySelector<HTMLButtonElement>('.saved-login')?.click());
+    act(() => {
+      field('Password').value = 'first';
+      field('Password').dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await connect(root);
+    await vi.waitFor(() => expect(root.textContent).toContain('bad password'));
+    expect(field('Host').value).toBe('play.example.com');
+    expect(field('Account').value).toBe('acct2');
+    expect(field('Password').value).toBe('');
+    act(() => {
+      field('Password').value = 'second';
+      field('Password').dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await connect(root);
+    await vi.waitFor(() => expect(tries.length).toBe(2));
+    expect(tries[1]).toMatchObject({ host: 'play.example.com', account: 'acct2', password: 'second', encryption: 'osi', era: 't2a', version: '5.0.9.1' });
   });
 });

@@ -14,7 +14,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use uoterm_nav::{frames_question_fits, Action};
 use uoterm_view::model::compare::ItemLayers;
-use uoterm_view::model::creation::{CREATION_FILES_PATH, TOWNS_SEPARATOR};
+use uoterm_view::model::creation::{
+    every_palette_hue, CreationFiles, CREATION_FILES_PATH, TOWNS_SEPARATOR,
+};
 
 pub(super) fn routes() -> Router<WebState> {
     Router::new()
@@ -144,8 +146,9 @@ struct CreationQuery {
     towns: String,
 }
 
-/// What the character creation reads, with only the words it reads. The
-/// small creation files are read once the client art is unlocked.
+/// What the character creation reads, with only the words it reads, and
+/// the color of each hue of its palettes. The small creation files are
+/// read once the client art is unlocked.
 async fn creation(State(state): State<WebState>, Query(query): Query<CreationQuery>) -> Response {
     let towns: Result<Vec<u32>, _> = query
         .towns
@@ -158,9 +161,18 @@ async fn creation(State(state): State<WebState>, Query(query): Query<CreationQue
     };
     from_files(
         &state,
-        |art| (art.uopath().to_path_buf(), art.cliloc_table()),
-        move |(uopath, words), tag| {
-            let files = read_creation_tables(&uopath).with_needed_words(words.as_deref(), &towns);
+        |art| {
+            let hue_colors = every_palette_hue()
+                .into_iter()
+                .filter_map(|hue| Some((hue, art.text_rgb(hue)?)))
+                .collect();
+            (art.uopath().to_path_buf(), art.cliloc_table(), hue_colors)
+        },
+        move |(uopath, words, hue_colors), tag| {
+            let files = CreationFiles {
+                hue_colors,
+                ..read_creation_tables(&uopath).with_needed_words(words.as_deref(), &towns)
+            };
             table(Some(files), tag)
         },
     )
@@ -187,10 +199,11 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use serde_json::Value;
     use uoterm_nav::fixtures::{write_cliloc, FIXTURE_LAND_NAMES, FIXTURE_WALL_NAME};
-    use uoterm_view::model::creation::CreationFiles;
+    use uoterm_view::model::creation::{every_palette_hue, CreationFiles};
 
     const CLILOC_NAME: &str = "Cliloc.enu";
     const RADARCOL_NAME: &str = "radarcol.mul";
+    const HUES_NAME: &str = "hues.mul";
     /// The text numbers of the name of Advanced, the profession every
     /// client has, of a start town, and of a message the creation does not
     /// read.
@@ -304,6 +317,25 @@ mod tests {
         )
         .await;
         assert_eq!(words, serde_json::json!({ REFUSAL.to_string(): "No." }));
+    }
+
+    #[tokio::test]
+    async fn the_creation_gets_the_color_of_every_palette_hue() {
+        const HUE_GROUP_BYTES: usize = 708;
+        const HUE_GROUPS: usize = 512;
+        const WHITE: [u8; 3] = [255, 255, 255];
+        let files = fixture_uopath();
+        let all_white = vec![u8::MAX; HUE_GROUP_BYTES * HUE_GROUPS];
+        std::fs::write(files.0.join(HUES_NAME), all_white).unwrap();
+        let state = state_in(Some(files.path()), files.path().join("config"));
+        let creation: CreationFiles =
+            serde_json::from_value(json(state, "/v1/data/creation?towns=").await).unwrap();
+        let hues = every_palette_hue();
+        assert_eq!(
+            creation.hue_colors.keys().copied().collect::<Vec<_>>(),
+            hues
+        );
+        assert!(creation.hue_colors.values().all(|rgb| *rgb == WHITE));
     }
 
     #[tokio::test]

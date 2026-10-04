@@ -4,7 +4,7 @@ import type { CharacterChoices, LoginAsk, LoginForm, LoginReply } from '../net/l
 import { Characters } from './Characters';
 import { Creation } from './Creation';
 import type { CreationMaker, CreationWords } from './creation_model';
-import { Login, type BlankLogin, type SavedForm, type SavedLogin } from './Login';
+import { Login, type BlankLogin, type KeptLogin, type SavedForm, type SavedLogin } from './Login';
 import { characterOf, make, nextScreen, pick, shardOf, type CharacterPlace, type LoginRules, type LoginWords } from './login_state';
 import { Picking } from './Picking';
 
@@ -45,8 +45,8 @@ type Stage =
   | { kind: 'form' }
   | { kind: 'connecting' }
   | { kind: 'picking'; names: string[] }
-  | ({ kind: 'characters' } & Listed)
-  | ({ kind: 'creating'; maker: CreationMaker } & Listed);
+  | { kind: 'characters'; listed: Listed }
+  | { kind: 'creating'; listed: Listed; maker: CreationMaker };
 
 const FORM: Stage = { kind: 'form' };
 const CONNECTING: Stage = { kind: 'connecting' };
@@ -60,6 +60,8 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
   const [logins, setLogins] = useState<Logins | null>(null);
   const [stage, setStage] = useState<Stage>(FORM);
   const [note, setNote] = useState<string | null>(firstNote);
+  /** The form of the last login, shown again when it fails; its password is empty. */
+  const [kept, setKept] = useState<KeptLogin | null>(null);
   /** The answer the open question of the login waits for. */
   const answer = useRef<((reply: LoginReply) => void) | null>(null);
   /** The character the replies play, to name the profile of the game. */
@@ -79,7 +81,7 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
       if (nextScreen(ask) === 'picking') setStage({ kind: 'picking', names: ask.names });
       else if (ask.kind === 'Characters') {
         const { names, refused, choices } = ask;
-        setStage({ kind: 'characters', names, refused, choices, version, asked: asked.current });
+        setStage({ kind: 'characters', listed: { names, refused, choices, version, asked: asked.current } });
       }
     });
 
@@ -90,7 +92,8 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
     setStage(CONNECTING);
   };
 
-  const connect = (form: LoginForm) => {
+  const connect = (form: LoginForm, left: KeptLogin) => {
+    setKept(left);
     chosen.current = form.character ?? null;
     setNote(null);
     setStage(CONNECTING);
@@ -116,32 +119,38 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
   switch (stage.kind) {
     case 'form':
       if (!logins) return note ? <p class="panel screen fault">{note}</p> : null;
-      return <Login saved={logins.logins} blank={logins} words={words} rules={rules} note={note} onConnect={connect} onSave={save} />;
+      return (
+        <Login saved={logins.logins} blank={logins} kept={kept} words={words} rules={rules} note={note} onConnect={connect} onSave={save} />
+      );
     case 'connecting':
       return <p class="panel screen waiting">{words.connecting}</p>;
     case 'picking':
       return <Picking title={words.pick_shard} names={stage.names} onPick={(index) => reply(pick(index), [])} />;
-    case 'characters':
+    case 'characters': {
+      const { listed } = stage;
       return (
         <Characters
-          key={stage.asked}
-          names={stage.names}
-          refused={stage.refused}
-          room={rules.canMake(stage.names, stage.choices.list_flags)}
+          key={listed.asked}
+          names={listed.names}
+          refused={listed.refused}
+          room={rules.canMake(listed.names, listed.choices.list_flags)}
           words={words}
-          onReply={(sent) => reply(sent, stage.names)}
-          onMake={() => setStage({ ...stage, kind: 'creating', maker: newCreation(stage.version, stage.choices) })}
+          onReply={(sent) => reply(sent, listed.names)}
+          onMake={() => setStage({ kind: 'creating', listed, maker: newCreation(listed.version, listed.choices) })}
         />
       );
-    case 'creating':
+    }
+    case 'creating': {
+      const { listed, maker } = stage;
       return (
         <CreationStage
-          maker={stage.maker}
+          maker={maker}
           words={creationWords}
-          onLeave={() => setStage({ ...stage, kind: 'characters' })}
-          onFinish={() => reply(make(stage.maker.wish(JSON.stringify(stage.names))), stage.names)}
+          onLeave={() => setStage({ kind: 'characters', listed })}
+          onFinish={() => reply(make(maker.wish(JSON.stringify(listed.names))), listed.names)}
         />
       );
+    }
   }
 }
 

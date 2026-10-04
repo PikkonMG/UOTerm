@@ -526,6 +526,12 @@ impl Scene {
         self.art.has_gump_art()
     }
 
+    /// The picture a request of the shared rules names, such as the card
+    /// of a profession.
+    pub fn art_picture(&mut self, request: &ArtRequest) -> Option<(egui::TextureId, Sprite)> {
+        picture(&mut self.art, request)
+    }
+
     /// A picture of a gump, for a window that is not the map.
     pub fn gump_picture(&mut self, gump: u16, hue: u16) -> Option<(egui::TextureId, Sprite)> {
         self.hued_gump_picture(gump, hue, false)

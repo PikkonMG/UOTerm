@@ -1,5 +1,6 @@
 import type { RefObject } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { isField } from '../input/keys';
 import { ArtFeed, pixelsOf, type FeedView } from '../net/art';
 import type {
   Card,
@@ -50,11 +51,6 @@ function useFocused(): RefObject<HTMLInputElement | null> {
   const field = useRef<HTMLInputElement>(null);
   useEffect(() => field.current?.focus(), []);
   return field;
-}
-
-/** True when `target` is a field that types the keys itself. */
-function isField(target: EventTarget | null): boolean {
-  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 }
 
 /** The feed view of `model` that redraws the screen whenever something it fetched comes. */

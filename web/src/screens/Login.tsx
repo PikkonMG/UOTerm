@@ -33,20 +33,34 @@ export interface SavedForm {
   encryption: Encryption;
 }
 
+/** The text of the fields, in the order of `LoginWords.labels`. */
+type Fields = [host: string, port: string, account: string, password: string, shard: string, character: string];
+
+/**
+ * The form as a login left it, to fill the form again after a login that
+ * failed: the fields with the password empty, the encryption, and the
+ * saved login picked, which gives the era and the version.
+ */
+export interface KeptLogin {
+  fields: Fields;
+  encryption: Encryption;
+  picked: SavedLogin | null;
+}
+
 interface LoginProps {
   saved: SavedLogin[];
   blank: BlankLogin;
+  /** The form of the last login, or null for a blank form. */
+  kept: KeptLogin | null;
   words: LoginWords;
   rules: LoginRules;
   /** Words of the last login that failed. */
   note: string | null;
-  onConnect(form: LoginForm): void;
+  /** Logs in with the form; `kept` is the form to show again after a failure. */
+  onConnect(form: LoginForm, kept: KeptLogin): void;
   /** Saves the form under a name; gives the saved logins after, which come back as `saved`. */
   onSave(name: string, form: SavedForm): Promise<SavedLogin[]>;
 }
-
-/** The text of the fields, in the order of `LoginWords.labels`. */
-type Fields = [host: string, port: string, account: string, password: string, shard: string, character: string];
 
 const HOST = 0;
 const PORT = 1;
@@ -69,10 +83,10 @@ const named = (words: string): string | null => words.trim() || null;
  * window's login screen in its order. The password is typed each time,
  * sent once with the login, and kept nowhere; a saved login never has it.
  */
-export function Login({ saved, blank, words, rules, note, onConnect, onSave }: LoginProps) {
-  const [fields, setFields] = useState<Fields>(() => blankFields(blank));
-  const [encryption, setEncryption] = useState<Encryption>(words.encryptions[0][0] as Encryption);
-  const [picked, setPicked] = useState<SavedLogin | null>(null);
+export function Login({ saved, blank, kept, words, rules, note, onConnect, onSave }: LoginProps) {
+  const [fields, setFields] = useState<Fields>(() => kept?.fields ?? blankFields(blank));
+  const [encryption, setEncryption] = useState<Encryption>(kept?.encryption ?? (words.encryptions[0][0] as Encryption));
+  const [picked, setPicked] = useState<SavedLogin | null>(kept?.picked ?? null);
   const [saveName, setSaveName] = useState<string | null>(null);
   const [fault, setFault] = useState<string | null>(null);
   const [told, setTold] = useState<string | null>(null);
@@ -103,7 +117,11 @@ export function Login({ saved, blank, words, rules, note, onConnect, onSave }: L
     const refusal = rules.fault(fields[HOST], fields[PORT], fields[ACCOUNT], fields[PASSWORD]);
     setFault(refusal);
     if (refusal !== null) return;
-    onConnect({
+    // The password goes once, with this login: the field holds it no longer.
+    const left = fields.map((value, at) => (at === PASSWORD ? '' : value)) as Fields;
+    setFields(left);
+    onConnect(
+      {
       host: fields[HOST].trim(),
       port: Number(fields[PORT].trim()),
       account: fields[ACCOUNT].trim(),
@@ -113,7 +131,9 @@ export function Login({ saved, blank, words, rules, note, onConnect, onSave }: L
       encryption,
       era: picked?.era ?? null,
       version: picked?.version ?? null,
-    });
+      },
+      { fields: left, encryption, picked },
+    );
   };
 
   const save = async () => {

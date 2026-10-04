@@ -4,7 +4,7 @@
  * little longer after each failed try, while its session runs.
  */
 
-import { api, readMessage, SESSIONS_PATH, socketUrl } from './api';
+import { api, readMessage, SESSIONS_PATH, socketUrl, type Sessions } from './api';
 import { backoffWait } from './backoff';
 
 // The limits of the server (crates/uoterm-runtime: `TOOL_CALL_TIMEOUT` of
@@ -54,11 +54,6 @@ export type LiveOut =
   | ({ kind: 'call'; id: number } & PageCall)
   | { kind: 'act'; id: number; calls: PageCall[] }
   | { kind: 'size'; size: number };
-
-/** The running sessions, as `GET /v1/sessions` gives them. */
-interface Sessions {
-  sessions: string[];
-}
 
 /** What the server sends on the link. */
 export type LiveIn =

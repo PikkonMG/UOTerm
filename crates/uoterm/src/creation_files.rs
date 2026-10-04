@@ -4,6 +4,7 @@
 //! `uoterm_view::model::creation`, and the web server sends them to the
 //! browser.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use uoterm_nav::ClilocData;
 use uoterm_view::model::creation::CreationFiles;
@@ -31,6 +32,7 @@ pub fn read_creation_tables(dir: &Path) -> CreationFiles {
             .unwrap_or_default(),
         town_texts: uoterm_nav::read_city_texts(dir).unwrap_or_default(),
         words: None,
+        hue_colors: BTreeMap::new(),
     }
 }
 

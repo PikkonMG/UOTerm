@@ -9,10 +9,10 @@
 use super::map_view::{Lay, MapPictures};
 use super::model::creation::{
     card_short, facet_name, name_rules, paint_words, preview_scale, profession_about,
-    profession_name, race_words, skill_rule, stat_rule, total_words, Creation, CreationFiles,
-    Palette, Progress, Stage, Step, Style, SKILL_RANGE, STAT_RANGE, STAT_WORDS, TOWN_MAP_TILES,
-    WORDS_BACK, WORDS_BEARD, WORDS_BODY, WORDS_COLORS, WORDS_FEMALE, WORDS_HAIR, WORDS_MALE,
-    WORDS_NAME, WORDS_NAME_HINT, WORDS_NO_ART, WORDS_PICK_SKILL, WORDS_PROFESSION,
+    profession_name, profession_picture, race_words, skill_rule, stat_rule, total_words, Creation,
+    CreationFiles, Palette, Progress, Stage, Step, Style, SKILL_RANGE, STAT_RANGE, STAT_WORDS,
+    TOWN_MAP_TILES, WORDS_BACK, WORDS_BEARD, WORDS_BODY, WORDS_COLORS, WORDS_FEMALE, WORDS_HAIR,
+    WORDS_MALE, WORDS_NAME, WORDS_NAME_HINT, WORDS_NO_ART, WORDS_PICK_SKILL, WORDS_PROFESSION,
     WORDS_PROFESSION_HINT, WORDS_SEARCH, WORDS_SKILLS, WORDS_STATS, WORDS_SUMMARY, WORDS_TITLE,
     WORDS_TOWN, WORDS_TURN_LEFT, WORDS_TURN_RIGHT,
 };
@@ -84,8 +84,6 @@ const BIG_BUTTON_WIDTH: f32 = 140.0;
 const ICON_GAP: f32 = 12.0;
 /// A locked profession shows its picture this faint.
 const LOCKED_ALPHA: f32 = 0.5;
-/// The profession pictures show in their own colors.
-const NO_HUE: u16 = 0;
 const TOWN_LIST_WIDTH: f32 = 280.0;
 const TOWN_ROW: f32 = 50.0;
 const TOWN_MARK: f32 = 4.0;
@@ -817,7 +815,7 @@ fn card(
         Color32::WHITE
     };
     if let Some((texture, sprite)) =
-        scene.and_then(|scene| scene.gump_picture(profession.gump, NO_HUE))
+        scene.and_then(|scene| scene.art_picture(&profession_picture(profession)))
     {
         let shown = theme::fit(icon, sprite.width, sprite.height);
         ui.painter()

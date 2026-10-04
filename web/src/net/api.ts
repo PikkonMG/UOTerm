@@ -6,6 +6,11 @@ export const METHOD_POST = 'POST';
 export const METHOD_PUT = 'PUT';
 /** The running sessions. Any screen may call it to learn whether the API wants its token. */
 export const SESSIONS_PATH = '/v1/sessions';
+
+/** The running sessions, as `GET /v1/sessions` gives them. */
+export interface Sessions {
+  sessions: string[];
+}
 /** Where the page trades the token for the cookie that carries it. */
 const TOKEN_PATH = '/v1/web/token';
 const JSON_TYPE = 'application/json';

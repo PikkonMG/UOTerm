@@ -356,8 +356,14 @@ mod tests {
 
     /// The routes on client files and a config folder, with no TypeSafe
     /// key.
+    /// The older saved logins live in the config folder of the test too,
+    /// not in the working directory.
     pub(super) fn state_in(uopath: Option<&Path>, config_dir: PathBuf) -> WebState {
-        WebState::open(uopath, config_dir, Runtime::new(TEST_SESSIONS), None)
+        let logins = LoginStore::at(config_dir.join(LOGINS_DIR), config_dir.join(PROFILES_DIR));
+        WebState {
+            logins,
+            ..WebState::open(uopath, config_dir, Runtime::new(TEST_SESSIONS), None)
+        }
     }
 
     /// The routes on the fixture files. The folder must outlive the state:
