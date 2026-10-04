@@ -1,6 +1,10 @@
 import { render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
+import { Board } from '../../src/panels/Board';
+import { Entry } from '../../src/panels/Entry';
 import { Journal } from '../../src/panels/Journal';
+import { OldMenu } from '../../src/panels/OldMenu';
+import { Shop } from '../../src/panels/Shop';
 import { Plates } from '../../src/panels/Plates';
 import { Tooltip } from '../../src/panels/Tooltip';
 import type { JournalData } from '../../src/panels/types';
@@ -46,5 +50,52 @@ describe('shard words', () => {
     const plates = render(<Plates plates={[plate]} floats={[{ words: MARKUP, x: 0, y: 0, color: [255, 255, 255, 255], alpha: 1, number: false }]} />);
     expect(plates.container.querySelector('b')).toBeNull();
     expect(plates.container.textContent).toBe(`${MARKUP}${MARKUP}`);
+  });
+
+  it('show_as_text_in_the_windows_of_the_shard', () => {
+    const shown = [
+      render(
+        <Shop
+          data={{
+            live: true,
+            goods: [{ serial: 1, picture: null, name: MARKUP, left: 'x1', price: '1 gp', count: { words: '0', color: 'var(--text)' }, hover: { serial: 1, words: MARKUP, footer: '' } }],
+            total: '',
+            gold: null,
+            deal: 'Buy',
+            clear: 'Clear',
+            close: 'Close',
+            step_down: '-',
+            step_up: '+',
+          }}
+          send={vi.fn()}
+        />,
+      ),
+      render(<OldMenu data={{ live: true, entries: [{ picture: null, name: MARKUP }], cancel: null }} send={vi.fn()} />),
+      render(<Entry data={{ live: false, description: MARKUP, hint: '', words: '', focus: false, okay: null, cancel: null, take_control: null }} send={vi.fn()} />),
+      render(
+        <Board
+          data={{
+            live: false,
+            posts: [{ serial: 1, subject: MARKUP, poster: MARKUP, indent: 0, reading: true }],
+            text: MARKUP,
+            subject: '',
+            body: '',
+            subject_hint: '',
+            text_hint: '',
+            post: '',
+            reply: null,
+            remove: null,
+            close: '',
+            paper: '',
+            ink: '',
+          }}
+          send={vi.fn()}
+        />,
+      ),
+    ];
+    for (const view of shown) {
+      expect(view.container.querySelector('b')).toBeNull();
+      expect(view.container.textContent).toContain(MARKUP);
+    }
   });
 });

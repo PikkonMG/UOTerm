@@ -26,6 +26,11 @@ const NO_GRAPHIC: u16 = 0;
 pub(crate) struct PagesState {
     book: Option<OpenBook>,
     board: BoardDraft,
+    /// How many times the player typed on a page, so the page draws the
+    /// words the book kept again after each.
+    edits: u64,
+    /// The page last typed on and where its caret stands, from zero.
+    caret: Option<(usize, usize)>,
 }
 
 /// The old-style menu: the question is its title.
@@ -58,6 +63,8 @@ pub struct BookData {
     pub pages: Vec<PageData>,
     /// The lines a page holds.
     pub lines: usize,
+    /// Counts the typing on the pages.
+    pub edits: u64,
     pub turns: Vec<&'static str>,
     pub save: Option<&'static str>,
     pub close: Option<&'static str>,
@@ -70,6 +77,8 @@ pub struct BookData {
 pub struct PageData {
     pub number: String,
     pub words: String,
+    /// Where the caret stands after the player typed on it, in chars.
+    pub caret: Option<usize>,
 }
 
 /// The bulletin board.
@@ -223,13 +232,18 @@ impl WebView {
         let spec = self.book_spec(frame)?;
         let live = frame.human_control;
         let writing = live && book.writable;
-        let open = self.panels.pages.book.as_ref()?;
+        let state = &self.panels.pages;
+        let open = state.book.as_ref()?;
         let pages = (open.left..open.left + PAGES_SHOWN)
             .filter_map(|number| {
                 let page = open.draft.pages.get(number)?;
                 Some(PageData {
                     number: (number + 1).to_string(),
                     words: page.field.clone(),
+                    caret: state
+                        .caret
+                        .filter(|(typed, _)| *typed == number)
+                        .map(|(_, caret)| caret),
                 })
             })
             .collect();
@@ -242,6 +256,7 @@ impl WebView {
             author_hint: HINT_AUTHOR,
             pages,
             lines: BOOK_LINES,
+            edits: state.edits,
             turns: open.turns(book).iter().map(|(words, _)| *words).collect(),
             save: writing.then_some(WORDS_SAVE),
             close: live.then_some(WORDS_CLOSE),
@@ -264,7 +279,8 @@ impl WebView {
         let writing = frame.human_control && book.writable;
         let fits_room = page_line_room();
         let measure = self.body_measure.as_ref();
-        let Some(open) = self.panels.pages.book.as_mut() else {
+        let state = &mut self.panels.pages;
+        let Some(open) = state.book.as_mut() else {
             return;
         };
         let acts = match action {
@@ -274,7 +290,11 @@ impl WebView {
             },
             BookAction::Page(typed) if writing => {
                 let fits = |line: &str| measure.is_none_or(|measure| measure(line).x <= fits_room);
-                open.write_page(open.left + typed.side, &typed.words, typed.caret, fits);
+                let number = open.left + typed.side;
+                state.edits += 1;
+                if let Some(caret) = open.write_page(number, &typed.words, typed.caret, fits) {
+                    state.caret = Some((number, caret));
+                }
                 Vec::new()
             }
             BookAction::Cover(cover) if writing => {

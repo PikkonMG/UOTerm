@@ -28,7 +28,19 @@ function data(): PanelData {
     },
     picker: null,
     sheet: null,
+    grids: [],
+    loot: null,
     split: null,
+    shop: null,
+    trades: [],
+    old_menu: null,
+    book: null,
+    board: null,
+    paperdoll: null,
+    entry: null,
+    race: null,
+    tip: null,
+    dye: null,
     ring: null,
     report: null,
     question: null,
@@ -117,5 +129,36 @@ describe('Panels', () => {
     rerender(<Panels data={{ ...first, look: { ui_scale: 2, opacity: 1 } }} send={vi.fn()} input={vi.fn()} covered={covered} />);
     expect(covered.mock.calls.at(-1)?.[0][0].max.x).toBe(200);
     vi.restoreAllMocks();
+  });
+
+  it('names_the_action_of_a_grid_by_its_container', () => {
+    const send = vi.fn();
+    const panels = data();
+    panels.grids = [
+      {
+        frame: frameAt('grid:9', 'Backpack', { x: 10, y: 10, w: 200, h: 200 }),
+        body: {
+          serial: 9,
+          live: true,
+          glass: 'var(--glass)',
+          glass_opacity: 1,
+          search: '',
+          search_hint: 'search',
+          count: '0',
+          favorite: { words: 'Fav', color: 'var(--text-dim)', hint: 'Fav' },
+          loot_all: null,
+          loot_bag: null,
+          columns: 1,
+          side: 46,
+          art_scale: 1,
+          cells: [],
+          strip: null,
+          zone: { into: 9 },
+        },
+      },
+    ];
+    const { getByText } = render(<Panels data={panels} send={send} input={vi.fn()} covered={vi.fn()} />);
+    fireEvent.click(getByText('Fav'));
+    expect(send).toHaveBeenCalledWith('grid:9', { favorite: true });
   });
 });

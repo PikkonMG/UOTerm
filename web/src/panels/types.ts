@@ -29,6 +29,8 @@ export interface TipKey {
   serial: number | null;
   words: string;
   footer: string;
+  /** A thing of a grid: the view adds the compare and the bag lines. */
+  in_grid?: boolean;
 }
 
 /** The zone of a panel a carried thing lands on. */
@@ -363,6 +365,201 @@ export interface SplitData {
   go_words: string;
 }
 
+/** A button of the head of a grid. */
+export interface TitleButton {
+  words: string;
+  color: string;
+  hint: string;
+}
+
+export interface GridItem {
+  serial: number;
+  picture: string | null;
+  alpha: number;
+  amount: Colored | null;
+  mark: string | null;
+  chosen: boolean;
+  /** The share of the slider of a pile of a grid loot. */
+  slider: number | null;
+  hover: TipKey;
+  zone: DropZone;
+}
+
+export interface GridCell {
+  slot: number;
+  locked: boolean;
+  item: GridItem | null;
+}
+
+/** A grid container (`GridData`). */
+export interface GridData {
+  serial: number;
+  live: boolean;
+  glass: string;
+  glass_opacity: number;
+  search: string;
+  search_hint: string;
+  count: string;
+  favorite: TitleButton | null;
+  loot_all: TitleButton | null;
+  loot_bag: TitleButton | null;
+  columns: number;
+  side: number;
+  art_scale: number;
+  cells: GridCell[];
+  strip: { buttons: string[]; count: string } | null;
+  zone: DropZone;
+}
+
+export interface LootData {
+  live: boolean;
+  rows: { serial: number; name: string; state: string }[];
+  none: string | null;
+  open: string;
+  loot: string;
+  loot_all: string | null;
+}
+
+export interface GoodRow {
+  serial: number;
+  picture: string | null;
+  name: string;
+  left: string;
+  price: string;
+  count: Colored;
+  hover: TipKey;
+}
+
+export interface ShopData {
+  live: boolean;
+  goods: GoodRow[];
+  total: string;
+  gold: string | null;
+  deal: string;
+  clear: string;
+  close: string;
+  step_down: string;
+  step_up: string;
+}
+
+export interface TradedItem {
+  serial: number;
+  picture: string | null;
+  amount: string | null;
+  hover: TipKey;
+}
+
+export interface TradeData {
+  live: boolean;
+  sides: { head: Colored; mine: boolean; items: TradedItem[] }[];
+  coins: { label: string; platinum: boolean; words: string; owned: string }[];
+  theirs: { label: string; value: string }[];
+  accept: Colored | null;
+  cancel: string | null;
+  zone: DropZone;
+}
+
+export interface OldMenuData {
+  live: boolean;
+  entries: { picture: string | null; name: string }[];
+  cancel: string | null;
+}
+
+export interface BookData {
+  writing: boolean;
+  by: string | null;
+  title: string;
+  author: string;
+  title_hint: string;
+  author_hint: string;
+  pages: { number: string; words: string; caret: number | null }[];
+  lines: number;
+  /** Counts the typing on the pages: each draws the kept words again. */
+  edits: number;
+  turns: string[];
+  save: string | null;
+  close: string | null;
+  paper: string;
+  ink: string;
+}
+
+export interface BoardData {
+  live: boolean;
+  posts: { serial: number; subject: string; poster: string; indent: number; reading: boolean }[];
+  text: string;
+  subject: string;
+  body: string;
+  subject_hint: string;
+  text_hint: string;
+  post: string;
+  reply: string | null;
+  remove: string | null;
+  close: string;
+  paper: string;
+  ink: string;
+}
+
+export interface PaperdollData {
+  live: boolean;
+  figure: string | null;
+  out_of_sight: string | null;
+  health: number | null;
+  rows: { serial: number; picture: string | null; words: string; hover: TipKey }[];
+  nothing: string | null;
+  dresses: boolean;
+  buttons: string[];
+  close: string;
+  zone: DropZone | null;
+}
+
+export interface EntryData {
+  live: boolean;
+  description: string;
+  hint: string;
+  words: string;
+  focus: boolean;
+  okay: string | null;
+  cancel: string | null;
+  take_control: string | null;
+}
+
+export interface RaceData {
+  live: boolean;
+  styles: { label: string; choices: string[]; chosen: number }[];
+  figure: string | null;
+  paints: { label: string; color: string; picking: boolean }[];
+  hint: string;
+  palette: { columns: number; hues: string[]; chosen: number } | null;
+  change: string | null;
+  keep: string | null;
+}
+
+export interface TipData {
+  words: string;
+  previous: string | null;
+  next: string | null;
+}
+
+/** A grid of hues with the shade slider under it. */
+export interface HueGridData {
+  columns: number;
+  cells: string[];
+  chosen: number;
+  shade: number;
+  shade_least: number;
+  shade_most: number;
+  shade_words: string;
+}
+
+export interface DyeData {
+  live: boolean;
+  grid: HueGridData;
+  tub: string | null;
+  hue: string;
+  okay: string | null;
+  eyedropper: Colored | null;
+}
+
 export interface RingData {
   center: Point;
   name: string;
@@ -399,7 +596,19 @@ export interface PanelData {
   hotbar: Framed<HotbarData> | null;
   picker: PickerData | null;
   sheet: Framed<SheetData> | null;
+  grids: Framed<GridData>[];
+  loot: Framed<LootData> | null;
   split: Framed<SplitData> | null;
+  shop: Framed<ShopData> | null;
+  trades: Framed<TradeData>[];
+  old_menu: Framed<OldMenuData> | null;
+  book: Framed<BookData> | null;
+  board: Framed<BoardData> | null;
+  paperdoll: Framed<PaperdollData> | null;
+  entry: Framed<EntryData> | null;
+  race: Framed<RaceData> | null;
+  tip: Framed<TipData> | null;
+  dye: Framed<DyeData> | null;
   ring: RingData | null;
   report: ReportData | null;
   question: QuestionData | null;

@@ -2,26 +2,38 @@ import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { InputEvent } from '../input/events';
 import { Activity } from './Activity';
+import { Board } from './Board';
+import { Book } from './Book';
 import { ChatLine } from './ChatLine';
 import { ControlBar } from './ControlBar';
+import { Dye } from './Dye';
+import { Entry } from './Entry';
 import { dropTarget, isCarrying, PANEL_ATTRIBUTE } from './drag';
 import { Frame } from './Frame';
+import { Grid } from './Grid';
 import type { Hover } from './hover';
 import { Hotbar } from './Hotbar';
 import { Journal } from './Journal';
 import { Launcher } from './Launcher';
+import { Loot } from './Loot';
 import { Near } from './Near';
+import { OldMenu } from './OldMenu';
 import { Pack } from './Pack';
+import { Paperdoll } from './Paperdoll';
 import { Picture } from './Picture';
 import { Question } from './Question';
+import { Race } from './Race';
 import { Radar } from './Radar';
 import { Report } from './Report';
 import { Ring } from './Ring';
 import { Sheet } from './Sheet';
+import { Shop } from './Shop';
 import { Split } from './Split';
 import { TargetBar } from './TargetBar';
+import { Tip } from './Tip';
 import { TitleBar } from './TitleBar';
 import { Tooltip } from './Tooltip';
+import { Trade } from './Trade';
 import type { CarriedData, Framed, PanelAction, PanelData, Place, Point, TooltipData } from './types';
 import { Vitals } from './Vitals';
 import './panels.css';
@@ -48,6 +60,7 @@ const placeStyle = (place: Place) => ({ left: `${place.x}px`, top: `${place.y}px
 const sameData = <P extends { data: unknown }>(before: P, after: P) => JSON.stringify(before.data) === JSON.stringify(after.data);
 const QuietSheet = memo(Sheet, sameData);
 const QuietJournal = memo(Journal, sameData);
+const QuietGrid = memo(Grid, sameData);
 
 /**
  * The tooltip and the carried thing at the mouse: the one part of the
@@ -191,6 +204,66 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
         {data.sheet && (
           <Frame {...frameOf(data.sheet)}>
             <QuietSheet data={data.sheet.body} send={to('sheet')} hover={hover} />
+          </Frame>
+        )}
+        {data.grids.map((grid) => (
+          <Frame {...frameOf(grid)} key={grid.frame.panel} glass={grid.body.glass} glassOpacity={grid.body.glass_opacity}>
+            <QuietGrid data={grid.body} send={to(grid.frame.panel)} hover={hover} />
+          </Frame>
+        ))}
+        {data.loot && (
+          <Frame {...frameOf(data.loot)}>
+            <Loot data={data.loot.body} send={to('loot')} />
+          </Frame>
+        )}
+        {data.shop && (
+          <Frame {...frameOf(data.shop)}>
+            <Shop data={data.shop.body} send={to('shop')} hover={hover} />
+          </Frame>
+        )}
+        {data.trades.map((trade) => (
+          <Frame {...frameOf(trade)} key={trade.frame.panel}>
+            <Trade data={trade.body} send={to(trade.frame.panel)} hover={hover} />
+          </Frame>
+        ))}
+        {data.old_menu && (
+          <Frame {...frameOf(data.old_menu)}>
+            <OldMenu data={data.old_menu.body} send={to('old_menu')} />
+          </Frame>
+        )}
+        {data.book && (
+          <Frame {...frameOf(data.book)}>
+            <Book data={data.book.body} send={to('book')} />
+          </Frame>
+        )}
+        {data.board && (
+          <Frame {...frameOf(data.board)}>
+            <Board data={data.board.body} send={to('board')} />
+          </Frame>
+        )}
+        {data.paperdoll && (
+          <Frame {...frameOf(data.paperdoll)}>
+            <Paperdoll data={data.paperdoll.body} send={to('paperdoll')} hover={hover} />
+          </Frame>
+        )}
+        {data.race && (
+          <Frame {...frameOf(data.race)}>
+            <Race data={data.race.body} send={to('race')} />
+          </Frame>
+        )}
+        {data.tip && (
+          <Frame {...frameOf(data.tip)}>
+            <Tip data={data.tip.body} send={to('tip')} />
+          </Frame>
+        )}
+        {data.dye && (
+          <Frame {...frameOf(data.dye)}>
+            <Dye data={data.dye.body} send={to('dye')} />
+          </Frame>
+        )}
+        {data.entry && (
+          <Frame {...frameOf(data.entry)}>
+            <Entry data={data.entry.body} send={to('entry')} />
           </Frame>
         )}
         {data.launcher && (

@@ -15,7 +15,7 @@ import { LiveLink } from './net/live';
 import { sendOut, type OutCall, type OutPlaces } from './out_calls';
 import { setDragDistance } from './panels/drag';
 import { setArtMostScale } from './panels/Picture';
-import { plateMeasure } from './panels/measure';
+import { bodyMeasure, plateMeasure } from './panels/measure';
 import type { CoveredArea } from './panels/Panels';
 import type { PanelAction, PanelData } from './panels/types';
 import { tearDown } from './teardown';
@@ -79,6 +79,7 @@ const clock = () => performance.now() / MS_PER_SECOND;
 export function startGame(session: string, canvas: HTMLCanvasElement, profile: GameProfile, show: Shows): GameHandle {
   const view = new WebView(JSON.stringify(profile.value));
   view.setTextMeasure(plateMeasure());
+  view.setBodyMeasure(bodyMeasure());
   setDragDistance(clickDistance());
   setArtMostScale(artMostScale());
   let stopped = false;

@@ -11,9 +11,10 @@ export function setArtMostScale(scale: number): void {
 /**
  * A picture of the art the view asked for, by its key in the page's cache
  * (`pixelsOf`): drawn once its pixels came, fitted to its cell with its
- * proportions kept, and grown no more than the view allows.
+ * proportions kept, and grown no more than the view allows, or than `most`
+ * when the panel says (a grid by its Containers page).
  */
-export function Picture({ picture, words }: { picture: string | null; words?: string }) {
+export function Picture({ picture, words, most }: { picture: string | null; words?: string; most?: number }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [, cameAgain] = useState(0);
   // Pixels that come later draw the picture, with no new panel data.
@@ -31,11 +32,12 @@ export function Picture({ picture, words }: { picture: string | null; words?: st
       }
       return;
     }
+    const grows = most ?? mostScale;
+    target.style.maxWidth = `${bitmap.width * grows}px`;
+    target.style.maxHeight = `${bitmap.height * grows}px`;
     if (target.dataset.drawn === picture) return;
     target.width = bitmap.width;
     target.height = bitmap.height;
-    target.style.maxWidth = `${bitmap.width * mostScale}px`;
-    target.style.maxHeight = `${bitmap.height * mostScale}px`;
     target.getContext('2d')?.drawImage(bitmap, 0, 0);
     target.dataset.drawn = picture ?? undefined;
   });

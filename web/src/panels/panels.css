@@ -895,3 +895,347 @@
   transform: translate(-50%, -50%);
   padding: var(--panel-pad);
 }
+
+/* The grid containers: the head with the search, the cells, the row of the chosen items. */
+.grid,
+.loot,
+.shop,
+.trade-window,
+.old-menu,
+.book,
+.board,
+.paperdoll,
+.entry,
+.notice,
+.dye,
+.race {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  height: 100%;
+  min-height: 0;
+}
+
+.grid-head,
+.grid-strip,
+.loot-row,
+.shop-good,
+.shop-steps,
+.shop-totals,
+.coin-row {
+  display: flex;
+  align-items: center;
+  gap: var(--row-gap);
+}
+
+.grid-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.grid-cells {
+  display: grid;
+  gap: var(--row-gap);
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  align-content: start;
+}
+
+.grid-cell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: var(--cell-art-pad);
+  background: var(--track);
+  border: calc(var(--edge-width) * 2) solid transparent;
+  border-radius: var(--bar-radius);
+  cursor: pointer;
+}
+
+.grid-cell:hover {
+  background: var(--button-hover);
+}
+
+.grid-cell.chosen {
+  border-color: var(--waiting);
+}
+
+.cell-picture {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+}
+
+.cell-amount {
+  position: absolute;
+  right: var(--cell-art-pad);
+  bottom: var(--cell-art-pad);
+  pointer-events: none;
+}
+
+.lock-dot {
+  position: absolute;
+  left: var(--cell-art-pad);
+  top: var(--cell-art-pad);
+  width: var(--row-gap);
+  height: var(--row-gap);
+  border-radius: 50%;
+  background: var(--waiting);
+}
+
+.pile-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--pip-height);
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
+
+.pile-fill {
+  display: block;
+  height: 100%;
+  background: var(--goal);
+  border-radius: var(--bar-radius);
+}
+
+/* The lists of the shard's windows scroll inside their panel. */
+.shop-goods,
+.board-posts,
+.paperdoll-rows,
+.notice-words,
+.old-menu {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.shop-goods {
+  flex: 1;
+}
+
+.loot-name,
+.shop-name {
+  flex: 1;
+}
+
+.shop-good {
+  cursor: pointer;
+  border-radius: var(--bar-radius);
+}
+
+.shop-good:hover {
+  background: var(--button);
+}
+
+.shop-count {
+  min-width: 2em;
+  text-align: center;
+}
+
+.shop-totals {
+  justify-content: space-between;
+}
+
+.trade-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--panel-pad);
+}
+
+.trade-cells {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--row-gap);
+  min-height: 9em;
+  align-content: start;
+  padding: var(--row-gap);
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
+
+.trade-cell {
+  position: relative;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.coin-row .field {
+  width: 6em;
+}
+
+.menu-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--row-gap);
+}
+
+.book-cover {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--row-gap);
+}
+
+.book-pages {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: calc(var(--panel-pad) * 2);
+  flex: 1;
+  min-height: 0;
+}
+
+.book-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--row-gap);
+  min-height: 0;
+}
+
+.book-page {
+  width: 100%;
+  flex: 1;
+  resize: none;
+}
+
+.paper {
+  padding: var(--row-gap);
+  border-radius: var(--bar-radius);
+  white-space: pre-wrap;
+  overflow: hidden;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--panel-pad);
+}
+
+.board-posts,
+.board-read {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  min-height: 0;
+}
+
+.board-post {
+  display: flex;
+  flex-direction: column;
+}
+
+.board-text {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.board-write {
+  min-height: 5em;
+  resize: none;
+}
+
+.paperdoll-top {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: var(--panel-pad);
+  flex: 1;
+  min-height: 0;
+}
+
+.paperdoll-figure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  min-height: 0;
+  padding: var(--row-gap);
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
+
+.notice-words {
+  flex: 1;
+  white-space: pre-wrap;
+}
+
+.race {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+.race-styles,
+.race-paints,
+.race-part {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+}
+
+.race-figure {
+  display: grid;
+  place-items: center;
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
+
+.race-foot {
+  grid-column: 1 / -1;
+}
+
+.swatch {
+  height: 2em;
+  border: var(--edge-width) solid var(--void);
+  border-radius: var(--bar-radius);
+  cursor: pointer;
+}
+
+.swatch.chosen {
+  border-color: var(--goal);
+}
+
+.race-palette,
+.hue-cells {
+  display: grid;
+}
+
+.hue-cell {
+  aspect-ratio: 1;
+  min-width: 0;
+  padding: 0;
+  border: calc(var(--edge-width) * 2) solid transparent;
+  cursor: pointer;
+}
+
+.hue-cell.chosen {
+  border-color: var(--text);
+}
+
+.hue-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  flex: 1;
+}
+
+.dye-top {
+  display: flex;
+  gap: calc(var(--row-gap) * 2);
+}
+
+.dye-tub {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--row-gap);
+}
+
+.tub-art {
+  width: 4em;
+  height: 4em;
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
