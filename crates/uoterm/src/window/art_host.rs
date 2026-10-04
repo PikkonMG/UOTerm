@@ -7,16 +7,15 @@ use crate::art::client_art::ClientArt;
 use eframe::egui;
 use std::collections::HashMap;
 use uoterm_nav::{Action, AnimRules, ArtPixels, ItemTile, LandTile, LightShape, MultiPiece};
-use uoterm_view::art::{Art, ArtRequest, Cell, Picture, Sprite, TextLook, WorldArt};
+use uoterm_view::art::{
+    text_rgb_or_plain, Art, ArtRequest, Cell, Picture, Sprite, TextLook, WorldArt,
+    NO_FONT_LINE_HEIGHT,
+};
 use uoterm_view::atlas::{ShelfPacker, ATLAS_SIDE, WHITE_SIDE};
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::{Point, Vector};
-use uoterm_view::ui::theme;
 
 const RGBA_BYTES: usize = 4;
-/// Words in a UO font are one line this tall when the client files hold no
-/// UO fonts.
-const NO_FONT_LINE_HEIGHT: f32 = 1.0;
 
 pub struct NativeArt {
     /// None when there are no client files.
@@ -220,11 +219,7 @@ impl WorldArt for NativeArt {
     }
 
     fn text_rgb(&self, hue: u16) -> [u8; 3] {
-        let [red, green, blue, _] = theme::TEXT.to_array();
-        self.client
-            .as_ref()
-            .and_then(|client| client.text_rgb(hue))
-            .unwrap_or([red, green, blue])
+        text_rgb_or_plain(self.client.as_ref().and_then(|client| client.text_rgb(hue)))
     }
 
     fn gump_drawn_at(&self, gump: u16, x: usize, y: usize) -> bool {

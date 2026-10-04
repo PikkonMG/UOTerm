@@ -39,8 +39,8 @@ use eframe::egui::text::LayoutJob;
 use eframe::egui::TextFormat;
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_view::clicks::{
-    act_for_click, bar_buttons, bar_status, beside_bar, escape_on_map, grabbed, hint_for, ChatMode,
-    EscapeOnMap, GroundClicks, Press, WordsEdge,
+    act_for_click, bar_buttons, bar_status, beside_bar, escape_on_map, grabbed, hint_for,
+    report_shows, ChatMode, EscapeOnMap, GroundClicks, Press, WordsEdge,
 };
 use uoterm_view::ui::control_bar::{BAR_WIDTH, RULE_GAP, SEGMENT_HEIGHT, STRIP_PAD, STRIP_ROW};
 
@@ -55,7 +55,6 @@ const FOLD_ARROW_SHARE: f32 = 0.5;
 const FOLD_STROKE: f32 = 2.0;
 const BUTTON_GAP: f32 = 8.0;
 const FIELD_RADIUS: u8 = 6;
-const REPORT_SECONDS: f64 = 5.0;
 const REPORT_GAP: f32 = 8.0;
 const MODE_WIDTH: f32 = 58.0;
 
@@ -693,7 +692,7 @@ impl ControlUi {
         let Some((report, since)) = &self.report else {
             return;
         };
-        if time - since > REPORT_SECONDS {
+        if !report_shows(*since, time) {
             self.report = None;
             return;
         }

@@ -44,6 +44,15 @@ const HINT_ORDER: &str = "An order, for example: attack the orc. Press Enter.";
 const HINT_ORDER_OFF: &str = "Orders are off. Set TYPESAFE_API_KEY.";
 const HINT_CLOSED: &str = "Press Enter to chat.";
 
+/// The words of the last act show this long beside the bar.
+pub const REPORT_SECONDS: f64 = 5.0;
+
+/// True while the words of an act that came at `since` still show at
+/// `time`.
+pub fn report_shows(since: f64, time: f64) -> bool {
+    time - since <= REPORT_SECONDS
+}
+
 /// What kind of thing the mouse is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickKind {
@@ -318,6 +327,12 @@ mod tests {
             target_cursor,
             ..WatchFrame::default()
         }
+    }
+
+    #[test]
+    fn the_words_of_an_act_show_for_a_while() {
+        assert!(report_shows(1.0, 1.0 + REPORT_SECONDS));
+        assert!(!report_shows(1.0, 1.1 + REPORT_SECONDS));
     }
 
     #[test]

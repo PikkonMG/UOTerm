@@ -5,6 +5,7 @@
 
 use crate::frame::{WatchEquip, WatchLiveMap, WatchLook};
 use crate::geom::{Area, Point, Rgba, Vector};
+use crate::ui::theme;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -462,6 +463,16 @@ pub trait WorldArt {
     fn gump_drawn_at(&self, gump: u16, x: usize, y: usize) -> bool;
     /// True when the client files hold the pictures of gumps.
     fn has_gump_art(&self) -> bool;
+}
+
+/// Words in a UO font are one line this tall when there are no UO fonts.
+pub const NO_FONT_LINE_HEIGHT: f32 = 1.0;
+
+/// The color of words in a hue as the client files give it, or the plain
+/// color of the window's words when they do not.
+pub fn text_rgb_or_plain(found: Option<[u8; 3]>) -> [u8; 3] {
+    let [red, green, blue, _] = theme::TEXT.to_array();
+    found.unwrap_or([red, green, blue])
 }
 
 /// The color of words in a hue. With no client files it is the plain
