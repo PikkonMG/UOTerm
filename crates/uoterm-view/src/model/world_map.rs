@@ -451,6 +451,11 @@ pub fn targets_ground(frame: &WatchFrame, options: &WorldMapOptions) -> bool {
     options.allow_positional_target && frame.target_cursor && frame.target_kind == TARGET_GROUND
 }
 
+/// True when the World Map page hides the file of this stem.
+pub fn is_hidden(hidden: &[String], stem: &str) -> bool {
+    hidden.iter().any(|known| known == stem)
+}
+
 /// Hides a file when it shows, and shows it when it is hidden.
 pub fn flip_hidden(hidden: &mut Vec<String>, name: String) {
     match hidden.iter().position(|known| *known == name) {
@@ -580,6 +585,14 @@ pub fn group_on_map(frame: &WatchFrame) -> Vec<GroupMember> {
 mod tests {
     use super::*;
     use crate::frame::{WatchMobile, WatchPartyMember, WatchTrackedMember};
+
+    #[test]
+    fn a_file_is_hidden_only_when_its_stem_is_in_the_hidden_list() {
+        let hidden = vec!["dungeons".to_string()];
+        assert!(is_hidden(&hidden, "dungeons"));
+        assert!(!is_hidden(&hidden, "towns"));
+        assert!(!is_hidden(&[], "dungeons"));
+    }
 
     #[test]
     fn a_facet_has_its_size_and_an_unknown_one_the_largest() {

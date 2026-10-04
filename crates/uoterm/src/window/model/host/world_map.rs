@@ -39,7 +39,7 @@ pub fn load_markers(dir: &Path, hidden: &[String]) -> Vec<MarkerFile> {
         .iter()
         .filter_map(|name| {
             let stem = MapFile::of(name)?.stem();
-            if hidden.iter().any(|hidden| hidden == stem) {
+            if world_map::is_hidden(hidden, stem) {
                 return None;
             }
             let text = std::fs::read_to_string(dir.join(name)).ok()?;
@@ -108,7 +108,7 @@ pub fn load_zones(dir: &Path, hidden: &[String]) -> Vec<ZoneFile> {
             let MapFile::Zones { stem } = MapFile::of(name)? else {
                 return None;
             };
-            if hidden.iter().any(|hidden| hidden == stem) {
+            if world_map::is_hidden(hidden, stem) {
                 return None;
             }
             parse_zones_json(stem, &std::fs::read_to_string(dir.join(name)).ok()?)

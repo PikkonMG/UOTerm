@@ -12,6 +12,9 @@ use uoterm_view::model::reads::{ReadCache, ReadKey};
 /// A read made, with its answer.
 type Answered = (ReadKey, Result<Value, String>);
 
+/// The answer of a read the worker can no longer take.
+const WORKER_GONE: &str = "the reads of the session stopped";
+
 pub struct Readings {
     cache: ReadCache,
     asks: Sender<ReadKey>,
@@ -66,11 +69,24 @@ impl Readings {
 
     /// Call this once in each frame, after the panels read. It asks for
     /// the reads they wanted that are due.
+    /// A read the worker can no longer take fails, so it does not stay
+    /// on its way.
     pub fn ask_due(&mut self) {
+        let mut worker_gone = false;
         for key in self.cache.due(self.time) {
-            if self.asks.send(key).is_err() {
-                return;
-            }
+            let unsent = if worker_gone {
+                key
+            } else {
+                match self.asks.send(key) {
+                    Ok(()) => continue,
+                    Err(mpsc::SendError(key)) => {
+                        worker_gone = true;
+                        key
+                    }
+                }
+            };
+            self.cache
+                .arrived(unsent, Err(WORKER_GONE.to_string()), self.time);
         }
     }
 }
@@ -109,5 +125,22 @@ mod tests {
             inbox.try_recv().is_err(),
             "a fresh answer is not asked again"
         );
+    }
+
+    #[test]
+    fn a_read_the_worker_cannot_take_fails_and_is_not_kept_on_its_way() {
+        let (asks, inbox) = mpsc::channel();
+        let (_outbox, answers) = mpsc::channel();
+        let mut readings = Readings::with_channels(asks, answers);
+        drop(inbox);
+        let first = ReadKey::new(TOOL, &json!({ "serial": 1 }));
+        let second = ReadKey::new(TOOL, &json!({ "serial": 2 }));
+        readings.begin(0.0);
+        readings.cache().want(first.clone(), MAX_AGE);
+        readings.cache().want(second.clone(), MAX_AGE);
+        readings.ask_due();
+        for key in [first, second] {
+            assert_eq!(readings.cache().failure(&key), Some(WORKER_GONE));
+        }
     }
 }
