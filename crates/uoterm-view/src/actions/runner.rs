@@ -4,7 +4,7 @@
 
 use super::resolve::{resolve, Context, Effect, Wait};
 use super::step_action;
-use crate::window::settings::MacroStep;
+use crate::settings::MacroStep;
 use std::collections::VecDeque;
 
 struct Running {
@@ -78,9 +78,9 @@ impl MacroRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::WatchFrame;
-    use crate::window::control::Act;
-    use crate::window::settings::Profile;
+    use crate::act::Act;
+    use crate::frame::WatchFrame;
+    use crate::settings::Profile;
 
     fn said(words: &str) -> Effect {
         Effect::Act(Act::Say {

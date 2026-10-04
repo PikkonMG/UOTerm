@@ -8,6 +8,7 @@ use super::text::TextLook;
 use super::text_field::TextField;
 use crate::view::WatchFrame;
 use crate::view::WatchPackItem;
+use crate::window::bridge;
 use eframe::egui::{Pos2, Vec2};
 
 /// The id of the split menu of one pile, by the serial of the pile.
@@ -90,7 +91,7 @@ impl SplitMenu {
             amount,
             ..self.item.clone()
         };
-        cx.desk.pick_up_at(&taken, self.grab);
+        cx.desk.pick_up_at(&taken, bridge::vector(self.grab));
         cx.close(cx.me);
     }
 }

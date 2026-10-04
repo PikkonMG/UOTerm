@@ -30,6 +30,7 @@ use super::spellbook::SPELLBOOK;
 use crate::view::{WatchContainer, WatchFrame, WatchPackItem};
 use crate::window::actions::modern::CORPSE_GUMP;
 use crate::window::control::{Act, DropTo};
+use crate::window::desk;
 use crate::window::model::loot::{corpse_look, shows_corpse};
 use crate::window::scene::Scene;
 use crate::window::settings::{ContainerPlace, Profile};
@@ -320,7 +321,7 @@ impl ContainerGump {
         board: bool,
         under: Option<&WatchPackItem>,
     ) {
-        let Some((carried, grab)) = cx.desk.land(g.ui()) else {
+        let Some((carried, grab)) = desk::land(cx.desk, g.ui()) else {
             return;
         };
         let to = match under.filter(|item| item.serial != carried.serial) {

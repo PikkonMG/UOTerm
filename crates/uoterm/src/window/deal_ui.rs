@@ -20,7 +20,9 @@ use super::modern::frame::{self, FrameEvent, PanelSpec};
 use super::modern::layout::{self, Spot};
 use super::settings::Profile;
 use super::theme::{self, number_font, text_font};
+use super::tips;
 use crate::view::{WatchFrame, WatchGood, WatchPackItem, WatchShop, WatchTrade};
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use std::collections::HashMap;
 
@@ -140,9 +142,15 @@ fn item_tip(
     footer: &str,
 ) {
     if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
-        tools
-            .tips
-            .point_at(ui, tools.hand, item.serial, &item.name, footer, tools.time);
+        tips::point_at(
+            tools.tips,
+            ui,
+            tools.hand,
+            item.serial,
+            &item.name,
+            footer,
+            tools.time,
+        );
     }
 }
 
@@ -395,7 +403,7 @@ impl DealUi {
         let panel = frame::place(rect, &spec, profile);
         let body = frame::draw(ui.painter(), panel, &title);
         // An item dropped anywhere on the trade goes on the side of the human.
-        tools.desk.zone(panel, Zone::Into(trade.mine));
+        tools.desk.zone(bridge::area(panel), Zone::Into(trade.mine));
         let state = self.trades.entry(trade.mine).or_default();
         let sides = [
             (WORDS_YOU, trade.i_accept, &trade.mine_items, true),

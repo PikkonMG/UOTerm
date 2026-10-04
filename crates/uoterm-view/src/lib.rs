@@ -5,8 +5,17 @@
 //! caller gives the time in seconds.
 
 pub mod act;
+pub mod actions;
+pub mod clicks;
+pub mod desk;
 pub mod frame;
 pub mod geom;
 pub mod guard;
 pub mod input;
+pub mod keys;
+pub mod model;
+pub mod pad;
 pub mod settings;
+pub mod steer;
+pub mod tips;
+pub mod video;

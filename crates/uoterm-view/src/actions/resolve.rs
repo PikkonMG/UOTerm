@@ -8,40 +8,21 @@ use super::arguments::{
 use super::{
     ActionId, GumpOp, LocalAim, PointerClick, RangeChange, SelectHow, Switch, WindowCommand,
 };
-use crate::view::WatchFrame;
-use crate::window::control::{quoted, Act, Channel};
-use crate::window::keys::chat::channel_hue;
-use crate::window::macros_ui::play_line;
-use crate::window::settings::{Choice, Profile, SpeechOptions};
+use crate::act::{quoted, Act, Channel};
+use crate::frame::WatchFrame;
+use crate::keys::chat::channel_hue;
+use crate::settings::{Choice, Profile, SpeechOptions};
 use std::time::Duration;
+use uoterm_world::hotkeys;
 
-/// Hotkeys of the session that some actions press.
-const HOTKEY_FLY: &str = "Fly On/Off";
-const HOTKEY_PRIMARY: &str = "Primary Ability";
-const HOTKEY_SECONDARY: &str = "Secondary Ability";
-const HOTKEY_LEFT_HAND: &str = "Toggle Left Hand";
-const HOTKEY_RIGHT_HAND: &str = "Toggle Right Hand";
-const HOTKEY_BANDAGE_SELF: &str = "Bandage Self";
-const HOTKEY_BANDAGE_LAST: &str = "Bandage Last";
-const HOTKEY_LAST_SKILL: &str = "Last Skill";
-const HOTKEY_LAST_SPELL: &str = "Last Spell";
-const HOTKEY_TARGET_LAST: &str = "Target Last";
-const HOTKEY_TARGET_SELF: &str = "Target Self";
-const HOTKEY_LAST_OBJECT: &str = "Use Last Item";
-const HOTKEY_NAMES_MOBILES: &str = "Show Names Mobiles";
-const HOTKEY_NAMES_CORPSES: &str = "Show Names Corpses";
-const HOTKEY_APPLE: &str = "Enchanted Apple";
-const HOTKEY_ROSE: &str = "Rose Of Trinsic";
-const HOTKEY_ORANGE_PETALS: &str = "Orange Petals";
-const HOTKEY_SMOKE_BOMB: &str = "Smoke Bomb";
-const HOTKEY_HEALING_STONE: &str = "Healing Stone";
-const HOTKEY_SPELL_STONE: &str = "Spell Stone";
 /// A potion hotkey is this and the potion name.
 const HOTKEY_POTION: &str = "Potion ";
 
 const COMMAND_OPEN_DOOR: &str = "opendoor";
 const COMMAND_GUILD: &str = "guildbutton";
 const COMMAND_QUESTS: &str = "questsbutton";
+/// The script command that runs a macro by its name.
+const COMMAND_PLAY: &str = "playmacro";
 /// Uses what the character holds: the one-handed layer first, then the
 /// two-handed one, as the official client does.
 const COMMAND_USE_IN_HAND: &str =
@@ -101,6 +82,12 @@ fn window(command: WindowCommand) -> Effect {
 
 fn note(words: impl Into<String>) -> Effect {
     Effect::Note(words.into())
+}
+
+/// The script line that runs a macro by name. A name cannot hold a quote,
+/// because the session refuses such a name when the macro is saved.
+pub fn play_line(name: &str) -> String {
+    format!("{COMMAND_PLAY} '{name}'")
 }
 
 /// Words that name no choice of the list.
@@ -188,12 +175,12 @@ fn use_object(object: UsableObject, frame: &WatchFrame) -> Vec<Effect> {
         UsableObject::BestAgilityPotion => potion("agility"),
         UsableObject::BestExplosionPotion => potion("explosion"),
         UsableObject::BestConflagrationPotion => potion("conflagration"),
-        UsableObject::EnchantedApple => vec![hotkey(HOTKEY_APPLE)],
-        UsableObject::PetalsOfTrinsic => vec![hotkey(HOTKEY_ROSE)],
-        UsableObject::OrangePetals => vec![hotkey(HOTKEY_ORANGE_PETALS)],
-        UsableObject::SmokeBomb => vec![hotkey(HOTKEY_SMOKE_BOMB)],
-        UsableObject::HealingStone => vec![hotkey(HOTKEY_HEALING_STONE)],
-        UsableObject::SpellStone => vec![hotkey(HOTKEY_SPELL_STONE)],
+        UsableObject::EnchantedApple => vec![hotkey(hotkeys::ENCHANTED_APPLE)],
+        UsableObject::PetalsOfTrinsic => vec![hotkey(hotkeys::ROSE_OF_TRINSIC)],
+        UsableObject::OrangePetals => vec![hotkey(hotkeys::ORANGE_PETALS)],
+        UsableObject::SmokeBomb => vec![hotkey(hotkeys::SMOKE_BOMB)],
+        UsableObject::HealingStone => vec![hotkey(hotkeys::HEALING_STONE)],
+        UsableObject::SpellStone => vec![hotkey(hotkeys::SPELL_STONE)],
         UsableObject::TrappedBox => frame
             .containers
             .iter()
@@ -244,7 +231,7 @@ pub fn resolve(action: ActionId, argument: &str, context: &Context<'_>) -> Vec<E
         ActionId::OpenDoor => vec![command(COMMAND_OPEN_DOOR.to_string())],
         ActionId::AlwaysRun => toggle(Switch::AlwaysRun),
         ActionId::ClickToRun => toggle(Switch::ClickToRun),
-        ActionId::ToggleFly => vec![hotkey(HOTKEY_FLY)],
+        ActionId::ToggleFly => vec![hotkey(hotkeys::FLY_ON_OFF)],
         ActionId::OpenGump => with_choice(words, |kind| gump(GumpOp::Open, kind, frame)),
         ActionId::CloseGump => with_choice(words, |kind| gump(GumpOp::Close, kind, frame)),
         ActionId::ToggleGump => with_choice(words, |kind| gump(GumpOp::Toggle, kind, frame)),
@@ -277,7 +264,10 @@ pub fn resolve(action: ActionId, argument: &str, context: &Context<'_>) -> Vec<E
         ActionId::ToggleVegetation => toggle(Switch::HideVegetation),
         ActionId::ToggleCaveTiles => toggle(Switch::CaveTiles),
         ActionId::ToggleNames => toggle(Switch::Names),
-        ActionId::AllNames => vec![hotkey(HOTKEY_NAMES_MOBILES), hotkey(HOTKEY_NAMES_CORPSES)],
+        ActionId::AllNames => vec![
+            hotkey(hotkeys::SHOW_NAMES_MOBILES),
+            hotkey(hotkeys::SHOW_NAMES_CORPSES),
+        ],
         ActionId::ToggleAura => toggle(Switch::Aura),
         ActionId::EnableRangeColor => {
             vec![window(WindowCommand::SetOption(
@@ -305,27 +295,27 @@ pub fn resolve(action: ActionId, argument: &str, context: &Context<'_>) -> Vec<E
         ActionId::AttackSelected => {
             on_selected(context, |serial| vec![Effect::Act(Act::Attack(serial))])
         }
-        ActionId::PrimaryAbility => vec![hotkey(HOTKEY_PRIMARY)],
-        ActionId::SecondaryAbility => vec![hotkey(HOTKEY_SECONDARY)],
+        ActionId::PrimaryAbility => vec![hotkey(hotkeys::PRIMARY_ABILITY)],
+        ActionId::SecondaryAbility => vec![hotkey(hotkeys::SECONDARY_ABILITY)],
         ActionId::ArmDisarm => with_choice::<Hand>(words, |hand| {
             vec![hotkey(match hand {
-                Hand::Left => HOTKEY_LEFT_HAND,
-                Hand::Right => HOTKEY_RIGHT_HAND,
+                Hand::Left => hotkeys::TOGGLE_LEFT_HAND,
+                Hand::Right => hotkeys::TOGGLE_RIGHT_HAND,
             })]
         }),
         ActionId::EquipLastWeapon => vec![Effect::Act(Act::WearLastWeapon)],
-        ActionId::BandageSelf => vec![hotkey(HOTKEY_BANDAGE_SELF)],
-        ActionId::BandageTarget => vec![hotkey(HOTKEY_BANDAGE_LAST)],
+        ActionId::BandageSelf => vec![hotkey(hotkeys::BANDAGE_SELF)],
+        ActionId::BandageTarget => vec![hotkey(hotkeys::BANDAGE_LAST)],
         ActionId::InvokeVirtue => {
             with_choice::<Virtue>(words, |virtue| vec![hotkey(Virtue::LABELS[virtue.index()])])
         }
         ActionId::TargetSystem => toggle(Switch::NewTargetSystem),
         ActionId::UseSkill => vec![command(format!("useskill {}", quoted(words)))],
-        ActionId::LastSkill => vec![hotkey(HOTKEY_LAST_SKILL)],
+        ActionId::LastSkill => vec![hotkey(hotkeys::LAST_SKILL)],
         ActionId::CastSpell => vec![command(format!("cast {}", quoted(words)))],
-        ActionId::LastSpell => vec![hotkey(HOTKEY_LAST_SPELL)],
-        ActionId::LastTarget => vec![hotkey(HOTKEY_TARGET_LAST)],
-        ActionId::TargetSelf => vec![hotkey(HOTKEY_TARGET_SELF)],
+        ActionId::LastSpell => vec![hotkey(hotkeys::LAST_SPELL)],
+        ActionId::LastTarget => vec![hotkey(hotkeys::TARGET_LAST)],
+        ActionId::TargetSelf => vec![hotkey(hotkeys::TARGET_SELF)],
         ActionId::WaitForTarget => milliseconds(words, DEFAULT_TARGET_WAIT_MS).map_or_else(
             || {
                 vec![note(format!(
@@ -350,7 +340,7 @@ pub fn resolve(action: ActionId, argument: &str, context: &Context<'_>) -> Vec<E
         }),
         ActionId::Grab => vec![window(WindowCommand::Aim(LocalAim::Grab))],
         ActionId::SetGrabBag => vec![window(WindowCommand::Aim(LocalAim::SetGrabBag))],
-        ActionId::LastObject => vec![hotkey(HOTKEY_LAST_OBJECT)],
+        ActionId::LastObject => vec![hotkey(hotkeys::USE_LAST_ITEM)],
         ActionId::UseItemInHand => vec![command(COMMAND_USE_IN_HAND.to_string())],
         ActionId::UsePotion => vec![hotkey(&format!("{HOTKEY_POTION}{words}"))],
         ActionId::UseObject => with_choice(words, |object| use_object(object, frame)),
@@ -374,8 +364,8 @@ pub fn resolve(action: ActionId, argument: &str, context: &Context<'_>) -> Vec<E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::{WatchContainer, WatchPackItem};
-    use crate::window::actions::{ArgumentKind, ACTIONS};
+    use crate::actions::{ArgumentKind, ACTIONS};
+    use crate::frame::{WatchContainer, WatchPackItem};
 
     const BAG: u32 = 0x4000_0001;
     const ORC: u32 = 9;
@@ -492,7 +482,7 @@ mod tests {
     #[test]
     fn a_backpack_opens_with_a_use_and_the_guild_with_a_request() {
         let mut frame = WatchFrame::default();
-        frame.look.equipment.push(crate::view::WatchEquip {
+        frame.look.equipment.push(crate::frame::WatchEquip {
             serial: BAG,
             layer: uoterm_protocol::types::LAYER_BACKPACK,
             ..Default::default()
@@ -530,5 +520,10 @@ mod tests {
             ),
             vec![Effect::Act(Act::Use(BAG))]
         );
+    }
+
+    #[test]
+    fn a_pinned_macro_is_one_script_line() {
+        assert_eq!(play_line("heal self"), "playmacro 'heal self'");
     }
 }

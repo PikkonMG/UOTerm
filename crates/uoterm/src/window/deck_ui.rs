@@ -5,7 +5,9 @@
 //! sizes and locks, and it shows at all times it is open. Its clicks, and
 //! the hotbar, work only while the human has control.
 
-use super::actions::modern::wanted;
+pub use uoterm_view::actions::windows::{CharacterView, Tab};
+
+use super::actions::windows::wanted;
 use super::actions::GumpOp;
 use super::atlas::Sprite;
 use super::boxes_ui::{scrolled, Tools, CELL, CELL_GAP, CELL_RADIUS};
@@ -32,7 +34,9 @@ use super::modern::{status_ui, wear_color};
 use super::ring_ui::Subject;
 use super::settings::{MacroStep, Profile};
 use super::theme::{self, number_font, text_font, title_font};
+use super::tips;
 use crate::view::{WatchEquip, WatchFrame, WatchPackItem};
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -109,29 +113,12 @@ const HINT_WORN: &str =
 const HINT_SLOT: &str = "Click or press the key: use.  Right-click: clear.";
 const HINT_EMPTY_SLOT: &str = "Click: choose a macro or an ability for it.";
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Tab {
-    #[default]
-    Character,
-    Skills,
-    Spells,
-    Party,
-}
-
 const TABS: [(Tab, &str); 4] = [
     (Tab::Character, "Character"),
     (Tab::Skills, "Skills"),
     (Tab::Spells, "Spells"),
     (Tab::Party, "Party"),
 ];
-
-/// What the character tab shows: the worn items, or the whole status.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CharacterView {
-    #[default]
-    Worn,
-    Status,
-}
 
 /// The ability panels a window command opens and closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -834,7 +821,7 @@ impl DeckUi {
         };
         let warning = profile.interface.durability_warning;
         // An item dropped anywhere on this view is put on.
-        tools.desk.zone(body, Zone::Wear);
+        tools.desk.zone(bridge::area(body), Zone::Wear);
         let painter = ui.painter();
         let doll = Rect::from_min_size(body.left_top(), Vec2::new(DOLL_WIDTH, DOLL_HEIGHT));
         painter.rect_filled(doll, CornerRadius::same(CELL_RADIUS), theme::TRACK);
@@ -1017,9 +1004,15 @@ impl DeckUi {
         );
         if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
             let footer = if frame.human_control { HINT_WORN } else { "" };
-            tools
-                .tips
-                .point_at(ui, tools.hand, item.serial, "", footer, tools.time);
+            tips::point_at(
+                tools.tips,
+                ui,
+                tools.hand,
+                item.serial,
+                "",
+                footer,
+                tools.time,
+            );
         }
         if !frame.human_control {
             return;
@@ -1228,7 +1221,7 @@ impl DeckUi {
                 Vec2::splat(side),
             );
             cells.push(cell);
-            tools.desk.zone(cell, Zone::Slot(slot));
+            tools.desk.zone(bridge::area(cell), Zone::Slot(slot));
             let response = ui.interact(cell, Id::new(("hotbar", slot)), Sense::click());
             let fill = if response.hovered() || self.picking == Some(slot) {
                 theme::BUTTON_HOVER
@@ -1246,7 +1239,7 @@ impl DeckUi {
             );
             let Some(what) = self.hotbars.slot(&frame.name, slot).cloned() else {
                 if response.hovered() && !tools.desk.carries() && self.dragging.is_none() {
-                    super::tips::label(ui, HOTBAR_KEY_WORDS[slot], HINT_EMPTY_SLOT);
+                    tips::label(ui, HOTBAR_KEY_WORDS[slot], HINT_EMPTY_SLOT);
                 }
                 if response.clicked() {
                     self.picking = if self.picking == Some(slot) {
@@ -1261,11 +1254,11 @@ impl DeckUi {
             if response.hovered() && !tools.desk.carries() && self.dragging.is_none() {
                 match &what {
                     Slot::Item { serial, name, .. } => {
-                        tools
-                            .tips
-                            .point_at(ui, tools.hand, *serial, name, HINT_SLOT, tools.time);
+                        tips::point_at(
+                            tools.tips, ui, tools.hand, *serial, name, HINT_SLOT, tools.time,
+                        );
                     }
-                    other => super::tips::label(ui, &other.words(frame), HINT_SLOT),
+                    other => tips::label(ui, &other.words(frame), HINT_SLOT),
                 }
             }
             let key = !typing && ui.input(|i| i.key_pressed(HOTBAR_KEYS[slot]));

@@ -13,6 +13,13 @@ pub struct Mods {
     pub command: bool,
 }
 
+impl Mods {
+    /// True when no modifier key is held.
+    pub fn is_none(self) -> bool {
+        self == Self::default()
+    }
+}
+
 /// A key by the egui name that saved profiles use, such as `F1`, `A` or
 /// `ArrowUp`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]

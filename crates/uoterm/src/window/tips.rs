@@ -1,114 +1,50 @@
-//! The tooltip of the thing under the mouse, in the words of the shard.
-//! The window asks once when the mouse rests on a thing, and keeps the
-//! answer for a short time, because the words of an item can change.
+//! The tooltip of the thing under the mouse, drawn by the window. Which
+//! words it shows and when the shard is asked are `uoterm_view::tips`.
+
+pub use uoterm_view::tips::*;
 
 use super::control::Hand;
 use super::theme::{self, text_font, title_font};
 use eframe::egui::{self, Id, Pos2, Rect, Vec2};
-use std::collections::HashMap;
 
-const REST_SECONDS: f64 = 0.35;
-const KEEP_SECONDS: f64 = 10.0;
 const TIP_OFFSET: Vec2 = Vec2::new(18.0, 20.0);
 const TIP_PAD: Vec2 = Vec2::new(10.0, 8.0);
 const TIP_LINE_GAP: f32 = 2.0;
 
-struct Known {
-    lines: Vec<String>,
-    at: f64,
+/// The mouse is on this thing now. `fallback` shows until the shard
+/// answers, and when it has no words for the thing.
+pub fn point_at(
+    tips: &mut Tips,
+    ui: &egui::Ui,
+    hand: &Hand,
+    serial: u32,
+    fallback: &str,
+    footer: &str,
+    time: f64,
+) {
+    point_at_with(tips, ui, hand, serial, fallback, &[], footer, time);
 }
 
-#[derive(Default)]
-pub struct Tips {
-    known: HashMap<u32, Known>,
-    /// The thing the mouse is on, and since when.
-    resting: Option<(u32, f64)>,
-    asked: Option<u32>,
-}
-
-impl Tips {
-    /// Call this once in each frame, before the panels point at things.
-    pub fn begin(&mut self, hand: &Hand, time: f64) {
-        for tip in hand.new_tips() {
-            if self.asked == Some(tip.serial) {
-                self.asked = None;
-            }
-            self.known.insert(
-                tip.serial,
-                Known {
-                    lines: tip.lines,
-                    at: time,
-                },
-            );
-        }
-        self.known.retain(|_, known| time - known.at < KEEP_SECONDS);
+/// The tooltip of a thing with lines of the window's own under the
+/// shard's words: a compare, or what a bag holds.
+#[allow(clippy::too_many_arguments)]
+pub fn point_at_with(
+    tips: &mut Tips,
+    ui: &egui::Ui,
+    hand: &Hand,
+    serial: u32,
+    fallback: &str,
+    extra: &[String],
+    footer: &str,
+    time: f64,
+) {
+    if !tips.rest_on(serial, time, |serial| hand.want_tip(serial)) {
+        ui.ctx().request_repaint();
     }
-
-    /// The words of a thing as the shard gave them, for a window that draws
-    /// its own tooltip. The shard is asked once while they are not known.
-    pub fn lines_of(&mut self, hand: &Hand, serial: u32) -> Option<&[String]> {
-        if !self.known.contains_key(&serial) && self.asked != Some(serial) {
-            self.asked = Some(serial);
-            hand.want_tip(serial);
-        }
-        self.known.get(&serial).map(|known| known.lines.as_slice())
-    }
-
-    /// The mouse is on this thing now. `fallback` shows until the shard
-    /// answers, and when it has no words for the thing.
-    pub fn point_at(
-        &mut self,
-        ui: &egui::Ui,
-        hand: &Hand,
-        serial: u32,
-        fallback: &str,
-        footer: &str,
-        time: f64,
-    ) {
-        self.point_at_with(ui, hand, serial, fallback, &[], footer, time);
-    }
-
-    /// The tooltip of a thing with lines of the window's own under the
-    /// shard's words: a compare, or what a bag holds.
-    #[allow(clippy::too_many_arguments)]
-    pub fn point_at_with(
-        &mut self,
-        ui: &egui::Ui,
-        hand: &Hand,
-        serial: u32,
-        fallback: &str,
-        extra: &[String],
-        footer: &str,
-        time: f64,
-    ) {
-        let since = match self.resting {
-            Some((resting, since)) if resting == serial => since,
-            _ => {
-                self.resting = Some((serial, time));
-                time
-            }
-        };
-        let rested = time - since >= REST_SECONDS;
-        if rested && !self.known.contains_key(&serial) && self.asked != Some(serial) {
-            self.asked = Some(serial);
-            hand.want_tip(serial);
-        }
-        if !rested {
-            ui.ctx().request_repaint();
-        }
-        let Some(mouse) = ui.input(|i| i.pointer.hover_pos()) else {
-            return;
-        };
-        let mut lines: Vec<&str> = match self.known.get(&serial) {
-            Some(known) if !known.lines.is_empty() => {
-                known.lines.iter().map(String::as_str).collect()
-            }
-            _ if fallback.is_empty() => Vec::new(),
-            _ => vec![fallback],
-        };
-        lines.extend(extra.iter().map(String::as_str));
-        draw(ui, mouse, &lines, footer);
-    }
+    let Some(mouse) = ui.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
+    draw(ui, mouse, &tips.shown(serial, fallback, extra), footer);
 }
 
 /// A tooltip for a thing the shard has no words for: a skill, a command.

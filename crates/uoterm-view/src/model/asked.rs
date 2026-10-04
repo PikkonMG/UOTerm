@@ -4,8 +4,8 @@
 //! the entry dialog of the Modern style and the classic prompt and text
 //! entry gumps answer through these.
 
-use crate::view::{WatchFrame, WatchTextEntry};
-use crate::window::control::{quoted, Act};
+use crate::act::{quoted, Act};
+use crate::frame::{WatchFrame, WatchTextEntry};
 
 /// The script command that answers a prompt of the shard.
 pub const COMMAND_PROMPT_ANSWER: &str = "promptmsg";
@@ -133,7 +133,7 @@ pub fn asked_commands(frame: &WatchFrame) -> Option<AskedCommands> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::TEXT_ENTRY_STYLE_NUMERIC;
+    use crate::frame::TEXT_ENTRY_STYLE_NUMERIC;
 
     #[test]
     fn a_text_entry_comes_before_a_prompt_and_answers_are_one_command() {

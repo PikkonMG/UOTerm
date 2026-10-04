@@ -2,10 +2,11 @@
 //! words the Options screen shows, so a kept profile reads plainly: a
 //! spell name, a window name, a number of milliseconds.
 
-use crate::window::settings::{choices, Choice};
+use crate::settings::{choices, Choice};
 use std::sync::OnceLock;
 use uoterm_assist::items::POTIONS;
 use uoterm_assist::spells::{School, SpellBook};
+use uoterm_world::hotkeys::FIXED_HOTKEY_NAMES;
 
 /// How long a step waits for a target cursor when it names no time. The
 /// official client waits this long too.
@@ -259,10 +260,7 @@ impl ArgumentKind {
             ArgumentKind::Skill => USABLE_SKILLS.iter().map(|s| s.to_string()).collect(),
             ArgumentKind::Spell => spell_names().to_vec(),
             ArgumentKind::Potion => POTIONS.iter().map(|p| sentence_case(p.name)).collect(),
-            ArgumentKind::Hotkey => uoterm_runtime::session::fixed_hotkey_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            ArgumentKind::Hotkey => FIXED_HOTKEY_NAMES.iter().map(|n| n.to_string()).collect(),
             ArgumentKind::None
             | ArgumentKind::Text
             | ArgumentKind::Number

@@ -7,7 +7,7 @@ use super::text::{TextKit, UoFonts};
 use crate::view::WatchFrame;
 use crate::window::control::Hand;
 use crate::window::desk::Desk;
-use crate::window::keys::Focus;
+use crate::window::keys::{self, Focus};
 use crate::window::link::Link;
 use crate::window::model::journal::JournalLog;
 use crate::window::model::reads::Readings;
@@ -127,7 +127,7 @@ pub fn focus_after_drawing(
     let ctx = egui::Context::default();
     let quiet = vec![Vec::new(); FRAMES];
     draw_in(&ctx, manager, profile, frame, &mut Desk::default(), &quiet)
-        .then(|| Focus::of(&ctx, egui::Id::NULL, true))
+        .then(|| keys::focus(&ctx, egui::Id::NULL, true))
 }
 
 fn draw_in(

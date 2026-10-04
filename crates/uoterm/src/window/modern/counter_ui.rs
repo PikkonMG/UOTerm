@@ -15,6 +15,7 @@ use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::desk;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, Vec2};
 
 pub const COUNTERS_ID: &str = "modern:counters";
@@ -170,7 +171,7 @@ fn take_drop(
         Stroke::new(FLASH_WIDTH, theme::GOAL),
         egui::StrokeKind::Inside,
     );
-    let Some((item, _)) = tools.desk.land(ui) else {
+    let Some((item, _)) = desk::land(tools.desk, ui) else {
         return false;
     };
     counters::put_in_cell(&mut profile.counters.items, index, counters::counted(&item));

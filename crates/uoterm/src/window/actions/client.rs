@@ -8,20 +8,23 @@ use super::guard::aim_words;
 use super::journal::ClientJournal;
 use super::resolve::{opens_doors, runs, Context, Effect};
 use super::runner::MacroRunner;
-use super::screenshot::{stored_words, Screenshots};
+use super::screenshot::Screenshots;
 use super::select::select;
+use super::switches::{set_switch, switch_on, switched_words};
 use super::view_range::ViewRange;
-use super::{GumpOp, Look, PointerClick, Switch, WindowCommand, ZoomStep};
+use super::{Look, PointerClick, Switch, WindowCommand, ZoomStep};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use crate::window::control::{Act, Hand};
-use crate::window::keys::{Focus, KeyDispatch, WarKey};
+use crate::window::keys::{self, KeyDispatch, WarKey};
 use crate::window::model::skills::SkillChanges;
 use crate::window::model::status::StatChanges;
 use crate::window::pad::{self, Pad};
 use crate::window::scene::Scene;
-use crate::window::settings::{AuraRule, Profile, ProfileHome};
+use crate::window::settings::{AuraRule, MacroStep, Profile, ProfileHome};
 use crate::window::steer::Movement;
 use eframe::egui::{self, Event, Id, PointerButton, Rect, ViewportCommand};
+use uoterm_view::actions::screenshot::{failed_words, stored_words, DeathWatch};
 
 /// One step of the zoom keys.
 const ZOOM_STEP: f32 = 0.1;
@@ -30,7 +33,6 @@ const PEEK_MOST: f32 = 240.0;
 
 const NOTE_SAVED: &str = "The desktop is saved.";
 const NOTE_NOTHING_TO_SELECT: &str = "There is nothing of that kind to select.";
-const NOTE_NO_SUCH_WINDOW: &str = "This window style has no such window.";
 
 /// What the window needs to run the controls of one frame.
 pub struct FrameEnv<'a> {
@@ -67,6 +69,7 @@ pub struct Controls {
     runner: MacroRunner,
     pub journal: ClientJournal,
     screenshots: Screenshots,
+    deaths: DeathWatch,
     view_range: ViewRange,
     /// The target the select actions picked.
     selected: Option<u32>,
@@ -75,7 +78,7 @@ pub struct Controls {
     /// Clicks a controller or a key asked for, for the next frame's input.
     clicks: Vec<PointerClick>,
     /// Macros the controller started, for the next frame.
-    pad_macros: Vec<Vec<crate::window::settings::MacroStep>>,
+    pad_macros: Vec<Vec<MacroStep>>,
     pad_walk: Option<(&'static str, bool)>,
     /// The skills of the last frame, to tell of the ones that changed.
     skill_changes: SkillChanges,
@@ -84,96 +87,27 @@ pub struct Controls {
     pad_note_told: bool,
 }
 
-/// The words of an option in the journal.
-fn switch_words(switch: Switch) -> &'static str {
-    match switch {
-        Switch::AlwaysRun => "Always run",
-        Switch::ClickToRun => "Click to run",
-        Switch::CircleOfTransparency => "Circle of transparency",
-        Switch::HideRoofs => "Hiding roofs",
-        Switch::TreesToStumps => "Trees to stumps",
-        Switch::HideVegetation => "Hiding vegetation",
-        Switch::CaveTiles => "Cave tile marks",
-        Switch::Names => "Names over heads",
-        Switch::Aura => "Auras",
-        Switch::OutOfRangeColor => "Out of range color",
-        Switch::NewTargetSystem => "Target system",
-    }
-}
-
-/// Whether an option is on.
-fn switch_on(profile: &Profile, switch: Switch) -> bool {
-    let general = &profile.general;
-    match switch {
-        Switch::AlwaysRun => general.always_run,
-        Switch::ClickToRun => general.click_to_run,
-        Switch::CircleOfTransparency => general.circle_of_transparency,
-        Switch::HideRoofs => general.hide_roofs,
-        Switch::TreesToStumps => general.trees_to_stumps,
-        Switch::HideVegetation => general.hide_vegetation,
-        Switch::CaveTiles => general.mark_cave_tiles,
-        Switch::Names => profile.nameplates.enabled,
-        Switch::Aura => general.aura_under_feet != AuraRule::Never,
-        Switch::OutOfRangeColor => general.out_of_range_no_color,
-        Switch::NewTargetSystem => profile.combat.new_target_system,
-    }
-}
-
 impl Controls {
-    fn set_switch(&mut self, profile: &mut Profile, switch: Switch, on: bool) {
-        let general = &mut profile.general;
-        let field = match switch {
-            Switch::AlwaysRun => &mut general.always_run,
-            Switch::ClickToRun => &mut general.click_to_run,
-            Switch::CircleOfTransparency => &mut general.circle_of_transparency,
-            Switch::HideRoofs => &mut general.hide_roofs,
-            Switch::TreesToStumps => &mut general.trees_to_stumps,
-            Switch::HideVegetation => &mut general.hide_vegetation,
-            Switch::CaveTiles => &mut general.mark_cave_tiles,
-            Switch::Names => &mut profile.nameplates.enabled,
-            Switch::OutOfRangeColor => &mut general.out_of_range_no_color,
-            Switch::NewTargetSystem => &mut profile.combat.new_target_system,
-            Switch::Aura => {
-                let rule = &mut general.aura_under_feet;
-                if on && *rule == AuraRule::Never {
-                    *rule = self.aura_before.take().unwrap_or(AuraRule::Always);
-                } else if !on && *rule != AuraRule::Never {
-                    self.aura_before = Some(*rule);
-                    *rule = AuraRule::Never;
-                }
-                return;
-            }
-        };
-        *field = on;
-    }
-
     /// Lays the window's own lines into a new picture and takes out what
     /// lies past the view range. Call it for each picture the session sends.
     pub fn received(&mut self, frame: &mut WatchFrame) {
-        self.journal.lay_into(frame);
-        self.view_range.cull(frame);
+        super::received(frame, &mut self.journal, &self.view_range);
     }
 
     /// Reads the controller and puts the clicks and the mouse moves it asks
     /// for into the input of the next frame. The window calls it from its
     /// raw input hook.
     pub fn raw_input(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput, profile: &Profile) {
-        let options = &profile.macros;
-        let pad = self.pad.poll(
-            options.controller_enabled,
-            options.controller_mouse_sensitivity,
-            &options.key_bindings,
-            !profile.experimental.disable_default_hotkeys,
-            raw.predicted_dt,
-        );
+        let pad = self.pad.poll(profile, raw.predicted_dt);
         pad::leave_pressed(ctx, pad.pressed.clone());
         self.pad_macros.extend(pad.macros);
         self.pad_walk = pad.walk;
         let last = ctx.input(|input| input.pointer.latest_pos());
         let mut at = last.unwrap_or_else(|| ctx.screen_rect().center());
-        if pad.pointer != egui::Vec2::ZERO {
+        let pointer = bridge::vec2(pad.pointer);
+        if pointer != egui::Vec2::ZERO {
             let room = raw.screen_rect.unwrap_or_else(|| ctx.screen_rect());
-            at = room.clamp(at + pad.pointer);
+            at = room.clamp(at + pointer);
             raw.events.push(Event::PointerMoved(at));
             ctx.send_viewport_cmd(ViewportCommand::CursorPosition(at));
         }
@@ -198,7 +132,7 @@ impl Controls {
 
     /// Starts a macro a button of the window runs. It runs from the next
     /// frame on, as the macro of a key does.
-    pub fn run_macro(&mut self, steps: Vec<crate::window::settings::MacroStep>) {
+    pub fn run_macro(&mut self, steps: Vec<MacroStep>) {
         self.runner.start(steps);
     }
 
@@ -206,16 +140,16 @@ impl Controls {
     pub fn frame(&mut self, env: &mut FrameEnv<'_>) -> FrameOut {
         let mut out = FrameOut::default();
         env.hand.watch_over(env.frame, &env.profile.combat);
-        let focus = Focus::of(env.ctx, env.chat_id, env.chat_empty);
+        let focus = keys::focus(env.ctx, env.chat_id, env.chat_empty);
         let presses = if env.keys_paused {
             Vec::new()
         } else {
-            KeyDispatch::presses(env.ctx)
+            keys::presses(env.ctx)
         };
         let dispatched = self
             .keys
             .dispatch(&presses, focus, env.profile, env.frame.war);
-        KeyDispatch::take_used(env.ctx, &dispatched);
+        keys::take_used(env.ctx, &dispatched);
         out.history_older = dispatched.history_older;
         match dispatched.war {
             Some(WarKey::Set(on)) => env.hand.act(Act::War(on)),
@@ -231,7 +165,7 @@ impl Controls {
         }
         self.look(env);
         out.movement = Movement {
-            keys: KeyDispatch::walk_keys(focus, env.profile),
+            keys: keys::walk_keys(focus, env.profile),
             held: self.keys.held_walk(),
             pad: self.pad_walk,
             always_run: runs(env.frame, env.profile),
@@ -270,7 +204,7 @@ impl Controls {
             self.pad_note_told = true;
             self.journal.print(env.frame, self.pad.note().to_string());
         }
-        if self.screenshots.died(env.frame) && env.profile.interface.screenshot_on_death {
+        if self.deaths.died(env.frame) && env.profile.interface.screenshot_on_death {
             self.screenshots.ask(env.ctx);
         }
         self.take_screenshot(env);
@@ -304,12 +238,11 @@ impl Controls {
         };
         match saved {
             Ok(path) if !env.profile.general.hide_screenshot_message => {
-                self.journal.print(env.frame, stored_words(&path));
+                let place = path.display().to_string();
+                self.journal.print(env.frame, stored_words(&place));
             }
             Ok(_) => {}
-            Err(why) => self
-                .journal
-                .print(env.frame, format!("The screenshot was not saved: {why}")),
+            Err(why) => self.journal.print(env.frame, failed_words(&why)),
         }
     }
 
@@ -374,65 +307,13 @@ impl Controls {
     }
 
     fn switch(&mut self, switch: Switch, on: bool, env: &mut FrameEnv<'_>) {
-        self.set_switch(env.profile, switch, on);
+        set_switch(env.profile, switch, on, &mut self.aura_before);
         env.home.save(env.profile);
-        let state = if on { "on" } else { "off" };
-        self.journal.print(
-            env.frame,
-            format!("{} is now {state}.", switch_words(switch)),
-        );
+        self.journal.print(env.frame, switched_words(switch, on));
     }
 
     /// Tells the player that the style has no window for a command.
     pub fn style_cannot(&mut self, frame: &WatchFrame, command: &WindowCommand) {
-        let words = match command {
-            WindowCommand::Gump(GumpOp::Open | GumpOp::Toggle, kind) => {
-                format!("This window style has no {} window.", kind.label())
-            }
-            _ => NOTE_NO_SUCH_WINDOW.to_string(),
-        };
-        self.journal.print(frame, words);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_switch_turns_its_own_option_on_and_off() {
-        let switches = [
-            Switch::AlwaysRun,
-            Switch::ClickToRun,
-            Switch::CircleOfTransparency,
-            Switch::HideRoofs,
-            Switch::TreesToStumps,
-            Switch::HideVegetation,
-            Switch::CaveTiles,
-            Switch::Names,
-            Switch::Aura,
-            Switch::OutOfRangeColor,
-            Switch::NewTargetSystem,
-        ];
-        let mut controls = Controls::default();
-        for switch in switches {
-            let mut profile = Profile::default();
-            let before = switch_on(&profile, switch);
-            controls.set_switch(&mut profile, switch, !before);
-            assert_eq!(switch_on(&profile, switch), !before, "{switch:?}");
-            controls.set_switch(&mut profile, switch, before);
-            assert_eq!(profile, Profile::default(), "{switch:?}");
-        }
-    }
-
-    #[test]
-    fn the_aura_key_brings_back_the_rule_it_turned_off() {
-        let mut controls = Controls::default();
-        let mut profile = Profile::default();
-        profile.general.aura_under_feet = AuraRule::WarMode;
-        controls.set_switch(&mut profile, Switch::Aura, false);
-        assert_eq!(profile.general.aura_under_feet, AuraRule::Never);
-        controls.set_switch(&mut profile, Switch::Aura, true);
-        assert_eq!(profile.general.aura_under_feet, AuraRule::WarMode);
+        super::style_cannot(&mut self.journal, frame, command);
     }
 }

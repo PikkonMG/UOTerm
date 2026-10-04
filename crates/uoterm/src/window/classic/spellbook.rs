@@ -278,7 +278,7 @@ impl Spellbook {
         g.label(DATA_X[1], HEADING_Y, WORDS_ABILITIES, &text(SMALL_FONT));
         let lines: Vec<String> = cx
             .tips
-            .lines_of(cx.hand, self.serial)
+            .lines_of(self.serial, |serial| cx.hand.want_tip(serial))
             .map(<[String]>::to_vec)
             .unwrap_or_default();
         let places = active_masteries(|cliloc| {

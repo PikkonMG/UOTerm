@@ -67,12 +67,6 @@ mod ultima_live;
 use agents::Agents;
 use scripting::Scripting;
 
-/// The names of the hotkeys every character has, whatever he knows, so a
-/// window can offer them for a key.
-pub fn fixed_hotkey_names() -> Vec<&'static str> {
-    uoterm_world::hotkeys::FIXED_HOTKEY_NAMES.to_vec()
-}
-
 const CMD_QUEUE_CAP: usize = 64;
 const READ_BUF_LEN: usize = 8192;
 const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(8);

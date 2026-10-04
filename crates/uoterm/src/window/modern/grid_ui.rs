@@ -27,9 +27,11 @@ use super::super::ring_ui::Subject;
 use super::super::settings::GridLayout;
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
+use super::super::tips;
 use super::frame::{self, FrameEvent, PanelSpec, TITLE_ROW};
 use super::layout::{self, Spot};
 use crate::view::{WatchContainer, WatchFrame, WatchPackItem};
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::{HashMap, HashSet};
 
@@ -224,7 +226,7 @@ impl GridUi {
     ) -> Option<FrameEvent> {
         let frame = view.frame;
         let serial = view.container.serial;
-        tools.desk.zone(panel, Zone::Into(serial));
+        tools.desk.zone(bridge::area(panel), Zone::Into(serial));
         let options = &profile.containers;
         let fill = theme::with_alpha(theme::GLASS, f32::from(options.grid_opacity) / PERCENT);
         let edge = if options.grid_border_hue == 0 {
@@ -293,7 +295,7 @@ impl GridUi {
                 tools.keep_profile(profile);
             }
             if ui.rect_contains_pointer(area) {
-                super::super::tips::label(ui, HINT_FAVORITE, "");
+                tips::label(ui, HINT_FAVORITE, "");
             }
         }
         if frame.human_control && view.grid_loot {
@@ -308,7 +310,7 @@ impl GridUi {
                 tools.hand.act(Act::Loot(serial));
             }
             if ui.rect_contains_pointer(area) {
-                super::super::tips::label(ui, HINT_LOOT_ALL, "");
+                tips::label(ui, HINT_LOOT_ALL, "");
             }
             let area = button(&mut right, TITLE_BUTTON_WIDTH);
             if theme::segment_keyed(
@@ -322,7 +324,7 @@ impl GridUi {
                 tools.hand.aim(LocalAim::SetGrabBag);
             }
             if ui.rect_contains_pointer(area) {
-                super::super::tips::label(ui, HINT_LOOT_BAG, "");
+                tips::label(ui, HINT_LOOT_BAG, "");
             }
         }
         let whole = frame::title_room(panel, frame::marks(spec));
@@ -596,7 +598,8 @@ impl GridUi {
                 (true, true) => HINT_LOOT_ITEM,
                 (true, false) => HINT_ITEM,
             };
-            tools.tips.point_at_with(
+            tips::point_at_with(
+                tools.tips,
                 ui,
                 tools.hand,
                 item.serial,
@@ -647,7 +650,7 @@ impl GridUi {
             );
         }
         // An item dropped on a bag goes in, and on a pile of its kind joins.
-        tools.desk.zone(cell, Zone::Into(item.serial));
+        tools.desk.zone(bridge::area(cell), Zone::Into(item.serial));
     }
 
     /// The bar at the foot of a pile of a grid loot: a click or a drag on

@@ -14,6 +14,7 @@ use super::text::TextLook;
 use super::text_field::TextField;
 use crate::view::{WatchFrame, WatchPackItem, WatchTrade};
 use crate::window::control::{Act, DropTo};
+use crate::window::desk;
 use crate::window::model::deals::{typed_offer, with_thousands};
 use crate::window::settings::Profile;
 use eframe::egui::Vec2;
@@ -174,7 +175,7 @@ impl Trade {
         if cx.desk.carried().is_none() || !g.hovered(left, top, w, h) {
             return;
         }
-        let Some((carried, _)) = cx.desk.land(g.ui()) else {
+        let Some((carried, _)) = desk::land(cx.desk, g.ui()) else {
             return;
         };
         let Some(mouse) = g.ui().input(|i| i.pointer.interact_pos()) else {

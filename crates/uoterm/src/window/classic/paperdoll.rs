@@ -27,6 +27,7 @@ use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpR
 use super::text::TextLook;
 use super::windows::PAPERDOLL_COMMAND;
 use crate::view::{WatchEquip, WatchFrame, WatchLook, WatchPackItem};
+use crate::window::bridge;
 use crate::window::control::Act;
 use crate::window::desk::Zone;
 use crate::window::model::dolls::{self, DollWatch, GUILD_COMMAND, QUESTS_COMMAND};
@@ -424,7 +425,7 @@ impl Paperdoll {
             };
             let rect = g.area(x, DOLL_AT.1, Vec2::new(sprite.width, sprite.height));
             if item.layer == LAYER_BACKPACK {
-                cx.desk.zone(rect, Zone::Into(item.serial));
+                cx.desk.zone(bridge::area(rect), Zone::Into(item.serial));
             }
             let held_here = self.pressed_on == Some(item.serial) && down;
             if under_mouse != Some(at) && !held_here {
@@ -691,9 +692,10 @@ impl GumpBody for Paperdoll {
         let own = self.own(frame);
         let size = g.pic(0, 0, self.background(frame), 0);
         if own {
-            cx.desk.zone(g.area(0, 0, size), Zone::Wear);
+            cx.desk.zone(bridge::area(g.area(0, 0, size)), Zone::Wear);
         } else if self.can_lift {
-            cx.desk.zone(g.area(0, 0, size), Zone::Into(self.serial));
+            cx.desk
+                .zone(bridge::area(g.area(0, 0, size)), Zone::Into(self.serial));
         }
         let pictures = self.pictures(g, frame);
         if let Some(look) = look_of(frame, self.serial).cloned() {

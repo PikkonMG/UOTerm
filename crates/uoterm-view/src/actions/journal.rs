@@ -3,7 +3,7 @@
 //! hears of them, so the window lays them into each picture it gets, after
 //! the line that was newest when they were written.
 
-use crate::view::{WatchFrame, WatchSpeech};
+use crate::frame::{WatchFrame, WatchSpeech};
 
 /// The message type of a system line.
 const KIND_SYSTEM: u8 = 1;

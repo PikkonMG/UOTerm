@@ -6,7 +6,7 @@
 //! first.
 
 use super::{new_step, step_action, ActionId};
-use crate::window::settings::{KeyBinding, KeyChord, PadChord};
+use crate::settings::{KeyBinding, KeyChord, PadChord};
 
 const NEW_MACRO_NAME: &str = "New macro";
 const UNKNOWN_ACTION: &str = "Unknown action";
@@ -175,7 +175,7 @@ impl MacroEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::settings::MacroStep;
+    use crate::settings::MacroStep;
 
     fn chord(words: &str) -> KeyChord {
         words.parse().unwrap()

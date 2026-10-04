@@ -651,7 +651,7 @@ impl eframe::App for WatchApp {
                             );
                         }
                         self.desk.begin();
-                        self.tips.begin(&self.hand, time);
+                        self.tips.begin(self.hand.new_tips(), time);
                         self.readings.begin(time);
                         let gumps_ready = self.classic.ready(&self.scene);
                         let mut covered: Vec<egui::Rect> = arrow_area.into_iter().collect();

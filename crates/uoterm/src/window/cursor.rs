@@ -8,6 +8,7 @@
 //! cursor adds when the options ask: an aura under the mouse in the hue of
 //! what the target does, and how far the thing under the mouse is.
 
+use super::bridge;
 use super::scene::Scene;
 use super::settings::Profile;
 use super::steer::way_of;
@@ -39,7 +40,8 @@ pub fn cursor_shape(target: bool, character: Pos2, mouse: Pos2) -> CursorShape {
     if target {
         return CursorShape::Target;
     }
-    Direction::from_name(way_of(mouse - character)).map_or(CursorShape::Normal, CursorShape::Walk)
+    Direction::from_name(way_of(bridge::vector(mouse - character)))
+        .map_or(CursorShape::Normal, CursorShape::Walk)
 }
 
 /// Draws the pointer of the classic client over the world, and hides the

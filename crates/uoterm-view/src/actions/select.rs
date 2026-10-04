@@ -3,7 +3,7 @@
 //! selected target use it.
 
 use super::{SelectHow, SelectKind};
-use crate::view::WatchFrame;
+use crate::frame::WatchFrame;
 use uoterm_protocol::types::{NOTO_ATTACKABLE, NOTO_ENEMY, NOTO_INVULNERABLE};
 
 /// A follower of these kinds is not picked: the official client leaves out
@@ -66,7 +66,7 @@ pub fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::{WatchMobile, WatchPartyMember};
+    use crate::frame::{WatchMobile, WatchPartyMember};
     use uoterm_protocol::types::{NOTO_INNOCENT, NOTO_MURDERER};
 
     fn mobile(serial: u32, x: u16, notoriety: u8) -> WatchMobile {

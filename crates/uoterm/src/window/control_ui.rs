@@ -17,8 +17,9 @@ use super::bridge;
 use super::build_ui::{BuildUi, ChatUi};
 use super::control::{Act, Hand, Report};
 use super::deck_ui::DeckUi;
+use super::desk;
 use super::hud::Hud;
-use super::keys::chat::{say_line, ChatLine};
+use super::keys::chat::{self, ChatKey, ChatLine, ChatOut};
 use super::macros_ui::MacrosUi;
 use super::map_ui::MapUi;
 use super::mapitem_ui::ProfileUi;
@@ -28,13 +29,18 @@ use super::modern::{ModernUi, WORDS_LAUNCHER};
 use super::options_ui::OptionsUi;
 use super::ring_ui::{opens_menu, Subject};
 use super::scene::{MapDrag, PickKind, Scene};
-use super::settings::{GeneralOptions, Profile, SpeechOptions};
-use super::steer::{Movement, Steer};
+use super::settings::{Profile, SpeechOptions};
+use super::steer::{self, Movement, Steer};
 use super::theme::{self, number_font, text_font};
+use super::tips;
 use crate::view::{WatchFrame, WatchPackItem};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::TextFormat;
-use eframe::egui::{self, Align2, CornerRadius, Id, Key, Modifiers, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
+use uoterm_view::clicks::{
+    act_for_click, bar_buttons, bar_status, beside_bar, grabbed, hint_for, ChatMode, GroundClicks,
+    Press, WordsEdge,
+};
 
 /// The top panel has one width in each state, so nothing in it moves when
 /// the buttons change.
@@ -62,39 +68,9 @@ const REPORT_SECONDS: f64 = 5.0;
 const REPORT_GAP: f32 = 8.0;
 const MODE_WIDTH: f32 = 58.0;
 
-const WORDS_TAKE: &str = "Take control";
-const WORDS_IN_CONTROL: &str = "You have control. The agent waits.";
-const WORDS_GIVE_BACK: &str = "Give back";
-const WORDS_STOP: &str = "Stop";
-const WORDS_WAR: &str = "War";
-const WORDS_PEACE: &str = "Peace";
-const WORDS_BAG: &str = "Bag";
-const WORDS_SHEET: &str = "Sheet";
-const WORDS_MAP: &str = "Map";
-const WORDS_MACROS: &str = "Macros";
-const WORDS_PROFILE: &str = "Profile";
-const WORDS_CHAT: &str = "Chat";
-const WORDS_HELP: &str = "Help";
-const WORDS_QUIT: &str = "Quit";
 const WORDS_PIN: &str = "Pin";
 const PIN_WIDTH: f32 = 48.0;
 const REPORT_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
-const WORDS_OPTIONS: &str = "Options";
-const WORDS_TARGET: &str = "Click the target. Press Esc to cancel.";
-const WORDS_SAY: &str = "Say";
-const WORDS_ORDER: &str = "Order";
-const WORDS_COMMAND: &str = "Do";
-const WORDS_ANSWER: &str = "Answer";
-const HINT_SAY: &str = "Press Enter, then the words to say.";
-const HINT_COMMAND: &str = "A command, for example: useskill 'hiding'. Press Enter.";
-const HINT_ANSWER: &str = "The shard asks for words. Type them and press Enter.";
-const HINT_MAP: &str = "Double-click: use.  Right-click: more.";
-const HINT_MAP_WAR: &str = "Double-click: attack.  Right-click: more.";
-const HINT_MAP_ITEM: &str = "Double-click: use.  Drag: move.  Right-click: more.";
-const HINT_MAP_TARGET: &str = "Click: target.";
-const HINT_ORDER: &str = "An order, for example: attack the orc. Press Enter.";
-const HINT_ORDER_OFF: &str = "Orders are off. Set TYPESAFE_API_KEY.";
-const HINT_CLOSED: &str = "Press Enter to chat.";
 const WORDS_YES: &str = "Yes";
 const WORDS_NO: &str = "No";
 const QUESTION_SIZE: Vec2 = Vec2::new(300.0, 110.0);
@@ -134,21 +110,14 @@ pub struct Places<'a> {
     pub view: Rect,
 }
 
-/// Where words beside the bar go, `gap` from it: under it, or over it when
-/// it stands `low`, at the foot of the window. Gives the point and the side
-/// of the words that touches it.
-fn beside_bar(bar: Rect, low: bool, gap: f32) -> (Pos2, Align2) {
-    if low {
-        (
-            Pos2::new(bar.center().x, bar.top() - gap),
-            Align2::CENTER_BOTTOM,
-        )
-    } else {
-        (
-            Pos2::new(bar.center().x, bar.bottom() + gap),
-            Align2::CENTER_TOP,
-        )
-    }
+/// Where words beside the bar go, `gap` from it, as egui places them.
+fn beside(bar: Rect, low: bool, gap: f32) -> (Pos2, Align2) {
+    let (at, edge) = beside_bar(bridge::area(bar), low, gap);
+    let side = match edge {
+        WordsEdge::Top => Align2::CENTER_TOP,
+        WordsEdge::Bottom => Align2::CENTER_BOTTOM,
+    };
+    (bridge::pos2(at), side)
 }
 
 /// The click sense of the whole map. Call this before any button is made.
@@ -180,22 +149,6 @@ fn location_job(frame: &WatchFrame) -> LayoutJob {
     job
 }
 
-/// What a button of the bar does.
-enum Press {
-    Act(Act),
-    /// Opens the backpack with this serial, or closes its panel.
-    Bag(u32),
-    Sheet,
-    Map,
-    Macros,
-    /// Opens the profile of the character, or closes it.
-    Profile,
-    Chat,
-    /// Leaves the world and closes the whole program.
-    Quit,
-    Options,
-}
-
 /// The arrow that folds the bar away and brings it back: it points up when
 /// the bar is open, and down when it is folded. True when it was clicked.
 fn fold_arrow(ui: &egui::Ui, area: Rect, folded: bool) -> bool {
@@ -219,27 +172,6 @@ fn fold_arrow(ui: &egui::Ui, area: Rect, folded: bool) -> bool {
     response.clicked()
 }
 
-/// What the chat box does with a line.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ChatMode {
-    #[default]
-    Say,
-    /// Words for Jev to turn into an act.
-    Order,
-    /// One line of the script language.
-    Command,
-}
-
-impl ChatMode {
-    fn next(self) -> Self {
-        match self {
-            Self::Say => Self::Order,
-            Self::Order => Self::Command,
-            Self::Command => Self::Say,
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct ControlUi {
     /// The operator folded the bar away.
@@ -253,63 +185,6 @@ pub struct ControlUi {
     report: Option<(Report, f64)>,
     /// Window commands of the buttons for the style, for the next frame.
     window_commands: Vec<WindowCommand>,
-}
-
-/// Which clicks on the ground run or walk there, from the General page and
-/// the keys held.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct GroundClicks {
-    /// Any click runs: "Click on the ground runs there" is on, or the run
-    /// key is held.
-    run: bool,
-    /// A double click walks, by the pathfinding options.
-    double: bool,
-}
-
-impl GroundClicks {
-    fn of(general: &GeneralOptions, modifiers: Modifiers) -> Self {
-        Self {
-            run: general.click_to_run || general.run_click_key.is_held(bridge::mods(modifiers)),
-            double: general.pathfinding && (modifiers.shift || !general.shift_pathfinding),
-        }
-    }
-}
-
-/// The act for a click on the map.
-fn act_for_click(
-    frame: &WatchFrame,
-    thing: Option<(u32, PickKind)>,
-    tile: (u16, u16, i8),
-    double: bool,
-    ground: GroundClicks,
-) -> Option<Act> {
-    let (x, y, z) = tile;
-    Some(match (thing, frame.target_cursor, double) {
-        (Some((serial, _)), true, _) => Act::Target(serial),
-        (None, true, _) => Act::TargetGround { x, y, z },
-        (Some((serial, PickKind::Mobile)), false, true) if frame.war => Act::Attack(serial),
-        (Some((serial, _)), false, true) => Act::Use(serial),
-        (Some((serial, _)), false, false) => Act::Look(serial),
-        (None, false, _) if ground.run => Act::RunTo { x, y },
-        (None, false, true) if ground.double => Act::WalkTo { x, y },
-        (None, false, _) => return None,
-    })
-}
-
-/// What a drag on the map takes: what the button went down on. With
-/// Sallos easy grab, a drag that began on the ground takes what the mouse
-/// is over now, as in the reference client.
-fn grabbed<T>(pressed_on: Option<T>, hovered: Option<T>, easy_grab: bool) -> Option<T> {
-    pressed_on.or(hovered.filter(|_| easy_grab))
-}
-
-fn hint_for(frame: &WatchFrame, kind: PickKind) -> &'static str {
-    match (frame.target_cursor, kind) {
-        (true, _) => HINT_MAP_TARGET,
-        (false, PickKind::Mobile) if frame.war => HINT_MAP_WAR,
-        (false, PickKind::Item) => HINT_MAP_ITEM,
-        (false, _) => HINT_MAP,
-    }
 }
 
 impl ControlUi {
@@ -466,7 +341,8 @@ fn act_on_map(
     let mouse = ui.input(|i| i.pointer.hover_pos());
     let on_panel =
         mouse.is_some_and(|at| hud.covers(at) || on_controls.iter().any(|r| r.contains(at)));
-    tools.desk.carry_and_land(
+    desk::carry_and_land(
+        tools.desk,
         ui,
         rect,
         frame,
@@ -480,7 +356,15 @@ fn act_on_map(
         .scene
         .place_of(frame, frame.serial)
         .map_or(rect.center(), |place| tools.scene.screen_of(rect, place));
-    let steered = steer.run(ui, character, mouse_on_map, hand, tools.time, movement);
+    let steered = steer::run(
+        steer,
+        ui,
+        character,
+        mouse_on_map,
+        hand,
+        tools.time,
+        movement,
+    );
     let Some(mouse) = mouse_on_map else {
         return;
     };
@@ -491,7 +375,7 @@ fn act_on_map(
     // part the human picked.
     if frame.designing.is_some() {
         let (x, y, z) = tools.scene.tile_at(rect, frame, mouse);
-        super::tips::label(ui, builder.hint(), "");
+        tips::label(ui, builder.hint(), "");
         if map.clicked() {
             if let Some(act) =
                 builder.click_on_house(frame, i32::from(x), i32::from(y), i32::from(z))
@@ -511,12 +395,18 @@ fn act_on_map(
     }
     let thing = tools.scene.thing_at(mouse).cloned();
     if let Some(aim) = hand.aiming() {
-        super::tips::label(ui, aim_words(aim), "");
+        tips::label(ui, aim_words(aim), "");
     } else if let Some(thing) = &thing {
         let footer = hint_for(frame, thing.kind);
-        tools
-            .tips
-            .point_at(ui, hand, thing.serial, &thing.name, footer, tools.time);
+        tips::point_at(
+            tools.tips,
+            ui,
+            hand,
+            thing.serial,
+            &thing.name,
+            footer,
+            tools.time,
+        );
     }
     let shift = ui.input(|i| i.modifiers.shift);
     let shift_needed = classic && profile.general.shift_for_context_menus;
@@ -567,7 +457,7 @@ fn act_on_map(
     if map.clicked() || map.double_clicked() {
         let tile = tools.scene.tile_at(rect, frame, mouse);
         let picked = thing.map(|t| (t.serial, t.kind));
-        let ground = GroundClicks::of(&profile.general, ui.input(|i| i.modifiers));
+        let ground = GroundClicks::of(&profile.general, bridge::mods(ui.input(|i| i.modifiers)));
         if let Some(act) = act_for_click(frame, picked, tile, map.double_clicked(), ground) {
             if let Act::Use(thing) = act {
                 boxes.used(thing);
@@ -592,44 +482,8 @@ impl ControlUi {
         hand: &Hand,
         places: &mut Places<'_>,
     ) -> Rect {
-        let war_words = if frame.war { WORDS_PEACE } else { WORDS_WAR };
-        let buttons: Vec<(&str, Press)> = if frame.human_control {
-            // The bag button shows only when the shard told which item the
-            // backpack is.
-            frame
-                .backpack()
-                .map(|bag| (WORDS_BAG, Press::Bag(bag)))
-                .into_iter()
-                .chain([
-                    (WORDS_SHEET, Press::Sheet),
-                    (WORDS_MAP, Press::Map),
-                    (WORDS_MACROS, Press::Macros),
-                    (WORDS_PROFILE, Press::Profile),
-                    (WORDS_CHAT, Press::Chat),
-                    (WORDS_HELP, Press::Act(Act::Help)),
-                    (war_words, Press::Act(Act::War(!frame.war))),
-                    (WORDS_STOP, Press::Act(Act::Stop)),
-                    (WORDS_GIVE_BACK, Press::Act(Act::GiveBack)),
-                    (WORDS_OPTIONS, Press::Options),
-                    (WORDS_QUIT, Press::Quit),
-                ])
-                .collect()
-        } else {
-            vec![
-                (WORDS_TAKE, Press::Act(Act::Take)),
-                (WORDS_SHEET, Press::Sheet),
-                (WORDS_MAP, Press::Map),
-                (WORDS_MACROS, Press::Macros),
-                (WORDS_OPTIONS, Press::Options),
-                (WORDS_QUIT, Press::Quit),
-            ]
-        };
-        let status = match (frame.human_control, frame.target_cursor, hand.aiming()) {
-            (false, ..) => None,
-            (true, _, Some(aim)) => Some(aim_words(aim)),
-            (true, false, None) => Some(WORDS_IN_CONTROL),
-            (true, true, None) => Some(WORDS_TARGET),
-        };
+        let buttons = bar_buttons(frame);
+        let status = bar_status(frame, hand.aiming());
         let menu_height = if self.folded {
             0.0
         } else {
@@ -672,7 +526,7 @@ impl ControlUi {
             }
         }
         if !scene.note().is_empty() {
-            let (at, side) = beside_bar(panel, places.classic, theme::ROW_GAP);
+            let (at, side) = beside(panel, places.classic, theme::ROW_GAP);
             theme::shadowed_text(
                 ui.painter(),
                 at,
@@ -764,12 +618,7 @@ impl ControlUi {
         // on Esc. A prompt of the shard takes the next line, whatever the
         // mode is.
         let asked = asked_commands(frame);
-        let mode_words = match (asked.is_some(), self.mode) {
-            (true, _) => WORDS_ANSWER,
-            (false, ChatMode::Say) => WORDS_SAY,
-            (false, ChatMode::Order) => WORDS_ORDER,
-            (false, ChatMode::Command) => WORDS_COMMAND,
-        };
+        let mode_words = self.mode.words(asked.is_some());
         let (_, switched) = theme::button(ui, row.left_top(), mode_words, theme::GOAL);
         if switched && asked.is_none() {
             self.mode = self.mode.next();
@@ -802,7 +651,7 @@ impl ControlUi {
         // The box keeps one id of its own, so it does not lose the focus
         // when the buttons beside it come and go.
         let key = chat_id();
-        self.chat_line.take_keys(ui.ctx(), key, speech);
+        chat::take_keys(&mut self.chat_line, ui.ctx(), key, speech);
         let typing = ui.ctx().memory(|m| m.has_focus(key));
         ui.painter()
             .rect_filled(field, CornerRadius::same(FIELD_RADIUS), theme::TRACK);
@@ -814,17 +663,12 @@ impl ControlUi {
                 egui::StrokeKind::Inside,
             );
         }
-        let hint = match (asked, self.mode, hand.orders_on) {
-            (Some(_), ..) => frame
-                .text_entry
-                .as_ref()
-                .map_or(HINT_ANSWER, |entry| entry.words()),
-            (None, ChatMode::Say, _) if !self.chat_line.is_open(speech) => HINT_CLOSED,
-            (None, ChatMode::Say, _) => HINT_SAY,
-            (None, ChatMode::Order, true) => HINT_ORDER,
-            (None, ChatMode::Order, false) => HINT_ORDER_OFF,
-            (None, ChatMode::Command, _) => HINT_COMMAND,
-        };
+        let hint = self.mode.hint(
+            frame,
+            asked.is_some(),
+            self.chat_line.is_open(speech),
+            hand.orders_on,
+        );
         // Tab is war mode, so it must not move the keys to another field.
         let edit = egui::TextEdit::singleline(&mut self.chat_line.text)
             .id(key)
@@ -840,20 +684,14 @@ impl ControlUi {
             return;
         }
         let shift = ui.input(|i| i.modifiers.shift);
-        let line = self.chat_line.enter(shift, speech);
+        let out = self.chat_line.key(ChatKey::Enter { shift }, speech);
         // An open line stays open after a line, so the next one needs no
         // key.
         if self.chat_line.is_open(speech) {
             response.request_focus();
         }
-        let Some(words) = line else {
-            return;
-        };
-        match (asked, self.mode) {
-            (Some(asked), _) => hand.act(asked.answer_act(&words)),
-            (None, ChatMode::Say) => say_line(&words, frame, speech, hand),
-            (None, ChatMode::Order) => hand.act(Act::Order(words, Box::new(frame.clone()))),
-            (None, ChatMode::Command) => hand.act(Act::Command(words)),
+        if let ChatOut::Sent(words) = out {
+            chat::tell(self.mode.said(&words, asked, frame, speech), hand);
         }
     }
 
@@ -872,7 +710,7 @@ impl ControlUi {
         } else {
             theme::TEXT
         };
-        let (at, side) = beside_bar(bar, low, REPORT_GAP);
+        let (at, side) = beside(bar, low, REPORT_GAP);
         theme::shadowed_text(
             ui.painter(),
             at,
@@ -882,178 +720,5 @@ impl ControlUi {
             color,
         );
         ui.ctx().request_repaint();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::window::settings::ModifierKey;
-
-    const ORC: u32 = 9;
-    const TILE: (u16, u16, i8) = (10, 20, 5);
-
-    #[test]
-    fn words_beside_the_bar_go_under_it_or_over_it_at_the_foot() {
-        const GAP: f32 = 4.0;
-        const BAR_AT: Pos2 = Pos2::new(100.0, 200.0);
-        let bar = Rect::from_min_size(BAR_AT, Vec2::new(BAR_WIDTH, BAR_MOST_HEIGHT));
-        assert_eq!(
-            beside_bar(bar, false, GAP),
-            (
-                Pos2::new(bar.center().x, bar.bottom() + GAP),
-                Align2::CENTER_TOP
-            )
-        );
-        assert_eq!(
-            beside_bar(bar, true, GAP),
-            (
-                Pos2::new(bar.center().x, bar.top() - GAP),
-                Align2::CENTER_BOTTOM
-            )
-        );
-    }
-
-    fn frame(war: bool, target_cursor: bool) -> WatchFrame {
-        WatchFrame {
-            war,
-            target_cursor,
-            ..WatchFrame::default()
-        }
-    }
-
-    #[test]
-    fn a_drag_takes_what_it_began_on_or_with_easy_grab_what_it_is_over() {
-        assert_eq!(grabbed(Some(1), Some(2), false), Some(1));
-        assert_eq!(grabbed(Some(1), Some(2), true), Some(1));
-        assert_eq!(grabbed(None, Some(2), false), None);
-        assert_eq!(grabbed(None, Some(2), true), Some(2));
-    }
-
-    #[test]
-    fn the_chat_modes_go_round() {
-        assert_eq!(ChatMode::Say.next().next().next(), ChatMode::Say);
-    }
-
-    #[test]
-    fn a_click_on_the_ground_walks_as_the_general_page_says() {
-        let peace = frame(false, false);
-        let off = GeneralOptions {
-            pathfinding: false,
-            ..GeneralOptions::default()
-        };
-        let still = GroundClicks::of(&off, Modifiers::NONE);
-        assert_eq!(act_for_click(&peace, None, TILE, false, still), None);
-        assert_eq!(act_for_click(&peace, None, TILE, true, still), None);
-        let mut general = GeneralOptions::default();
-        assert!(general.pathfinding, "a double click walks by default");
-        let walk = Some(Act::WalkTo { x: 10, y: 20 });
-        let pathfind = GroundClicks::of(&general, Modifiers::NONE);
-        assert_eq!(act_for_click(&peace, None, TILE, true, pathfind), walk);
-        assert_eq!(act_for_click(&peace, None, TILE, false, pathfind), None);
-        general.shift_pathfinding = true;
-        let no_shift = GroundClicks::of(&general, Modifiers::NONE);
-        assert_eq!(act_for_click(&peace, None, TILE, true, no_shift), None);
-        let shift = GroundClicks::of(&general, Modifiers::SHIFT);
-        assert_eq!(act_for_click(&peace, None, TILE, true, shift), walk);
-    }
-
-    #[test]
-    fn a_click_on_the_ground_runs_with_the_run_key_or_the_click_to_run_option() {
-        let peace = frame(false, false);
-        let run = Some(Act::RunTo { x: 10, y: 20 });
-        let mut general = GeneralOptions::default();
-        let plain = GroundClicks::of(&general, Modifiers::NONE);
-        assert_eq!(act_for_click(&peace, None, TILE, false, plain), None);
-        let alt = GroundClicks::of(&general, Modifiers::ALT);
-        assert_eq!(act_for_click(&peace, None, TILE, false, alt), run);
-        assert_eq!(act_for_click(&peace, None, TILE, true, alt), run);
-        for other in [Modifiers::CTRL, Modifiers::SHIFT] {
-            let clicks = GroundClicks::of(&general, other);
-            assert_eq!(act_for_click(&peace, None, TILE, false, clicks), None);
-        }
-        let orc = Some((ORC, PickKind::Mobile));
-        assert_eq!(
-            act_for_click(&peace, orc, TILE, false, alt),
-            Some(Act::Look(ORC)),
-            "the run key leaves a click on a thing as it is"
-        );
-        general.run_click_key = ModifierKey::Ctrl;
-        let ctrl = GroundClicks::of(&general, Modifiers::CTRL);
-        assert_eq!(act_for_click(&peace, None, TILE, false, ctrl), run);
-        let alt = GroundClicks::of(&general, Modifiers::ALT);
-        assert_eq!(act_for_click(&peace, None, TILE, false, alt), None);
-        general.run_click_key = ModifierKey::None;
-        general.click_to_run = true;
-        let toggled = GroundClicks::of(&general, Modifiers::NONE);
-        assert_eq!(act_for_click(&peace, None, TILE, false, toggled), run);
-        assert_eq!(act_for_click(&peace, None, TILE, true, toggled), run);
-        let aiming = frame(false, true);
-        assert_eq!(
-            act_for_click(&aiming, None, TILE, false, toggled),
-            Some(Act::TargetGround { x: 10, y: 20, z: 5 }),
-            "a target cursor takes the click first"
-        );
-    }
-
-    #[test]
-    fn a_target_cursor_targets_what_is_clicked() {
-        let aiming = frame(false, true);
-        let ground = GroundClicks::default();
-        assert_eq!(
-            act_for_click(&aiming, None, TILE, false, ground),
-            Some(Act::TargetGround { x: 10, y: 20, z: 5 })
-        );
-        let orc = Some((ORC, PickKind::Mobile));
-        assert_eq!(
-            act_for_click(&aiming, orc, TILE, false, ground),
-            Some(Act::Target(ORC))
-        );
-    }
-
-    #[test]
-    fn a_double_click_attacks_in_war_and_uses_in_peace() {
-        let orc = Some((ORC, PickKind::Mobile));
-        assert_eq!(
-            act_for_click(
-                &frame(true, false),
-                orc,
-                TILE,
-                true,
-                GroundClicks::default()
-            ),
-            Some(Act::Attack(ORC))
-        );
-        assert_eq!(
-            act_for_click(
-                &frame(false, false),
-                orc,
-                TILE,
-                true,
-                GroundClicks::default()
-            ),
-            Some(Act::Use(ORC))
-        );
-        assert_eq!(
-            act_for_click(
-                &frame(true, false),
-                orc,
-                TILE,
-                false,
-                GroundClicks::default()
-            ),
-            Some(Act::Look(ORC))
-        );
-        let chest = Some((ORC, PickKind::Item));
-        assert_eq!(
-            act_for_click(
-                &frame(true, false),
-                chest,
-                TILE,
-                true,
-                GroundClicks::default()
-            ),
-            Some(Act::Use(ORC))
-        );
     }
 }

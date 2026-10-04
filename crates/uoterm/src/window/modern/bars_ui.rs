@@ -28,6 +28,7 @@ use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::{WatchFrame, WatchMobile, MOBILE_LINES};
+use crate::window::bridge;
 use eframe::egui::{
     self, text::LayoutJob, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke,
     StrokeKind, TextFormat, Vec2,
@@ -560,7 +561,9 @@ impl BarsUi {
             Id::new(("near-row", mobile.serial)),
             Sense::click_and_drag(),
         );
-        tools.desk.zone(row, Zone::Into(mobile.serial));
+        tools
+            .desk
+            .zone(bridge::area(row), Zone::Into(mobile.serial));
         if response.hovered() {
             let words = if frame.target_cursor {
                 HINT_TARGETING
@@ -713,7 +716,7 @@ impl BarsUi {
             Pos2::new(panel.right(), y),
         );
         let response = ui.interact(body, Id::new(("bar-body", &id)), Sense::click());
-        tools.desk.zone(panel, Zone::Into(serial));
+        tools.desk.zone(bridge::area(panel), Zone::Into(serial));
         self.clicked(ui, &response, serial, &bar.name, frame, tools);
         let mut closed = false;
         response.context_menu(|ui| {

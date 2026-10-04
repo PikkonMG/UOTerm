@@ -20,7 +20,9 @@ use super::modern::layout::{self, Spot};
 use super::modern::{DyeUi, EntryUi, RaceUi, TipUi};
 use super::settings::Profile;
 use super::theme::{self, number_font, text_font};
+use super::tips;
 use crate::view::{WatchBoard, WatchBook, WatchEquip, WatchFrame, WatchOldMenu, WatchPackItem};
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use uoterm_protocol::BOOK_PAGE_LINE_MAX;
 
@@ -235,7 +237,7 @@ impl PagesUi {
         let body = frame::draw(ui.painter(), panel, &title);
         if dresses && live {
             let zone = if own { Zone::Wear } else { Zone::Into(serial) };
-            tools.desk.zone(panel, zone);
+            tools.desk.zone(bridge::area(panel), zone);
         }
         let picture = Rect::from_min_size(body.min, DOLL_PICTURE);
         ui.painter()
@@ -355,9 +357,15 @@ impl PagesUi {
                     (true, true) => HINT_WORN_LIFT,
                     (true, false) => HINT_WORN,
                 };
-                tools
-                    .tips
-                    .point_at(ui, tools.hand, item.serial, "", footer, tools.time);
+                tips::point_at(
+                    tools.tips,
+                    ui,
+                    tools.hand,
+                    item.serial,
+                    "",
+                    footer,
+                    tools.time,
+                );
             }
             if !live {
                 continue;

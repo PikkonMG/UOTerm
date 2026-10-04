@@ -13,6 +13,7 @@ use super::manager::GumpManager;
 use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpRules};
 use super::text::TextLook;
 use crate::window::control::Act;
+use crate::window::desk;
 use crate::window::model::counters::{self, Changes};
 use crate::window::settings::{CounterOptions, Profile, NO_HUE};
 use eframe::egui::{Color32, Vec2};
@@ -94,7 +95,7 @@ impl CounterBar {
         if !hovered || cx.profile.counters.read_only || cx.desk.carried().is_none() {
             return;
         }
-        let Some((item, _)) = cx.desk.land(g.ui()) else {
+        let Some((item, _)) = desk::land(cx.desk, g.ui()) else {
             return;
         };
         counters::put_in_cell(

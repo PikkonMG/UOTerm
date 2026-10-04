@@ -22,6 +22,7 @@ use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpR
 use super::text::TextLook;
 use super::text_field::TextField;
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use crate::window::desk::Zone;
 use crate::window::look::notoriety_hue;
 use crate::window::model::health_bars::{
@@ -575,7 +576,8 @@ impl GumpBody for HealthBar {
         };
         self.clicks(g, cx, serial);
         // An item dropped on the bar goes to the mobile, as on the mobile.
-        cx.desk.zone(g.area(0, 0, size), Zone::Into(serial));
+        cx.desk
+            .zone(bridge::area(g.area(0, 0, size)), Zone::Into(serial));
         if !self.drawn_once {
             self.drawn_once = true;
             match self.first.take() {

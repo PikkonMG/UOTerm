@@ -8,6 +8,7 @@ use super::canvas::{Canvas, ItemLook};
 use super::registry::{GumpContext, GumpId};
 use super::split_menu::{SplitMenu, SPLIT_MENU};
 use crate::view::WatchPackItem;
+use crate::window::bridge;
 use crate::window::model::clicks::asks_amount;
 pub use crate::window::model::clicks::ClickDelay;
 use crate::window::scene::Scene;
@@ -85,7 +86,7 @@ pub fn item_tooltip(g: &mut Canvas<'_>, cx: &mut GumpContext<'_>, item: &WatchPa
     }
     let words = cx
         .tips
-        .lines_of(cx.hand, item.serial)
+        .lines_of(item.serial, |serial| cx.hand.want_tip(serial))
         .filter(|lines| !lines.is_empty())
         .map(|lines| lines.join("\n"))
         .unwrap_or_else(|| item.name.clone());
@@ -120,7 +121,7 @@ pub fn pick_up(g: &Canvas<'_>, cx: &mut GumpContext<'_>, item: &WatchPackItem, c
             Box::new(SplitMenu::new(item.clone(), grab, mouse)),
         );
     } else {
-        cx.desk.pick_up_at(item, grab);
+        cx.desk.pick_up_at(item, bridge::vector(grab));
     }
 }
 

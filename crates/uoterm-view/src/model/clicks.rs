@@ -5,8 +5,8 @@
 //! to move by the "Hold Shift to split stacks" option. The Modern panels and
 //! the classic gumps click items through these.
 
-use crate::view::WatchFrame;
-use crate::window::control::Act;
+use crate::act::Act;
+use crate::frame::WatchFrame;
 
 /// A single click waits this long for a second one, in seconds.
 pub const DOUBLE_CLICK_SECONDS: f64 = 0.35;

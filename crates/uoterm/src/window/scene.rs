@@ -2,6 +2,8 @@
 //! the way to the walk goal. It draws the real pictures when the client
 //! files are there, and flat colors from the radar when they are not.
 
+pub use uoterm_view::clicks::PickKind;
+
 use super::atlas::{Atlas, Sprite};
 use super::audio::Step;
 use super::classic::text::TextLook;
@@ -325,14 +327,6 @@ pub struct Scene {
 pub struct MapDrag {
     pub from: Pos2,
     pub mobile: Option<u32>,
-}
-
-/// What kind of thing the mouse is on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PickKind {
-    Mobile,
-    Item,
-    Corpse,
 }
 
 /// One thing on the map that the mouse can point at.

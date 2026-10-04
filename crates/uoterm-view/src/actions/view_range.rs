@@ -3,7 +3,7 @@
 //! own, as in the reference client; the shard still sends them.
 
 use super::RangeChange;
-use crate::view::WatchFrame;
+use crate::frame::WatchFrame;
 use uoterm_protocol::types::{CLIENT_VIEW_RANGE_MAX, CLIENT_VIEW_RANGE_MIN};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +54,7 @@ impl ViewRange {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::{WatchItem, WatchMobile};
+    use crate::frame::{WatchItem, WatchMobile};
 
     #[test]
     fn the_range_stays_inside_the_limits_of_the_official_client() {

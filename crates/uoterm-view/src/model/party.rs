@@ -3,7 +3,7 @@
 //! sent, and the script lines that add a member and answer an invite. The
 //! Classic party gumps and the Modern party tab both read it.
 
-use crate::view::WatchFrame;
+use crate::frame::WatchFrame;
 
 /// A party holds this many members.
 pub const PARTY_PLACES: usize = 10;
@@ -53,7 +53,7 @@ pub fn invite_words(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::{WatchMobile, WatchPartyMember};
+    use crate::frame::{WatchMobile, WatchPartyMember};
 
     const ME: u32 = 1;
     const BOB: u32 = 2;

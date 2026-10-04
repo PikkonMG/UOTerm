@@ -11,13 +11,10 @@
 //! the character is not in, give the line the reference client prints in
 //! the journal.
 
-use crate::view::WatchFrame;
-use crate::window::control::{Act, Channel, Hand};
-use crate::window::model::party::{
-    leads, ACCEPT_COMMAND, DECLINE_COMMAND, INVITE_COMMAND, PARTY_PLACES,
-};
-use crate::window::settings::SpeechOptions;
-use eframe::egui::{self, Id, Key};
+use crate::act::{Act, Channel};
+use crate::frame::WatchFrame;
+use crate::model::party::{leads, ACCEPT_COMMAND, DECLINE_COMMAND, INVITE_COMMAND, PARTY_PLACES};
+use crate::settings::SpeechOptions;
 
 /// The chat line keeps this many sent lines for Ctrl+Q and Ctrl+W.
 const HISTORY_LINES: usize = 50;
@@ -99,7 +96,7 @@ pub fn parse_line(line: &str) -> Spoken {
 }
 
 /// A party line: a member's place, a party word, or words to all.
-fn party_line(rest: &str) -> Spoken {
+pub fn party_line(rest: &str) -> Spoken {
     let (head, tail) = rest.split_once(' ').unwrap_or((rest, ""));
     if let Ok(place) = head.parse::<usize>() {
         if (1..=PARTY_PLACES).contains(&place) {
@@ -176,7 +173,7 @@ impl Spoken {
 
 /// A party order, or the words the reference client prints when it
 /// cannot be done.
-fn party_order(order: PartyOrder, frame: &WatchFrame, in_party: bool) -> Said {
+pub fn party_order(order: PartyOrder, frame: &WatchFrame, in_party: bool) -> Said {
     let invited = !in_party && frame.party_invite.is_some();
     let command = |line: &str| Said::Act(Act::Command(line.to_string()));
     let note = |words: &str| Said::Note(words.to_string());
@@ -193,14 +190,27 @@ fn party_order(order: PartyOrder, frame: &WatchFrame, in_party: bool) -> Said {
     }
 }
 
-/// Sends a line of the chat line, or prints what the client answers
-/// itself.
-pub fn say_line(line: &str, frame: &WatchFrame, speech: &SpeechOptions, hand: &Hand) {
-    match parse_line(line).said(frame, speech) {
-        Some(Said::Act(act)) => hand.act(act),
-        Some(Said::Note(words)) => hand.note(&words),
-        None => {}
-    }
+/// A key the chat line takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatKey {
+    /// Words typed into the line.
+    Text(String),
+    Escape,
+    Enter {
+        shift: bool,
+    },
+    /// Words pasted into the line.
+    Paste(String),
+}
+
+/// What a key does to the chat line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChatOut {
+    None,
+    /// The line lets the keys go.
+    Close,
+    /// A line to send.
+    Sent(String),
 }
 
 /// The chat line: the words in it, whether it takes the keys, and the
@@ -242,52 +252,64 @@ impl ChatLine {
         self.paste_wanted = true;
     }
 
-    /// Gives the line, the field with id `key`, the keys when the Speech
-    /// page says it has them: always, or after Enter or a prefix key. Esc
-    /// lets them go. True when Enter opened the line this frame: that
-    /// Enter sends nothing.
-    pub fn take_keys(&mut self, ctx: &egui::Context, key: Id, speech: &SpeechOptions) -> bool {
-        let focused = ctx.memory(|m| m.focused());
-        if focused == Some(key) {
-            if ctx.input(|i| i.key_pressed(Key::Escape)) {
-                self.open = false;
-                ctx.memory_mut(|m| m.surrender_focus(key));
+    /// Takes one key. A client whose field types the words itself gives
+    /// only Escape and Enter here, and the words typed while the field
+    /// does not have the keys to `open_on`.
+    pub fn key(&mut self, key: ChatKey, speech: &SpeechOptions) -> ChatOut {
+        match key {
+            ChatKey::Text(typed) => {
+                self.open_on(&typed, speech);
+                if self.is_open(speech) {
+                    self.text.push_str(&typed);
+                }
+                ChatOut::None
             }
-            return false;
+            ChatKey::Paste(pasted) => {
+                self.hidden = false;
+                self.open = true;
+                self.text.push_str(&pasted);
+                ChatOut::None
+            }
+            ChatKey::Escape => {
+                self.open = false;
+                ChatOut::Close
+            }
+            ChatKey::Enter { shift } => self
+                .enter(shift, speech)
+                .map_or(ChatOut::None, ChatOut::Sent),
         }
-        if focused.is_some_and(|id| super::is_word_field(ctx, id)) {
-            return false;
-        }
-        let typed = ctx.input(|i| {
-            i.events.iter().find_map(|event| match event {
-                egui::Event::Text(text) => Some(text.clone()),
-                _ => None,
-            })
-        });
-        if typed.is_some_and(|text| self.opens_on(&text, speech)) {
-            self.open = true;
-        }
-        let opened = speech.chat_on_enter
-            && !self.is_open(speech)
-            && ctx.input(|i| i.key_pressed(Key::Enter));
-        if opened {
-            self.enter(false, speech);
-        }
-        let paste = std::mem::take(&mut self.paste_wanted);
-        if paste {
-            self.open = true;
-        }
-        if self.is_open(speech) {
-            ctx.memory_mut(|m| m.request_focus(key));
-        }
-        if paste {
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
-        }
-        opened
     }
 
     /// Typed words open a closed line when the first one is a prefix key
     /// and the Speech page allows it.
+    pub fn open_on(&mut self, typed: &str, speech: &SpeechOptions) {
+        if self.opens_on(typed, speech) {
+            self.open = true;
+        }
+    }
+
+    /// A key asked to paste into the line: true once, then false until a
+    /// key asks again. The line opens for the words.
+    pub fn take_paste(&mut self) -> bool {
+        let paste = std::mem::take(&mut self.paste_wanted);
+        if paste {
+            self.open = true;
+        }
+        paste
+    }
+
+    /// Enter while the line does not have the keys: it opens a closed
+    /// line, and that Enter sends nothing. True when it opened the line.
+    pub fn enter_outside(&mut self, speech: &SpeechOptions) -> bool {
+        let opens = speech.chat_on_enter && !self.is_open(speech);
+        if opens {
+            self.open = true;
+        }
+        opens
+    }
+
+    /// Whether typed words open the line: it is closed, the first one is a
+    /// prefix key, and the Speech page allows it.
     fn opens_on(&self, typed: &str, speech: &SpeechOptions) -> bool {
         speech.chat_on_enter
             && speech.chat_prefix_keys
@@ -301,7 +323,7 @@ impl ChatLine {
     /// Enter was pressed. Gives the line to send, if it has words. The line
     /// closes after it, unless the line is always open or Shift was held
     /// and the Speech page keeps it open for Shift+Enter.
-    pub fn enter(&mut self, shift: bool, speech: &SpeechOptions) -> Option<String> {
+    fn enter(&mut self, shift: bool, speech: &SpeechOptions) -> Option<String> {
         if speech.chat_on_enter && !self.open {
             self.open = true;
             return None;
@@ -347,7 +369,7 @@ impl ChatLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::WatchPartyMember;
+    use crate::frame::WatchPartyMember;
 
     #[test]
     fn a_prefix_picks_who_hears_the_line() {
@@ -567,5 +589,40 @@ mod tests {
         line.text = "bye".into();
         assert_eq!(line.enter(false, &on_enter), Some("bye".into()));
         assert!(!line.is_open(&on_enter));
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn enter_sends_the_typed_line() {
+        let speech = SpeechOptions::default();
+        let mut line = ChatLine::default();
+        line.key(ChatKey::Text("hail".into()), &speech);
+        assert_eq!(
+            line.key(ChatKey::Enter { shift: false }, &speech),
+            ChatOut::Sent("hail".into())
+        );
+    }
+
+    #[test]
+    fn escape_closes_and_the_next_enter_only_opens() {
+        let speech = SpeechOptions {
+            chat_on_enter: true,
+            ..SpeechOptions::default()
+        };
+        let mut line = ChatLine::default();
+        assert_eq!(
+            line.key(ChatKey::Enter { shift: false }, &speech),
+            ChatOut::None
+        );
+        line.key(ChatKey::Text("bank".into()), &speech);
+        assert_eq!(line.key(ChatKey::Escape, &speech), ChatOut::Close);
+        assert_eq!(
+            line.key(ChatKey::Enter { shift: false }, &speech),
+            ChatOut::None
+        );
     }
 }

@@ -7,6 +7,7 @@
 //! lines of that hotkey go to the end of the macro. Jev writes no script: it
 //! only picks from the hotkeys the session has.
 
+use super::actions::resolve::play_line;
 use super::boxes_ui::{scrolled, Tools, CELL_RADIUS};
 use super::control::{Act, Answer, Ask, Asker};
 use super::deck_ui::DeckUi;
@@ -45,8 +46,6 @@ const NOTE_NEEDS_NAME: &str = "Give the macro a name first.";
 const NOTE_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
 const NOTE_PINNED: &str = "The macro is on the hotbar.";
 const NOTE_ASKING: &str = "Jev looks for the hotkey...";
-/// The script command that runs a macro by its name.
-const COMMAND_PLAY: &str = "playmacro";
 
 pub struct MacrosUi {
     open: bool,
@@ -92,12 +91,6 @@ fn with_lines(macro_lines: &str, new_lines: &str) -> String {
     } else {
         format!("{kept}\n{new_lines}\n")
     }
-}
-
-/// The script line that runs a macro by name. A name cannot hold a quote,
-/// because the session refuses such a name when the macro is saved.
-pub fn play_line(name: &str) -> String {
-    format!("{COMMAND_PLAY} '{name}'")
 }
 
 impl MacrosUi {
@@ -436,10 +429,5 @@ mod tests {
         assert!(editor.wish.is_empty());
         editor.take_answers(vec![Answer::Lines(Err("No hotkey does that.".into()))], 2.0);
         assert!(matches!(&editor.note, Some((words, true, _)) if words.contains("No hotkey")));
-    }
-
-    #[test]
-    fn a_pinned_macro_is_one_script_line() {
-        assert_eq!(play_line("heal self"), "playmacro 'heal self'");
     }
 }

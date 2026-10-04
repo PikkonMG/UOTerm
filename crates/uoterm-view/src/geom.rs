@@ -25,6 +25,8 @@ pub struct Vector {
 }
 
 impl Vector {
+    pub const ZERO: Vector = Vector::new(0.0, 0.0);
+
     pub const fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }

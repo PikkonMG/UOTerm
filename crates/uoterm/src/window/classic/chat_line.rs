@@ -13,7 +13,7 @@ use super::text_field::TextField;
 use crate::view::WatchFrame;
 use crate::window::control::Hand;
 use crate::window::control_ui::chat_id;
-use crate::window::keys::chat::{say_line, typed_hue, ChatLine};
+use crate::window::keys::chat::{self, say_line, typed_hue, ChatKey, ChatLine, ChatOut};
 use crate::window::model::system_chat::SystemChat;
 use crate::window::settings::Profile;
 
@@ -70,7 +70,7 @@ impl ClassicChat {
         let line_y = height - LINE_HEIGHT - EDGE;
         // The human talks only while he has the character.
         if inputs.frame.human_control && !line.is_hidden() {
-            let opened = line.take_keys(g.ctx(), chat_id(), speech);
+            let opened = chat::take_keys(line, g.ctx(), chat_id(), speech);
             if line.is_open(speech) {
                 self.typed_line(g, (width, line_y), line, opened, &inputs);
             }
@@ -129,7 +129,7 @@ impl ClassicChat {
             return;
         }
         let shift = g.ui().input(|i| i.modifiers.shift);
-        if let Some(words) = line.enter(shift, speech) {
+        if let ChatOut::Sent(words) = line.key(ChatKey::Enter { shift }, speech) {
             say_line(&words, inputs.frame, speech, inputs.hand);
         }
         self.field.set_text(&line.text);
@@ -140,7 +140,7 @@ impl ClassicChat {
 mod tests {
     use super::*;
     use crate::window::classic::testing::{draw_canvas, idle_hand};
-    use crate::window::keys::Focus;
+    use crate::window::keys::{self, Focus};
     use crate::window::settings::SpeechOptions;
     use eframe::egui::{Event, Key, Modifiers};
 
@@ -183,7 +183,7 @@ mod tests {
             };
             chat.draw(g, SIZE, &mut line, inputs);
             focus.push((
-                Focus::of(ctx, chat_id(), line.text.is_empty()),
+                keys::focus(ctx, chat_id(), line.text.is_empty()),
                 line.text.clone(),
             ));
         });

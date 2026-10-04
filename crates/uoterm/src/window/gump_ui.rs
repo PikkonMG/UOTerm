@@ -207,7 +207,7 @@ impl GumpBody for ShardGump {
                 g.tooltip(tooltip);
             }
             if let Some(serial) = piece.property.filter(|_| g.last_hovered()) {
-                if let Some(lines) = cx.tips.lines_of(cx.hand, serial) {
+                if let Some(lines) = cx.tips.lines_of(serial, |serial| cx.hand.want_tip(serial)) {
                     g.tooltip(&lines.join(&LINE_BREAK.to_string()));
                 }
             }

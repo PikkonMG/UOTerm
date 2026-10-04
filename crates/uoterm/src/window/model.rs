@@ -4,13 +4,13 @@
 //! No module here draws. The Modern panels and the Classic gumps both read
 //! from these, so a rule lives in one place.
 
+pub use uoterm_view::model::{asked, clicks, party};
+
 pub mod abilities;
 pub mod agents;
-pub mod asked;
 pub mod buffs;
 pub mod casting;
 pub mod chat;
-pub mod clicks;
 pub mod compare;
 pub mod cooldowns;
 pub mod counters;
@@ -33,7 +33,6 @@ pub mod loot;
 pub mod map_item;
 pub mod options_draft;
 pub mod pages;
-pub mod party;
 pub mod places;
 pub mod properties;
 pub mod race_change;

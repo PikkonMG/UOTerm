@@ -1,17 +1,13 @@
 //! The Video page applied to the window: how it sits on the screen, its
 //! size, the frame rate while it is in front and while it is not, and the
 //! scale of the whole interface. VSync is chosen when the window opens.
+//! The frame rate and the scale rules are `uoterm_view::video`.
+
+pub use uoterm_view::video::frame_interval;
 
 use super::settings::{VideoOptions, WindowMode};
 use eframe::egui::{self, Vec2, ViewportBuilder, ViewportCommand};
-use std::time::Duration;
-
-/// The frame rates the classic client allows.
-const FPS_MIN: u16 = 12;
-const FPS_MAX: u16 = 250;
-/// The interface scales no smaller or larger than this.
-const UI_SCALE_MIN: f32 = 0.5;
-const UI_SCALE_MAX: f32 = 3.0;
+use uoterm_view::video::ui_scale;
 
 /// The part of the Video page the window has put into effect.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,7 +22,7 @@ impl Applied {
         Self {
             mode: video.window_mode,
             size: Vec2::new(video.window_width, video.window_height),
-            ui_scale: video.ui_scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX),
+            ui_scale: ui_scale(video),
         }
     }
 }
@@ -88,47 +84,9 @@ pub fn opening_viewport(builder: ViewportBuilder, video: &VideoOptions) -> Viewp
     }
 }
 
-/// The time between two frames of the window, from the frame rate of the
-/// Video page, or its lower rate while the window is not in front.
-pub fn frame_interval(video: &VideoOptions, focused: bool) -> Duration {
-    let fps = if !focused && video.reduce_fps_when_inactive {
-        video.inactive_fps
-    } else {
-        video.fps
-    };
-    Duration::from_secs_f64(1.0 / f64::from(fps.clamp(FPS_MIN, FPS_MAX)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_window_slows_down_when_it_is_not_in_front() {
-        let mut video = VideoOptions {
-            fps: 60,
-            inactive_fps: 15,
-            ..VideoOptions::default()
-        };
-        assert_eq!(
-            frame_interval(&video, true),
-            Duration::from_secs_f64(1.0 / 60.0)
-        );
-        assert_eq!(
-            frame_interval(&video, false),
-            Duration::from_secs_f64(1.0 / 15.0)
-        );
-        video.reduce_fps_when_inactive = false;
-        assert_eq!(
-            frame_interval(&video, false),
-            Duration::from_secs_f64(1.0 / 60.0)
-        );
-        video.fps = 1;
-        assert_eq!(
-            frame_interval(&video, true),
-            Duration::from_secs_f64(1.0 / f64::from(FPS_MIN))
-        );
-    }
 
     #[test]
     fn each_mode_has_its_own_commands() {
@@ -142,14 +100,5 @@ mod tests {
             mode_commands(WindowMode::Fullscreen, size),
             vec![ViewportCommand::Fullscreen(true)]
         );
-    }
-
-    #[test]
-    fn the_ui_scale_stays_in_its_range() {
-        let video = VideoOptions {
-            ui_scale: 10.0,
-            ..VideoOptions::default()
-        };
-        assert_eq!(Applied::of(&video).ui_scale, UI_SCALE_MAX);
     }
 }

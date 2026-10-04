@@ -2,9 +2,10 @@
 //! holds becomes the plain type of `uoterm-view` here, and back.
 
 // The window moves its rules to `uoterm-view` task by task, and each move
-// starts to call these. Until all of them are called, some stay unused.
-// The expectation fails once every function is used: then remove it.
-#![expect(dead_code)]
+// starts to call these. Until all of them are called, some stay unused
+// outside the tests, which call every one. The expectation fails once
+// every function is used: then remove it.
+#![cfg_attr(not(test), expect(dead_code))]
 
 use eframe::egui;
 use uoterm_view::geom::{Area, Point, Rgba, Vector};
@@ -56,6 +57,18 @@ pub fn mods(modifiers: egui::Modifiers) -> Mods {
     }
 }
 
+/// The egui modifiers of plain ones. The Command key of a Mac is
+/// `command`, which egui matches on every system.
+pub fn modifiers(mods: Mods) -> egui::Modifiers {
+    egui::Modifiers {
+        alt: mods.alt,
+        ctrl: mods.ctrl,
+        shift: mods.shift,
+        mac_cmd: false,
+        command: mods.command,
+    }
+}
+
 pub fn key_name(key: egui::Key) -> KeyName {
     KeyName(key.name().to_owned())
 }
@@ -82,6 +95,12 @@ mod tests {
             egui_key(&KeyName("ArrowUp".into())),
             Some(egui::Key::ArrowUp)
         );
+    }
+
+    #[test]
+    fn modifiers_survive_the_round_trip() {
+        let original = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+        assert_eq!(modifiers(mods(original)), original);
     }
 
     #[test]
