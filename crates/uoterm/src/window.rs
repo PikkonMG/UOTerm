@@ -107,6 +107,7 @@ pub struct Shown {
 pub use actions::screenshot;
 pub use login_ui::{Connect, KeepLogin, KeepLogins, LoginForm, SavedLogin};
 pub use model::host::fonts;
+pub use model::host::world_map as map_files;
 pub use settings::{shard_address, CharacterKey, ProfileStore};
 pub use uoterm_view::model::login::NEEDS_PASSWORD;
 #[cfg(test)]

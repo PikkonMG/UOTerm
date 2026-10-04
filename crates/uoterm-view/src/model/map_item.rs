@@ -8,9 +8,33 @@ use crate::geom::{Area, Point, Rgba, Vector};
 /// The largest picture made for a map item. A larger map is drawn into this
 /// and shown at its own size.
 pub const PICTURE_MAX: usize = 400;
+/// Where a web page gets the land of a map item:
+/// `{MAP_ITEM_PREFIX}/{facet}/{start_x}/{start_y}/{end_x}/{end_y}`.
+pub const MAP_ITEM_PREFIX: &str = "/v1/map-item";
 /// The color of land the client files do not have.
 pub const UNKNOWN: Rgba = Rgba::from_rgba_premultiplied(28, 30, 34, OPAQUE);
 const OPAQUE: u8 = u8::MAX;
+
+/// The path of the land of a map item.
+pub fn map_item_path(map: &WatchMap) -> String {
+    format!(
+        "{MAP_ITEM_PREFIX}/{}/{}/{}/{}/{}",
+        map.facet, map.start_x, map.start_y, map.end_x, map.end_y
+    )
+}
+
+/// The map item a path names the land of: its facet and its corners.
+/// None when its end is not past its start.
+pub fn map_of_path(facet: u8, start: (u16, u16), end: (u16, u16)) -> Option<WatchMap> {
+    (end.0 > start.0 && end.1 > start.1).then(|| WatchMap {
+        facet,
+        start_x: start.0,
+        start_y: start.1,
+        end_x: end.0,
+        end_y: end.1,
+        ..WatchMap::default()
+    })
+}
 
 /// The pixel of a map picture that a tile of the world lies on.
 pub fn pixel_of(map: &WatchMap, x: u16, y: u16) -> (u16, u16) {
@@ -110,6 +134,15 @@ mod tests {
             height: 200,
             ..WatchMap::default()
         }
+    }
+
+    #[test]
+    fn the_path_of_the_land_names_its_corners() {
+        let map = treasure_map();
+        assert_eq!(map_item_path(&map), "/v1/map-item/0/1000/1200/1400/1600");
+        let read = map_of_path(0, (1000, 1200), (1400, 1600)).unwrap();
+        assert_eq!(picture_size(&read), picture_size(&map));
+        assert!(map_of_path(0, (5, 5), (5, 9)).is_none());
     }
 
     #[test]

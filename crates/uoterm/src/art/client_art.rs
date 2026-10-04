@@ -18,9 +18,10 @@ use uoterm_view::art::{
     is_drawn, mount_item, radar_item, ArtRequest, Cell, CellStatic, GumpMask, MapBlockAt, Picture,
     Stretch, TextLook, TextMeasure,
 };
-use uoterm_view::frame::{WatchLiveMap, WatchLook};
+use uoterm_view::frame::{WatchLiveMap, WatchLook, WatchMap};
 use uoterm_view::geom::Vector;
-use uoterm_view::map_lay::{near_pixels, SPAN};
+use uoterm_view::map_lay::{map_tile_pixels, near_pixels, MAP_TILE_SIDE, SPAN};
+use uoterm_view::model::map_item::land_rgba;
 
 /// How many tiles the window remembers. A full window shows about four
 /// thousand, so this is a few windows of walking.
@@ -500,6 +501,31 @@ impl ClientArt {
             width: SPAN,
             height: SPAN,
             rgba: pixels.iter().flat_map(|pixel| pixel.to_array()).collect(),
+            anchor: Vector::ZERO,
+        })
+    }
+
+    /// One tile of the whole-world picture of a map, in its radar colors,
+    /// as the world map of a web page lays it. None for a tile past the
+    /// picture, or with no known land.
+    pub fn map_tile_picture(&mut self, map_index: u8, tile: (usize, usize)) -> Option<Picture> {
+        let pixels = map_tile_pixels(map_index, tile, |x, y| self.radar_rgb(map_index, x, y))?;
+        Some(Picture {
+            width: MAP_TILE_SIDE,
+            height: MAP_TILE_SIDE,
+            rgba: pixels.iter().flat_map(|pixel| pixel.to_array()).collect(),
+            anchor: Vector::ZERO,
+        })
+    }
+
+    /// The land of a map item in its radar colors. None when no tile of it
+    /// has a color.
+    pub fn map_item_picture(&mut self, map: &WatchMap) -> Option<Picture> {
+        let (width, height, rgba) = land_rgba(map, |facet, x, y| self.radar_rgb(facet, x, y))?;
+        Some(Picture {
+            width,
+            height,
+            rgba,
             anchor: Vector::ZERO,
         })
     }

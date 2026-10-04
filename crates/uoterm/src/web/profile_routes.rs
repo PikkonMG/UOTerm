@@ -6,6 +6,7 @@
 use super::{on_blocking, send_file, WebState};
 use crate::kept;
 use crate::window::fonts::{font_names, fonts_dir};
+use crate::window::map_files::{map_dir_in, map_folder};
 use crate::window::screenshot::{create_new_file, screenshots_dir};
 use crate::window::{shard_address, CharacterKey, ProfileStore};
 use axum::body::Bytes;
@@ -19,6 +20,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::Write;
 use uoterm_view::guard::{KeptGrabBags, GRAB_BAGS_FILE};
+use uoterm_view::model::world_map::MAP_FILES_KEPT;
 use uoterm_view::settings::Profile;
 use uoterm_view::ui::deck::{KeptHotbars, HOTBAR_FILE};
 
@@ -120,11 +122,14 @@ async fn write_character(
     .await
 }
 
-/// The kept files a web page may read and write, besides the profiles.
+/// The kept files a web page may read, besides the profiles. It writes
+/// the hotbars and the grab bags; the marker and zone files of the map
+/// folder it only reads.
 #[derive(Clone, Copy)]
 enum KeptFile {
     Hotbars,
     GrabBags,
+    MapFiles,
 }
 
 impl KeptFile {
@@ -132,31 +137,33 @@ impl KeptFile {
         match name {
             HOTBAR_FILE => Some(Self::Hotbars),
             GRAB_BAGS_FILE => Some(Self::GrabBags),
+            MAP_FILES_KEPT => Some(Self::MapFiles),
             _ => None,
         }
     }
 
-    fn file(self) -> &'static str {
+    /// The file as JSON, from the config folder. A missing or bad file
+    /// gives the default.
+    fn read(self, config_dir: &std::path::Path) -> Value {
         match self {
-            Self::Hotbars => HOTBAR_FILE,
-            Self::GrabBags => GRAB_BAGS_FILE,
-        }
-    }
-
-    /// The file as JSON. A missing or bad file gives the default.
-    fn read(self, path: &std::path::Path) -> Value {
-        match self {
-            Self::Hotbars => as_json(kept::load_from::<KeptHotbars>(path)),
-            Self::GrabBags => as_json(kept::load_from::<KeptGrabBags>(path)),
+            Self::Hotbars => as_json(kept::load_from::<KeptHotbars>(
+                &config_dir.join(HOTBAR_FILE),
+            )),
+            Self::GrabBags => as_json(kept::load_from::<KeptGrabBags>(
+                &config_dir.join(GRAB_BAGS_FILE),
+            )),
+            Self::MapFiles => as_json(map_folder(&map_dir_in(config_dir))),
         }
     }
 
     /// Writes the JSON of a page as the file. A bad request when the JSON
-    /// is not what the file holds.
-    fn write(self, path: &std::path::Path, value: Value) -> Response {
+    /// is not what the file holds; not allowed for a file the page only
+    /// reads.
+    fn write(self, config_dir: &std::path::Path, value: Value) -> Response {
         match self {
-            Self::Hotbars => write_as::<KeptHotbars>(path, value),
-            Self::GrabBags => write_as::<KeptGrabBags>(path, value),
+            Self::Hotbars => write_as::<KeptHotbars>(&config_dir.join(HOTBAR_FILE), value),
+            Self::GrabBags => write_as::<KeptGrabBags>(&config_dir.join(GRAB_BAGS_FILE), value),
+            Self::MapFiles => StatusCode::METHOD_NOT_ALLOWED.into_response(),
         }
     }
 }
@@ -176,7 +183,7 @@ async fn read_kept(State(state): State<WebState>, Path(name): Path<String>) -> R
     let Some(file) = KeptFile::named(&name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    on_blocking(move || Json(file.read(&state.config_dir.join(file.file()))).into_response()).await
+    on_blocking(move || Json(file.read(&state.config_dir)).into_response()).await
 }
 
 async fn write_kept(
@@ -187,7 +194,7 @@ async fn write_kept(
     let Some(file) = KeptFile::named(&name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    on_blocking(move || file.write(&state.config_dir.join(file.file()), value)).await
+    on_blocking(move || file.write(&state.config_dir, value)).await
 }
 
 /// The file names of the player fonts in the `Fonts` folder.
@@ -250,6 +257,7 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
     use uoterm_runtime::config::file_safe;
+    use uoterm_view::model::world_map::MapFolder;
     use uoterm_view::settings::Profile;
 
     const PNG_START: &[u8] = b"\x89PNG\r\n\x1a\nrest";
@@ -398,6 +406,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The marker and zone files of the map folder read as one kept file,
+    /// which the page may not write.
+    #[tokio::test]
+    async fn the_map_files_are_read_only_to_the_page() {
+        let home = test_config_dir();
+        let map = home.path().join("map");
+        std::fs::create_dir_all(&map).unwrap();
+        std::fs::write(map.join("towns.csv"), "1434,1699,1,Bank\n").unwrap();
+        std::fs::write(
+            map.join("land.zones.json"),
+            r#"{ "MapIndex": 1, "Zones": [ { "Label": "Britain", "Color": "red",
+                "Polygon": [[0, 0], [10, 0], [10, 10]] } ] }"#,
+        )
+        .unwrap();
+        let app = profile_router(home.path());
+        let answer = app.clone().oneshot(get("/v1/kept/markers")).await.unwrap();
+        assert_eq!(answer.status(), StatusCode::OK);
+        let folder: MapFolder = serde_json::from_slice(&body(answer).await).unwrap();
+        assert_eq!(folder.markers[0].name, "towns");
+        assert_eq!(folder.markers[0].markers[0].x, 1434);
+        assert_eq!(folder.zones[0].zones[0].label, "Britain");
+        let put = app
+            .oneshot(put_json("/v1/kept/markers", &json!({})))
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert!(map.join("towns.csv").exists(), "the files stay");
     }
 
     #[tokio::test]
