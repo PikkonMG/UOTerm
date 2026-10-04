@@ -25,6 +25,9 @@ pub const WORDS_Y: &str = "Y";
 pub const WORDS_NAME: &str = "Name";
 pub const WORDS_ICON: &str = "Icon";
 pub const WORDS_COLOR: &str = "Color";
+/// Where the marker files may only be read, a marker is added in the
+/// UOTerm window.
+pub const WORDS_READ_ONLY: &str = "Markers are added and changed in the UOTerm window.";
 pub const HINT_SEARCH: &str = "search the markers";
 pub const HINT_ICON: &str = "no icon";
 

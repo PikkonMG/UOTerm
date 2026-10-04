@@ -11,6 +11,7 @@
 //! never opened. The five common entities, such as `&nbsp;`, become their
 //! chars.
 
+use crate::ui::theme::{SIZE_BODY, SIZE_HEADING, SIZE_SMALL};
 use uoterm_nav::TextAlign;
 use uoterm_world::GumpScroll;
 
@@ -605,6 +606,22 @@ pub fn html_lines(
     lines
 }
 
+/// The pixels one char steps across, from the width its font draws it:
+/// a bold char is one pixel wider, as the classic client steps it.
+pub fn char_advance(ch: &HtmlChar, width: u32) -> u32 {
+    width + u32::from(ch.look.bold && ch.ch != SPACE)
+}
+
+/// The size of the text font a page draws the words of a Unicode font of
+/// the client in.
+pub fn html_font_size(font: u8) -> f32 {
+    match font {
+        FONT_BIG => SIZE_HEADING,
+        FONT_SMALL => SIZE_SMALL,
+        _ => SIZE_BODY,
+    }
+}
+
 /// How a block of HTML sits in its box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HtmlBox {
@@ -733,6 +750,15 @@ mod tests {
         );
         let lines = html_lines(&centered, 100, |_| CHAR_WIDTH);
         assert_eq!(lines[0].left(100), (100 - 2 * CHAR_WIDTH) / 2);
+    }
+
+    #[test]
+    fn a_bold_char_steps_one_more_and_fonts_have_page_sizes() {
+        let text = parse_html("<b>a b</b>", base(), &every_font);
+        let steps: Vec<u32> = text.chars.iter().map(|c| char_advance(c, 5)).collect();
+        assert_eq!(steps, [6, 5, 6]);
+        assert_eq!(html_font_size(FONT_NORMAL), SIZE_BODY);
+        assert!(html_font_size(FONT_BIG) > html_font_size(FONT_SMALL));
     }
 
     #[test]

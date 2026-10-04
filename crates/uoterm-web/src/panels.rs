@@ -11,6 +11,7 @@
 mod asks;
 mod bar;
 mod bars;
+mod build;
 mod deals;
 mod deck;
 mod desk;
@@ -18,14 +19,18 @@ mod doll;
 mod grids;
 mod hud;
 mod journal;
+mod map_items;
 mod pages;
 mod radar;
 mod ring;
+mod shard_gumps;
 mod sheet;
+mod world_map;
 
 pub use asks::{DyeData, EntryData, RaceData, TipData};
 pub use bar::{ChatData, ControlBarData, LauncherData, QuestionData, ReportData, WaitingData};
 pub use bars::{HealthBarData, NearData};
+pub use build::{BuildData, ChatPanelData};
 pub use deals::{ShopData, TradeData};
 pub use deck::{HotbarAction, HotbarData, HotbarSlot, PickerData};
 pub use desk::{CarriedData, DropZone, SplitData};
@@ -33,23 +38,30 @@ pub use doll::PaperdollData;
 pub use grids::{GridData, LootData};
 pub use hud::{ActivityData, PackData, VitalsData};
 pub use journal::JournalData;
+pub use map_items::{MapItemData, ProfileData};
 pub use pages::{BoardData, BookData, OldMenuData};
 pub use radar::RadarData;
 pub use ring::{RingData, TipKey};
+pub use shard_gumps::ShardGumpData;
 pub use sheet::SheetData;
+pub use world_map::{MarkersData, QuestArrowData, WorldMapData};
 
 pub(crate) use asks::AsksState;
 pub(crate) use bar::BarState;
 pub(crate) use bars::BarsState;
+pub(crate) use build::BuildState;
 pub(crate) use deals::DealsState;
 pub(crate) use deck::DeckState;
 pub(crate) use doll::DollState;
 pub(crate) use grids::GridsState;
 pub(crate) use journal::JournalState;
+pub(crate) use map_items::MapItemsState;
 pub(crate) use pages::PagesState;
 pub(crate) use radar::RadarState;
 pub(crate) use ring::RingState;
+pub(crate) use shard_gumps::ShardGumpsState;
 pub(crate) use sheet::SheetState;
+pub(crate) use world_map::WorldMapState;
 
 use crate::out::Hand;
 use crate::{kept, TooltipData, WebView};
@@ -92,10 +104,21 @@ pub const PANEL_ENTRY: &str = "entry";
 pub const PANEL_RACE: &str = "race";
 pub const PANEL_TIP: &str = "tip";
 pub const PANEL_DYE: &str = "dye";
+pub const PANEL_BUILD: &str = "build";
+/// The chat of the shard, with its channels; `"chat"` is the chat line.
+pub const PANEL_CHANNELS: &str = "channels";
+pub const PANEL_WORLD_MAP: &str = "world_map";
+pub const PANEL_MARKERS: &str = "markers";
+pub const PANEL_PROFILE: &str = "profile";
+pub const PANEL_QUEST_ARROW: &str = "quest_arrow";
+/// A map item is the panel `"map_item:{serial}"`.
+pub const PANEL_MAP_ITEM_PREFIX: &str = "map_item:";
 /// A grid container is the panel `"grid:{serial}"`.
 pub const PANEL_GRID_PREFIX: &str = "grid:";
 /// A trade is the panel `"trade:{serial}"`, by the character's box of it.
 pub const PANEL_TRADE_PREFIX: &str = "trade:";
+/// A gump of the shard is the panel `"gump:{gump}"`.
+pub const PANEL_GUMP_PREFIX: &str = "gump:";
 /// A health bar of its own is the panel `"health:{serial}"`; the target
 /// bar is `"health:target"`.
 pub const PANEL_HEALTH_PREFIX: &str = "health:";
@@ -149,6 +172,19 @@ pub struct PanelData {
     pub tip: Option<Framed<TipData>>,
     /// The dye panel, when the client files have no gump art.
     pub dye: Option<Framed<DyeData>>,
+    /// The gumps of the shard, in their own layout.
+    pub gumps: Vec<ShardGumpData>,
+    /// The house designer, while the shard has it open.
+    pub build: Option<Framed<BuildData>>,
+    /// The chat of the shard.
+    pub channels: Option<Framed<ChatPanelData>>,
+    pub world_map: Option<Framed<WorldMapData>>,
+    pub markers: Option<Framed<MarkersData>>,
+    /// The map items the character opened.
+    pub map_items: Vec<Framed<MapItemData>>,
+    pub profile: Option<Framed<ProfileData>>,
+    /// Where the quest arrow takes clicks.
+    pub quest_arrow: Option<QuestArrowData>,
     pub ring: Option<RingData>,
     /// The words of the last act, while they show.
     pub report: Option<ReportData>,
@@ -187,6 +223,13 @@ const HINTS: FrameHints = FrameHints {
     size: HINT_SIZE,
     fold: HINT_FOLD,
 };
+
+/// Words under a panel for a while, and whether they tell of a failure.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NoteData {
+    pub words: String,
+    pub failed: bool,
+}
 
 /// A place on the page, in the points of the panel layer: its left, its
 /// top, its width and its height.
@@ -331,6 +374,10 @@ pub(crate) struct PanelState {
     pub pages: PagesState,
     pub doll: DollState,
     pub asks: AsksState,
+    pub gumps: ShardGumpsState,
+    pub build: BuildState,
+    pub world_map: WorldMapState,
+    pub map_items: MapItemsState,
     pub hud: hud::HudBars,
 }
 
@@ -385,6 +432,14 @@ impl WebView {
                 race: None,
                 tip: None,
                 dye: None,
+                gumps: Vec::new(),
+                build: None,
+                channels: None,
+                world_map: None,
+                markers: None,
+                map_items: Vec::new(),
+                profile: None,
+                quest_arrow: None,
                 ring: None,
                 report,
                 question,
@@ -424,6 +479,14 @@ impl WebView {
             race: self.race_data(&frame),
             tip: self.tip_data(&frame),
             dye: self.dye_data(&frame),
+            gumps: self.gumps_data(&frame),
+            build: self.build_data(&frame, time),
+            channels: self.channels_data(&frame, time),
+            world_map: self.world_map_data(&frame, time),
+            markers: self.markers_data(),
+            map_items: self.map_items_data(&frame),
+            profile: self.profile_data(&frame),
+            quest_arrow: self.quest_arrow_data(&frame),
             ring: self.ring_data(&frame),
             report,
             question,
@@ -495,8 +558,15 @@ impl WebView {
             PANEL_RACE => self.race_spec(frame),
             PANEL_TIP => self.tip_spec(frame),
             PANEL_DYE => self.dye_spec(frame),
+            PANEL_BUILD => self.build_spec(frame),
+            PANEL_CHANNELS => self.channels_spec(frame),
+            PANEL_WORLD_MAP => self.world_map_spec(),
+            PANEL_MARKERS => self.markers_spec(),
+            PANEL_PROFILE => self.profile_spec(frame),
+            map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.map_item_spec(frame, map),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.grid_panel_spec(frame, grid),
             trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.trade_spec(frame, trade),
+            gump if gump.starts_with(PANEL_GUMP_PREFIX) => None,
             health => self.health_bar_spec(frame, health),
         }
     }
@@ -534,8 +604,16 @@ impl WebView {
             PANEL_RACE => self.race_action(action),
             PANEL_TIP => self.tip_action(action),
             PANEL_DYE => self.dye_action(action),
+            PANEL_BUILD => self.build_action(action),
+            PANEL_CHANNELS => self.channels_action(action),
+            PANEL_WORLD_MAP => self.world_map_action(action),
+            PANEL_MARKERS => self.markers_action(action),
+            PANEL_PROFILE => self.profile_action(action),
+            PANEL_QUEST_ARROW => self.quest_arrow_action(action),
+            map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.map_item_action(map, action),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.grid_action(grid, action),
             trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.trade_action(trade, action),
+            gump if gump.starts_with(PANEL_GUMP_PREFIX) => self.gump_action(gump, action),
             health => self.health_bar_action(health, action),
         }
     }
@@ -588,6 +666,12 @@ impl WebView {
             PANEL_ENTRY => self.close_entry(),
             PANEL_RACE => self.close_race(),
             PANEL_TIP => self.close_tip(),
+            PANEL_BUILD => self.close_build(),
+            PANEL_CHANNELS => self.panels.build.chat.open = false,
+            PANEL_WORLD_MAP => self.close_world_map(),
+            PANEL_MARKERS => self.close_markers(),
+            PANEL_PROFILE => self.close_profile(),
+            map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.close_map_item(map),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.close_grid(grid),
             trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.close_deal(trade),
             health => self.close_health_bar(health),
@@ -664,9 +748,17 @@ pub(crate) mod tests {
     /// A settled view whose picture holds `value` at `key`, with or
     /// without control, after a frame and with what it sent taken.
     pub fn view_with(key: &str, value: Value, control: bool) -> WebView {
+        view_with_all(&[(key, value)], control)
+    }
+
+    /// A settled view whose picture holds each value at its key, with or
+    /// without control, after a frame and with what it sent taken.
+    pub fn view_with_all(values: &[(&str, Value)], control: bool) -> WebView {
         let mut watch: Value =
             serde_json::from_str(&crate::tests::fixture_watch_with_backpack()).unwrap();
-        watch[key] = value;
+        for (key, value) in values {
+            watch[*key] = value.clone();
+        }
         watch["human_control"] = json!(control);
         let mut view = settled();
         view.frame(&watch.to_string(), 0.1);

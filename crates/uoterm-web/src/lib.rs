@@ -46,6 +46,7 @@ use uoterm_view::guard::KeptGrabBags;
 use uoterm_view::guard::GRAB_BAGS_FILE;
 use uoterm_view::keys::chat::ChatLine;
 use uoterm_view::model::game_view::ShardReports;
+use uoterm_view::model::world_map::MAP_FILES_KEPT;
 use uoterm_view::pad::PadState;
 use uoterm_view::scene::{SceneState, WHEEL_POINTS_PER_NOTCH};
 use uoterm_view::settings::{Profile, UiStyle};
@@ -214,7 +215,7 @@ impl WebView {
             hotbars: KeptHotbars::default(),
             panels: panels::PanelState::default(),
             view: Area::default(),
-            kept_wanted: [HOTBAR_FILE, GRAB_BAGS_FILE]
+            kept_wanted: [HOTBAR_FILE, GRAB_BAGS_FILE, MAP_FILES_KEPT]
                 .iter()
                 .map(|name| format!("{KEPT_PREFIX}{name}"))
                 .collect(),
@@ -314,6 +315,9 @@ impl WebView {
             Some(GRAB_BAGS_FILE) => {
                 let bags: KeptGrabBags = serde_json::from_value(answer.clone()).unwrap_or_default();
                 self.hand.keep_grab_bags(bags);
+            }
+            Some(MAP_FILES_KEPT) => {
+                self.take_map_folder(serde_json::from_value(answer.clone()).unwrap_or_default());
             }
             _ => {
                 self.art.data_arrived(path, answer);
@@ -646,7 +650,7 @@ pub(crate) mod tests {
     const CORPSE: u32 = 0x4000_0200;
     pub const HATCHET: u32 = 0x4000_0010;
     const BACKPACK: u32 = 0x4000_0001;
-    const ME: u32 = 0x0000_0001;
+    pub const ME: u32 = 0x0000_0001;
     pub const VIEW: Area = Area {
         min: Point { x: 0.0, y: 0.0 },
         max: Point { x: 800.0, y: 600.0 },
@@ -1139,6 +1143,10 @@ pub(crate) mod tests {
         assert!(view.panel_data(0.0).question.is_some());
         view.take_out_native();
         view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::WorldMap));
+        view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::Chat));
+        let data = view.panel_data(0.0);
+        assert!(data.world_map.is_some() && data.channels.is_some());
+        view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::Macros));
         assert!(matches!(
             view.take_out_native().as_slice(),
             [OutCall::Window { .. }]

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use uoterm_nav::{TextAlign, TextPicture, UnicodeStyle, UNICODE_PICTURE_PADDING};
 use uoterm_view::ui::html::{
-    html_base_look, html_lines, parse_html, HtmlChar, Rgba, HTML_LINE_HEIGHT,
+    char_advance, html_base_look, html_lines, parse_html, HtmlChar, Rgba, HTML_LINE_HEIGHT,
 };
 
 /// How many drawn blocks of words the cache keeps. A busy screen shows a
@@ -22,7 +22,6 @@ const TEXT_CACHE_CAPACITY: usize = 1024;
 const TEXTURE_NAME: &str = "uoterm-classic-text";
 const TEXTURE_OPTIONS: TextureOptions = TextureOptions::NEAREST;
 const RGBA_BYTES: usize = 4;
-const SPACE: char = ' ';
 
 /// How a block of gump HTML is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -38,7 +37,7 @@ fn html_advance(fonts: &UoFonts, ch: &HtmlChar) -> u32 {
     let width = fonts
         .unicode
         .width(ch.look.font, ch.ch.encode_utf8(&mut [0; 4]));
-    width + u32::from(ch.look.bold && ch.ch != SPACE)
+    char_advance(ch, width)
 }
 
 /// Draws gump HTML, wrapped to the width of `look`.

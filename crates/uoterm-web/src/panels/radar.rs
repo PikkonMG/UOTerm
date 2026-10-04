@@ -1,6 +1,7 @@
 //! The radar of the Modern style: the land round the character, turned as
-//! the play field is turned, with the mobiles, the party, the named places
-//! of the session and the character marked over it. The land is the
+//! the play field is turned, with the mobiles, the party, the marker and
+//! zone files, the named places of the session and the character marked
+//! over it. The land is the
 //! picture the server makes of the radar colors round a tile
 //! (`/v1/map/near/...`), asked for again only when the character walked
 //! far from its middle, so the radar reads no map block. Where the land
@@ -218,7 +219,7 @@ impl WebView {
             unit: side.x.min(side.y) / (SPAN as f32 * HALF) * self.panels.radar.zoom,
         };
         let session = session_markers(self.hand.reads(), &self.profile, frame.map);
-        let files = MapFiles::default();
+        let files = MapFiles::shown(&self.panels.world_map.folder, &self.profile.world_map);
         let marks = Marks {
             frame,
             map: frame.map,
@@ -259,7 +260,7 @@ impl WebView {
 /// The picture of the land round `middle` of `map`, and the matrix that
 /// lays its pixels on the field by `lay`: one pixel for each tile, from
 /// the north west corner, as the window lays its texture.
-fn land_data(map: u8, middle: (u16, u16), lay: Lay) -> LandData {
+pub(super) fn land_data(map: u8, middle: (u16, u16), lay: Lay) -> LandData {
     let half = (SPAN / 2) as f32;
     let left = f32::from(middle.0) - half;
     let top = f32::from(middle.1) - half;

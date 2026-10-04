@@ -257,6 +257,9 @@ impl WebView {
         self.follow_pages(frame);
         self.follow_doll(frame, now);
         self.follow_asks(frame);
+        self.follow_gumps(frame);
+        self.follow_build(frame, now);
+        self.follow_map_items(frame);
         moving || frame.danger() != uoterm_view::frame::Danger::Calm
     }
 
@@ -308,6 +311,9 @@ impl WebView {
         self.close_health_bars(frame, false);
         self.panels.grids.closed.close_open(frame, false);
         self.close_doll();
+        self.close_world_map();
+        self.panels.build.chat.open = false;
+        self.panels.map_items.profile.close();
         if frame.human_control {
             if frame.book.is_some() {
                 self.hand.act(Act::BookClose);
@@ -326,6 +332,20 @@ impl WebView {
     fn gump(&mut self, frame: &WatchFrame, op: GumpOp, kind: GumpKind) -> bool {
         if let Some(school) = kind.school() {
             return self.spellbook(frame, op, school);
+        }
+        match kind {
+            GumpKind::WorldMap => {
+                if wanted(op, self.world_map_open()) != self.world_map_open() {
+                    self.toggle_world_map();
+                }
+                return true;
+            }
+            GumpKind::Chat => {
+                let chat = &mut self.panels.build.chat;
+                chat.open = wanted(op, chat.open);
+                return true;
+            }
+            _ => {}
         }
         let sheet = &self.panels.sheet;
         if let Some(view) = character_view(kind) {
@@ -590,8 +610,20 @@ impl WebView {
         let Some(mouse) = mouse_on_map else {
             return;
         };
-        // The house designer takes the clicks on the house while it is open.
-        if self.carries() || self.steer.by_mouse() || frame.designing.is_some() {
+        if self.carries() || self.steer.by_mouse() {
+            return;
+        }
+        // While the designer is open, a click on the house builds with the
+        // part the human picked.
+        if frame.designing.is_some() {
+            self.tooltip = Some(TooltipData {
+                lines: vec![self.panels.build.design.hint().to_string()],
+                footer: String::new(),
+            });
+            if let Some(click) = input.clicks.iter().find(|click| on_map(&click.at)) {
+                let tile = self.scene.tile_at(&mut self.art, view, frame, click.at);
+                self.click_on_house(frame, tile);
+            }
             return;
         }
         if let Some(shapes) = self

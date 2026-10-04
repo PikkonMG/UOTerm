@@ -165,6 +165,9 @@ impl WebView {
                     return;
                 };
                 let shard_line = matches!(line.act, Act::MenuPick { .. });
+                if let Act::ProfileRead(serial) = line.act {
+                    self.show_profile(serial);
+                }
                 self.hand.act(line.act);
                 if !shard_line {
                     self.hand.act(Act::MenuClose);

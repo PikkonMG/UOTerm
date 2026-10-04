@@ -91,6 +91,11 @@ pub const MAP_BUTTONS: [MapButton; 4] = [
     MapButton::Markers,
 ];
 
+/// The buttons of the row of the markers where the marker files may only
+/// be read, as in the browser: no marker is added there.
+pub const READ_ONLY_MAP_BUTTONS: [MapButton; 3] =
+    [MapButton::Redraw, MapButton::Reload, MapButton::Markers];
+
 /// How wide one side of the map field is in a window of this size.
 pub fn field_side(window: Area) -> f32 {
     let room = window.height().min(window.width()) * PANEL_SHARE - TITLE_ROW - PANEL_PAD * 2.0;

@@ -236,7 +236,7 @@ impl WebView {
             Press::Macros => self.style_command(frame, toggle(GumpKind::Macros)),
             Press::Chat => self.style_command(frame, toggle(GumpKind::Chat)),
             Press::Options => self.style_command(frame, toggle(GumpKind::Options)),
-            Press::Profile => self.hand.act(Act::ProfileRead(frame.serial)),
+            Press::Profile => self.toggle_profile(frame.serial),
             Press::Quit => self.style_command(frame, WindowCommand::QuitGame),
             Press::Bag(bag) => self.toggle_bag(frame, bag),
         }
@@ -496,16 +496,31 @@ mod tests {
     }
 
     #[test]
-    fn the_map_button_goes_to_the_page_as_the_window_command_of_its_window() {
+    fn the_map_button_opens_the_map_and_macros_go_to_the_page() {
         let mut view = settled();
         let map = button(&view, |press| matches!(press, Press::Map));
-        let out = press(&mut view, PANEL_BAR, json!({ "press": map }));
+        assert!(press(&mut view, PANEL_BAR, json!({ "press": map })).is_empty());
+        assert!(view.panel_data(0.0).world_map.is_some());
+        let macros = button(&view, |press| matches!(press, Press::Macros));
+        let out = press(&mut view, PANEL_BAR, json!({ "press": macros }));
         assert_eq!(
             out,
             vec![OutCall::Window {
-                command: WindowCommand::Gump(GumpOp::Toggle, GumpKind::WorldMap)
+                command: WindowCommand::Gump(GumpOp::Toggle, GumpKind::Macros)
             }]
         );
+    }
+
+    #[test]
+    fn the_profile_button_shows_the_own_profile_and_closes_it() {
+        let mut view = settled();
+        let serial = view.frame_ref().unwrap().serial;
+        let profile = button(&view, |press| matches!(press, Press::Profile));
+        let out = press(&mut view, PANEL_BAR, json!({ "press": profile }));
+        assert_eq!(out_acts(&out), vec![Act::ProfileRead(serial).for_page()]);
+        assert!(view.panel_data(0.0).profile.is_some());
+        press(&mut view, PANEL_BAR, json!({ "press": profile }));
+        assert!(view.panel_data(0.0).profile.is_none());
     }
 
     #[test]
