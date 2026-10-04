@@ -27,29 +27,22 @@ use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
-use crate::view::{WatchFrame, WatchMobile, MOBILE_LINES};
+use crate::view::{WatchFrame, WatchMobile};
 use crate::window::bridge;
 use eframe::egui::{
     self, text::LayoutJob, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke,
     StrokeKind, TextFormat, Vec2,
 };
 use uoterm_view::geom::{Area, Point};
+use uoterm_view::ui::bars::{
+    self as rules, bar_id, bar_size, line_count, near_list_size, party_buttons, restore_bars,
+    subject_bar_id, BUTTON_ROW, LINE_GAP, NEAR_ID, NEAR_LEAST, NEAR_ROW as ROW,
+};
 
-pub const NEAR_ID: &str = "modern:near";
-const BAR_ID_PREFIX: &str = "modern:bar:";
-/// The target bar keeps its place under its own id; it opens again with
-/// the next target, not with the next game.
-const TARGET_BAR_ID: &str = "modern:bar:target";
-pub(super) const NEAR_WIDTH: f32 = 300.0;
-pub(super) const NEAR_LEAST: Vec2 = Vec2::new(220.0, 110.0);
-const ROW: f32 = 20.0;
 const DOT_RADIUS: f32 = 4.0;
 const GAP: f32 = 6.0;
 const PIP_WIDTH: f32 = 40.0;
 const DIST_WIDTH: f32 = 30.0;
-const BAR_WIDTH: f32 = 210.0;
-const LINE_GAP: f32 = 4.0;
-const BUTTON_ROW: f32 = 24.0;
 const NAME_ROOM: f32 = 60.0;
 const SELECTION_FILL_ALPHA: f32 = 0.12;
 const SELECTION_EDGE: f32 = 1.0;
@@ -64,66 +57,6 @@ const WORDS_CLOSE: &str = "Close bar";
 const WORDS_TARGET: &str = "Target";
 const HINT_ROW: &str = "Double-click: attack in war, use in peace. Drag out: a bar of its own.";
 const HINT_TARGETING: &str = "Click: target it.";
-
-/// The id a bar of a mobile keeps its place and its being open under.
-fn bar_id(serial: u32) -> String {
-    format!("{BAR_ID_PREFIX}{serial:08X}")
-}
-
-/// The mobile of a kept bar id. None for other ids and the target bar.
-fn bar_serial(id: &str) -> Option<u32> {
-    u32::from_str_radix(id.strip_prefix(BAR_ID_PREFIX)?, 16).ok()
-}
-
-/// How many lines of hits, mana and stamina a bar shows.
-fn line_count(facts: &BarFacts) -> usize {
-    [facts.hits, facts.mana, facts.stam]
-        .iter()
-        .filter(|value| value.is_some())
-        .count()
-        .max(1)
-}
-
-/// The size of the near list with room for `rows` rows.
-pub(super) fn near_size(rows: usize) -> Vec2 {
-    Vec2::new(
-        NEAR_WIDTH,
-        frame::TITLE_ROW + ROW * rows as f32 + theme::PANEL_PAD * 2.0,
-    )
-}
-
-/// The size of a bar for its facts.
-fn bar_size(facts: &BarFacts) -> Vec2 {
-    let lines = line_count(facts) as f32;
-    let buttons = if party_buttons(facts) {
-        BUTTON_ROW + LINE_GAP
-    } else {
-        0.0
-    };
-    Vec2::new(
-        BAR_WIDTH,
-        frame::TITLE_ROW
-            + lines * (theme::BAR_HEIGHT + LINE_GAP)
-            + buttons
-            + theme::PANEL_PAD * 2.0,
-    )
-}
-
-/// The party buttons show on the bar of another member in range.
-fn party_buttons(facts: &BarFacts) -> bool {
-    facts.party && !facts.own && facts.in_range
-}
-
-/// The color of the hits of a bar.
-fn hits_color(facts: &BarFacts) -> Color32 {
-    if facts.poisoned {
-        theme::HITS_POISONED
-    } else if facts.yellow_hits {
-        theme::STAM
-    } else {
-        theme::HITS
-    }
-}
 
 /// Sends an act of the character, when the human has control.
 fn act(frame: &WatchFrame, tools: &Tools<'_>, act: Act) {
@@ -155,10 +88,7 @@ impl OneBar {
     }
 
     fn id(&self) -> String {
-        match self.subject {
-            Subject::Mobile(serial) => bar_id(serial),
-            _ => TARGET_BAR_ID.to_string(),
-        }
+        subject_bar_id(self.subject)
     }
 }
 
@@ -211,19 +141,8 @@ impl BarsUi {
     /// Closes every bar of its own, or only those whose mobile is out of
     /// view.
     pub fn close_bars(&mut self, frame: &WatchFrame, inactive_only: bool, profile: &mut Profile) {
-        let in_view = |serial: u32| frame.mobiles.iter().any(|mobile| mobile.serial == serial);
-        let closing: Vec<String> = self
-            .bars
-            .iter()
-            .filter(|bar| match bar.subject {
-                Subject::Mobile(serial) => !inactive_only || !in_view(serial),
-                _ => false,
-            })
-            .map(OneBar::id)
-            .collect();
-        for id in &closing {
-            places::set_open(profile, id, false);
-        }
+        let open = self.bars.iter().map(|bar| bar.subject);
+        let closing = rules::close_bars(open, frame, inactive_only, profile);
         self.bars.retain(|bar| !closing.contains(&bar.id()));
         if !inactive_only {
             self.target = None;
@@ -242,13 +161,7 @@ impl BarsUi {
     ) -> Vec<Rect> {
         if !self.started {
             self.started = true;
-            let kept: Vec<u32> = profile
-                .interface
-                .open_panels
-                .iter()
-                .filter_map(|id| bar_serial(id))
-                .collect();
-            self.bars = kept
+            self.bars = restore_bars(profile)
                 .into_iter()
                 .map(|serial| OneBar::new(Subject::Mobile(serial), true))
                 .collect();
@@ -346,7 +259,7 @@ impl BarsUi {
         let id = bar_id(serial);
         match pointer.at.filter(|_| pointer.down) {
             Some(at) => {
-                let size = bridge::vector(bar_size(&health_bars::facts(frame, serial)));
+                let size = bar_size(&health_bars::facts(frame, serial));
                 places::remember(profile, &id, Area::from_center_size(at, size), false);
                 ui.ctx().request_repaint();
             }
@@ -379,7 +292,7 @@ impl BarsUi {
             health_bars::selected_mobiles(tools.scene.mobiles_in(area), frame, general, |serial| {
                 self.has_bar(serial)
             });
-        let size = bridge::vector(bar_size(&BarFacts::default()));
+        let size = bar_size(&BarFacts::default());
         let open: Vec<(u32, Area)> = self
             .bars
             .iter()
@@ -425,12 +338,12 @@ impl BarsUi {
     ) -> Rect {
         // Until the player sizes it, the list grows with the mobiles in
         // view, up to its most rows, as far as its room lets it.
-        let size = near_size(frame.mobiles.len().clamp(1, MOBILE_LINES));
+        let size = bridge::vec2(near_list_size(frame));
         let spec = PanelSpec {
             id: NEAR_ID,
             title: WORDS_NEAR,
             default: layout::first_place(rect, Spot::Near, size),
-            min_size: Some(NEAR_LEAST),
+            min_size: Some(bridge::vec2(NEAR_LEAST)),
             closable: false,
         };
         let whole = frame::place(rect, &spec, profile);
@@ -650,7 +563,7 @@ impl BarsUi {
             return Drawn::Closed;
         }
         let id = bar.id();
-        let size = bar_size(&facts);
+        let size = bridge::vec2(bar_size(&facts));
         let spec = PanelSpec {
             id: &id,
             title: &bar.name,
@@ -682,7 +595,7 @@ impl BarsUi {
             .galley(inner.left_top(), ui.painter().layout_job(title), name_color);
         let mut y = inner.top() + frame::TITLE_ROW;
         let lines = [
-            (facts.hits, hits_color(&facts)),
+            (facts.hits, bridge::color(rules::hits_color(&facts))),
             (facts.mana, theme::MANA),
             (facts.stam, theme::STAM),
         ];
@@ -779,43 +692,9 @@ impl BarsUi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::WatchPartyMember;
 
     const ORC: u32 = 0x0000_0B01;
     const FRIEND: u32 = 0x0000_0B02;
-
-    #[test]
-    fn a_bar_id_names_its_mobile_and_nothing_else_does() {
-        assert_eq!(bar_serial(&bar_id(ORC)), Some(ORC));
-        assert_eq!(bar_serial(TARGET_BAR_ID), None);
-        assert_eq!(bar_serial(NEAR_ID), None);
-    }
-
-    #[test]
-    fn a_party_bar_is_taller_than_the_bar_of_another() {
-        let frame = WatchFrame {
-            party_members: vec![WatchPartyMember {
-                serial: FRIEND,
-                name: "Bob".into(),
-                hits_percent: Some(80),
-                ..WatchPartyMember::default()
-            }],
-            ..WatchFrame::default()
-        };
-        let other = health_bars::facts(&frame, ORC);
-        let mut member = health_bars::facts(&frame, FRIEND);
-        member.in_range = true;
-        member.mana = Some((1, 2));
-        assert!(!party_buttons(&other) && party_buttons(&member));
-        assert!(bar_size(&member).y > bar_size(&other).y);
-        assert_eq!(
-            line_count(&other),
-            1,
-            "an unknown mobile still has its line"
-        );
-        member.poisoned = true;
-        assert_eq!(hits_color(&member), theme::HITS_POISONED);
-    }
 
     #[test]
     fn closing_bars_keeps_those_in_view_when_asked() {

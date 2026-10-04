@@ -16,11 +16,11 @@ use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Id, Rect, Sense, Vec2};
+use uoterm_view::ui::launch::RADAR_ID;
+use uoterm_view::ui::lists::radar_panel_size;
 
-pub const RADAR_ID: &str = "modern:radar";
-const SMALL_SIDE: f32 = 190.0;
-const LARGE_SIDE: f32 = 320.0;
 /// The radar starts close, and the wheel takes it closer or back to the
 /// whole picture round the character.
 const FIRST_ZOOM: f32 = 4.0;
@@ -29,22 +29,6 @@ const HALF: f32 = 2.0;
 const WORDS_TITLE: &str = "Radar";
 const WORDS_NO_FILES: &str = "The radar needs the client files.";
 const HINT_RADAR: &str = "Wheel: zoom. Double-click: larger or smaller.";
-
-/// The side of the field for the size the World Map page keeps.
-/// The size of the radar panel, large or small.
-pub(super) fn panel_size(large: bool) -> Vec2 {
-    Vec2::splat(field_side(large))
-        + Vec2::new(0.0, frame::TITLE_ROW)
-        + Vec2::splat(theme::PANEL_PAD * 2.0)
-}
-
-fn field_side(large: bool) -> f32 {
-    if large {
-        LARGE_SIDE
-    } else {
-        SMALL_SIDE
-    }
-}
 
 pub struct RadarUi {
     pictures: MapPictures,
@@ -75,7 +59,7 @@ impl RadarUi {
         if places::is_shut(profile, RADAR_ID) {
             return None;
         }
-        let size = panel_size(profile.world_map.minimap_large);
+        let size = bridge::vec2(radar_panel_size(profile.world_map.minimap_large));
         let spec = PanelSpec {
             id: RADAR_ID,
             title: WORDS_TITLE,
@@ -155,8 +139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_large_radar_is_larger() {
-        assert!(field_side(true) > field_side(false));
+    fn the_radar_starts_close() {
         assert_eq!(RadarUi::default().zoom, FIRST_ZOOM);
     }
 }

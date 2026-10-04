@@ -19,7 +19,8 @@ use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
-use uoterm_assist::abilities::{ability_name, weapons_with, ABILITIES};
+use uoterm_assist::abilities::ABILITIES;
+use uoterm_view::ui::lists::{ability_slot_words, ability_weapon_names};
 
 pub const ABILITIES_ID: &str = "modern:abilities";
 pub const RACIAL_ID: &str = "modern:racial";
@@ -48,16 +49,6 @@ const WORDS_NO_RACE: &str = "The shard names no race for the character.";
 const WORDS_WEAPONS: &str = "Weapons: ";
 const HINT_SLOT: &str = "Click: arm or let go.  Drag: onto the hotbar.";
 const HINT_FLIGHT: &str = "Click: fly or land.  Drag: onto the hotbar.";
-
-/// The name of an ability, or its number when the table has none.
-fn name_of(ability: u8) -> String {
-    ability_name(ability).map_or_else(|| ability.to_string(), str::to_string)
-}
-
-/// The words of a slot: which it is, and the ability of the weapon in hand.
-pub fn slot_words(frame: &WatchFrame, slot: AbilitySlot) -> String {
-    format!("{}: {}", slot.title(), name_of(ability_of(frame, slot)))
-}
 
 /// A gump icon in a cell.
 fn icon(ui: &egui::Ui, tools: &mut Tools<'_>, cell: Rect, gump: u16, hue: u16) {
@@ -173,7 +164,7 @@ fn slot_card(
         slot_hue(frame, slot),
     );
     let is_armed = armed(frame, slot);
-    let words = slot_words(frame, slot);
+    let words = ability_slot_words(frame, slot);
     let beside = cell.right() + theme::ROW_GAP;
     ui.painter().text(
         Pos2::new(beside, cell.top()),
@@ -217,21 +208,6 @@ fn slot_card(
         return Some(Offer::Drag(Slot::Ability { slot }));
     }
     (pressed == Some(1)).then_some(Offer::Pin(Slot::Ability { slot }))
-}
-
-/// The names of the weapons that have an ability, from the client files.
-fn weapon_names(tools: &Tools<'_>, ability: u8) -> String {
-    let mut names: Vec<String> = Vec::new();
-    for graphic in weapons_with(ability) {
-        let Some(tile) = tools.scene.item_tile(graphic) else {
-            continue;
-        };
-        let name = tile.name.trim().to_string();
-        if !name.is_empty() && !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names.join(", ")
 }
 
 /// Every weapon ability, with its icon; the ones of the weapon in hand are
@@ -281,7 +257,12 @@ fn every_ability(
         }
         let response = ui.interact(row, Id::new(("every-ability", *ability)), Sense::hover());
         if response.hovered() {
-            let weapons = format!("{WORDS_WEAPONS}{}", weapon_names(tools, *ability));
+            let weapons = format!(
+                "{WORDS_WEAPONS}{}",
+                ability_weapon_names(*ability, |graphic| {
+                    tools.scene.item_tile(graphic).map(|tile| tile.name.clone())
+                })
+            );
             super::super::tips::label(ui, name, &weapons);
         }
     }
@@ -390,20 +371,6 @@ fn race_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_slot_names_the_ability_of_the_weapon_in_hand() {
-        let frame = WatchFrame::default();
-        assert_eq!(
-            slot_words(&frame, AbilitySlot::Primary),
-            "Primary: Paralyzing Blow"
-        );
-        assert_eq!(
-            slot_words(&frame, AbilitySlot::Secondary),
-            "Secondary: Disarm"
-        );
-        assert_eq!(name_of(200), "200");
-    }
 
     #[test]
     fn both_panels_draw_and_the_racial_one_takes_the_height_of_the_race() {

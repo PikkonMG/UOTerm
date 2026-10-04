@@ -19,6 +19,7 @@ use super::super::theme::{self, text_font, title_font};
 use crate::view::{WatchFrame, WatchSpellbook};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::spells::School;
+use uoterm_view::ui::lists::{self, spell_book_words, spell_chosen};
 
 const LIST_WIDTH: f32 = 180.0;
 const ICON_SIDE: f32 = 44.0;
@@ -42,33 +43,6 @@ fn assigned_words(name: &str) -> String {
     format!("The macro {name} is made. Give it a key on the Macros page of the Options.")
 }
 
-/// The words of a book button: the school, with a number when the
-/// character has more books of it.
-fn book_words(books: &[&WatchSpellbook], at: usize) -> String {
-    let info = |book: &WatchSpellbook| book_info(&book.school, book.graphic).name;
-    let school = info(books[at]);
-    let same = books.iter().filter(|book| info(book) == school).count();
-    let title = book_info(&books[at].school, books[at].graphic).title;
-    if same < 2 {
-        return title.to_string();
-    }
-    let number = books[..at]
-        .iter()
-        .filter(|book| info(book) == school)
-        .count()
-        + 1;
-    format!("{title} {number}")
-}
-
-/// The books of the character, and the one the tab shows.
-fn chosen(frame: &WatchFrame, wanted: Option<u32>) -> Option<&WatchSpellbook> {
-    frame
-        .spellbooks
-        .iter()
-        .find(|book| Some(book.serial) == wanted)
-        .or_else(|| frame.spellbooks.first())
-}
-
 #[derive(Default)]
 pub struct SpellsTab {
     /// The book the player chose, by its serial.
@@ -84,13 +58,10 @@ impl SpellsTab {
     /// Shows the book of a school. False when the character has none yet;
     /// the tab turns to one when the shard tells of it.
     pub fn choose_school(&mut self, frame: &WatchFrame, school: School) -> bool {
-        let book = frame
-            .spellbooks
-            .iter()
-            .find(|book| book_info(&book.school, book.graphic).school == school);
+        let book = lists::choose_school(frame, school);
         match book {
-            Some(book) => {
-                self.book = Some(book.serial);
+            Some(serial) => {
+                self.book = Some(serial);
                 self.first_row = 0;
                 self.wanted = None;
             }
@@ -101,7 +72,7 @@ impl SpellsTab {
 
     /// The school of the book the tab shows.
     pub fn school(&self, frame: &WatchFrame) -> Option<School> {
-        chosen(frame, self.book).map(|book| book_info(&book.school, book.graphic).school)
+        spell_chosen(frame, self.book).map(|book| book_info(&book.school, book.graphic).school)
     }
 
     /// Draws the tab in `body`. Gives what the player pinned or dragged
@@ -118,7 +89,7 @@ impl SpellsTab {
             self.choose_school(frame, school);
         }
         let books: Vec<&WatchSpellbook> = frame.spellbooks.iter().collect();
-        let Some(contents) = chosen(frame, self.book) else {
+        let Some(contents) = spell_chosen(frame, self.book) else {
             self.no_book(ui, body, frame, tools);
             return None;
         };
@@ -136,7 +107,7 @@ impl SpellsTab {
             } else {
                 theme::TEXT_DIM
             };
-            let words = book_words(&books, at);
+            let words = spell_book_words(&books, at);
             if theme::segment_keyed(
                 ui,
                 area,
@@ -477,15 +448,6 @@ mod tests {
     }
 
     #[test]
-    fn each_book_is_named_by_its_school_and_counted_when_there_are_more() {
-        let books = [book(1, "magery"), book(2, "necromancy"), book(3, "magery")];
-        let shown: Vec<&WatchSpellbook> = books.iter().collect();
-        assert_eq!(book_words(&shown, 0), "Magery 1");
-        assert_eq!(book_words(&shown, 1), "Necromancy");
-        assert_eq!(book_words(&shown, 2), "Magery 2");
-    }
-
-    #[test]
     fn the_tab_shows_the_chosen_book_or_the_first_and_finds_a_school() {
         let frame = WatchFrame {
             spellbooks: vec![book(1, "magery"), book(2, "chivalry")],
@@ -494,7 +456,7 @@ mod tests {
         let mut tab = SpellsTab::default();
         assert_eq!(tab.school(&frame), Some(School::Magery));
         assert!(tab.choose_school(&frame, School::Chivalry));
-        assert_eq!(chosen(&frame, tab.book).map(|b| b.serial), Some(2));
+        assert_eq!(tab.book, Some(2));
         assert!(!tab.choose_school(&frame, School::Bushido));
         assert_eq!(tab.school(&frame), Some(School::Chivalry));
         assert_eq!(tab.wanted, Some(School::Bushido), "it waits for the book");
@@ -504,7 +466,6 @@ mod tests {
         };
         assert!(tab.choose_school(&later, School::Bushido));
         assert_eq!(tab.wanted, None);
-        assert!(chosen(&WatchFrame::default(), None).is_none());
         assert!(assigned_words("Heal").contains("Heal"));
     }
 

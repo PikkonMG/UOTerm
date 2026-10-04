@@ -147,6 +147,11 @@ impl Area {
 pub struct Rgba(pub [u8; 4]);
 
 impl Rgba {
+    /// An opaque colour.
+    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        Self([r, g, b, u8::MAX])
+    }
+
     pub const fn from_rgba_premultiplied(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self([r, g, b, a])
     }

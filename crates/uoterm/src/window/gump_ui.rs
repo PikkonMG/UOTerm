@@ -5,7 +5,6 @@
 //! The pages, the boxes and the fields work at all times; a reply goes to
 //! the shard only while the human has control.
 
-use super::boxes_ui::{on_page, FIRST_PAGE};
 use super::classic::canvas::{ButtonArt, Canvas, HtmlBox};
 use super::classic::registry::{
     well_known, Closing, GumpBody, GumpContext, GumpId, GumpKind, GumpLocks, GumpRules,
@@ -18,6 +17,9 @@ use super::settings::Profile;
 use crate::view::WatchFrame;
 use eframe::egui::{Pos2, Rect, Vec2};
 use std::collections::HashMap;
+use uoterm_view::ui::gumps::{
+    click_box, layout_ticked, on_page, picture_hue, shown_hue, FIRST_PAGE,
+};
 use uoterm_world::{GumpLayout, GumpPiece, GumpPieceKind};
 
 pub const SHARD_GUMP: GumpKind = GumpKind {
@@ -32,8 +34,6 @@ pub const SHARD_GUMP: GumpKind = GumpKind {
 
 /// A text entry with no limit of its own takes this many chars.
 const ENTRY_MAX_CHARS: usize = u8::MAX as usize;
-/// A picture hue this low or lower shows the picture as it is.
-const PLAIN_HUE_MAX: u16 = 2;
 /// Words under a `checkertrans` show at this share of their opacity.
 const UNDER_VEIL: f32 = 0.5;
 const LINE_BREAK: char = '\n';
@@ -46,22 +46,6 @@ pub fn sync(manager: &mut GumpManager, frame: &WatchFrame, profile: &mut Profile
         if !manager.is_open(&id) {
             manager.open(id, profile);
         }
-    }
-}
-
-/// The hue a gump picture or a line of words takes, from the number the
-/// shard sent: the classic client counts one more.
-fn shown_hue(hue: u16) -> u16 {
-    hue.wrapping_add(1)
-}
-
-/// The hue of a gump picture, where the lowest hues show no hue.
-fn picture_hue(hue: u16) -> u16 {
-    let hue = shown_hue(hue);
-    if hue <= PLAIN_HUE_MAX {
-        0
-    } else {
-        hue
     }
 }
 
@@ -89,54 +73,6 @@ impl ShardGump {
 
     fn layout<'f>(&self, frame: &'f WatchFrame) -> Option<&'f GumpLayout> {
         frame.gump_layouts.iter().find(|l| l.gump == self.gump)
-    }
-}
-
-/// The boxes that are ticked now: the ticks the gump came with, with the
-/// ticks of the human on top.
-fn ticked(layout: &GumpLayout, ticks: &HashMap<u32, bool>) -> Vec<u32> {
-    layout
-        .pieces
-        .iter()
-        .filter_map(|piece| match piece.what {
-            GumpPieceKind::Choice { switch, ticked, .. } => ticks
-                .get(&switch)
-                .copied()
-                .unwrap_or(ticked)
-                .then_some(switch),
-            _ => None,
-        })
-        .collect()
-}
-
-/// A click on a box. A radio box clears the other radio boxes of its group.
-fn click_box(layout: &GumpLayout, ticks: &mut HashMap<u32, bool>, clicked: &GumpPiece) {
-    let GumpPieceKind::Choice {
-        switch,
-        radio,
-        group,
-        ..
-    } = clicked.what
-    else {
-        return;
-    };
-    let on = ticked(layout, ticks).contains(&switch);
-    if !radio {
-        ticks.insert(switch, !on);
-        return;
-    }
-    for piece in &layout.pieces {
-        if let GumpPieceKind::Choice {
-            switch: rival,
-            radio: true,
-            group: rival_group,
-            ..
-        } = piece.what
-        {
-            if rival_group == group {
-                ticks.insert(rival, rival == switch);
-            }
-        }
     }
 }
 
@@ -216,7 +152,7 @@ impl GumpBody for ShardGump {
             cx.act(Act::GumpButton {
                 gump: self.gump,
                 button,
-                switches: ticked(layout, &self.ticks),
+                switches: layout_ticked(layout, &self.ticks),
                 texts: self
                     .fields
                     .iter()
@@ -338,7 +274,7 @@ impl ShardGump {
                 radio,
                 ..
             } => {
-                let is_on = ticked(layout, &self.ticks).contains(switch);
+                let is_on = layout_ticked(layout, &self.ticks).contains(switch);
                 let clicked = if *radio {
                     g.radio(key, x, y, (*off, *on), is_on, None)
                 } else {
@@ -379,56 +315,27 @@ impl ShardGump {
 mod tests {
     use super::*;
 
-    fn choice(page: u32, switch: u32, radio: bool, ticked: bool, group: u32) -> GumpPiece {
-        GumpPiece {
-            page,
-            x: 0,
-            y: 0,
-            what: GumpPieceKind::Choice {
-                off: 210,
-                on: 211,
-                switch,
-                radio,
-                ticked,
-                group,
-            },
-            tooltip: None,
-            property: None,
-        }
-    }
-
-    #[test]
-    fn a_radio_box_clears_the_radios_of_its_group_and_a_check_box_flips() {
-        let layout = GumpLayout {
-            pieces: vec![
-                choice(1, 1, true, true, 0),
-                choice(2, 2, true, false, 0),
-                choice(1, 3, false, false, 0),
-                choice(1, 4, true, true, 1),
-            ],
-            ..GumpLayout::default()
-        };
-        let mut ticks = HashMap::new();
-        assert_eq!(ticked(&layout, &ticks), vec![1, 4]);
-        click_box(&layout, &mut ticks, &layout.pieces[1]);
-        assert_eq!(
-            ticked(&layout, &ticks),
-            vec![2, 4],
-            "group 1 keeps its tick"
-        );
-        click_box(&layout, &mut ticks, &layout.pieces[2]);
-        assert_eq!(ticked(&layout, &ticks), vec![2, 3, 4]);
-        click_box(&layout, &mut ticks, &layout.pieces[2]);
-        assert_eq!(ticked(&layout, &ticks), vec![2, 4]);
-    }
-
     #[test]
     fn a_gump_of_the_shard_opens_draws_and_closes_with_its_layout() {
         use crate::window::classic::testing::draw_frames;
         let layout = GumpLayout {
             gump: 77,
             pieces: vec![
-                choice(0, 1, true, true, 0),
+                GumpPiece {
+                    page: 0,
+                    x: 0,
+                    y: 0,
+                    what: GumpPieceKind::Choice {
+                        off: 210,
+                        on: 211,
+                        switch: 1,
+                        radio: true,
+                        ticked: true,
+                        group: 0,
+                    },
+                    tooltip: None,
+                    property: None,
+                },
                 GumpPiece {
                     page: 0,
                     x: 0,
@@ -465,14 +372,5 @@ mod tests {
         draw_frames(&mut manager, &mut profile, &frame);
         assert!(!manager.is_open(&id), "the shard took it away");
         assert!(profile.gumps.is_empty(), "a gump of the shard is not kept");
-    }
-
-    #[test]
-    fn hues_count_one_more_and_low_picture_hues_show_none() {
-        assert_eq!(shown_hue(0), 1);
-        assert_eq!(shown_hue(0x0481), 0x0482);
-        assert_eq!(picture_hue(0), 0);
-        assert_eq!(picture_hue(1), 0);
-        assert_eq!(picture_hue(2), 3);
     }
 }

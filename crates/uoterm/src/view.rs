@@ -14,7 +14,6 @@ pub const WINDOW_RADAR_SIZE: u16 = 41;
 pub const WINDOW_RADAR_SIZE_WITH_ART: u16 = 5;
 pub const WINDOW_TITLE: &str = "UOTerm watch";
 pub const JOURNAL_LINES: usize = 12;
-pub const MOBILE_LINES: usize = 12;
 
 /// The picture as lines of text: vitals, goal, radar, the people near and
 /// the journal. The text watch prints it.

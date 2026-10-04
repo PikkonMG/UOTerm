@@ -15,9 +15,7 @@ use super::text::TextLook;
 use super::text_field::TextField;
 use crate::view::{WatchBook, WatchFrame};
 use crate::window::control::Act;
-use crate::window::model::pages::{
-    self, fitted, last_left, turned, BookDraft, BookWords, PAGES_SHOWN,
-};
+use crate::window::model::pages::{self, fitted, last_left, turned, BookDraft, PAGES_SHOWN};
 use uoterm_protocol::BOOK_PAGE_LINE_MAX;
 
 pub const BOOK: GumpKind = GumpKind {
@@ -212,16 +210,6 @@ fn page_field() -> TextField {
     let mut field = TextField::default();
     field.multiline = true;
     field
-}
-
-impl BookWords for TextField {
-    fn words(&self) -> &str {
-        self.text()
-    }
-
-    fn set_words(&mut self, words: &str) {
-        self.set_text(words);
-    }
 }
 
 impl GumpBody for BookGump {

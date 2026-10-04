@@ -10,10 +10,10 @@ use super::super::settings::Profile;
 use super::super::theme::{self, title_font};
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{self, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
+use uoterm_view::ui::places as rules;
 
-pub const TITLE_ROW: f32 = 28.0;
-/// A panel is at least this wide, so its title and marks fit.
-const MIN_WIDTH: f32 = 170.0;
+pub use uoterm_view::ui::places::{FOLDED_HEIGHT, TITLE_ROW};
+
 const MARK_SIDE: f32 = 18.0;
 const MARK_GAP: f32 = 6.0;
 const MARK_STROKE: f32 = 1.5;
@@ -38,8 +38,6 @@ const LOCK_SHACKLE_LIFT: f32 = 0.17;
 const LOCK_ARC_PIECES: usize = 12;
 /// The arms of the fold mark reach this share of its side from the middle.
 const CHEVRON_SHARE: f32 = 0.25;
-/// A folded panel shows its title alone.
-pub const FOLDED_HEIGHT: f32 = TITLE_ROW + theme::PANEL_PAD * 2.0;
 const HINT_MOVE: &str = "Drag: move.  Double-click: put it back.";
 const HINT_LOCK: &str = "Lock or free the panel.";
 const HINT_CLOSE: &str = "Close.";
@@ -66,26 +64,23 @@ pub enum FrameEvent {
 
 /// A size made wide enough for the title and the marks.
 pub fn with_title_room(size: Vec2) -> Vec2 {
-    size.max(Vec2::new(MIN_WIDTH, 0.0))
+    bridge::vec2(rules::with_title_room(bridge::vector(size)))
 }
 
 /// Where the panel stands now.
 pub fn place(window: Rect, spec: &PanelSpec<'_>, profile: &Profile) -> Rect {
-    bridge::rect(places::placed_rect(
+    bridge::rect(rules::place(
         bridge::area(window),
+        spec.id,
         bridge::area(spec.default),
-        places::kept(profile, spec.id),
         spec.min_size.map(bridge::vector),
+        profile,
     ))
 }
 
 /// The place a panel takes: its title alone when it is folded.
 pub fn shown_rect(rect: Rect, folded: bool) -> Rect {
-    if folded {
-        Rect::from_min_size(rect.min, Vec2::new(rect.width(), FOLDED_HEIGHT))
-    } else {
-        rect
-    }
+    bridge::rect(rules::shown_rect(bridge::area(rect), folded))
 }
 
 /// Draws the glass and the title. Gives the room under the title.
@@ -372,12 +367,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_folded_panel_keeps_its_title_and_the_marks_stand_right_first() {
+    fn the_marks_stand_right_first() {
         let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(300.0, 200.0));
-        assert_eq!(shown_rect(rect, false), rect);
-        let folded = shown_rect(rect, true);
-        assert_eq!((folded.min, folded.width()), (rect.min, rect.width()));
-        assert_eq!(folded.height(), FOLDED_HEIGHT);
         assert!(mark_area(rect, 1).right() < mark_area(rect, 0).left());
         let spec = PanelSpec {
             id: "test",
@@ -435,7 +426,7 @@ mod tests {
 
     #[test]
     fn the_marks_and_the_title_never_lie_on_each_other_at_any_width() {
-        const WIDTHS: [f32; 4] = [MIN_WIDTH, 240.0, 400.0, 900.0];
+        const WIDTHS: [f32; 4] = [rules::PANEL_MIN_WIDTH, 240.0, 400.0, 900.0];
         for width in WIDTHS {
             let rect = Rect::from_min_size(Pos2::new(5.0, 7.0), Vec2::new(width, 200.0));
             for mark in 0..MOST_MARKS {

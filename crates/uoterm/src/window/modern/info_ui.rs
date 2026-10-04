@@ -3,7 +3,7 @@
 //! a colored bar under it.
 
 use super::super::boxes_ui::Tools;
-use super::super::model::info_bar::{self, HUE_FINE};
+use super::super::model::info_bar;
 use super::super::settings::InfoBarHighlight;
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
@@ -11,6 +11,7 @@ use super::frame::{self, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use eframe::egui::{self, Pos2, Rect, Vec2};
+use uoterm_view::ui::lists::info_highlight;
 
 pub const INFO_BAR_ID: &str = "modern:info_bar";
 const ITEM_GAP: f32 = 14.0;
@@ -40,10 +41,9 @@ pub fn draw(
                 font.clone(),
                 tools.scene.words_color(item.hue),
             );
-            let value_color = match options.highlight {
-                InfoBarHighlight::TextColor => tools.scene.words_color(value.hue),
-                InfoBarHighlight::ColoredBars => tools.scene.words_color(HUE_FINE),
-            };
+            let value_color = tools
+                .scene
+                .words_color(info_highlight(options.highlight, value.hue));
             let words = painter.layout_no_wrap(value.words.clone(), font.clone(), value_color);
             (label, words, value)
         })

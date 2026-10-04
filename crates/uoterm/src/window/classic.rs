@@ -14,7 +14,7 @@
 //!   frames, buttons, check and radio boxes, sliders, scroll bars and
 //!   areas, words and HTML, text boxes, drop-down lists, color boxes.
 //! - `text`, `html`, `text_field`: UO fonts, the HTML of gumps, and the
-//!   words of a text box.
+//!   words of a text box (`uoterm_view::ui::text_field`).
 //! - `layout`, `anchor`: the arithmetic, with no drawing.
 //! - The gumps of this module: the status gump and the health bar of the
 //!   character, the top bar, the Options gump, the color picker and the
@@ -121,7 +121,7 @@ pub mod split_menu;
 pub mod status;
 pub mod text;
 pub mod text_entry;
-pub mod text_field;
+pub use uoterm_view::ui::text_field;
 pub mod tip_notice;
 pub mod top_bar;
 pub mod trade;

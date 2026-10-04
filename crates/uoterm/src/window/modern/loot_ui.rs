@@ -13,6 +13,7 @@ use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, Id, Pos2, Rect, Vec2};
 use std::collections::HashSet;
+use uoterm_view::ui::lists;
 
 pub const LOOT_ID: &str = "modern:loot";
 const WIDTH: f32 = 300.0;
@@ -39,13 +40,7 @@ impl LootUi {
     /// Opens the corpses the corpse options ask for. It runs whether the
     /// window shows or not.
     pub fn open_corpses(&mut self, frame: &WatchFrame, tools: &Tools<'_>, profile: &Profile) {
-        self.opened
-            .retain(|serial| frame.items.iter().any(|item| item.serial == *serial));
-        if !frame.human_control {
-            return;
-        }
-        for corpse in loot::corpses_to_open(&profile.general, frame, &self.opened) {
-            self.opened.insert(corpse);
+        for corpse in lists::open_corpses(&mut self.opened, frame, profile) {
             tools.hand.act(Act::Use(corpse));
         }
     }

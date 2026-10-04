@@ -11,8 +11,7 @@ use super::super::control::{Act, Channel};
 use super::super::deck_ui::{ROW, TAB_GAP};
 use super::super::keys::chat::channel_hue;
 use super::super::model::party::{
-    invite_words, inviter_name, leads, leave_words, ACCEPT_COMMAND, DECLINE_COMMAND,
-    INVITE_COMMAND, PARTY_PLACES,
+    invite_words, inviter_name, leads, leave_words, ACCEPT_COMMAND, DECLINE_COMMAND, INVITE_COMMAND,
 };
 use super::super::settings::{Profile, SpeechOptions};
 use super::super::theme::{self, number_font, text_font};
@@ -20,7 +19,7 @@ use super::frame::{self, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::{WatchFrame, WatchPartyMember};
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
-use uoterm_assist::mobiles::is_humanoid;
+use uoterm_view::ui::lists::{party_entries, PartyEntry};
 
 pub const INVITE_ID: &str = "modern:party_invite";
 const INVITE_WIDTH: f32 = 320.0;
@@ -36,8 +35,6 @@ const PERCENT: f32 = 100.0;
 /// apart.
 const POOL_GAP: f32 = 4.0;
 const POOLS: f32 = 3.0;
-/// People this near can be invited from the party tab.
-const INVITE_TILES: u16 = 12;
 const WORDS_INVITE_TITLE: &str = "Party invite";
 const WORDS_ACCEPT: &str = "Accept";
 const WORDS_DECLINE: &str = "Decline";
@@ -52,45 +49,6 @@ const WORDS_NEAR: &str = "Invite someone near:";
 const WORDS_SAY: &str = "Say";
 const HINT_TELL_PARTY: &str = "Tell the party";
 const HINT_MEMBER: &str = "Click: look, or target while the shard asks for one.";
-
-/// One row of the list of the tab.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Entry {
-    Place(usize),
-    NearTitle,
-    Near(u32),
-}
-
-/// The people near the character a player may invite: humans in sight who
-/// are not in the party.
-fn near(frame: &WatchFrame) -> Vec<u32> {
-    frame
-        .mobiles
-        .iter()
-        .filter(|mobile| {
-            mobile.serial != frame.serial
-                && mobile.dist <= INVITE_TILES
-                && is_humanoid(mobile.look.body)
-                && !frame
-                    .party_members
-                    .iter()
-                    .any(|member| member.serial == mobile.serial)
-        })
-        .map(|mobile| mobile.serial)
-        .collect()
-}
-
-/// The rows of the list: the ten places, then the people near to invite
-/// when the character may add.
-fn entries(frame: &WatchFrame) -> Vec<Entry> {
-    let mut rows: Vec<Entry> = (0..PARTY_PLACES).map(Entry::Place).collect();
-    let near = near(frame);
-    if leads(frame) && !near.is_empty() {
-        rows.push(Entry::NearTitle);
-        rows.extend(near.into_iter().map(Entry::Near));
-    }
-    rows
-}
 
 /// The Accept and Decline of an invite, at the right of `row`, with its
 /// words at the left.
@@ -295,7 +253,7 @@ impl PartyTab {
 
     /// The ten places, and the people near to invite.
     fn list(&mut self, ui: &egui::Ui, list: Rect, frame: &WatchFrame, tools: &mut Tools<'_>) {
-        let rows = entries(frame);
+        let rows = party_entries(frame);
         let shown = ((list.height() / ROW).floor() as usize).max(1);
         let last_first = rows.len().saturating_sub(shown);
         self.first_row = scrolled(ui, list, self.first_row.min(last_first), last_first);
@@ -305,7 +263,7 @@ impl PartyTab {
                 Vec2::new(list.width(), ROW),
             );
             match entry {
-                Entry::Place(place) => match frame.party_members.get(*place) {
+                PartyEntry::Place(place) => match frame.party_members.get(*place) {
                     Some(member) => self.member_row(ui, row, *place, member, frame, tools),
                     None => {
                         ui.painter().text(
@@ -324,7 +282,7 @@ impl PartyTab {
                         );
                     }
                 },
-                Entry::NearTitle => {
+                PartyEntry::NearTitle => {
                     ui.painter().text(
                         row.left_bottom(),
                         Align2::LEFT_BOTTOM,
@@ -333,7 +291,7 @@ impl PartyTab {
                         theme::TEXT_DIM,
                     );
                 }
-                Entry::Near(serial) => near_row(ui, row, *serial, frame, tools),
+                PartyEntry::Near(serial) => near_row(ui, row, *serial, frame, tools),
             }
         }
     }
@@ -527,44 +485,9 @@ fn near_row(ui: &egui::Ui, row: Rect, serial: u32, frame: &WatchFrame, tools: &T
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::{WatchLook, WatchMobile};
 
     const ME: u32 = 1;
     const BOB: u32 = 2;
-    const HUMAN_BODY: u16 = 0x0190;
-
-    #[test]
-    fn the_list_holds_ten_places_then_the_people_near_for_the_leader() {
-        let mut frame = WatchFrame {
-            serial: ME,
-            mobiles: vec![WatchMobile {
-                serial: BOB,
-                name: "Bob".into(),
-                dist: 3,
-                look: WatchLook {
-                    body: HUMAN_BODY,
-                    ..WatchLook::default()
-                },
-                ..WatchMobile::default()
-            }],
-            ..WatchFrame::default()
-        };
-        let rows = entries(&frame);
-        assert_eq!(rows.len(), PARTY_PLACES + 2);
-        assert_eq!(rows[PARTY_PLACES], Entry::NearTitle);
-        assert_eq!(rows[PARTY_PLACES + 1], Entry::Near(BOB));
-        frame.party_members = vec![
-            WatchPartyMember {
-                serial: BOB,
-                ..WatchPartyMember::default()
-            },
-            WatchPartyMember {
-                serial: ME,
-                ..WatchPartyMember::default()
-            },
-        ];
-        assert_eq!(entries(&frame).len(), PARTY_PLACES, "a member does not add");
-    }
 
     #[test]
     fn tell_picks_a_member_and_the_invite_shows_in_its_own_panel() {

@@ -43,7 +43,7 @@ pub fn rgba(color: egui::Color32) -> Rgba {
     Rgba::from_rgba_premultiplied(r, g, b, a)
 }
 
-pub fn color(rgba: Rgba) -> egui::Color32 {
+pub const fn color(rgba: Rgba) -> egui::Color32 {
     let [r, g, b, a] = rgba.to_array();
     egui::Color32::from_rgba_premultiplied(r, g, b, a)
 }

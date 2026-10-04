@@ -13,8 +13,8 @@ use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, Id, Pos2, Rect, Vec2};
 use serde_json::json;
 use uoterm_runtime::tools::TOOL_DAMAGE_METER;
+use uoterm_view::ui::launch::DPS_ID;
 
-pub const DPS_ID: &str = "modern:dps";
 const WIDTH: f32 = 300.0;
 const ROW: f32 = 22.0;
 const BUTTON_ROW: f32 = 28.0;

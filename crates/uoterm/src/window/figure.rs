@@ -18,7 +18,6 @@ use uoterm_protocol::types::{
     LAYER_PANTS, LAYER_RING, LAYER_ROBE, LAYER_SHIRT, LAYER_SHOES, LAYER_SKIRT, LAYER_TALISMAN,
     LAYER_TORSO, LAYER_TUNIC, LAYER_TWO_HANDED, LAYER_WAIST,
 };
-pub use uoterm_view::settings::WORN_LAYERS;
 
 /// The order the game paints worn items, first to last. The cloak is not
 /// here: its place depends on the way the mobile faces.
@@ -355,6 +354,7 @@ pub fn compose(source: &Source<'_>, look: &WatchLook, pose: Pose, paint: Paint) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uoterm_view::settings::WORN_LAYERS;
 
     const WEST: u8 = 6;
 

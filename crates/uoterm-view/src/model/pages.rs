@@ -6,6 +6,7 @@
 
 use crate::act::Act;
 use crate::frame::{WatchBook, WatchPost};
+use crate::ui::text_field::TextField;
 use std::collections::HashSet;
 
 /// A book shows two pages at a time, as a book that lies open.
@@ -63,6 +64,16 @@ impl BookWords for String {
 
     fn set_words(&mut self, words: &str) {
         words.clone_into(self);
+    }
+}
+
+impl BookWords for TextField {
+    fn words(&self) -> &str {
+        self.text()
+    }
+
+    fn set_words(&mut self, words: &str) {
+        self.set_text(words);
     }
 }
 

@@ -6,46 +6,15 @@
 use super::super::boxes_ui::{scrolled, Tools};
 use super::super::control::{Act, Hand};
 use super::super::deck_ui::{lock_mark, LOCK_SIDE};
-use super::super::model::status::{sections, stats, StatLocks, STAT_NAMES};
+use super::super::model::status::{stats, StatLocks, STAT_NAMES};
 use super::super::theme::{self, number_font, text_font, title_font};
 use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, Id, Pos2, Rect, Sense, Vec2};
+use uoterm_view::ui::lists::{
+    column_room, status_lines, StatusLine, STATUS_COLUMNS as COLUMNS, STATUS_LINE as LINE,
+};
 
-/// The height of one line of the status view.
-const LINE: f32 = 20.0;
-const COLUMNS: usize = 2;
-const WORDS_STATS: &str = "Stats";
 const HINT_LOCK: &str = "Click: up, down or locked.";
-
-/// One line of the status view.
-enum Line {
-    Title(&'static str),
-    Stat(usize),
-    Fact(&'static str, String),
-}
-
-/// Every line of the status view, in order.
-fn lines(frame: &WatchFrame) -> Vec<Line> {
-    let mut lines = vec![Line::Title(WORDS_STATS)];
-    lines.extend((0..STAT_NAMES.len()).map(Line::Stat));
-    for section in sections(frame) {
-        lines.push(Line::Title(section.title));
-        lines.extend(
-            section
-                .facts
-                .into_iter()
-                .map(|(words, value)| Line::Fact(words, value)),
-        );
-    }
-    lines
-}
-
-/// How many lines each column holds in `height`, and the last first line
-/// the wheel may scroll to, for `count` lines.
-fn column_room(height: f32, count: usize) -> (usize, usize) {
-    let per_column = ((height / LINE).floor() as usize).max(1);
-    (per_column, count.saturating_sub(per_column * COLUMNS))
-}
 
 /// A fact: its words at the left of the row, its value at the right.
 fn fact(painter: &egui::Painter, row: Rect, words: &str, value: &str) {
@@ -111,7 +80,7 @@ pub fn draw(
     locks: &mut StatLocks,
     first_line: &mut usize,
 ) {
-    let lines = lines(frame);
+    let lines = status_lines(frame);
     let (per_column, last_first) = column_room(body.height(), lines.len());
     *first_line = scrolled(ui, body, (*first_line).min(last_first), last_first);
     let column_width = (body.width() - theme::ROW_GAP * 2.0) / COLUMNS as f32;
@@ -127,7 +96,7 @@ pub fn draw(
             Vec2::new(column_width, LINE),
         );
         match line {
-            Line::Title(title) => {
+            StatusLine::Title(title) => {
                 ui.painter().text(
                     area.left_bottom(),
                     Align2::LEFT_BOTTOM,
@@ -136,8 +105,8 @@ pub fn draw(
                     theme::GOAL,
                 );
             }
-            Line::Stat(stat) => stat_row(ui, area, *stat, frame, locks, tools.hand),
-            Line::Fact(words, value) => fact(ui.painter(), area, words, value),
+            StatusLine::Stat(stat) => stat_row(ui, area, *stat, frame, locks, tools.hand),
+            StatusLine::Fact(words, value) => fact(ui.painter(), area, words, value),
         }
     }
 }
@@ -145,22 +114,6 @@ pub fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_view_holds_the_stats_then_each_section_and_scrolls_for_the_rest() {
-        let all = lines(&WatchFrame::default());
-        assert!(matches!(all[0], Line::Title(WORDS_STATS)));
-        assert!(matches!(all[1], Line::Stat(0)));
-        let titles = all
-            .iter()
-            .filter(|line| matches!(line, Line::Title(_)))
-            .count();
-        assert_eq!(titles, 6, "the stats and the five sections");
-        const TEN_LINES: f32 = LINE * 10.5;
-        assert_eq!(column_room(TEN_LINES, 25), (10, 5));
-        assert_eq!(column_room(TEN_LINES, 12), (10, 0));
-        assert_eq!(column_room(0.0, 3), (1, 1), "one line shows at the least");
-    }
 
     #[test]
     fn a_click_on_the_lock_of_a_stat_turns_it() {

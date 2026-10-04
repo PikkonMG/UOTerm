@@ -10,23 +10,24 @@
 
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
 use super::super::model::host;
-use super::super::model::journal::{self, Entry, JournalLog, Origin};
+use super::super::model::journal::{self, Entry, JournalLog};
 use super::super::model::places;
-use super::super::settings::{Choice, JournalKind, JournalOptions, Profile};
+use super::super::settings::{Choice, JournalKind, Profile};
 use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{
     self, text::LayoutJob, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Sense,
     TextFormat, Vec2,
 };
+use uoterm_view::ui::launch::JOURNAL_ID;
+use uoterm_view::ui::lists::{
+    journal_waiting_words, journal_wheel_turns, journal_words_color, WordsColor, JOURNAL_FILTERS,
+    JOURNAL_HEIGHT, JOURNAL_LEAST, JOURNAL_WIDTH,
+};
 
-pub const JOURNAL_ID: &str = "modern:journal";
-/// The journal stands at the bottom right, as wide as this.
-pub(super) const JOURNAL_WIDTH: f32 = 400.0;
-pub(super) const JOURNAL_HEIGHT: f32 = 330.0;
-pub(super) const JOURNAL_LEAST: Vec2 = Vec2::new(260.0, 200.0);
 const TAB_ROW: f32 = 24.0;
 const TAB_GAP: f32 = 4.0;
 const NEW_TAB_WIDTH: f32 = 24.0;
@@ -54,17 +55,6 @@ const HINT_NEW_TAB: &str = "Add a tab.";
 const HINT_TAB: &str = "Right-click: rename, kinds of lines, delete.";
 const HINT_TAB_NAME: &str = "tab name";
 
-/// The option of the Journal page one filter flips.
-type FilterOption = fn(&mut JournalOptions) -> &mut bool;
-
-/// The filters under the search: their words, and the option each flips.
-const FILTERS: [(&str, FilterOption); 4] = [
-    ("Shard", |options| &mut options.show_system_lines),
-    ("Things", |options| &mut options.show_object_lines),
-    ("Client", |options| &mut options.show_client_lines),
-    ("Guild", |options| &mut options.show_guild_and_alliance),
-];
-
 /// What the journal tells the Modern panels after it is drawn.
 pub struct JournalDrawn {
     pub panel: Rect,
@@ -86,19 +76,6 @@ pub struct JournalUi {
     new_tab: Option<String>,
     /// The name the player types for a tab in its menu.
     renaming: String,
-}
-
-fn waiting_words(persons: usize) -> String {
-    if persons == 1 {
-        "1 person waits for an answer".to_string()
-    } else {
-        format!("{persons} persons wait for an answer")
-    }
-}
-
-/// The whole turns of the wheel: up reads back.
-fn wheel_turns(notches: f32) -> i32 {
-    (notches.signum() * notches.abs().ceil()) as i32
 }
 
 impl JournalUi {
@@ -126,7 +103,7 @@ impl JournalUi {
             id: JOURNAL_ID,
             title: WORDS_TITLE,
             default,
-            min_size: Some(JOURNAL_LEAST),
+            min_size: Some(bridge::vec2(JOURNAL_LEAST)),
             closable: true,
         };
         let whole = frame::place(rect, &spec, profile);
@@ -157,7 +134,7 @@ impl JournalUi {
                     panel.top() + theme::PANEL_PAD,
                 ),
                 Align2::RIGHT_TOP,
-                waiting_words(frame.unanswered),
+                journal_waiting_words(frame.unanswered),
                 text_font(theme::SIZE_SMALL),
                 theme::WAITING,
             );
@@ -427,8 +404,9 @@ impl JournalUi {
 
 /// The filters: each shows or hides one kind of lines.
 fn filters(ui: &egui::Ui, row: Rect, tools: &Tools<'_>, profile: &mut Profile) {
-    let width = (row.width() - TAB_GAP * (FILTERS.len() - 1) as f32) / FILTERS.len() as f32;
-    for (at, (words, option)) in FILTERS.into_iter().enumerate() {
+    let width =
+        (row.width() - TAB_GAP * (JOURNAL_FILTERS.len() - 1) as f32) / JOURNAL_FILTERS.len() as f32;
+    for (at, (words, option)) in JOURNAL_FILTERS.into_iter().enumerate() {
         let area = Rect::from_min_size(
             row.left_top() + Vec2::new(at as f32 * (width + TAB_GAP), 0.0),
             Vec2::new(width, row.height()),
@@ -449,10 +427,10 @@ fn filters(ui: &egui::Ui, row: Rect, tools: &Tools<'_>, profile: &mut Profile) {
 /// The color of a line's words: the hue the shard gave it, or the plain
 /// colors of the window.
 fn words_color(entry: &Entry, tools: &Tools<'_>) -> Color32 {
-    match entry.origin {
-        Origin::System | Origin::Client => theme::TEXT_DIM,
-        Origin::Mobile | Origin::Object if entry.hue == 0 => theme::TEXT,
-        Origin::Mobile | Origin::Object => tools.scene.words_color(entry.hue),
+    match journal_words_color(entry) {
+        WordsColor::Dim => theme::TEXT_DIM,
+        WordsColor::Plain => theme::TEXT,
+        WordsColor::Hue(hue) => tools.scene.words_color(hue),
     }
 }
 
@@ -509,7 +487,7 @@ fn lines(
             0.0
         }
     });
-    let back = journal::scrolled_back(back, wheel_turns(notches));
+    let back = journal::scrolled_back(back, journal_wheel_turns(notches));
     let (range, back) = journal::visible(shown.len(), back);
     let mut bottom = area.bottom();
     for (at, entry) in shown[range].iter().rev().enumerate() {
@@ -539,12 +517,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_person_waits_and_two_persons_wait() {
-        assert_eq!(waiting_words(1), "1 person waits for an answer");
-        assert_eq!(waiting_words(2), "2 persons wait for an answer");
-    }
-
-    #[test]
     fn only_whole_lines_stand_under_the_filters() {
         const ROOM_TOP: f32 = 100.0;
         const LINE: f32 = 18.0;
@@ -560,24 +532,6 @@ mod tests {
             Some(92.0),
             "the newest line shows even in a room too low for it"
         );
-    }
-
-    #[test]
-    fn a_part_of_a_notch_is_a_whole_turn_each_way() {
-        assert_eq!(wheel_turns(0.2), 1);
-        assert_eq!(wheel_turns(-1.5), -2);
-        assert_eq!(wheel_turns(0.0), 0);
-    }
-
-    #[test]
-    fn each_filter_flips_its_own_option() {
-        let mut options = JournalOptions::default();
-        for (_, option) in FILTERS {
-            let before = *option(&mut options);
-            *option(&mut options) = !before;
-            assert_ne!(*option(&mut options), before);
-        }
-        assert_ne!(options, JournalOptions::default());
     }
 
     #[test]

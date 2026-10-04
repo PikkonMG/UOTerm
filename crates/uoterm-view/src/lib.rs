@@ -19,4 +19,5 @@ pub mod pad;
 pub mod settings;
 pub mod steer;
 pub mod tips;
+pub mod ui;
 pub mod video;

@@ -7,32 +7,23 @@
 
 use super::super::boxes_ui::Tools;
 use super::super::model::places;
-use super::super::model::stats::{self, DebugFacts, PingLevel};
+use super::super::model::stats::{self, DebugFacts};
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Color32, Id, Rect, Sense, Vec2};
+use uoterm_view::ui::launch::{DEBUG_ID, NET_STATS_ID};
+use uoterm_view::ui::lists::ping_color;
 
-pub const NET_STATS_ID: &str = "modern:net_stats";
-pub const DEBUG_ID: &str = "modern:debug";
 const WORDS_NET_STATS: &str = "Network";
 const WORDS_DEBUG: &str = "Debug";
 const HINT_MORE: &str = "Double-click: more or less.";
 /// The panels first stand at the top of the middle, one under the other.
 const NET_STATS_SPOT: Spot = Spot::MiddleTop(0);
 const DEBUG_SPOT: Spot = Spot::MiddleTop(1);
-
-/// The color of the round trip: green, yellow, orange or red.
-fn ping_color(level: PingLevel) -> Color32 {
-    match level {
-        PingLevel::Quick => theme::HITS_POISONED,
-        PingLevel::Fair => theme::STAM,
-        PingLevel::Slow => theme::WAITING,
-        PingLevel::Lagging => theme::ALARM,
-    }
-}
 
 /// The two panels, and whether each shows its short words.
 #[derive(Default)]
@@ -88,7 +79,7 @@ impl StatsUi {
         let mut covered = Vec::new();
         if places::is_open(profile, NET_STATS_ID) {
             let words = stats::net_words(frame, self.net_folded);
-            let color = ping_color(stats::ping_level(stats::ping(frame)));
+            let color = bridge::color(ping_color(stats::ping_level(stats::ping(frame))));
             let (panel, flip, closed) = words_panel(
                 ui,
                 rect,
@@ -134,17 +125,5 @@ fn close_on(closed: bool, id: &str, tools: &Tools<'_>, profile: &mut Profile) {
     if closed {
         places::set_open(profile, id, false);
         tools.keep_profile(profile);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_round_trip_goes_from_green_to_red() {
-        assert_eq!(ping_color(PingLevel::Quick), theme::HITS_POISONED);
-        assert_eq!(ping_color(PingLevel::Lagging), theme::ALARM);
-        assert_ne!(ping_color(PingLevel::Fair), ping_color(PingLevel::Slow));
     }
 }

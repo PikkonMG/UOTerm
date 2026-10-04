@@ -13,13 +13,11 @@
 use super::super::actions::guard::AIM_GRAB_BAG;
 use super::super::actions::LocalAim;
 use super::super::boxes_ui::{
-    ask_waiting_name, scrolled, single_or_double, Tools, CELL, CELL_GAP, CELL_RADIUS,
+    ask_waiting_name, scrolled, single_or_double, Tools, CELL_GAP, CELL_RADIUS,
 };
 use super::super::control::{Act, DropTo};
 use super::super::desk::Zone;
-use super::super::hud::capitalized;
 use super::super::model::clicks::ClickDelay;
-use super::super::model::compare::{self, Difference};
 use super::super::model::grid::{self, Look, Selection};
 use super::super::model::loot::{amount_at, share_of, LootAmounts};
 use super::super::model::{highlight, loot, properties};
@@ -28,19 +26,21 @@ use super::super::settings::GridLayout;
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::super::tips;
-use super::frame::{self, FrameEvent, PanelSpec, TITLE_ROW};
+use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use crate::view::{WatchContainer, WatchFrame, WatchPackItem};
 use crate::window::bridge;
-use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, Id, PointerButton, Pos2, Rect, Sense, Stroke, Vec2,
+};
 use std::collections::{HashMap, HashSet};
+use uoterm_view::input;
+use uoterm_view::ui::grid_clicks::{
+    cell_side, corpse_place_id, first_size, grid_click, grid_title, hover_lines, least_size,
+    CellPress, GridClick, SEARCH_ROW,
+};
 
-const CORPSE_PLACE_ID: &str = "grid:corpse:";
 const PERCENT: f32 = 100.0;
-/// The smallest grid shows this many cells across and down.
-const MIN_COLUMNS: f32 = 2.0;
-const MIN_ROWS: f32 = 1.0;
-const SEARCH_ROW: f32 = 22.0;
 const TITLE_BUTTON_WIDTH: f32 = 44.0;
 const TITLE_GAP: f32 = 6.0;
 const STRIP_ROW: f32 = 26.0;
@@ -48,8 +48,6 @@ const STRIP_BUTTON_WIDTH: f32 = 96.0;
 const MARK_WIDTH: f32 = 2.0;
 const LOCK_DOT: f32 = 3.0;
 const DIMMED_ALPHA: f32 = 0.3;
-/// A bag's preview names this many of its items.
-const PREVIEW_ITEMS: usize = 8;
 /// Pictures in a cell grow no more than this when the Containers page
 /// scales them, and not at all when it does not.
 const SCALED_ART: f32 = 2.0;
@@ -65,11 +63,6 @@ const WORDS_LOOT_BAG: &str = "Bag";
 const WORDS_MOVE_HERE: &str = "Move here";
 const WORDS_TO_FAVORITE: &str = "To favorite";
 const WORDS_CLEAR: &str = "Clear";
-const WORDS_COMPARED: &str = "Against the worn one:";
-const WORDS_SAME: &str = "No change against the worn one.";
-const WORDS_HOLDS: &str = "Holds:";
-/// The title of a container the shard and the client files do not name.
-const WORDS_CONTAINER: &str = "Container";
 const HINT_SEARCH: &str = "search";
 const HINT_ITEM: &str = "Click: name.  Double-click: use.  Drag: move.  Ctrl+click: choose.  \
      Shift+click: lock the slot.";
@@ -99,29 +92,6 @@ struct GridView<'a> {
     /// The item property lines are needed: a rule, a search or the
     /// highlight words.
     wants_lines: bool,
-}
-
-fn cell_side(profile: &Profile) -> f32 {
-    CELL * f32::from(profile.containers.grid_scale) / PERCENT
-}
-
-/// The size of a grid of `columns` by `rows` cells.
-fn grid_size(side: f32, columns: f32, rows: f32) -> Vec2 {
-    Vec2::new(
-        columns * (side + CELL_GAP) - CELL_GAP,
-        rows * (side + CELL_GAP) - CELL_GAP + TITLE_ROW + SEARCH_ROW + CELL_GAP,
-    ) + Vec2::splat(theme::PANEL_PAD * 2.0)
-}
-
-/// The size a grid first opens at: the columns and the rows of the
-/// Containers page.
-pub(super) fn first_size(profile: &Profile) -> Vec2 {
-    let options = &profile.containers;
-    grid_size(
-        cell_side(profile),
-        f32::from(options.grid_columns),
-        f32::from(options.grid_rows),
-    )
 }
 
 impl GridUi {
@@ -180,15 +150,15 @@ impl GridUi {
                 grid_loot: corpse && corpse_look.grid,
                 wants_lines: wants_lines || searching,
             };
-            let side = cell_side(profile);
-            let default = layout::first_place(rect, Spot::Container(opened), first_size(profile));
+            let default = layout::first_place(
+                rect,
+                Spot::Container(opened),
+                bridge::vec2(first_size(profile)),
+            );
             opened += 1;
-            // The first corpse opens where the last first corpse was left,
-            // the second where the last second one was, and so on, so the
-            // profile does not keep a place for each corpse.
             let id = if corpse {
                 corpses += 1;
-                format!("{CORPSE_PLACE_ID}{corpses}")
+                corpse_place_id(corpses)
             } else {
                 grid::place_id(container.serial)
             };
@@ -201,7 +171,7 @@ impl GridUi {
                 id: &id,
                 title: &title,
                 default,
-                min_size: Some(grid_size(side, MIN_COLUMNS, MIN_ROWS)),
+                min_size: Some(bridge::vec2(least_size(profile))),
                 closable: true,
             };
             let panel = frame::place(rect, &spec, profile);
@@ -592,7 +562,13 @@ impl GridUi {
             }
         }
         if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
-            let extra = self.hover_lines(item, &lines, view.frame, tools, profile);
+            let extra = hover_lines(
+                item,
+                &lines,
+                view.frame,
+                (tools.layers, tools.readings),
+                profile,
+            );
             let footer = match (frame.human_control, view.grid_loot) {
                 (false, _) => "",
                 (true, true) => HINT_LOOT_ITEM,
@@ -615,39 +591,54 @@ impl GridUi {
         if pile_slider {
             self.pile_slider(ui, cell, item.serial, most, taken);
         }
-        let modifiers = ui.input(|i| i.modifiers);
-        if response.clicked() && modifiers.command {
-            self.chosen.toggle(item.serial);
-        } else if response.clicked() && modifiers.shift && !view.corpse {
-            let lock = (!slot_locked).then_some(item.serial);
-            self.set_lock(tools, profile, serial, slot, lock);
-        } else if response.clicked() && view.grid_loot && !frame.target_cursor {
-            if let Some(bag) = tools.hand.grab_bag() {
-                tools.hand.act(Act::Move {
-                    item: item.serial,
-                    amount: self.amounts.taken(item.serial),
-                    to: DropTo::Into(bag),
-                });
+        let press = CellPress {
+            click: if response.clicked() {
+                Some(input::PointerButton::Primary)
+            } else if response.secondary_clicked() {
+                Some(input::PointerButton::Secondary)
+            } else {
+                None
+            },
+            double: response.double_clicked(),
+            drag_started: response.drag_started_by(PointerButton::Primary),
+            mods: bridge::mods(ui.input(|i| i.modifiers)),
+        };
+        match grid_click(press, view.corpse, view.grid_loot, frame.target_cursor) {
+            GridClick::Choose => self.chosen.toggle(item.serial),
+            GridClick::Lock => {
+                let lock = (!slot_locked).then_some(item.serial);
+                self.set_lock(tools, profile, serial, slot, lock);
             }
-        } else if response.drag_started_by(egui::PointerButton::Primary) {
-            tools.desk.pick_up(item);
-        } else if single_or_double(
-            &response,
-            &mut self.clicks,
-            frame,
-            tools.hand,
-            item.serial,
-            tools.time,
-        ) {
-            tools.hand.act(Act::Use(item.serial));
-        } else if response.secondary_clicked() {
-            tools.ring.open_at(
+            GridClick::Grab => {
+                if let Some(bag) = tools.hand.grab_bag() {
+                    tools.hand.act(Act::Move {
+                        item: item.serial,
+                        amount: self.amounts.taken(item.serial),
+                        to: DropTo::Into(bag),
+                    });
+                }
+            }
+            GridClick::PickUp => tools.desk.pick_up(item),
+            GridClick::Use | GridClick::Name => {
+                if single_or_double(
+                    &response,
+                    &mut self.clicks,
+                    frame,
+                    tools.hand,
+                    item.serial,
+                    tools.time,
+                ) {
+                    tools.hand.act(Act::Use(item.serial));
+                }
+            }
+            GridClick::Ring => tools.ring.open_at(
                 cell.center(),
                 item.serial,
                 &item.name,
                 Subject::Packed,
                 tools.hand,
-            );
+            ),
+            GridClick::Nothing => {}
         }
         // An item dropped on a bag goes in, and on a pile of its kind joins.
         tools.desk.zone(bridge::area(cell), Zone::Into(item.serial));
@@ -699,67 +690,6 @@ impl GridUi {
         }
         tools.keep_profile(profile);
     }
-
-    /// The lines under the name in the tooltip: the compare with the worn
-    /// item, and what a bag holds.
-    fn hover_lines(
-        &self,
-        item: &WatchPackItem,
-        lines: &[String],
-        frame: &WatchFrame,
-        tools: &mut Tools<'_>,
-        profile: &mut Profile,
-    ) -> Vec<String> {
-        let mut extra = Vec::new();
-        let compare_on = profile.containers.grid_compare_tooltip;
-        let worn = tools
-            .layers
-            .layer(item.graphic)
-            .and_then(|layer| compare::worn_on(frame, layer))
-            .filter(|worn| worn.serial != item.serial);
-        if let (true, Some(worn)) = (compare_on, worn) {
-            let item_lines = if lines.is_empty() {
-                properties::lines_of(tools.readings, item.serial)
-            } else {
-                lines.to_vec()
-            };
-            let worn_lines = properties::lines_of(tools.readings, worn.serial);
-            let differences: Vec<Difference> = compare::differences(&item_lines, &worn_lines);
-            if differences.is_empty() {
-                extra.push(WORDS_SAME.to_string());
-            } else {
-                extra.push(WORDS_COMPARED.to_string());
-                extra.extend(differences.iter().map(Difference::words_for_player));
-            }
-        }
-        if profile.containers.grid_preview {
-            if let Some(bag) = grid::open_bag(frame, item.serial) {
-                extra.push(format!("{WORDS_HOLDS} {}", bag.total));
-                extra.extend(bag.items.iter().take(PREVIEW_ITEMS).map(preview_words));
-            }
-        }
-        extra
-    }
-}
-
-/// The title of a grid: the name the shard gives the container, or with
-/// none, the name the client files give its graphic, as "Backpack".
-fn grid_title(name: &str, tile_name: Option<&str>) -> String {
-    [Some(name), tile_name]
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .find(|name| !name.is_empty())
-        .map_or_else(|| WORDS_CONTAINER.to_string(), capitalized)
-}
-
-/// One item of a bag's preview: its amount and its name.
-fn preview_words(item: &WatchPackItem) -> String {
-    if item.amount > 1 {
-        format!("{} {}", item.amount, item.name)
-    } else {
-        item.name.clone()
-    }
 }
 
 #[cfg(test)]
@@ -804,15 +734,6 @@ mod tests {
             shown = grids.draw(ui, rect, frame, tools, profile, closed).len();
         });
         shown
-    }
-
-    #[test]
-    fn a_grid_is_titled_by_the_shard_or_else_by_the_client_files() {
-        assert_eq!(grid_title("Mara's chest", Some("chest")), "Mara's chest");
-        assert_eq!(grid_title("", Some("backpack")), "Backpack");
-        assert_eq!(grid_title("  ", Some(" pouch ")), "Pouch");
-        assert_eq!(grid_title("", None), WORDS_CONTAINER);
-        assert_eq!(grid_title("", Some("")), WORDS_CONTAINER);
     }
 
     #[test]

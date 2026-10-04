@@ -42,18 +42,8 @@ use uoterm_view::clicks::{
     act_for_click, bar_buttons, bar_status, beside_bar, grabbed, hint_for, ChatMode, GroundClicks,
     Press, WordsEdge,
 };
+use uoterm_view::ui::control_bar::{BAR_WIDTH, RULE_GAP, SEGMENT_HEIGHT, STRIP_PAD, STRIP_ROW};
 
-/// The top panel has one width in each state, so nothing in it moves when
-/// the buttons change.
-pub(super) const BAR_WIDTH: f32 = 880.0;
-const STRIP_PAD: f32 = 10.0;
-const STRIP_ROW: f32 = 24.0;
-const RULE_GAP: f32 = 8.0;
-const SEGMENT_HEIGHT: f32 = 30.0;
-/// The bar at its tallest: the place row, the row of what the human does,
-/// and the buttons.
-pub(super) const BAR_MOST_HEIGHT: f32 =
-    STRIP_PAD * 2.0 + STRIP_ROW * 2.0 + RULE_GAP * 2.0 + SEGMENT_HEIGHT;
 /// The button that opens the panel launcher of the Modern style, at the
 /// left of the place row.
 const LAUNCHER_BUTTON_WIDTH: f32 = 72.0;

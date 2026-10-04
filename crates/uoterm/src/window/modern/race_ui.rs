@@ -8,17 +8,17 @@
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
 use super::super::control::Act;
 use super::super::model::race_change::{
-    doll_body, paints, palette, palette_columns, style_lists, Paint, RacePicks,
+    paints, palette, palette_columns, style_lists, Paint, RacePicks,
 };
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::hue_ui;
 use super::layout::{self, Spot};
-use crate::view::{WatchEquip, WatchFrame, WatchLook};
+use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
-use uoterm_protocol::types::{LAYER_BEARD, LAYER_HAIR};
-use uoterm_world::{Race, RaceChange};
+use uoterm_view::ui::lists::{race_change_words, race_preview_look};
+use uoterm_world::RaceChange;
 
 pub const RACE_ID: &str = "modern:race_change";
 const WIDTH: f32 = 600.0;
@@ -30,58 +30,9 @@ const PART_GAP: f32 = 12.0;
 const FOOT_ROW: f32 = 40.0;
 const SWATCH_EDGE: f32 = 1.0;
 const MARK_WIDTH: f32 = 2.0;
-/// A worn hair or beard of the preview has no serial.
-const NO_SERIAL: u32 = 0;
-const NO_STYLE: u16 = 0;
-
-const WORDS_TITLE: &str = "Race change";
-const WORDS_HUMAN: &str = "Human";
-const WORDS_ELF: &str = "Elf";
-const WORDS_GARGOYLE: &str = "Gargoyle";
-const WORDS_MAN: &str = "man";
-const WORDS_WOMAN: &str = "woman";
 const WORDS_CHANGE: &str = "Change";
 const WORDS_KEEP: &str = "Keep my looks";
 const HINT_COLOR: &str = "Click: pick from the palette.";
-
-/// The words of the race and the sex the shard asks the player to be.
-fn change_words(change: RaceChange) -> String {
-    let race = match change.race {
-        Race::Human => WORDS_HUMAN,
-        Race::Elf => WORDS_ELF,
-        Race::Gargoyle => WORDS_GARGOYLE,
-    };
-    let sex = if change.female {
-        WORDS_WOMAN
-    } else {
-        WORDS_MAN
-    };
-    format!("{WORDS_TITLE}: {race} {sex}")
-}
-
-/// The look of the figure with the new looks.
-fn preview_look(change: RaceChange, picks: &RacePicks) -> WatchLook {
-    let looks = picks.looks(change);
-    let worn = [
-        (looks.hair, looks.hair_hue, LAYER_HAIR),
-        (looks.beard, looks.beard_hue, LAYER_BEARD),
-    ];
-    WatchLook {
-        body: doll_body(change),
-        hue: looks.skin_hue,
-        equipment: worn
-            .into_iter()
-            .filter(|(graphic, ..)| *graphic != NO_STYLE)
-            .map(|(graphic, hue, layer)| WatchEquip {
-                serial: NO_SERIAL,
-                graphic,
-                layer,
-                hue,
-            })
-            .collect(),
-        ..WatchLook::default()
-    }
-}
 
 /// The panel, the picks of the player, and the palette that is open.
 #[derive(Default)]
@@ -109,7 +60,7 @@ impl RaceUi {
         }
         self.picks.follow(change);
         let live = frame.human_control;
-        let title = change_words(change);
+        let title = race_change_words(change);
         let spec = PanelSpec {
             id: RACE_ID,
             title: &title,
@@ -195,7 +146,7 @@ impl RaceUi {
     ) {
         ui.painter()
             .rect_filled(area, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        let look = preview_look(change, &self.picks);
+        let look = race_preview_look(change, &self.picks);
         if let Some((texture, sprite)) = tools.scene.doll_picture(frame.map, &look) {
             let shown = theme::fit(area, sprite.width, sprite.height);
             ui.painter()
@@ -300,26 +251,12 @@ impl RaceUi {
 mod tests {
     use super::super::testing::draw_frames;
     use super::*;
-    use uoterm_world::BODY_HUMAN_MALE;
+    use uoterm_world::Race;
 
     const HUMAN_MAN: RaceChange = RaceChange {
         race: Race::Human,
         female: false,
     };
-
-    #[test]
-    fn the_preview_wears_the_picked_hair_and_beard_on_the_new_body() {
-        let mut picks = RacePicks::default();
-        picks.follow(HUMAN_MAN);
-        assert!(preview_look(HUMAN_MAN, &picks).equipment.is_empty(), "bald");
-        picks.hair = 1;
-        picks.beard = 1;
-        let look = preview_look(HUMAN_MAN, &picks);
-        assert_eq!(look.body, BODY_HUMAN_MALE);
-        let layers: Vec<u8> = look.equipment.iter().map(|worn| worn.layer).collect();
-        assert_eq!(layers, vec![LAYER_HAIR, LAYER_BEARD]);
-        assert_eq!(change_words(HUMAN_MAN), "Race change: Human man");
-    }
 
     #[test]
     fn the_panel_shows_while_the_shard_waits_and_a_new_request_starts_over() {

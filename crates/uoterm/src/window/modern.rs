@@ -42,14 +42,12 @@ pub use durability_ui::wear_color;
 pub use dye_ui::DyeUi;
 pub use entry_ui::EntryUi;
 pub use grid_ui::GridUi;
-pub use journal_ui::JOURNAL_ID;
 pub use markers_ui::{MarkersAsk, MarkersUi};
 pub use race_ui::RaceUi;
-pub use radar_ui::RADAR_ID;
 pub use tip_ui::TipUi;
+pub use uoterm_view::ui::launch::{JOURNAL_ID, RADAR_ID, WORDS_LAUNCHER};
 
 use super::boxes_ui::Tools;
-use super::model::agents::AgentPanel;
 use super::model::info_bar::title_words;
 use super::model::{host, journal, places};
 use super::settings::{
@@ -57,7 +55,7 @@ use super::settings::{
 };
 use super::theme;
 use crate::view::{WatchFrame, WINDOW_TITLE};
-use agents_ui::{AgentsUi, AGENTS_ID, IGNORE_ID};
+use agents_ui::AgentsUi;
 use ask_ui::{Asked, Question};
 use bars_ui::BarsUi;
 use combat_ui::CombatUi;
@@ -68,40 +66,15 @@ use journal_ui::JournalUi;
 use layout::Spot;
 use loot_ui::LootUi;
 use radar_ui::RadarUi;
-use stats_ui::{StatsUi, DEBUG_ID, NET_STATS_ID};
+use stats_ui::StatsUi;
 use std::path::PathBuf;
+use uoterm_view::ui::launch::{self, Launch, DPS_ID, DURABILITY_ID, LAUNCHES};
 
 const LAUNCHER_ID: &str = "modern:launcher";
 const LAUNCHER_WIDTH: f32 = 220.0;
 const LAUNCHER_COLUMNS: usize = 2;
 const LAUNCHER_ROW: f32 = 28.0;
 const LAUNCHER_GAP: f32 = 6.0;
-
-/// The words of the launcher, and of the button of the control bar that
-/// opens it.
-pub const WORDS_LAUNCHER: &str = "Panels";
-const WORDS_LOOT: &str = "Loot";
-const WORDS_DURABILITY: &str = "Durability";
-const WORDS_DAMAGE: &str = "Damage";
-const WORDS_AGENTS: &str = "Agents";
-const WORDS_COUNTERS: &str = "Counters";
-const WORDS_INFO: &str = "Info bar";
-const WORDS_RADAR: &str = "Radar";
-const WORDS_JOURNAL: &str = "Journal";
-const WORDS_BUFFS: &str = "Buffs";
-const WORDS_NET_STATS: &str = "Network";
-const WORDS_DEBUG: &str = "Debug";
-
-/// The panels a close of every window closes, by the ids that keep them
-/// open.
-const CLOSING_PANELS: [&str; 6] = [
-    durability_ui::DURABILITY_ID,
-    dps_ui::DPS_ID,
-    AGENTS_ID,
-    IGNORE_ID,
-    NET_STATS_ID,
-    DEBUG_ID,
-];
 
 /// The look the window has now, so it changes only when the profile does.
 /// The Classic style scales and letters its own gumps, so it keeps the
@@ -138,70 +111,6 @@ pub struct ModernDrawn {
     pub covered: Vec<Rect>,
     /// The row of the chat box, at the bottom of the journal.
     pub chat_row: Rect,
-}
-
-/// A button of the launcher: its words, and whether its panel shows.
-#[derive(Clone, Copy)]
-enum Launch {
-    Loot,
-    Durability,
-    Damage,
-    Agents,
-    Counters,
-    InfoBar,
-    Radar,
-    Journal,
-    Buffs,
-    NetStats,
-    Debug,
-}
-
-const LAUNCHES: [(Launch, &str); 11] = [
-    (Launch::Radar, WORDS_RADAR),
-    (Launch::Journal, WORDS_JOURNAL),
-    (Launch::Loot, WORDS_LOOT),
-    (Launch::Durability, WORDS_DURABILITY),
-    (Launch::Damage, WORDS_DAMAGE),
-    (Launch::Agents, WORDS_AGENTS),
-    (Launch::Counters, WORDS_COUNTERS),
-    (Launch::InfoBar, WORDS_INFO),
-    (Launch::Buffs, WORDS_BUFFS),
-    (Launch::NetStats, WORDS_NET_STATS),
-    (Launch::Debug, WORDS_DEBUG),
-];
-
-impl Launch {
-    fn shows(self, profile: &Profile) -> bool {
-        match self {
-            Self::Loot => profile.interface.nearby_loot_window,
-            Self::Durability => places::is_open(profile, durability_ui::DURABILITY_ID),
-            Self::Damage => places::is_open(profile, dps_ui::DPS_ID),
-            Self::Agents => places::is_open(profile, AGENTS_ID),
-            Self::Counters => profile.counters.enabled,
-            Self::InfoBar => profile.info_bar.enabled,
-            Self::Radar => !places::is_shut(profile, RADAR_ID),
-            Self::Journal => !places::is_shut(profile, JOURNAL_ID),
-            Self::Buffs => profile.combat.improved_buff_bar,
-            Self::NetStats => places::is_open(profile, NET_STATS_ID),
-            Self::Debug => places::is_open(profile, DEBUG_ID),
-        }
-    }
-
-    fn set(self, profile: &mut Profile, shows: bool) {
-        match self {
-            Self::Loot => profile.interface.nearby_loot_window = shows,
-            Self::Durability => places::set_open(profile, durability_ui::DURABILITY_ID, shows),
-            Self::Damage => places::set_open(profile, dps_ui::DPS_ID, shows),
-            Self::Agents => places::set_open(profile, AGENTS_ID, shows),
-            Self::Counters => profile.counters.enabled = shows,
-            Self::InfoBar => profile.info_bar.enabled = shows,
-            Self::Radar => places::set_shut(profile, RADAR_ID, !shows),
-            Self::Journal => places::set_shut(profile, JOURNAL_ID, !shows),
-            Self::Buffs => profile.combat.improved_buff_bar = shows,
-            Self::NetStats => places::set_open(profile, NET_STATS_ID, shows),
-            Self::Debug => places::set_open(profile, DEBUG_ID, shows),
-        }
-    }
 }
 
 #[derive(Default)]
@@ -296,11 +205,8 @@ impl ModernUi {
             }
         }
         for (id, draw) in [
-            (
-                durability_ui::DURABILITY_ID,
-                durability_ui::draw as PanelDraw,
-            ),
-            (dps_ui::DPS_ID, dps_ui::draw as PanelDraw),
+            (DURABILITY_ID, durability_ui::draw as PanelDraw),
+            (DPS_ID, dps_ui::draw as PanelDraw),
         ] {
             if places::is_open(profile, id) {
                 let (panel, closed) = draw(ui, rect, frame, tools, profile);
@@ -358,13 +264,7 @@ impl ModernUi {
     /// client.
     pub fn close_all(&mut self, frame: &WatchFrame, profile: &mut Profile) {
         self.launcher_open = false;
-        profile.interface.nearby_loot_window = false;
-        for id in CLOSING_PANELS {
-            places::set_open(profile, id, false);
-        }
-        for agent in AgentPanel::ALL {
-            places::set_open(profile, &agent.place_id(), false);
-        }
+        launch::close_all(profile);
         self.bars.close_bars(frame, false, profile);
         self.question = None;
     }

@@ -21,6 +21,7 @@ use super::super::settings::{Profile, SkillGroupSet};
 use super::super::theme::{self, number_font, text_font, title_font};
 use crate::view::{WatchFrame, WatchSkill};
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
+use uoterm_view::ui::lists::{next_sort, skill_entries, SkillEntry};
 
 /// The width of each value column.
 const VALUE_WIDTH: f32 = 48.0;
@@ -41,31 +42,6 @@ const WORDS_FOLDED: &str = "+";
 const HINT_GROUP: &str = "Click: select, again: rename.  Delete: take it away.";
 const HINT_SKILL: &str = "Drag: to another group, or a skill to use onto the hotbar.";
 
-/// One row of the grouped list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Entry {
-    Group(usize),
-    Skill(u16),
-}
-
-/// The rows of the grouped list: each group, and the skills of an open one.
-fn entries(groups: &[SkillGroupSet], skills: &[WatchSkill]) -> Vec<Entry> {
-    let mut rows = Vec::new();
-    for (at, group) in groups.iter().enumerate() {
-        rows.push(Entry::Group(at));
-        if group.open {
-            rows.extend(
-                group
-                    .skills
-                    .iter()
-                    .filter(|id| skills.iter().any(|skill| skill.id == **id))
-                    .map(|id| Entry::Skill(*id)),
-            );
-        }
-    }
-    rows
-}
-
 /// The right edge of a value column of a row, from the first value column.
 fn value_right(row: Rect, column: usize) -> f32 {
     let columns = SkillSort::COLUMNS.len() - 1;
@@ -78,16 +54,6 @@ fn delete_area(row: Rect) -> Rect {
         Pos2::new(row.right() - USE_WIDTH, row.top()),
         Vec2::new(USE_WIDTH, row.height() - TAB_GAP / 2.0),
     )
-}
-
-/// The sort after a click on a column: the same column turns round, a new
-/// one sorts from the least.
-fn next_sort(now: (SkillSort, bool), clicked: SkillSort) -> (SkillSort, bool) {
-    if now.0 == clicked {
-        (clicked, !now.1)
-    } else {
-        (clicked, false)
-    }
 }
 
 pub struct SkillsTab {
@@ -335,7 +301,7 @@ impl SkillsTab {
         profile: &mut Profile,
     ) -> Option<Offer> {
         let mut groups = shown_groups(&profile.skill_groups, &frame.skills);
-        let rows = entries(&groups, &frame.skills);
+        let rows = skill_entries(&groups, &frame.skills);
         let shown_rows = ((list.height() / ROW).floor() as usize).max(1);
         let last_first = rows.len().saturating_sub(shown_rows);
         self.first_row = scrolled(ui, list, self.first_row.min(last_first), last_first);
@@ -345,7 +311,7 @@ impl SkillsTab {
         let mut areas: Vec<(usize, Rect)> = Vec::new();
         let mut group_at = 0;
         for entry in rows.iter().take(self.first_row) {
-            if let Entry::Group(at) = entry {
+            if let SkillEntry::Group(at) = entry {
                 group_at = *at;
             }
         }
@@ -356,14 +322,14 @@ impl SkillsTab {
                 Vec2::new(list.width(), ROW),
             );
             match entry {
-                Entry::Group(at) => {
+                SkillEntry::Group(at) => {
                     group_at = *at;
                     changed |= self.group_row(ui, row, &mut groups, *at, frame);
                     if self.delete_pressed(ui, row, *at, frame) {
                         deleted = Some(*at);
                     }
                 }
-                Entry::Skill(id) => {
+                SkillEntry::Skill(id) => {
                     if let Some(skill) = frame.skills.iter().find(|skill| skill.id == *id) {
                         offer = offer.or(self.skill_row(ui, row, skill, frame, tools));
                     }
@@ -617,41 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn an_open_group_lists_its_known_skills_and_a_folded_one_none() {
-        let groups = vec![
-            SkillGroupSet {
-                name: "Open".into(),
-                skills: vec![1, 2, 99],
-                open: true,
-            },
-            SkillGroupSet {
-                name: "Folded".into(),
-                skills: vec![3],
-                open: false,
-            },
-        ];
-        let skills = [skill(1), skill(2), skill(3)];
-        assert_eq!(
-            entries(&groups, &skills),
-            vec![
-                Entry::Group(0),
-                Entry::Skill(1),
-                Entry::Skill(2),
-                Entry::Group(1)
-            ]
-        );
-    }
-
-    #[test]
-    fn a_column_sorts_from_the_least_and_turns_round_on_a_second_click() {
-        assert_eq!(
-            next_sort((SkillSort::Name, false), SkillSort::Cap),
-            (SkillSort::Cap, false)
-        );
-        assert_eq!(
-            next_sort((SkillSort::Cap, false), SkillSort::Cap),
-            (SkillSort::Cap, true)
-        );
+    fn the_value_columns_stand_left_of_the_buttons() {
         let row = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, ROW));
         assert_eq!(value_right(row, 2), 400.0 - BUTTONS_WIDTH);
         assert_eq!(

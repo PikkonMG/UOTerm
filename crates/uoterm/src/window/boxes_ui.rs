@@ -20,9 +20,10 @@ use super::tips::Tips;
 use crate::view::{WatchFrame, WatchGump};
 use eframe::egui::{self, Align2, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use std::collections::{HashMap, HashSet};
+use uoterm_view::ui::gumps::{self, flip, next_first_row, on_page, ticked, FIRST_PAGE};
 
-pub(super) const CELL: f32 = 46.0;
-pub(super) const CELL_GAP: f32 = 4.0;
+pub use uoterm_view::ui::gumps::{CELL, CELL_GAP};
+
 pub(super) const CELL_RADIUS: u8 = 5;
 
 const GUMP_PLACE_ID: &str = "modern:gump:";
@@ -32,8 +33,6 @@ const GUMP_MAX_ROWS: usize = 10;
 const GUMP_ROW: f32 = 26.0;
 const BOX_SIDE: f32 = 14.0;
 const BOX_RADIUS: u8 = 3;
-pub(super) const FIRST_PAGE: u32 = 1;
-const EVERY_PAGE: u32 = 0;
 
 const WORDS_GUMP: &str = "Shard window";
 
@@ -80,43 +79,6 @@ pub struct BoxesUi {
     grids: GridUi,
 }
 
-/// The boxes that are ticked now: the ticks the gump came with, with the
-/// human's changes on top. A tick on a radio box clears the others of its page.
-fn ticked(gump: &WatchGump, flipped: &HashSet<u32>) -> Vec<u32> {
-    gump.choices
-        .iter()
-        .filter(|c| c.on != flipped.contains(&c.switch))
-        .map(|c| c.switch)
-        .collect()
-}
-
-fn flip(gump: &WatchGump, flipped: &mut HashSet<u32>, switch: u32) {
-    let Some(clicked) = gump.choices.iter().find(|c| c.switch == switch) else {
-        return;
-    };
-    let now_on = ticked(gump, flipped);
-    let toggle = |flipped: &mut HashSet<u32>, switch: u32| {
-        if !flipped.remove(&switch) {
-            flipped.insert(switch);
-        }
-    };
-    if !clicked.radio {
-        toggle(flipped, switch);
-        return;
-    }
-    if now_on.contains(&switch) {
-        return;
-    }
-    let rivals = gump
-        .choices
-        .iter()
-        .filter(|c| c.radio && c.page == clicked.page && now_on.contains(&c.switch));
-    for rival in rivals {
-        toggle(flipped, rival.switch);
-    }
-    toggle(flipped, switch);
-}
-
 /// The first row after the mouse wheel turned over the panel.
 pub(super) fn scrolled(
     ui: &egui::Ui,
@@ -135,21 +97,6 @@ pub(super) fn scrolled(
     next_first_row(first_row, turned, last_first_row)
 }
 
-fn next_first_row(first_row: usize, turned: f32, last_first_row: usize) -> usize {
-    let next = if turned < 0.0 {
-        first_row + 1
-    } else if turned > 0.0 {
-        first_row.saturating_sub(1)
-    } else {
-        first_row
-    };
-    next.min(last_first_row)
-}
-
-pub(super) fn on_page(item_page: u32, shown: u32) -> bool {
-    item_page == EVERY_PAGE || item_page == shown
-}
-
 /// A click on an item of a panel: under a target cursor a click targets
 /// the item, and else a single click asks its name once the double click
 /// time is over. True on a double click, whose act is the panel's.
@@ -161,25 +108,27 @@ pub(super) fn single_or_double(
     serial: u32,
     time: f64,
 ) -> bool {
-    if response.double_clicked() {
-        clicks.double_clicked();
-        return true;
+    let (double, act) = gumps::single_or_double(
+        (response.clicked(), response.double_clicked()),
+        clicks,
+        frame,
+        serial,
+        time,
+    );
+    if let Some(act) = act {
+        hand.act(act);
     }
-    if response.clicked() {
-        if let Some(act) = clicks.single_click(frame, serial, time) {
-            hand.act(act);
-        }
-    }
-    false
+    double
 }
 
 /// Asks the name of the item whose single click waited long enough, and
 /// keeps the window drawing while one waits.
 pub(super) fn ask_waiting_name(ui: &egui::Ui, clicks: &mut ClickDelay, hand: &Hand, time: f64) {
-    if let Some(act) = clicks.due_look(time) {
+    let (act, waiting) = gumps::ask_waiting_name(clicks, time);
+    if let Some(act) = act {
         hand.act(act);
     }
-    if clicks.is_waiting() {
+    if waiting {
         ui.ctx().request_repaint();
     }
 }
@@ -427,7 +376,7 @@ impl BoxesUi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::{WatchContainer, WatchGumpChoice};
+    use crate::view::WatchContainer;
 
     #[test]
     fn a_closed_container_shows_again_when_it_is_used() {
@@ -446,46 +395,6 @@ mod tests {
         boxes.used(BAG);
         assert!(boxes.shows(&frame, BAG));
         assert!(!boxes.shows(&WatchFrame::default(), BAG));
-    }
-
-    fn choice(switch: u32, radio: bool, on: bool) -> WatchGumpChoice {
-        WatchGumpChoice {
-            switch,
-            radio,
-            on,
-            page: FIRST_PAGE,
-            label: String::new(),
-        }
-    }
-
-    #[test]
-    fn a_tick_on_a_radio_box_clears_its_rival() {
-        let gump = WatchGump {
-            choices: vec![
-                choice(1, true, true),
-                choice(2, true, false),
-                choice(3, false, false),
-            ],
-            ..WatchGump::default()
-        };
-        let mut flipped = HashSet::new();
-        assert_eq!(ticked(&gump, &flipped), vec![1]);
-        flip(&gump, &mut flipped, 2);
-        assert_eq!(ticked(&gump, &flipped), vec![2]);
-        flip(&gump, &mut flipped, 2);
-        assert_eq!(ticked(&gump, &flipped), vec![2], "a radio box stays on");
-        flip(&gump, &mut flipped, 3);
-        assert_eq!(ticked(&gump, &flipped), vec![2, 3]);
-        flip(&gump, &mut flipped, 3);
-        assert_eq!(ticked(&gump, &flipped), vec![2]);
-    }
-
-    #[test]
-    fn the_wheel_turns_a_container_one_row_and_stops_at_its_ends() {
-        assert_eq!(next_first_row(0, -1.0, 2), 1);
-        assert_eq!(next_first_row(2, -1.0, 2), 2);
-        assert_eq!(next_first_row(0, 1.0, 2), 0);
-        assert_eq!(next_first_row(2, 0.0, 1), 1, "the container lost rows");
     }
 
     #[test]
@@ -509,12 +418,5 @@ mod tests {
             });
             assert_eq!(covered.len(), shown);
         }
-    }
-
-    #[test]
-    fn page_zero_shows_on_each_page() {
-        assert!(on_page(EVERY_PAGE, 3));
-        assert!(on_page(2, 2));
-        assert!(!on_page(2, FIRST_PAGE));
     }
 }

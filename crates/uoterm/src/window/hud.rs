@@ -11,19 +11,20 @@ use super::modern::layout::{self, Spot};
 use super::settings::Profile;
 use super::theme::{self, number_font, text_font, title_font};
 use crate::view::{Danger, WatchFrame};
+use crate::window::bridge;
 use eframe::egui::{
     self,
     epaint::{Mesh, Vertex, WHITE_UV},
     text::LayoutJob,
     Align2, Color32, Painter, Pos2, Rect, Shape, Vec2,
 };
+use uoterm_view::ui::hud::{
+    self as rules, activity_details, activity_height, goal_words, hits_look, message_height,
+    pack_height, pack_lists, share, vitals_height, weight_color, Bar, BAR_COUNT, BAR_ROW_GAP,
+    PACK_WIDTH, ROW_HEIGHT, SIDE_PANEL_WIDTH, TITLE_HEIGHT,
+};
 
-pub(super) const SIDE_PANEL_WIDTH: f32 = 300.0;
-pub(super) const PACK_WIDTH: f32 = 340.0;
 const MESSAGE_WIDTH: f32 = 440.0;
-const ROW_HEIGHT: f32 = 20.0;
-const TITLE_HEIGHT: f32 = 28.0;
-const BAR_ROW_GAP: f32 = 10.0;
 const BAR_LABEL_WIDTH: f32 = 58.0;
 const CHIP_PAD: Vec2 = Vec2::new(7.0, 3.0);
 const CHIP_GAP: f32 = 6.0;
@@ -33,21 +34,6 @@ const ACTIVITY_ID: &str = "modern:activity";
 const VITALS_ID: &str = "modern:vitals";
 const PACK_ID: &str = "modern:pack";
 const WORDS_PACK: &str = "Pack";
-/// The most detail rows of the activity panel: the job, the walk goal, the
-/// one followed and the script.
-const ACTIVITY_MOST_DETAILS: usize = 4;
-/// The lists the pack panel shows when they hold anything.
-const PACK_LISTS: [&str; 2] = ["Buffs", "Party"];
-/// The tallest each panel grows, for the plan to keep room for it.
-pub(super) const ACTIVITY_MOST_HEIGHT: f32 = activity_height(ACTIVITY_MOST_DETAILS);
-pub(super) const VITALS_MOST_HEIGHT: f32 = vitals_height(true, true);
-pub(super) const PACK_MOST_HEIGHT: f32 = pack_height(PACK_LISTS.len());
-
-/// The share of the way to its goal that a bar covers each second.
-const BAR_RATE: f32 = 10.0;
-/// The lost part of a bar stays for a moment, then follows more slowly.
-const GHOST_RATE: f32 = 1.6;
-const BAR_AT_REST: f32 = 0.002;
 
 const VIGNETTE_DEPTH: f32 = 170.0;
 const ALARM_DEPTH: f32 = 120.0;
@@ -57,11 +43,6 @@ const PULSE_LOW: f32 = 0.25;
 const FIGHT_ALPHA: f32 = 0.20;
 const CRITICAL_ALPHA: f32 = 0.50;
 const DEAD_ALPHA: f32 = 0.38;
-
-const WEIGHT_WARN_SHARE: f32 = 0.9;
-
-/// The bars of the vitals: hits, mana and stamina.
-const BAR_COUNT: usize = 3;
 
 #[derive(Default)]
 pub struct Hud {
@@ -76,42 +57,6 @@ pub struct Drawn {
     pub moving: bool,
     /// The pack panel at the bottom middle. The hotbar sits on it.
     pub pack: Rect,
-}
-
-/// What one bar shows now, as shares of its full length.
-#[derive(Clone, Copy, Default)]
-struct Bar {
-    fill: f32,
-    ghost: f32,
-}
-
-impl Bar {
-    fn follow(&mut self, goal: f32, dt: f32) -> bool {
-        let step = |rate: f32| 1.0 - (-rate * dt).exp();
-        self.fill += (goal - self.fill) * step(BAR_RATE);
-        self.ghost = if self.ghost < self.fill {
-            self.fill
-        } else {
-            self.ghost + (self.fill - self.ghost) * step(GHOST_RATE)
-        };
-        (goal - self.fill).abs() > BAR_AT_REST || (self.ghost - self.fill).abs() > BAR_AT_REST
-    }
-}
-
-fn share(now: u16, max: u16) -> f32 {
-    if max == 0 {
-        0.0
-    } else {
-        (f32::from(now) / f32::from(max)).clamp(0.0, 1.0)
-    }
-}
-
-/// The word with a capital first letter.
-pub(super) fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
 }
 
 /// How one bar looks: its fill, its height, and its numbers.
@@ -288,42 +233,6 @@ fn spec(id: &'static str, default: Rect) -> PanelSpec<'static> {
     }
 }
 
-const fn panel_height(content: f32) -> f32 {
-    content + theme::PANEL_PAD * 2.0
-}
-
-/// The height of the activity panel with `details` rows under its title.
-/// With none it tells that the agent is idle.
-const fn activity_height(details: usize) -> f32 {
-    let rows = if details == 0 { 1 } else { details };
-    panel_height(TITLE_HEIGHT + ROW_HEIGHT * rows as f32)
-}
-
-/// The height of the vitals panel, with the row of states and the row of
-/// the fight when they show.
-const fn vitals_height(states: bool, fights: bool) -> f32 {
-    let bars = BAR_COUNT as f32;
-    let states_row = if states {
-        ROW_HEIGHT + theme::ROW_GAP
-    } else {
-        0.0
-    };
-    let fight_row = if fights { ROW_HEIGHT } else { 0.0 };
-    panel_height(
-        TITLE_HEIGHT
-            + states_row
-            + theme::BAR_HEIGHT_MAIN
-            + theme::BAR_HEIGHT * (bars - 1.0)
-            + BAR_ROW_GAP * bars
-            + fight_row,
-    )
-}
-
-/// The height of the pack panel with `lists` lists under its fixed rows.
-const fn pack_height(lists: usize) -> f32 {
-    panel_height(TITLE_HEIGHT + ROW_HEIGHT * (PACK_FIXED_ROWS + lists) as f32 - theme::ROW_GAP)
-}
-
 impl Hud {
     /// Draws every panel where the player left it.
     pub fn draw(
@@ -377,7 +286,10 @@ impl Hud {
         for (bar, goal) in self.bars.iter_mut().zip(goals) {
             moving |= bar.follow(goal, dt);
         }
-        let states = states(frame);
+        let states: Vec<(&str, Color32)> = rules::states(frame)
+            .into_iter()
+            .map(|(word, color)| (word, bridge::color(color)))
+            .collect();
         let fights = !frame.combatant.is_empty();
         let size = Vec2::new(SIDE_PANEL_WIDTH, vitals_height(!states.is_empty(), fights));
         let panel = glass(
@@ -392,19 +304,12 @@ impl Hud {
         if !states.is_empty() {
             rows.chips(&states);
         }
+        let (fill, number_color) = hits_look(frame);
         let hits = BarLook {
-            fill: if frame.poisoned {
-                theme::HITS_POISONED
-            } else {
-                theme::HITS
-            },
+            fill: bridge::color(fill),
             height: theme::BAR_HEIGHT_MAIN,
             number_size: theme::SIZE_BODY,
-            number_color: if frame.danger() >= Danger::Critical {
-                theme::ALARM
-            } else {
-                theme::TEXT
-            },
+            number_color: bridge::color(number_color),
         };
         rows.bar("Hits", self.bars[0], frame.hits, frame.hits_max, hits);
         rows.bar(
@@ -428,20 +333,6 @@ impl Hud {
     }
 }
 
-fn states(frame: &WatchFrame) -> Vec<(&'static str, Color32)> {
-    [
-        (frame.dead, "Dead", theme::ALARM),
-        (frame.war, "War mode", theme::ALARM),
-        (frame.poisoned, "Poisoned", theme::HITS_POISONED),
-        (frame.paralyzed, "Paralyzed", theme::WAITING),
-        (frame.hidden, "Hidden", theme::TEXT_DIM),
-    ]
-    .into_iter()
-    .filter(|(on, _, _)| *on)
-    .map(|(_, word, color)| (word, color))
-    .collect()
-}
-
 /// The window the panels stand in, and the profile that keeps their places.
 struct Window<'a> {
     rect: Rect,
@@ -455,29 +346,7 @@ fn activity(
     window: &Window<'_>,
     frame: &WatchFrame,
 ) {
-    let mut detail: Vec<(&str, String, Color32)> = Vec::new();
-    if frame.job != "-" && !frame.job.is_empty() {
-        let job = if frame.phase.is_empty() {
-            frame.job.clone()
-        } else {
-            format!("{}, {}", frame.job, frame.phase)
-        };
-        detail.push(("Job", job, theme::TEXT));
-    }
-    if let (Some(x), Some(y)) = (frame.dest_x, frame.dest_y) {
-        let tiles = uoterm_protocol::types::tile_distance((x, y), (frame.x, frame.y));
-        detail.push((
-            "Walks to",
-            format!("{x}, {y}  ({tiles} tiles)"),
-            theme::GOAL,
-        ));
-    }
-    if !frame.following.is_empty() {
-        detail.push(("Follows", frame.following.clone(), theme::TEXT));
-    }
-    if !frame.script.is_empty() {
-        detail.push(("Script", frame.script.clone(), theme::TEXT));
-    }
+    let detail = activity_details(frame);
     let idle = detail.is_empty();
     let size = Vec2::new(SIDE_PANEL_WIDTH, activity_height(detail.len()));
     let panel = glass(
@@ -488,23 +357,14 @@ fn activity(
         window.profile,
     );
     let mut rows = rows(painter, panel);
-    let goal = if frame.goal.is_empty() || frame.goal == "-" {
-        "Idle".to_string()
-    } else {
-        capitalized(&frame.goal)
-    };
-    rows.title(&goal, theme::TEXT);
+    rows.title(&goal_words(frame), theme::TEXT);
     if idle {
         rows.line("No job. No walk goal.", theme::TEXT_FAINT);
     }
     for (label, value, color) in detail {
-        rows.pair(label, &value, color);
+        rows.pair(label, &value, bridge::color(color));
     }
 }
-
-/// The rows the pack panel always has: the weight with the gold, and the
-/// clock.
-const PACK_FIXED_ROWS: usize = 2;
 
 /// The pack, the gold, the clock of the shard, the buffs and the party, in
 /// the middle between the vitals and the journal. Each has its own row.
@@ -514,12 +374,7 @@ fn pack(
     window: &Window<'_>,
     frame: &WatchFrame,
 ) -> Rect {
-    let lists: Vec<(&str, String)> = PACK_LISTS
-        .into_iter()
-        .zip([&frame.buffs, &frame.party])
-        .filter(|(_, list)| !list.is_empty())
-        .map(|(label, list)| (label, list.join(", ")))
-        .collect();
+    let lists = pack_lists(frame);
     let size = Vec2::new(PACK_WIDTH, pack_height(lists.len()));
     let panel = glass(
         painter,
@@ -530,9 +385,7 @@ fn pack(
     );
     let mut rows = rows(painter, panel);
     rows.title(WORDS_PACK, theme::TEXT);
-    let heavy = f32::from(frame.weight) >= f32::from(frame.weight_max) * WEIGHT_WARN_SHARE
-        && frame.weight_max > 0;
-    let weight_color = if heavy { theme::WAITING } else { theme::TEXT };
+    let weight_color = bridge::color(weight_color(frame));
     let gold_word = painter
         .text(
             Pos2::new(rows.right, rows.y),
@@ -631,10 +484,9 @@ fn edge_glow(painter: &Painter, rect: Rect, depth: f32, color: Color32) {
 /// One panel in the middle of the window, for the times with no picture.
 pub fn message(painter: &Painter, rect: Rect, heading: &str, lines: &[&str], color: Color32) {
     painter.rect_filled(rect, 0.0, theme::VOID);
-    let content = TITLE_HEIGHT + ROW_HEIGHT * lines.len() as f32;
     let panel = Rect::from_center_size(
         rect.center(),
-        Vec2::new(MESSAGE_WIDTH, panel_height(content)),
+        Vec2::new(MESSAGE_WIDTH, message_height(lines.len())),
     );
     theme::panel(painter, panel);
     let mut rows = rows(painter, panel);
@@ -663,31 +515,6 @@ mod tests {
     use super::*;
 
     const ONE_FRAME: f32 = 1.0 / 60.0;
-    const HALF: f32 = 0.5;
-
-    #[test]
-    fn a_lost_part_of_a_bar_stays_behind_the_fill() {
-        let mut bar = Bar {
-            fill: 1.0,
-            ghost: 1.0,
-        };
-        assert!(bar.follow(HALF, ONE_FRAME));
-        assert!(bar.fill < 1.0);
-        assert!(bar.ghost > bar.fill);
-    }
-
-    #[test]
-    fn a_bar_that_grows_has_no_ghost() {
-        let mut bar = Bar::default();
-        bar.follow(HALF, ONE_FRAME);
-        assert_eq!(bar.ghost, bar.fill);
-    }
-
-    #[test]
-    fn a_bar_with_no_maximum_is_empty() {
-        assert_eq!(share(10, 0), 0.0);
-        assert_eq!(share(30, 20), 1.0);
-    }
 
     #[test]
     fn the_panels_stand_where_the_player_left_them() {

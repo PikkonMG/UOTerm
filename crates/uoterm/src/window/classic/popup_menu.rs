@@ -2,15 +2,15 @@
 //! the reference client draws it: its lines on a see-through stone
 //! frame by the pointer. The line under the pointer is the one a left click
 //! picks; a right click closes the menu. The lines and the acts that pick
-//! them are those of the ring of the Modern style (`ring_ui::shard_lines`).
+//! them are those of the ring of the Modern style (`uoterm_view::ui::ring::shard_lines`).
 
 use super::canvas::Canvas;
 use super::registry::{Closing, GumpBody, GumpContext, GumpId, GumpKind, GumpRules};
 use super::text::TextLook;
 use crate::view::WatchFrame;
 use crate::window::control::Act;
-use crate::window::ring_ui::shard_lines;
 use eframe::egui::PointerButton;
+use uoterm_view::ui::ring::shard_lines;
 
 pub const POPUP_MENU_ID: &str = "popup_menu";
 
@@ -63,13 +63,13 @@ impl GumpBody for PopupMenu {
         }
         let looks: Vec<TextLook> = lines
             .iter()
-            .map(|(_, enabled, _)| TextLook::unicode(FONT, if *enabled { HUE } else { HUE_OFF }))
+            .map(|line| TextLook::unicode(FONT, if line.enabled { HUE } else { HUE_OFF }))
             .collect();
         let sizes: Vec<(i32, i32)> = lines
             .iter()
             .zip(&looks)
-            .map(|((words, _, _), look)| {
-                let size = g.measure(words, look);
+            .map(|(line, look)| {
+                let size = g.measure(&line.words, look);
                 (size.x as i32, size.y as i32)
             })
             .collect();
@@ -80,7 +80,7 @@ impl GumpBody for PopupMenu {
         }
         g.faded(FRAME_ALPHA, |g| g.frame(0, 0, width, height, FRAME));
         let mut y = FIRST_LINE;
-        for (at, (((words, _, _), look), (_, line_height))) in
+        for (at, ((line, look), (_, line_height))) in
             lines.iter().zip(&looks).zip(&sizes).enumerate()
         {
             if g.hit_box(("line", at), PAD, y, width - PAD * 2, *line_height)
@@ -88,7 +88,7 @@ impl GumpBody for PopupMenu {
             {
                 self.hovered = Some(at);
             }
-            g.label(PAD, y, words, look);
+            g.label(PAD, y, &line.words, look);
             y += line_height;
         }
         let released = g
@@ -96,8 +96,9 @@ impl GumpBody for PopupMenu {
             .input(|i| i.pointer.button_released(PointerButton::Primary));
         let on_menu = g.hovered(0, 0, width, height);
         if released && on_menu {
-            if let Some((_, true, act)) = self.hovered.and_then(|at| lines.get(at)).cloned() {
-                cx.act(act);
+            let picked = self.hovered.and_then(|at| lines.get(at));
+            if let Some(line) = picked.filter(|line| line.enabled) {
+                cx.act(line.act.clone());
             }
             cx.close(cx.me);
         } else if released {
