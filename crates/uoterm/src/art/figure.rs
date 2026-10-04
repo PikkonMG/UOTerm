@@ -297,14 +297,14 @@ fn parts(source: &Source<'_>, look: &WatchLook, pose: Pose, whole_hue: Option<u1
     out
 }
 
-/// The worn items painted, in paint order: one on each layer, the last the
-/// list gives, as the client keeps one item on each layer. A covered layer
-/// is left out.
+/// The worn items painted, in paint order: one on each layer, the first the
+/// list gives, as the reference client takes it and as the mount is found.
+/// A covered layer is left out.
 fn worn_in_paint_order(look: &WatchLook) -> Vec<&WatchEquip> {
     paint_order(look.direction)
         .into_iter()
         .filter(|layer| !is_covered(*layer, &look.equipment))
-        .filter_map(|layer| look.equipment.iter().rfind(|item| item.layer == layer))
+        .filter_map(|layer| look.equipment.iter().find(|item| item.layer == layer))
         .collect()
 }
 
@@ -432,7 +432,7 @@ mod tests {
             .iter()
             .map(|i| i.serial)
             .collect();
-        assert_eq!(worn, [4, 3], "the shirt, then the last helmet");
+        assert_eq!(worn, [4, 1], "the shirt, then the first helmet");
     }
 
     #[test]
