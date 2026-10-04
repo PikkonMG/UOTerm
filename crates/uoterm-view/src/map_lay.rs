@@ -1,13 +1,14 @@
 //! What the world maps of both styles share, apart from how they draw: how
 //! a view lays tiles on its field (turned as the play field is turned, or
-//! north up), the zoom of the wheel, the marker and zone files, the named
-//! places of the session, and where each mark goes over the land. The
-//! window paints the marks.
+//! north up), the zoom of the wheel, how the pictures of the land sample
+//! the radar colors, the marker and zone files, the named places of the
+//! session, and where each mark goes over the land. The window paints the
+//! marks.
 
 use crate::frame::WatchFrame;
 use crate::geom::{Area, Point, Rgba, Vector};
 use crate::model::reads::{ReadCache, ReadKey};
-use crate::model::world_map::{self, Marker, MarkerFile, ZoneFile};
+use crate::model::world_map::{self, MapFolder, Marker, MarkerFile, ZoneFile};
 use crate::settings::{Profile, WorldMapOptions};
 use crate::ui::theme;
 use serde_json::{json, Value};
@@ -20,6 +21,12 @@ pub const SPAN: usize = 256;
 pub const NEAR_MAP_PREFIX: &str = "/v1/map/near";
 /// A tile of a map picture whose color the client files do not give.
 pub const UNKNOWN_LAND: Rgba = Rgba::from_rgb(10, 12, 18);
+/// The whole-world picture is at most this many pixels on its longer side.
+pub const WORLD_PICTURE_SIDE: u16 = 1024;
+/// A web page gets the whole-world picture in square tiles of this many
+/// pixels: `{MAP_PICTURE_PREFIX}/{map}/{tx}/{ty}`.
+pub const MAP_TILE_SIDE: usize = 256;
+pub const MAP_PICTURE_PREFIX: &str = "/v1/map-picture";
 /// The least zoom of a Modern map: the whole picture fits the field.
 pub const ZOOM_MIN: f32 = 1.0;
 /// The picture near a place is made again when its middle is this many
@@ -71,6 +78,111 @@ pub fn near_pixels(
         }
     }
     any.then_some(pixels)
+}
+
+/// How many tiles of the world one pixel of the whole-world picture of
+/// `map` stands for.
+pub fn world_step(map: u8) -> u16 {
+    let (width, height) = world_map::facet_size(map);
+    width.max(height).div_ceil(WORLD_PICTURE_SIDE)
+}
+
+/// The size of the whole-world picture of `map`: its columns and its rows.
+pub fn world_picture_size(map: u8) -> (usize, usize) {
+    let (width, height) = world_map::facet_size(map);
+    let step = world_step(map);
+    (
+        usize::from(width.div_ceil(step)),
+        usize::from(height.div_ceil(step)),
+    )
+}
+
+/// The tile of the world one pixel of the whole-world picture shows, by
+/// its column and its row.
+pub fn world_pixel_tile(step: u16, column: usize, row: usize) -> (u16, u16) {
+    let at = |pixel: usize| u16::try_from(pixel * usize::from(step)).unwrap_or(u16::MAX);
+    (at(column), at(row))
+}
+
+/// How many tiles of [`MAP_TILE_SIDE`] the whole-world picture of `map` is
+/// across and down.
+pub fn map_picture_tiles(map: u8) -> (usize, usize) {
+    let (columns, rows) = world_picture_size(map);
+    (
+        columns.div_ceil(MAP_TILE_SIDE),
+        rows.div_ceil(MAP_TILE_SIDE),
+    )
+}
+
+/// The path of one tile of the whole-world picture of `map`.
+pub fn map_picture_path(map: u8, tx: usize, ty: usize) -> String {
+    format!("{MAP_PICTURE_PREFIX}/{map}/{tx}/{ty}")
+}
+
+/// The pixels of one tile of the whole-world picture of `map`, row by row:
+/// each pixel in the color `radar` gives its tile, or [`UNKNOWN_LAND`],
+/// also past the edge of the picture. None for a tile past the picture,
+/// or when `radar` gives no pixel a color.
+pub fn map_tile_pixels(
+    map: u8,
+    (tx, ty): (usize, usize),
+    mut radar: impl FnMut(u16, u16) -> Option<[u8; 3]>,
+) -> Option<Vec<Rgba>> {
+    let (across, down) = map_picture_tiles(map);
+    if tx >= across || ty >= down {
+        return None;
+    }
+    let (columns, rows) = world_picture_size(map);
+    let step = world_step(map);
+    let mut pixels = vec![UNKNOWN_LAND; MAP_TILE_SIDE * MAP_TILE_SIDE];
+    let mut any = false;
+    for row in 0..MAP_TILE_SIDE {
+        let picture_row = ty * MAP_TILE_SIDE + row;
+        for column in 0..MAP_TILE_SIDE {
+            let picture_column = tx * MAP_TILE_SIDE + column;
+            if picture_column >= columns || picture_row >= rows {
+                continue;
+            }
+            let (x, y) = world_pixel_tile(step, picture_column, picture_row);
+            if let Some([r, g, b]) = radar(x, y) {
+                pixels[row * MAP_TILE_SIDE + column] = Rgba::from_rgb(r, g, b);
+                any = true;
+            }
+        }
+    }
+    any.then_some(pixels)
+}
+
+/// One tile of the whole-world picture that shows on a field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapTileAt {
+    pub path: String,
+    /// Where it lies on the field.
+    pub area: Area,
+}
+
+/// The tiles of the whole-world picture of `map` that show on `field`
+/// laid north up by `lay`, each where it lies.
+pub fn map_tiles_on(field: Area, lay: Lay, map: u8) -> Vec<MapTileAt> {
+    let (across, down) = map_picture_tiles(map);
+    let tile_tiles = (MAP_TILE_SIDE * usize::from(world_step(map))) as f32;
+    let mut out = Vec::new();
+    for ty in 0..down {
+        for tx in 0..across {
+            let (left, top) = (tx as f32 * tile_tiles, ty as f32 * tile_tiles);
+            let area = Area::from_two_points(
+                lay.screen(left, top),
+                lay.screen(left + tile_tiles, top + tile_tiles),
+            );
+            if area.intersects(field) {
+                out.push(MapTileAt {
+                    path: map_picture_path(map, tx, ty),
+                    area,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// True when a picture of the land round `drawn` of `drawn_map` still
@@ -220,6 +332,28 @@ pub struct MapFiles {
 }
 
 impl MapFiles {
+    /// The files of the folder the World Map page does not hide.
+    pub fn shown(folder: &MapFolder, options: &WorldMapOptions) -> Self {
+        let hidden_markers = &options.hidden_marker_files;
+        let hidden_zones = &options.hidden_zone_files;
+        Self {
+            markers: folder
+                .markers
+                .iter()
+                .filter(|file| !world_map::is_hidden(hidden_markers, &file.name))
+                .cloned()
+                .collect(),
+            zones: folder
+                .zones
+                .iter()
+                .filter(|file| !world_map::is_hidden(hidden_zones, &file.name))
+                .cloned()
+                .collect(),
+            hidden_markers: hidden_markers.clone(),
+            hidden_zones: hidden_zones.clone(),
+        }
+    }
+
     /// The label of the zone a tile lies in, on a facet.
     pub fn zone_at(&self, map: u8, x: u16, y: u16) -> Option<String> {
         self.zones
@@ -600,6 +734,68 @@ mod tests {
             assert!((lay.tile(at) - Vector::new(1010.0, 1195.0)).length() < 0.01);
         }
         assert_eq!(whole_tile(Vector::new(-4.0, 70_000.0)), (0, u16::MAX));
+    }
+
+    #[test]
+    fn the_world_picture_is_cut_in_tiles_of_its_sampled_pixels() {
+        const FELUCCA: u8 = 0;
+        let step = world_step(FELUCCA);
+        let (columns, rows) = world_picture_size(FELUCCA);
+        assert!(
+            columns <= usize::from(WORLD_PICTURE_SIDE) && rows <= usize::from(WORLD_PICTURE_SIDE)
+        );
+        let (across, down) = map_picture_tiles(FELUCCA);
+        assert_eq!(
+            (across, down),
+            (
+                columns.div_ceil(MAP_TILE_SIDE),
+                rows.div_ceil(MAP_TILE_SIDE)
+            )
+        );
+        let mut asked = Vec::new();
+        let pixels = map_tile_pixels(FELUCCA, (1, 0), |x, y| {
+            asked.push((x, y));
+            Some([1, 2, 3])
+        })
+        .unwrap();
+        assert_eq!(pixels.len(), MAP_TILE_SIDE * MAP_TILE_SIDE);
+        assert_eq!(asked[0], world_pixel_tile(step, MAP_TILE_SIDE, 0));
+        assert!(map_tile_pixels(FELUCCA, (across, 0), |_, _| Some([1, 2, 3])).is_none());
+        assert!(map_tile_pixels(FELUCCA, (0, 0), |_, _| None).is_none());
+        let field = Area::from_min_size(Point::new(0.0, 0.0), Vector::new(100.0, 100.0));
+        let lay = Lay::NorthUp {
+            center: field.center(),
+            middle: Vector::new(0.0, 0.0),
+            scale: 0.1,
+        };
+        let tiles = map_tiles_on(field, lay, FELUCCA);
+        assert_eq!(tiles[0].path, "/v1/map-picture/0/0/0");
+        assert_eq!(tiles[0].area.min, field.center());
+    }
+
+    #[test]
+    fn the_files_the_world_map_page_hides_do_not_show() {
+        let folder = MapFolder {
+            markers: ["camps", "towns"]
+                .map(|name| MarkerFile {
+                    name: name.into(),
+                    markers: Vec::new(),
+                })
+                .to_vec(),
+            zones: vec![ZoneFile {
+                name: "towns".into(),
+                map: 0,
+                zones: Vec::new(),
+            }],
+        };
+        let mut options = WorldMapOptions::default();
+        options.hidden_marker_files = vec!["camps".into()];
+        options.hidden_zone_files = vec!["towns".into()];
+        let files = MapFiles::shown(&folder, &options);
+        assert_eq!(files.markers.len(), 1);
+        assert_eq!(files.markers[0].name, "towns");
+        assert!(files.zones.is_empty());
+        assert!(files.read_for(&options));
     }
 
     #[test]

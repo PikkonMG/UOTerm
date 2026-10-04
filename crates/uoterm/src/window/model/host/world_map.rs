@@ -5,14 +5,27 @@
 use std::path::{Path, PathBuf};
 use uoterm_view::model::world_map::{
     self, csv_line, kept_marker, markers_csv, parse_markers, parse_zones_json, removed_marker,
-    MapFile, Marker, MarkerFile, ZoneFile, USER_MARKERS, USER_MARKERS_EXTENSION,
+    MapFile, MapFolder, Marker, MarkerFile, ZoneFile, USER_MARKERS, USER_MARKERS_EXTENSION,
 };
 
 const MAP_DIR: &str = "map";
 
 /// The folder of the marker and zone files.
 pub fn map_dir() -> PathBuf {
-    uoterm_runtime::config::config_dir().join(MAP_DIR)
+    map_dir_in(&uoterm_runtime::config::config_dir())
+}
+
+/// The folder of the marker and zone files in a config folder.
+pub fn map_dir_in(config_dir: &Path) -> PathBuf {
+    config_dir.join(MAP_DIR)
+}
+
+/// Every marker file and zone file of the folder.
+pub fn map_folder(dir: &Path) -> MapFolder {
+    MapFolder {
+        markers: load_markers(dir),
+        zones: load_zones(dir),
+    }
 }
 
 /// The names of the files of a folder. Empty when it does not read.
@@ -33,15 +46,12 @@ pub fn file_names(dir: &Path) -> (Vec<String>, Vec<String>) {
     world_map::file_names(names.iter().map(String::as_str))
 }
 
-/// Every marker file of the folder, less those the World Map page hides.
-pub fn load_markers(dir: &Path, hidden: &[String]) -> Vec<MarkerFile> {
+/// Every marker file of the folder.
+pub fn load_markers(dir: &Path) -> Vec<MarkerFile> {
     let mut files: Vec<MarkerFile> = names_in(dir)
         .iter()
         .filter_map(|name| {
             let stem = MapFile::of(name)?.stem();
-            if world_map::is_hidden(hidden, stem) {
-                return None;
-            }
             let text = std::fs::read_to_string(dir.join(name)).ok()?;
             Some(MarkerFile {
                 name: stem.to_string(),
@@ -79,7 +89,7 @@ pub fn save_user_markers(dir: &Path, markers: &[Marker]) -> std::io::Result<()> 
 
 /// The markers of the player's own file.
 pub fn user_markers(dir: &Path) -> Vec<Marker> {
-    load_markers(dir, &[])
+    load_markers(dir)
         .into_iter()
         .find(|file| file.name == USER_MARKERS)
         .map(|file| file.markers)
@@ -100,17 +110,14 @@ pub fn remove_user_marker(dir: &Path, at: usize) -> std::io::Result<()> {
     save_user_markers(dir, &removed_marker(user_markers(dir), at))
 }
 
-/// Every zone file of the folder, less those the World Map page hides.
-pub fn load_zones(dir: &Path, hidden: &[String]) -> Vec<ZoneFile> {
+/// Every zone file of the folder.
+pub fn load_zones(dir: &Path) -> Vec<ZoneFile> {
     names_in(dir)
         .iter()
         .filter_map(|name| {
             let MapFile::Zones { stem } = MapFile::of(name)? else {
                 return None;
             };
-            if world_map::is_hidden(hidden, stem) {
-                return None;
-            }
             parse_zones_json(stem, &std::fs::read_to_string(dir.join(name)).ok()?)
         })
         .collect()
@@ -166,13 +173,13 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("old.csv"), "1,1,0,Hidden\n").unwrap();
-        let files = load_markers(&dir, &["old".into()]);
+        let files = load_markers(&dir);
         let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, vec!["towns", "user-markers"]);
-        assert_eq!(files[1].markers[0].name, "My  camp");
-        assert_eq!(files[1].name, USER_MARKERS);
-        assert_eq!(files[0].markers[0].x, 1434);
-        let mut kept = files[1].markers.clone();
+        assert_eq!(names, vec!["old", "towns", "user-markers"]);
+        assert_eq!(files[2].markers[0].name, "My  camp");
+        assert_eq!(files[2].name, USER_MARKERS);
+        assert_eq!(files[1].markers[0].x, 1434);
+        let mut kept = files[2].markers.clone();
         kept[0].color = "red".into();
         kept.push(Marker {
             name: "Mine".into(),
@@ -180,13 +187,12 @@ mod tests {
             ..kept[0].clone()
         });
         save_user_markers(&dir, &kept).unwrap();
-        let again = load_markers(&dir, &["old".into(), "towns".into()]);
-        assert_eq!(again[0].markers, kept, "the file keeps each field");
+        assert_eq!(user_markers(&dir), kept, "the file keeps each field");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn the_zone_files_of_the_folder_read_and_hide() {
+    fn the_zone_files_of_the_folder_read() {
         let text = r#"{ "MapIndex": 1, "Zones": [ { "Label": "Britain", "Color": "red",
             "Polygon": [[0, 0], [10, 0], [10, 10], [0, 10]] } ] }"#;
         let dir = std::env::temp_dir().join(format!("uoterm-zones-{}", uuid::Uuid::new_v4()));
@@ -197,8 +203,8 @@ mod tests {
             file_names(&dir),
             (vec!["camps".to_string()], vec!["towns".to_string()])
         );
-        assert_eq!(load_zones(&dir, &[]).len(), 1);
-        assert!(load_zones(&dir, &["towns".into()]).is_empty());
+        assert_eq!(load_zones(&dir).len(), 1);
+        assert_eq!(map_folder(&dir).markers.len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

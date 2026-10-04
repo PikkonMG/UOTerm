@@ -9,7 +9,6 @@ pub use uoterm_view::map_lay::*;
 
 use super::bridge;
 use super::model::host;
-use super::model::world_map;
 use super::scene::Scene;
 use super::settings::Profile;
 use super::theme;
@@ -19,8 +18,6 @@ use eframe::egui::{
 };
 use uoterm_view::ui::places::PANEL_WHEEL_POINTS;
 
-/// The whole-world picture is at most this many pixels on its longer side.
-const WORLD_PICTURE_SIDE: u16 = 1024;
 /// The whole-world picture grows this many rows in each frame, so the
 /// window does not stop while the facet is read.
 const WORLD_ROWS_PER_FRAME: usize = 8;
@@ -140,17 +137,12 @@ impl MapPictures {
 
     /// Reads a few more rows of the whole facet. True while rows are left.
     pub fn grow_world(&mut self, ctx: &egui::Context, scene: &mut Scene, map: u8) -> bool {
-        let (width, height) = world_map::facet_size(map);
         if self.world.as_ref().is_none_or(|world| world.map != map) {
-            let step = width.max(height).div_ceil(WORLD_PICTURE_SIDE);
-            let size = [
-                usize::from(width.div_ceil(step)),
-                usize::from(height.div_ceil(step)),
-            ];
+            let (columns, rows) = world_picture_size(map);
             self.world = Some(WorldPicture {
                 map,
-                step,
-                image: ColorImage::new(size, bridge::color(UNKNOWN_LAND)),
+                step: world_step(map),
+                image: ColorImage::new([columns, rows], bridge::color(UNKNOWN_LAND)),
                 next_row: 0,
                 texture: None,
             });
@@ -165,8 +157,7 @@ impl MapPictures {
         let last = (world.next_row + WORLD_ROWS_PER_FRAME).min(rows);
         for row in world.next_row..last {
             for column in 0..columns {
-                let x = column as u16 * world.step;
-                let y = row as u16 * world.step;
+                let (x, y) = world_pixel_tile(world.step, column, row);
                 if let Some([r, g, b]) = scene.radar_rgb(map, x, y) {
                     world.image.pixels[row * columns + column] = Color32::from_rgb(r, g, b);
                 }
@@ -218,13 +209,8 @@ impl MapFilesCache {
             self.files = None;
         }
         self.files.get_or_insert_with(|| {
-            let dir = host::world_map::map_dir();
-            MapFiles {
-                markers: host::world_map::load_markers(&dir, &options.hidden_marker_files),
-                zones: host::world_map::load_zones(&dir, &options.hidden_zone_files),
-                hidden_markers: options.hidden_marker_files.clone(),
-                hidden_zones: options.hidden_zone_files.clone(),
-            }
+            let folder = host::world_map::map_folder(&host::world_map::map_dir());
+            MapFiles::shown(&folder, options)
         })
     }
 

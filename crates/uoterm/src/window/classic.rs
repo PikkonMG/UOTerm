@@ -84,7 +84,6 @@ pub mod doll_order;
 pub mod grid_loot;
 pub mod health_bar;
 pub mod house;
-pub mod html;
 pub mod hue_picker;
 pub mod ignore_list;
 pub mod info_bar;

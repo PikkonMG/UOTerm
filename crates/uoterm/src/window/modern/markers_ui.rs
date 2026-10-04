@@ -6,44 +6,26 @@
 //! them.
 
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
+use super::super::bridge;
 use super::super::model::host;
-use super::super::model::world_map::{
-    self, Marker, MarkerFields, MarkerFile, MARKER_COLORS, USER_MARKERS,
-};
+use super::super::model::world_map::{self, Marker, MarkerFields, MarkerFile, MARKER_COLORS};
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use super::rows::Rows;
 use eframe::egui::{self, Align2, CornerRadius, Id, Pos2, Rect, Vec2};
+use uoterm_view::ui::markers::{
+    manager_first_place, row_buttons, row_words, MarkerButton, BOX_ID, BOX_SIZE, HINT_ICON,
+    HINT_SEARCH, MANAGER_ID, WORDS_ADD, WORDS_BAD_FIELDS, WORDS_CANCEL, WORDS_COLOR, WORDS_CREATE,
+    WORDS_EDIT_MARKER, WORDS_ICON, WORDS_MANAGER, WORDS_NAME, WORDS_NONE_FOUND, WORDS_NO_FILES,
+    WORDS_X, WORDS_Y,
+};
 
-const MANAGER_ID: &str = "modern:markers";
-const BOX_ID: &str = "modern:marker_box";
-const MANAGER_SIZE: Vec2 = Vec2::new(480.0, 420.0);
-const MANAGER_LEAST: Vec2 = Vec2::new(320.0, 240.0);
-const BOX_SIZE: Vec2 = Vec2::new(320.0, 270.0);
 const ROW: f32 = 26.0;
 const GAP: f32 = 6.0;
 const ROW_BUTTON_WIDTH: f32 = 58.0;
 const FIELD_LABEL_WIDTH: f32 = 50.0;
-const WORDS_MANAGER: &str = "Markers";
-const WORDS_ADD: &str = "Add marker";
-const WORDS_EDIT_MARKER: &str = "Edit marker";
-const WORDS_EDIT: &str = "Edit";
-const WORDS_REMOVE: &str = "Remove";
-const WORDS_GO: &str = "Go";
-const WORDS_CREATE: &str = "Create";
-const WORDS_CANCEL: &str = "Cancel";
-const WORDS_NO_FILES: &str = "No marker files. Ctrl+click the map to add a marker.";
-const WORDS_NONE_FOUND: &str = "No marker holds these words.";
-const WORDS_BAD_FIELDS: &str = "Give a name, and x and y inside the facet.";
-const WORDS_X: &str = "X";
-const WORDS_Y: &str = "Y";
-const WORDS_NAME: &str = "Name";
-const WORDS_ICON: &str = "Icon";
-const WORDS_COLOR: &str = "Color";
-const HINT_SEARCH: &str = "search the markers";
-const HINT_ICON: &str = "no icon";
 
 /// What the markers ask of the world map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,7 +91,7 @@ impl MarkersUi {
         let mut asks = Vec::new();
         if self.open {
             if !self.loaded {
-                self.files = host::world_map::load_markers(&host::world_map::map_dir(), &[]);
+                self.files = host::world_map::load_markers(&host::world_map::map_dir());
                 self.file = self.file.min(self.files.len().saturating_sub(1));
                 self.loaded = true;
             }
@@ -132,11 +114,12 @@ impl MarkersUi {
         profile: &mut Profile,
         asks: &mut Vec<MarkersAsk>,
     ) -> Rect {
+        let (default, least) = manager_first_place(bridge::area(rect));
         let spec = PanelSpec {
             id: MANAGER_ID,
             title: WORDS_MANAGER,
-            default: layout::first_place(rect, Spot::Middle(0), MANAGER_SIZE),
-            min_size: Some(MANAGER_LEAST),
+            default: bridge::rect(default),
+            min_size: Some(bridge::vec2(least)),
             closable: true,
         };
         let panel = frame::place(rect, &spec, profile);
@@ -204,48 +187,41 @@ impl MarkersUi {
             self.scroll = rows.finish();
             return;
         };
-        let editable = file.name == USER_MARKERS;
         let shown = world_map::found(&file.markers, &self.search);
         if shown.is_empty() {
             rows.words(WORDS_NONE_FOUND, theme::TEXT_FAINT);
         }
-        let buttons: &[(&str, egui::Color32)] = if editable {
-            &[
-                (WORDS_EDIT, theme::TEXT),
-                (WORDS_REMOVE, theme::ALARM),
-                (WORDS_GO, theme::GOAL),
-            ]
-        } else {
-            &[(WORDS_GO, theme::GOAL)]
-        };
+        let kinds = row_buttons(&file.name, true);
+        let buttons: Vec<(&str, egui::Color32)> = kinds
+            .iter()
+            .map(|button| (button.words(), button_color(*button)))
+            .collect();
         let mut pressed = None;
         for (at, marker) in &shown {
-            let words = format!(
-                "{}  {}, {}  {}",
-                marker.name, marker.x, marker.y, marker.color
-            );
-            if let Some(button) = rows.labeled("marker", *at, &words, buttons, ROW_BUTTON_WIDTH) {
-                pressed = Some((*at, (*marker).clone(), button));
+            let words = row_words(marker);
+            if let Some(button) = rows.labeled("marker", *at, &words, &buttons, ROW_BUTTON_WIDTH) {
+                pressed = Some((*at, (*marker).clone(), kinds[button]));
             }
         }
         self.scroll = rows.finish();
         let Some((at, marker, button)) = pressed else {
             return;
         };
-        let go = buttons.len() - 1;
         match button {
-            button if button == go => asks.push(MarkersAsk::GoTo(marker.x, marker.y)),
-            0 => {
+            MarkerButton::Go => asks.push(MarkersAsk::GoTo(marker.x, marker.y)),
+            MarkerButton::Edit => {
                 self.marker_box = Some(MarkerBox {
                     editing: Some(at),
                     fields: MarkerFields::of(&marker),
                     error: None,
                 });
             }
-            _ => match host::world_map::remove_user_marker(&host::world_map::map_dir(), at) {
-                Ok(()) => asks.push(MarkersAsk::Changed),
-                Err(error) => self.error = Some(error.to_string()),
-            },
+            MarkerButton::Remove => {
+                match host::world_map::remove_user_marker(&host::world_map::map_dir(), at) {
+                    Ok(()) => asks.push(MarkersAsk::Changed),
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
         }
     }
 
@@ -268,7 +244,7 @@ impl MarkersUi {
         let spec = PanelSpec {
             id: BOX_ID,
             title,
-            default: layout::first_place(rect, Spot::Middle(0), BOX_SIZE),
+            default: layout::first_place(rect, Spot::Middle(0), bridge::vec2(BOX_SIZE)),
             min_size: None,
             closable: true,
         };
@@ -302,6 +278,15 @@ impl MarkersUi {
             self.marker_box = None;
         }
         panel
+    }
+}
+
+/// The color of the words of a row button.
+fn button_color(button: MarkerButton) -> egui::Color32 {
+    match button {
+        MarkerButton::Edit => theme::TEXT,
+        MarkerButton::Remove => theme::ALARM,
+        MarkerButton::Go => theme::GOAL,
     }
 }
 
@@ -339,7 +324,7 @@ fn box_fields(ui: &mut egui::Ui, marker_box: &mut MarkerBox) -> (bool, bool) {
         ui.colored_label(theme::ALARM, error);
     }
     let words = if marker_box.editing.is_some() {
-        WORDS_EDIT
+        MarkerButton::Edit.words()
     } else {
         WORDS_CREATE
     };

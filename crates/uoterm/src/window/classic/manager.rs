@@ -14,7 +14,7 @@
 
 use super::anchor::Anchors;
 use super::canvas::{Canvas, CanvasInput};
-use super::layout::{in_screen, rest_place};
+use super::layout::in_screen;
 use super::registry::{
     kind, well_known, Closing, GumpBody, GumpCommand, GumpContext, GumpId, GumpRules,
 };
@@ -35,6 +35,7 @@ use eframe::egui::{
 };
 use std::collections::{BTreeMap, HashMap};
 use uoterm_nav::TextAlign;
+use uoterm_view::ui::gump_frame::rest_place;
 
 const AREA_ID: &str = "classic-gumps";
 /// The ids of the places that drag a gump, apart from its controls.
@@ -775,8 +776,11 @@ impl GumpManager {
             let rect = Rect::from_min_size(self.shown[at].place, size);
             self.anchors.join((&id, rect), (&host, host_rect))
         });
-        self.shown[at].place =
-            joined.unwrap_or_else(|| rest_place(self.shown[at].place, size, screen));
+        self.shown[at].place = joined.unwrap_or_else(|| {
+            let place = bridge::point(self.shown[at].place);
+            let rest = rest_place(place, bridge::vector(size), bridge::area(screen));
+            bridge::pos2(rest)
+        });
         let mut changed = self.keep(at, profile);
         for partner in self.anchors.partners(&id) {
             if let Some(other) = self.shown.iter().position(|gump| gump.id == partner) {

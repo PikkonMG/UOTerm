@@ -2,23 +2,23 @@
 //! picture, line of words, button and field at its own place, from the gump
 //! art of the client, in the fonts and by the rules the reference client reads each
 //! command with. It is a floating gump of the gump manager in both styles.
-//! The pages, the boxes and the fields work at all times; a reply goes to
-//! the shard only while the human has control.
+//! What the human did to it and its answer are
+//! `uoterm_view::ui::shard_gump`, which the browser shares.
 
-use super::classic::canvas::{ButtonArt, Canvas, HtmlBox};
+use super::bridge;
+use super::classic::canvas::{ButtonArt, Canvas};
 use super::classic::registry::{
     well_known, Closing, GumpBody, GumpContext, GumpId, GumpKind, GumpLocks, GumpRules,
 };
 use super::classic::text::{TextLook, HTML_FONT};
-use super::classic::text_field::TextField;
 use super::classic::GumpManager;
-use super::control::Act;
 use super::settings::Profile;
 use crate::view::WatchFrame;
-use eframe::egui::{Pos2, Rect, Vec2};
-use std::collections::HashMap;
-use uoterm_view::ui::gumps::{
-    click_box, layout_ticked, on_page, picture_hue, shown_hue, FIRST_PAGE,
+use eframe::egui::{Pos2, Vec2};
+use uoterm_view::ui::gumps::{picture_hue, shown_hue};
+use uoterm_view::ui::html::HtmlBox;
+use uoterm_view::ui::shard_gump::{
+    gump_first_place, tile_art_place, veiled, PieceArt, ShardGumpState, UNDER_VEIL,
 };
 use uoterm_world::{GumpLayout, GumpPiece, GumpPieceKind};
 
@@ -32,10 +32,6 @@ pub const SHARD_GUMP: GumpKind = GumpKind {
     open: |serial| Box::new(ShardGump::new(serial.unwrap_or_default())),
 };
 
-/// A text entry with no limit of its own takes this many chars.
-const ENTRY_MAX_CHARS: usize = u8::MAX as usize;
-/// Words under a `checkertrans` show at this share of their opacity.
-const UNDER_VEIL: f32 = 0.5;
 const LINE_BREAK: char = '\n';
 
 /// Opens a gump for each layout the shard sent that is not open yet. A gump
@@ -49,88 +45,35 @@ pub fn sync(manager: &mut GumpManager, frame: &WatchFrame, profile: &mut Profile
     }
 }
 
-/// What the human did to one gump before he answers it.
+/// One gump of the shard in the gump manager.
 pub struct ShardGump {
-    gump: u32,
-    page: u32,
-    /// The boxes the human set, by their switch.
-    ticks: HashMap<u32, bool>,
-    fields: HashMap<u16, TextField>,
-    /// The first field took the keys already.
-    focused: bool,
+    state: ShardGumpState,
 }
 
 impl ShardGump {
     fn new(gump: u32) -> Self {
         Self {
-            gump,
-            page: FIRST_PAGE,
-            ticks: HashMap::new(),
-            fields: HashMap::new(),
-            focused: false,
+            state: ShardGumpState::new(gump),
         }
-    }
-
-    fn layout<'f>(&self, frame: &'f WatchFrame) -> Option<&'f GumpLayout> {
-        frame.gump_layouts.iter().find(|l| l.gump == self.gump)
     }
 }
 
-/// The size a piece takes on the gump, as `checkertrans` measures it.
-fn piece_size(g: &mut Canvas<'_>, piece: &GumpPiece) -> Vec2 {
-    let size = |w: i32, h: i32| Vec2::new(w as f32, h as f32);
-    match &piece.what {
-        GumpPieceKind::Background { w, h, .. }
-        | GumpPieceKind::Tiled { w, h, .. }
-        | GumpPieceKind::Words { w, h, .. }
-        | GumpPieceKind::Entry { w, h, .. }
-        | GumpPieceKind::Veil { w, h } => size(*w, *h),
-        GumpPieceKind::Image { gump, .. } => g.gump_size(*gump).unwrap_or(Vec2::ZERO),
-        GumpPieceKind::Button { normal, art, .. } => match art {
-            Some(art) if art.w > 0 && art.h > 0 => size(art.w, art.h),
-            _ => g.gump_size(*normal).unwrap_or(Vec2::ZERO),
-        },
-        GumpPieceKind::Choice { off, .. } => g.gump_size(*off).unwrap_or(Vec2::ZERO),
-        GumpPieceKind::Item { graphic, .. } => g.item_size(*graphic),
-    }
-}
-
-/// Which pieces a later `checkertrans` of their page lies over, as the
-/// classic client fades them.
-fn veiled(g: &mut Canvas<'_>, shown: &[&GumpPiece]) -> Vec<bool> {
-    let areas: Vec<Rect> = shown
-        .iter()
-        .map(|piece| {
-            Rect::from_min_size(
-                Pos2::new(piece.x as f32, piece.y as f32),
-                piece_size(g, piece),
-            )
-        })
-        .collect();
-    let mut faded = vec![false; shown.len()];
-    for (at, piece) in shown.iter().enumerate() {
-        if !matches!(piece.what, GumpPieceKind::Veil { .. }) {
-            continue;
-        }
-        for before in 0..at {
-            let on_page = shown[before].page == 0 || shown[before].page == piece.page;
-            faded[before] |= on_page && areas[before].intersects(areas[at]);
-        }
-    }
-    faded
+/// The size of a picture of a piece, as the canvas has it.
+fn art_size(g: &mut Canvas<'_>, art: PieceArt) -> Option<uoterm_view::geom::Vector> {
+    let size = match art {
+        PieceArt::Gump(gump) => g.gump_size(gump)?,
+        PieceArt::Item(graphic) => g.item_size(graphic),
+    };
+    Some(bridge::vector(size))
 }
 
 impl GumpBody for ShardGump {
     fn draw(&mut self, g: &mut Canvas<'_>, cx: &mut GumpContext<'_>) {
-        let Some(layout) = self.layout(cx.frame) else {
+        let Some(layout) = self.state.layout(cx.frame) else {
             return;
         };
-        let shown: Vec<&GumpPiece> = layout
-            .pieces
-            .iter()
-            .filter(|piece| on_page(piece.page, self.page))
-            .collect();
-        let faded = veiled(g, &shown);
+        let shown = self.state.shown(layout);
+        let faded = veiled(&shown, |art| art_size(g, art));
         let mut reply = None;
         for (index, piece) in shown.iter().enumerate() {
             let share = if faded[index] { UNDER_VEIL } else { 1.0 };
@@ -149,26 +92,19 @@ impl GumpBody for ShardGump {
             }
         }
         if let Some(button) = reply {
-            cx.act(Act::GumpButton {
-                gump: self.gump,
-                button,
-                switches: layout_ticked(layout, &self.ticks),
-                texts: self
-                    .fields
-                    .iter()
-                    .map(|(id, field)| (*id, field.text().to_string()))
-                    .collect(),
-            });
+            cx.act(self.state.answer(layout, button));
         }
     }
 
     fn first_place(&self, frame: &WatchFrame) -> Option<Pos2> {
-        self.layout(frame)
-            .map(|layout| Pos2::new(layout.x as f32, layout.y as f32))
+        self.state
+            .layout(frame)
+            .map(|layout| bridge::pos2(gump_first_place(layout)))
     }
 
     fn locks(&self, frame: &WatchFrame) -> GumpLocks {
-        self.layout(frame)
+        self.state
+            .layout(frame)
             .map_or_else(GumpLocks::default, |layout| GumpLocks {
                 no_move: layout.no_move,
                 no_close: layout.no_close,
@@ -178,12 +114,12 @@ impl GumpBody for ShardGump {
     /// A right click answers the gump with no button, as the classic
     /// client does. It stays until the shard takes it away.
     fn close(&mut self, cx: &mut GumpContext<'_>) -> Closing {
-        cx.act(Act::GumpClose(self.gump));
+        cx.act(self.state.close());
         Closing::Wait
     }
 
     fn alive(&self, frame: &WatchFrame) -> bool {
-        self.layout(frame).is_some()
+        self.state.layout(frame).is_some()
     }
 }
 
@@ -198,7 +134,7 @@ impl ShardGump {
         index: usize,
     ) -> Option<u32> {
         let (x, y) = (piece.x, piece.y);
-        let key = (self.page, index);
+        let key = (self.state.page, index);
         match &piece.what {
             GumpPieceKind::Background { w, h, gump } => g.frame(x, y, *w, *h, *gump),
             GumpPieceKind::Image { gump, hue } => {
@@ -237,9 +173,8 @@ impl ShardGump {
             GumpPieceKind::Button {
                 normal,
                 pressed,
-                id,
-                to_page,
                 art,
+                ..
             } => {
                 let button = ButtonArt::new(*normal, *pressed, 0);
                 let clicked = match art {
@@ -251,20 +186,15 @@ impl ShardGump {
                             button,
                             Vec2::new(tile.w as f32, tile.h as f32),
                         );
-                        let item = g.item_size(tile.graphic);
-                        let left = x + ((tile.w - item.x as i32) / 2).max(0);
-                        let top = y + ((tile.h - item.y as i32) / 2).max(0);
+                        let item = bridge::vector(g.item_size(tile.graphic));
+                        let (left, top) = tile_art_place(x, y, tile, item);
                         g.item(left, top, tile.graphic, tile.hue);
                         clicked
                     }
                     None => g.button(key, x, y, button),
                 };
                 if clicked {
-                    match (id, to_page) {
-                        (Some(id), _) => return Some(*id),
-                        (None, Some(to_page)) => self.page = *to_page,
-                        (None, None) => {}
-                    }
+                    return self.state.press(piece);
                 }
             }
             GumpPieceKind::Choice {
@@ -274,7 +204,7 @@ impl ShardGump {
                 radio,
                 ..
             } => {
-                let is_on = layout_ticked(layout, &self.ticks).contains(switch);
+                let is_on = self.state.is_ticked(layout, *switch);
                 let clicked = if *radio {
                     g.radio(key, x, y, (*off, *on), is_on, None)
                 } else {
@@ -282,7 +212,7 @@ impl ShardGump {
                     g.checkbox(key, x, y, (*off, *on), &mut flipped, None)
                 };
                 if clicked {
-                    click_box(layout, &mut self.ticks, piece);
+                    self.state.click_box(layout, piece);
                 }
             }
             GumpPieceKind::Entry {
@@ -293,16 +223,11 @@ impl ShardGump {
                 text,
                 limit,
             } => {
-                let max = limit.map_or(ENTRY_MAX_CHARS, |limit| limit as usize);
-                let field = self
-                    .fields
-                    .entry(*id)
-                    .or_insert_with(|| TextField::new(text).with_max_chars(Some(max)));
                 let look = TextLook::unicode(HTML_FONT, shown_hue(*hue)).bordered();
-                if !self.focused {
-                    self.focused = true;
+                if self.state.take_focus() {
                     g.focus(key);
                 }
+                let field = self.state.field(*id, text, *limit);
                 g.text_box(key, x, y, *w, *h, field, &look);
             }
             GumpPieceKind::Veil { w, h } => g.checker_trans(x, y, *w, *h),

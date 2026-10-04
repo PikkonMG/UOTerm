@@ -213,7 +213,7 @@ impl Default for MarkersManager {
 
 impl MarkersManager {
     fn load(&mut self) {
-        self.files = host::world_map::load_markers(&host::world_map::map_dir(), &[]);
+        self.files = host::world_map::load_markers(&host::world_map::map_dir());
         self.file = self.file.min(self.files.len().saturating_sub(1));
         self.loaded = true;
     }

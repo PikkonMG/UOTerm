@@ -11,7 +11,7 @@
 //! Pictures and words drag the gump; buttons, boxes, sliders and fields
 //! take their own clicks, as in the classic client.
 
-use super::layout::{self, frame_part_ids, frame_parts, FRAME_PARTS};
+use super::layout;
 use super::text::{HtmlLook, TextKit, TextLook, TextTexture};
 use super::text_field::{FieldKey, FieldOutcome, TextField};
 use crate::window::bridge;
@@ -23,6 +23,8 @@ use eframe::egui::{
 };
 use std::hash::Hash;
 use uoterm_view::art::Sprite;
+use uoterm_view::ui::gump_frame::{frame_part_ids, frame_parts, FRAME_PARTS};
+use uoterm_view::ui::html::{HtmlBox, HTML_BACKGROUND, HTML_BAR_ROOM};
 use uoterm_world::GumpScroll;
 
 // The scroll bar of the classic client.
@@ -41,21 +43,6 @@ const SCROLL_STEP: i32 = 50;
 const SCROLL_SPEED_UP_STEPS: i32 = 8;
 /// A scroll area keeps this much room at its right for its bar.
 const SCROLL_AREA_BAR: i32 = 14;
-// HTML words.
-const HTML_BACKGROUND: u16 = 0x2486;
-const HTML_BAR_ROOM: i32 = 16;
-const HTML_BACKGROUND_ROOM: i32 = 8;
-/// Words on a background with no color of their own lose this much more.
-const HTML_BACKGROUND_EXTRA_ROOM: i32 = 9;
-const HTML_BACKGROUND_PAD: i32 = 4;
-/// The 15-bit white a shard sends for white HTML words.
-const HTML_WHITE_15: u32 = 0x7FFF;
-const HTML_WHITE: [u8; 4] = [0xFF, 0xFF, 0xFE, u8::MAX];
-const HTML_NEAR_BLACK: [u8; 4] = [0x01, 0x01, 0x01, u8::MAX];
-const HTML_WHITE_DEFAULT: [u8; 4] = [0xFF, 0xFF, 0xFF, u8::MAX];
-const COLOR_CHANNEL_MAX: u32 = 31;
-const RED_SHIFT: u32 = 10;
-const GREEN_SHIFT: u32 = 5;
 // Sliders.
 const SLIDER_LEFT: u16 = 213;
 const SLIDER_MIDDLE: u16 = 214;
@@ -139,17 +126,6 @@ pub enum SliderStyle {
     BlueKnob,
 }
 
-/// How a block of HTML sits in its box.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HtmlBox {
-    /// A paper background under the words.
-    pub background: bool,
-    pub scroll: GumpScroll,
-    /// A 15-bit color for words no tag colors. None follows the classic
-    /// rules: dark on paper, light with a bar, dark with neither.
-    pub color: Option<u32>,
-}
-
 /// What the gump manager tells the canvas of one gump.
 pub struct CanvasInput {
     /// The id every control of the gump is made from.
@@ -210,42 +186,6 @@ pub struct Canvas<'a> {
     out: CanvasOutput,
     /// The last thing drawn, for a tooltip.
     last: Rect,
-}
-
-/// The 15-bit color of the game as red, green, blue and alpha bytes.
-fn game_rgba(color: u32) -> [u8; 4] {
-    let channel = |shift: u32| {
-        (((color >> shift) & COLOR_CHANNEL_MAX) * u32::from(u8::MAX) / COLOR_CHANNEL_MAX) as u8
-    };
-    [
-        channel(RED_SHIFT),
-        channel(GREEN_SHIFT),
-        channel(0),
-        u8::MAX,
-    ]
-}
-
-/// The color HTML words take, and how much narrower than the box they
-/// wrap, by the classic rules.
-fn html_color_and_room(look: &HtmlBox) -> ([u8; 4], i32) {
-    let mut room = 0;
-    if look.scroll != GumpScroll::None {
-        room += HTML_BAR_ROOM;
-    }
-    if look.background {
-        room += HTML_BACKGROUND_ROOM;
-    }
-    let color = match look.color {
-        Some(HTML_WHITE_15) => HTML_WHITE,
-        Some(color) => game_rgba(color),
-        None if look.background => {
-            room += HTML_BACKGROUND_EXTRA_ROOM;
-            HTML_NEAR_BLACK
-        }
-        None if look.scroll == GumpScroll::None => HTML_NEAR_BLACK,
-        None => HTML_WHITE_DEFAULT,
-    };
-    (color, room)
 }
 
 /// The key a text box takes from one event, when it takes one.
@@ -492,16 +432,19 @@ impl<'a> Canvas<'a> {
         let rect = self.area(x, y, Vec2::new(w as f32, h as f32));
         let mut sizes = [None; FRAME_PARTS];
         for (size, part) in sizes.iter_mut().zip(frame_part_ids(gump)) {
-            *size = self.gump_size(part).map(|s| s * self.input.scale);
+            *size = self
+                .gump_size(part)
+                .map(|s| bridge::vector(s * self.input.scale));
         }
-        for part in frame_parts(gump, &sizes, rect) {
+        for part in frame_parts(gump, &sizes, bridge::area(rect)) {
+            let area = bridge::rect(part.area);
             let Some((texture, sprite)) = self.scene.gump_picture(part.gump, NO_HUE) else {
                 continue;
             };
             if part.tiled {
-                self.tile_over(texture, sprite, part.area);
+                self.tile_over(texture, sprite, area);
             } else {
-                self.paint(texture, part.area, bridge::rect(sprite.uv));
+                self.paint(texture, area, bridge::rect(sprite.uv));
             }
         }
         self.piece(rect, true);
@@ -1243,8 +1186,8 @@ impl<'a> Canvas<'a> {
         html: &str,
         look: &HtmlBox,
     ) {
-        let (color, room) = html_color_and_room(look);
-        let has_bar = look.scroll != GumpScroll::None;
+        let (color, room) = look.color_and_room();
+        let has_bar = look.has_bar();
         let bar_room = if has_bar { HTML_BAR_ROOM } else { 0 };
         if look.background {
             self.frame(x, y, w - bar_room, h, HTML_BACKGROUND);
@@ -1253,18 +1196,8 @@ impl<'a> Canvas<'a> {
         let ctx = self.ui.ctx().clone();
         let texture = self.text.html(&ctx, html, &HtmlLook { width, color });
         let text_height = texture.as_ref().map_or(0, |t| t.size.y as i32);
-        let pad = if look.background {
-            HTML_BACKGROUND_PAD
-        } else {
-            0
-        };
-        let max = (text_height - h
-            + if look.background {
-                HTML_BACKGROUND_ROOM
-            } else {
-                0
-            })
-        .max(0);
+        let pad = look.pad();
+        let max = look.most_scroll(text_height, h);
         let id = self.id(key);
         let value_key = id.with("value");
         let mut value: i32 = self.ui.data(|d| d.get_temp(value_key)).unwrap_or(0);
@@ -1753,48 +1686,6 @@ fn row_and_column(words: &str, place: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn html_colors_and_room_follow_the_classic_rules() {
-        let plain = HtmlBox {
-            background: false,
-            scroll: GumpScroll::None,
-            color: None,
-        };
-        assert_eq!(html_color_and_room(&plain), (HTML_NEAR_BLACK, 0));
-        let barred = HtmlBox {
-            scroll: GumpScroll::Bar,
-            ..plain
-        };
-        assert_eq!(
-            html_color_and_room(&barred),
-            (HTML_WHITE_DEFAULT, HTML_BAR_ROOM)
-        );
-        let paper = HtmlBox {
-            background: true,
-            ..plain
-        };
-        assert_eq!(
-            html_color_and_room(&paper),
-            (
-                HTML_NEAR_BLACK,
-                HTML_BACKGROUND_ROOM + HTML_BACKGROUND_EXTRA_ROOM
-            )
-        );
-        let colored = HtmlBox {
-            color: Some(0x7C00),
-            ..paper
-        };
-        assert_eq!(
-            html_color_and_room(&colored),
-            ([u8::MAX, 0, 0, u8::MAX], HTML_BACKGROUND_ROOM)
-        );
-        let white = HtmlBox {
-            color: Some(HTML_WHITE_15),
-            ..plain
-        };
-        assert_eq!(html_color_and_room(&white).0, HTML_WHITE);
-    }
 
     #[test]
     fn keys_become_field_keys() {

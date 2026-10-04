@@ -17,61 +17,37 @@
 //! The player moves and locks both panels.
 
 use super::boxes_ui::{scrolled, Tools, CELL_RADIUS};
-use super::control::{Act, Answer, Ask, Asker};
+use super::bridge;
+use super::control::{Act, Answer, Asker};
 use super::model::chat::{
-    chat_door, chat_name_act, joining, lines_back, Asking, ChatDoor, ChatWatch, Joining,
-    CHAT_NAME_MAX_CHARS, WORDS_CHOOSE_NAME,
+    chat_door, chat_name_act, lines_back, ChatDoor, CHAT_NAME_MAX_CHARS, WORDS_CHOOSE_NAME,
 };
 use super::model::house_design::{
-    design_counts, limits_words, part_words, plot_limits, styles_of, HouseDesign, PlotLimits,
-    SharedDesign, StoreyLook, ACTION_EXIT, DESIGNER_FLOORS, DESIGN_COMMANDS, KINDS,
+    limits_words, styles_of, HouseDesign, PlotLimits, SharedDesign, StoreyLook, ACTION_EXIT, KINDS,
 };
 use super::modern::frame::{self, FrameEvent, PanelSpec};
-use super::modern::layout::{self, Spot};
 use super::settings::Profile;
 use super::theme::{self, text_font};
 use crate::view::{WatchChat, WatchFrame};
-use crate::window::bridge;
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, TextFormat, Vec2,
 };
 use uoterm_nav::HousePart;
+use uoterm_view::ui::build::{
+    build_first_place, command_rows, counts_words, limits_of, part_ask, storey_words, storeys_of,
+    take_part_answer, BUILD_ID, BUTTON_ROWS, FIELD_ROW, FOOT_ROW, GAP, HINT_PICK, HINT_STOREY,
+    HINT_WISH, HINT_WISH_OFF, KIND_ROW, LIST_ROW, LIST_ROWS, NOTE_SECONDS, PIECE_SIDE,
+    WORDS_ASKING, WORDS_FIND, WORDS_FLOOR, WORDS_NO_PARTS, WORDS_PICK, WORDS_REMOVE, WORDS_TITLE,
+};
+use uoterm_view::ui::chat_panel::{
+    asking_label, channel_ask, chat_first_place, chat_title, say_act, ChatButton, ChatPanel,
+    CHANNEL_ROW, CHANNEL_ROWS, CHAT_BUTTONS, CHAT_ID, HINT_CHANNEL, HINT_CHANNEL_ROW, HINT_SAY,
+    LABEL_WIDTH, WORDS_CANCEL, WORDS_LOCK_MARK, WORDS_OKAY, WORDS_TURN_ON,
+};
 
-const BUILD_ID: &str = "modern:build";
-const PANEL_WIDTH: f32 = 430.0;
-/// The designer's foot has five rows: the changes, the backups and the
-/// eyedropper, the levels, how each storey shows, and the counts.
-const BUTTON_ROWS: usize = 5;
-/// The first steps of `DESIGN_COMMANDS` keep the design and bring it back;
-/// the rest change it.
-const KEEPING_COMMANDS: usize = 3;
-const TITLE_ROW: f32 = 32.0;
-const FIELD_ROW: f32 = 30.0;
-const FOOT_ROW: f32 = 40.0;
-const GAP: f32 = 8.0;
-const LIST_ROWS: usize = 8;
-const LIST_ROW: f32 = 30.0;
-const PIECE_SIDE: f32 = 40.0;
 const ASK_WIDTH: f32 = 60.0;
-const NOTE_SECONDS: f64 = 6.0;
 
-const WORDS_TITLE: &str = "Build";
-const WORDS_REMOVE: &str = "Remove";
-const WORDS_PICK: &str = "Pick";
-const WORDS_STOREY: &str = "Storey";
-const WORDS_COMPONENTS: &str = "Components";
-const WORDS_FIXTURES: &str = "Fixtures";
-const WORDS_COST: &str = "Cost";
-const HINT_PICK: &str = "Click a part of the house to build with it.";
-const HINT_STOREY: &str = "Click: how this storey shows while you design.";
-const WORDS_FLOOR: &str = "Floor";
-const WORDS_EXIT: &str = "Leave";
-const WORDS_FIND: &str = "Find";
-const WORDS_ASKING: &str = "Jev looks at the catalog...";
-const WORDS_NO_PARTS: &str = "The catalog needs the client files.";
-const HINT_WISH: &str = "Say the part in plain words, for example: a stone wall";
-const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
 pub struct BuildUi {
     /// The part the human builds with, which the classic gump shares.
     design: SharedDesign,
@@ -109,27 +85,25 @@ impl BuildUi {
         SharedDesign::clone(&self.design)
     }
 
-    /// Picks the part at this place of the catalog.
-    fn pick_part(&mut self, frame: &WatchFrame, place: usize) {
-        if place >= frame.house_parts.len() {
-            return;
+    /// Takes an answer of Jev about a part of the catalog: the part he
+    /// picked shows in the list.
+    fn take_answer(&mut self, frame: &WatchFrame, answer: Answer, time: f64) {
+        let picked = take_part_answer(&mut self.design.borrow_mut(), frame, answer);
+        match picked {
+            Ok(true) => {
+                self.first_style = self.design.borrow().style.saturating_sub(LIST_ROWS / 2);
+                self.wish.clear();
+                self.note = None;
+            }
+            Ok(false) => {}
+            Err(words) => self.say(&words, true, time),
         }
-        let mut design = self.design.borrow_mut();
-        design.pick_part(&frame.house_parts, place);
-        self.first_style = design.style.saturating_sub(LIST_ROWS / 2);
-        self.wish.clear();
-        self.note = None;
     }
 
-    /// Takes the answer of Jev about a part of the catalog.
+    /// Takes the answers of Jev about parts of the catalog.
     fn take_answers(&mut self, frame: &WatchFrame, tools: &Tools<'_>, time: f64) {
         for answer in tools.hand.new_answers(Asker::Designer) {
-            match answer {
-                Answer::Picked(Ok(place)) => self.pick_part(frame, place),
-                Answer::Picked(Err(words)) => self.say(&words, true, time),
-                // The designer asks only for a pick.
-                _ => {}
-            }
+            self.take_answer(frame, answer, time);
         }
     }
 
@@ -155,21 +129,7 @@ impl BuildUi {
         let spec = PanelSpec {
             id: BUILD_ID,
             title: WORDS_TITLE,
-            default: layout::first_place(
-                rect,
-                Spot::RightColumn(0),
-                Vec2::new(
-                    PANEL_WIDTH,
-                    frame::TITLE_ROW
-                        + TITLE_ROW
-                        + LIST_ROWS as f32 * LIST_ROW
-                        + PIECE_SIDE
-                        + FIELD_ROW
-                        + FOOT_ROW * BUTTON_ROWS as f32
-                        + GAP * 4.0
-                        + theme::PANEL_PAD * 2.0,
-                ),
-            ),
+            default: bridge::rect(build_first_place(bridge::area(rect))),
             min_size: None,
             closable: live,
         };
@@ -182,10 +142,10 @@ impl BuildUi {
             ui,
             Rect::from_min_size(
                 Pos2::new(inner.left(), y),
-                Vec2::new(inner.width(), TITLE_ROW),
+                Vec2::new(inner.width(), KIND_ROW),
             ),
         );
-        y += TITLE_ROW + GAP;
+        y += KIND_ROW + GAP;
         let list = Rect::from_min_size(
             Pos2::new(inner.left(), y),
             Vec2::new(inner.width(), LIST_ROWS as f32 * LIST_ROW),
@@ -204,11 +164,9 @@ impl BuildUi {
         );
         self.ask_field(ui, wish_row, frame, tools);
         y = wish_row.bottom() + GAP;
-        let limits = designing
-            .plot
-            .map(|(width, depth)| plot_limits(width, depth));
+        let limits = limits_of(&designing);
         if live {
-            let storeys = limits.map_or(DESIGNER_FLOORS, |limits| limits.storeys);
+            let storeys = storeys_of(limits);
             self.buttons(
                 ui,
                 Pos2::new(inner.left(), y),
@@ -361,14 +319,8 @@ impl BuildUi {
             if on { theme::GOAL } else { theme::TEXT_FAINT },
         );
         let asked = find || (typed.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
-        if asked && on && !self.wish.trim().is_empty() {
-            tools.hand.ask(
-                Asker::Designer,
-                Ask::HousePart {
-                    wish: self.wish.trim().to_string(),
-                    options: frame.house_parts.iter().map(part_words).collect(),
-                },
-            );
+        if let Some(ask) = part_ask(frame, &self.wish).filter(|_| asked && on) {
+            tools.hand.ask(Asker::Designer, ask);
             let time = tools.time;
             self.say(WORDS_ASKING, false, time);
         }
@@ -393,22 +345,18 @@ impl BuildUi {
         if pressed_remove {
             self.design.borrow_mut().toggle_removing();
         }
-        let (kept, changes) = DESIGN_COMMANDS.split_at(KEEPING_COMMANDS);
-        let exit = (WORDS_EXIT, ACTION_EXIT);
-        let rows: [(Pos2, Vec<&(&str, &'static str)>); 2] = [
+        let [changes, kept] = command_rows();
+        let rows = [
             (
                 Pos2::new(remove.right() + theme::ROW_GAP, left_top.y),
-                changes.iter().chain([&exit]).collect(),
+                changes,
             ),
-            (
-                Pos2::new(left_top.x, left_top.y + FOOT_ROW),
-                kept.iter().collect(),
-            ),
+            (Pos2::new(left_top.x, left_top.y + FOOT_ROW), kept),
         ];
         let mut kept_end = left_top.x;
         for (start, steps) in rows {
             let mut at = start;
-            for &(words, action) in steps {
+            for (words, action) in steps {
                 let (area, pressed) = theme::button(ui, at, words, theme::TEXT);
                 at = Pos2::new(area.right() + theme::ROW_GAP, start.y);
                 if pressed {
@@ -452,7 +400,7 @@ impl BuildUi {
         let mut at = Pos2::new(left_top.x, looks_y);
         for storey in 0..usize::from(storeys) {
             let look = self.design.borrow().storeys[storey];
-            let words = format!("{WORDS_STOREY} {}", storey + 1);
+            let words = storey_words(storey);
             let (area, pressed) = theme::button(ui, at, &words, storey_color(look));
             at = Pos2::new(area.right() + theme::ROW_GAP, looks_y);
             if pressed {
@@ -505,38 +453,22 @@ fn storey_color(look: StoreyLook) -> Color32 {
     [theme::TEXT, theme::WAITING, theme::ALARM][look.button_look()]
 }
 
+/// The room between two counts.
+const COUNTS_GAP: &str = "   ";
+
 /// The components and fixtures of the design against the most the plot
 /// takes, and what it costs; a count at its most in the alarm color.
 fn counts_row(ui: &egui::Ui, left_top: Pos2, frame: &WatchFrame, limits: PlotLimits) {
-    let counts = design_counts(frame);
     let font = text_font(theme::SIZE_BODY);
-    let color = |count: u32, most: u32| {
-        if count >= most {
-            theme::ALARM
-        } else {
-            theme::TEXT
-        }
-    };
     let mut job = LayoutJob::default();
-    let parts = [
-        (
-            format!(
-                "{WORDS_COMPONENTS} {}/{}   ",
-                counts.components, limits.components
-            ),
-            color(counts.components, limits.components),
-        ),
-        (
-            format!(
-                "{WORDS_FIXTURES} {}/{}   ",
-                counts.fixtures, limits.fixtures
-            ),
-            color(counts.fixtures, limits.fixtures),
-        ),
-        (format!("{WORDS_COST} {}", counts.cost()), theme::TEXT),
-    ];
-    for (words, color) in parts {
-        job.append(&words, 0.0, TextFormat::simple(font.clone(), color));
+    for (at, (words, at_most)) in counts_words(frame, limits).into_iter().enumerate() {
+        let color = if at_most { theme::ALARM } else { theme::TEXT };
+        let gap = if at == 0 { "" } else { COUNTS_GAP };
+        job.append(
+            &format!("{gap}{words}"),
+            0.0,
+            TextFormat::simple(font.clone(), color),
+        );
     }
     let galley = ui.painter().layout_job(job);
     let area = Rect::from_min_size(left_top, galley.size());
@@ -584,14 +516,14 @@ mod tests {
         let mut build = BuildUi::default();
         let shared = build.design();
         let frame = designing();
-        build.pick_part(&frame, 2);
+        build.take_answer(&frame, Answer::Picked(Ok(2)), 0.0);
         assert_eq!(shared.borrow().kind, HousePartKind::Roof);
-        build.pick_part(&frame, 1);
+        build.take_answer(&frame, Answer::Picked(Ok(1)), 0.0);
         assert_eq!(
             (shared.borrow().kind, shared.borrow().style),
             (HousePartKind::Wall, 1)
         );
-        build.pick_part(&frame, 99);
+        build.take_answer(&frame, Answer::Picked(Ok(99)), 0.0);
         assert_eq!(
             shared.borrow().style,
             1,
@@ -605,49 +537,21 @@ mod tests {
     }
 }
 
-const CHAT_ID: &str = "modern:chat";
-const CHAT_SIZE: Vec2 = Vec2::new(420.0, 600.0);
-const CHAT_LEAST_SIZE: Vec2 = Vec2::new(360.0, 460.0);
-const CHANNEL_ROW: f32 = 24.0;
-const CHANNEL_ROWS: usize = 4;
-const LABEL_WIDTH: f32 = 80.0;
-
-const WORDS_CHAT: &str = "Chat";
-const WORDS_JOIN: &str = "Join";
-const WORDS_LEAVE: &str = "Leave";
-const WORDS_CREATE: &str = "Create";
-const WORDS_OKAY: &str = "Okay";
-const WORDS_CANCEL: &str = "Cancel";
-const WORDS_TURN_ON: &str = "Turn the chat on";
-const WORDS_NAME: &str = "Name:";
-const WORDS_PASSWORD: &str = "Password:";
-const WORDS_LOCKED: &str = "needs a password";
-const WORDS_LOCK_MARK: &str = "locked";
-const HINT_CHANNEL_ROW: &str = "Click: pick.  Double-click: join.";
-const HINT_SAY: &str = "Words for the channel. Press Enter.";
-const HINT_CHANNEL: &str = "Say the channel in plain words, for example: the trade one";
-
 /// The chat of the shard: its channels, its lines, and a box to talk in.
 /// It opens by itself when the shard opens the chat or asks for the chat
 /// name.
 #[derive(Default)]
 pub struct ChatUi {
-    open: bool,
+    panel: ChatPanel,
     words: String,
     wish: String,
-    /// The channel the player picked in the list.
-    picked: Option<String>,
     first_channel: usize,
     /// The newest lines hidden under the view, and how many lines there
     /// were when the panel last looked.
     back: usize,
     seen: usize,
-    /// The small box that asks for a channel name or a password, with the
-    /// words typed in it.
-    asking: Option<(Asking, String)>,
     /// The chat name typed for the shard.
     name: String,
-    watch: ChatWatch,
     note: Option<(String, bool, f64)>,
 }
 
@@ -655,17 +559,17 @@ impl ChatUi {
     /// The chat as the window starts.
     pub fn starting(open: bool) -> Self {
         Self {
-            open,
+            panel: ChatPanel::starting(open),
             ..Self::default()
         }
     }
 
     pub fn toggle(&mut self) {
-        self.open = !self.open;
+        self.panel.toggle();
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.panel.open
     }
 
     /// Draws the chat when it is open. Gives the place it covers.
@@ -679,23 +583,17 @@ impl ChatUi {
     ) -> Option<Rect> {
         let time = tools.time;
         self.take_answers(frame, tools, time);
-        if self.watch.opened(frame) {
-            self.open = true;
-        }
-        if !self.open {
+        self.panel.follow(frame);
+        if !self.panel.open {
             return None;
         }
-        let title = match frame.chat.as_ref() {
-            Some(chat) if !chat.in_channel.is_empty() => {
-                format!("{WORDS_CHAT}: {}", chat.in_channel)
-            }
-            _ => WORDS_CHAT.to_string(),
-        };
+        let title = chat_title(frame);
+        let (default, least) = chat_first_place(bridge::area(rect));
         let spec = PanelSpec {
             id: CHAT_ID,
             title: &title,
-            default: layout::first_place(rect, Spot::LeftColumn(0), CHAT_SIZE),
-            min_size: Some(CHAT_LEAST_SIZE),
+            default: bridge::rect(default),
+            min_size: Some(bridge::vec2(least)),
             closable: true,
         };
         let panel = frame::place(rect, &spec, profile);
@@ -717,7 +615,7 @@ impl ChatUi {
             }
         }
         if frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) {
-            self.open = false;
+            self.panel.open = false;
         }
         self.show_note(ui, panel, time);
         Some(panel)
@@ -741,7 +639,7 @@ impl ChatUi {
         if live {
             self.channel_buttons(ui, Pos2::new(body.left(), top), chat, tools);
             top += FOOT_ROW;
-            if self.asking.is_some() {
+            if self.panel.asking.is_some() {
                 let row = Rect::from_min_size(
                     Pos2::new(body.left(), top),
                     Vec2::new(body.width(), FIELD_ROW),
@@ -777,19 +675,18 @@ impl ChatUi {
 
     fn take_answers(&mut self, frame: &WatchFrame, tools: &Tools<'_>, time: f64) {
         for answer in tools.hand.new_answers(Asker::Chat) {
-            let Some(chat) = frame.chat.as_ref() else {
-                continue;
-            };
-            match answer {
-                Answer::Picked(Ok(place)) => {
-                    if let Some((name, _)) = chat.channels.get(place) {
-                        self.join(chat, name.clone(), tools);
+            let picked = matches!(answer, Answer::Picked(Ok(_)));
+            match self.panel.take_answer(frame.chat.as_ref(), answer) {
+                Ok(act) => {
+                    if let Some(act) = act {
+                        tools.hand.act(act);
+                    }
+                    if picked && self.panel.picked.is_some() {
                         self.wish.clear();
                         self.note = None;
                     }
                 }
-                Answer::Picked(Err(words)) => self.note = Some((words, true, time)),
-                _ => {}
+                Err(words) => self.note = Some((words, true, time)),
             }
         }
     }
@@ -797,14 +694,9 @@ impl ChatUi {
     /// Joins a channel: at once, or through the box that asks for its
     /// password.
     fn join(&mut self, chat: &WatchChat, channel: String, tools: &Tools<'_>) {
-        match joining(chat, Some(&channel)) {
-            Joining::Send(act) => tools.hand.act(act),
-            Joining::AskPassword(channel) => {
-                self.asking = Some((Asking::Password(channel), String::new()));
-            }
-            Joining::Nothing => {}
+        if let Some(act) = self.panel.join(chat, channel) {
+            tools.hand.act(act);
         }
-        self.picked = Some(channel);
     }
 
     /// The list of every channel. A click picks one and a double click
@@ -833,7 +725,7 @@ impl ChatUi {
                 Vec2::new(area.width(), CHANNEL_ROW),
             );
             let response = ui.interact(row, Id::new(("chat-channel", at)), Sense::click());
-            let picked = self.picked.as_deref() == Some(name.as_str());
+            let picked = self.panel.picked.as_deref() == Some(name.as_str());
             if picked || (live && response.hovered()) {
                 ui.painter()
                     .rect_filled(row, CornerRadius::same(CELL_RADIUS), theme::BUTTON_HOVER);
@@ -868,7 +760,7 @@ impl ChatUi {
             if response.double_clicked() {
                 self.join(chat, name.clone(), tools);
             } else if response.clicked() {
-                self.picked = Some(name.clone());
+                self.panel.picked = Some(name.clone());
             }
         }
     }
@@ -881,38 +773,32 @@ impl ChatUi {
         chat: &WatchChat,
         tools: &Tools<'_>,
     ) {
-        let (join, joined) = theme::button(ui, left_top, WORDS_JOIN, theme::GOAL);
-        let (leave, left) = theme::button(
-            ui,
-            Pos2::new(join.right() + theme::ROW_GAP, left_top.y),
-            WORDS_LEAVE,
-            theme::TEXT,
-        );
-        let (_, create) = theme::button(
-            ui,
-            Pos2::new(leave.right() + theme::ROW_GAP, left_top.y),
-            WORDS_CREATE,
-            theme::TEXT,
-        );
-        if let Some(channel) = self.picked.clone().filter(|_| joined) {
-            self.join(chat, channel, tools);
-        } else if left {
-            tools.hand.act(Act::ChatLeave);
-        } else if create {
-            self.asking = Some((Asking::NewChannel, String::new()));
+        let mut at = left_top;
+        let mut pressed = None;
+        for button in CHAT_BUTTONS {
+            let color = if button == ChatButton::Join {
+                theme::GOAL
+            } else {
+                theme::TEXT
+            };
+            let (area, clicked) = theme::button(ui, at, button.words(), color);
+            at = Pos2::new(area.right() + theme::ROW_GAP, left_top.y);
+            if clicked {
+                pressed = Some(button);
+            }
+        }
+        if let Some(act) = pressed.and_then(|button| self.panel.press(chat, button)) {
+            tools.hand.act(act);
         }
     }
 
     /// The small box that asks for the name of a new channel or the
     /// password of one.
     fn small_box(&mut self, ui: &mut egui::Ui, row: Rect, tools: &Tools<'_>) {
-        let Some((asking, words)) = self.asking.as_mut() else {
+        let Some((asking, words)) = self.panel.asking.as_mut() else {
             return;
         };
-        let label = match asking {
-            Asking::NewChannel => WORDS_NAME,
-            Asking::Password(_) => WORDS_PASSWORD,
-        };
+        let label = asking_label(asking);
         ui.painter().text(
             row.left_center(),
             Align2::LEFT_CENTER,
@@ -950,13 +836,10 @@ impl ChatUi {
             theme::TEXT_DIM,
         );
         let entered = typed.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-        if okay || entered {
-            if let Some(act) = asking.act(words) {
+        if okay || entered || cancel {
+            if let Some(act) = self.panel.answer_box(okay || entered) {
                 tools.hand.act(act);
             }
-        }
-        if okay || entered || cancel {
-            self.asking = None;
         }
     }
 
@@ -1054,9 +937,8 @@ impl ChatUi {
                 .text_color(theme::TEXT),
         );
         let sent = typed.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-        let words = self.words.trim().to_string();
-        if sent && !words.is_empty() {
-            tools.hand.act(Act::ChatSay(words));
+        if let Some(act) = say_act(&self.words).filter(|_| sent) {
+            tools.hand.act(act);
             self.words.clear();
             typed.request_focus();
         }
@@ -1090,24 +972,8 @@ impl ChatUi {
             if on { theme::GOAL } else { theme::TEXT_FAINT },
         );
         let asked = join || (typed.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
-        if asked && on && !self.wish.trim().is_empty() {
-            tools.hand.ask(
-                Asker::Chat,
-                Ask::Channel {
-                    wish: self.wish.trim().to_string(),
-                    options: chat
-                        .channels
-                        .iter()
-                        .map(|(name, locked)| {
-                            if *locked {
-                                format!("{name} ({WORDS_LOCKED})")
-                            } else {
-                                name.clone()
-                            }
-                        })
-                        .collect(),
-                },
-            );
+        if let Some(ask) = channel_ask(chat, &self.wish).filter(|_| asked && on) {
+            tools.hand.ask(Asker::Chat, ask);
             self.note = Some((WORDS_ASKING.into(), false, tools.time));
         }
     }
@@ -1189,14 +1055,20 @@ mod chat_tests {
             let chat = chat();
             ui_chat.join(&chat, "Channel 1".into(), tools);
             assert_eq!(
-                ui_chat.asking.as_ref().map(|(asking, _)| asking.clone()),
-                Some(Asking::Password("Channel 1".into()))
+                ui_chat
+                    .panel
+                    .asking
+                    .as_ref()
+                    .map(|(asking, _)| asking.clone()),
+                Some(uoterm_view::model::chat::Asking::Password(
+                    "Channel 1".into()
+                ))
             );
-            ui_chat.asking = None;
+            ui_chat.panel.asking = None;
             ui_chat.join(&chat, "Channel 2".into(), tools);
-            assert!(ui_chat.asking.is_none());
+            assert!(ui_chat.panel.asking.is_none());
         });
-        assert_eq!(ui_chat.picked.as_deref(), Some("Channel 2"));
+        assert_eq!(ui_chat.panel.picked.as_deref(), Some("Channel 2"));
     }
 
     #[test]

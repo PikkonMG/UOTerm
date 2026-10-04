@@ -1,7 +1,9 @@
 //! The HTML of gumps, as the classic client reads it: a short list of tags
 //! that set the font, the color, bold, italic, underline and the alignment
 //! of words, and a few that break the line. The reader gives each char its
-//! look; `text` lays the chars out in lines.
+//! look; [`html_lines`] lays the chars out in lines, and [`HtmlBox`] says
+//! how a box of HTML words sits in a gump. The Rust window draws the lines
+//! in the fonts of the client; the browser draws them as text.
 //!
 //! The rules follow the reference client. A tag it does not know is dropped. `<body>`
 //! drops the words before it. A `<b>`, `<i>`, `<u>` or `<p>` sets the line
@@ -10,9 +12,35 @@
 //! chars.
 
 use uoterm_nav::TextAlign;
+use uoterm_world::GumpScroll;
 
 /// A color in red, green, blue and alpha bytes.
 pub type Rgba = [u8; 4];
+
+/// Every line of HTML words is this tall, as in the classic client.
+pub const HTML_LINE_HEIGHT: u32 = 18;
+/// How far a line in a `<p>` starts from the left.
+pub const HTML_INDENT: u32 = 14;
+/// The Unicode font that gump HTML is written in.
+pub const HTML_FONT: u8 = 1;
+/// The frame under HTML words on a paper background.
+pub const HTML_BACKGROUND: u16 = 0x2486;
+/// A box with a scroll bar keeps this much room at its right for it.
+pub const HTML_BAR_ROOM: i32 = 16;
+pub const HTML_BACKGROUND_ROOM: i32 = 8;
+/// Words on a background with no color of their own lose this much more.
+const HTML_BACKGROUND_EXTRA_ROOM: i32 = 9;
+/// Words on a background start this far in from its corner.
+pub const HTML_BACKGROUND_PAD: i32 = 4;
+/// The 15-bit white a shard sends for white HTML words.
+const HTML_WHITE_15: u32 = 0x7FFF;
+const HTML_WHITE: Rgba = [0xFF, 0xFF, 0xFE, OPAQUE];
+const HTML_NEAR_BLACK: Rgba = [0x01, 0x01, 0x01, OPAQUE];
+const HTML_WHITE_DEFAULT: Rgba = [0xFF, 0xFF, 0xFF, OPAQUE];
+const COLOR_CHANNEL_MAX: u32 = 31;
+const RED_SHIFT: u32 = 10;
+const GREEN_SHIFT: u32 = 5;
+const SPACE: char = ' ';
 
 const OPAQUE: u8 = u8::MAX;
 const TAG_OPEN: char = '<';
@@ -382,6 +410,19 @@ fn decode_entities(words: &str) -> String {
     out
 }
 
+/// The look of HTML words outside every tag, in `color`.
+pub fn html_base_look(color: Rgba) -> CharLook {
+    CharLook {
+        font: HTML_FONT,
+        color,
+        bold: false,
+        italic: false,
+        underline: false,
+        indent: false,
+        align: TextAlign::Left,
+    }
+}
+
 /// Reads HTML words into chars with their looks. `base` is the look of the
 /// words outside every tag; `has_font` says which Unicode fonts the client
 /// has, so a tag that asks for a missing font changes nothing.
@@ -462,22 +503,286 @@ pub fn parse_html(html: &str, base: CharLook, has_font: &dyn Fn(u8) -> bool) -> 
     out
 }
 
+/// One line of HTML words: the chars it holds and how wide they are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HtmlLine {
+    pub start: usize,
+    pub end: usize,
+    pub width: u32,
+    pub align: TextAlign,
+    pub indent: u32,
+}
+
+impl HtmlLine {
+    /// Where the line starts in a block of `width`.
+    pub fn left(&self, width: u32) -> u32 {
+        match self.align {
+            TextAlign::Left => self.indent,
+            TextAlign::Center => width.saturating_sub(self.width) / 2,
+            TextAlign::Right => width.saturating_sub(self.width),
+        }
+    }
+
+    /// The runs of the line: its chars, cut where their look changes.
+    pub fn runs<'a>(&self, chars: &'a [HtmlChar]) -> impl Iterator<Item = &'a [HtmlChar]> {
+        chars[self.start..self.end].chunk_by(|a, b| a.look == b.look)
+    }
+}
+
+/// Breaks HTML chars into lines no wider than `width`, as the classic
+/// client does: at the last space that fits, or where a word wider than the
+/// whole line overflows. The space a line breaks at, and each new line
+/// char, belong to no line. A line in a `<p>` that sits on the left starts
+/// a little to the right.
+pub fn html_lines(
+    chars: &[HtmlChar],
+    width: u32,
+    advance: impl Fn(&HtmlChar) -> u32,
+) -> Vec<HtmlLine> {
+    let mut lines = Vec::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let first = chars[at].look;
+        let indent = if first.indent && first.align == TextAlign::Left {
+            HTML_INDENT
+        } else {
+            0
+        };
+        let room = width.saturating_sub(indent);
+        let start = at;
+        let mut used = 0;
+        let mut last_space = None;
+        let mut next = None;
+        while at < chars.len() {
+            let ch = &chars[at];
+            if ch.ch == NEW_LINE {
+                next = Some(at + 1);
+                break;
+            }
+            let step = advance(ch);
+            if at > start && used + step > room {
+                next = Some(match (ch.ch == SPACE, last_space) {
+                    (true, _) => at + 1,
+                    (false, Some(space)) => {
+                        at = space;
+                        space + 1
+                    }
+                    (false, None) => at,
+                });
+                break;
+            }
+            if ch.ch == SPACE {
+                last_space = Some(at);
+            }
+            used += step;
+            at += 1;
+        }
+        let end = at;
+        let width = chars[start..end].iter().map(&advance).sum();
+        lines.push(HtmlLine {
+            start,
+            end,
+            width,
+            align: first.align,
+            indent,
+        });
+        match next {
+            Some(after) => {
+                at = after;
+                if at == chars.len() && chars[at - 1].ch == NEW_LINE {
+                    lines.push(HtmlLine {
+                        start: at,
+                        end: at,
+                        width: 0,
+                        align: first.align,
+                        indent: 0,
+                    });
+                }
+            }
+            None => break,
+        }
+    }
+    lines
+}
+
+/// How a block of HTML sits in its box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HtmlBox {
+    /// A paper background under the words.
+    pub background: bool,
+    pub scroll: GumpScroll,
+    /// A 15-bit color for words no tag colors. None follows the classic
+    /// rules: dark on paper, light with a bar, dark with neither.
+    pub color: Option<u32>,
+}
+
+impl HtmlBox {
+    /// The box shows a scroll bar.
+    pub fn has_bar(&self) -> bool {
+        self.scroll != GumpScroll::None
+    }
+
+    /// The color HTML words take, and how much narrower than the box they
+    /// wrap, by the classic rules.
+    pub fn color_and_room(&self) -> (Rgba, i32) {
+        let mut room = 0;
+        if self.has_bar() {
+            room += HTML_BAR_ROOM;
+        }
+        if self.background {
+            room += HTML_BACKGROUND_ROOM;
+        }
+        let color = match self.color {
+            Some(HTML_WHITE_15) => HTML_WHITE,
+            Some(color) => game_rgba(color),
+            None if self.background => {
+                room += HTML_BACKGROUND_EXTRA_ROOM;
+                HTML_NEAR_BLACK
+            }
+            None if !self.has_bar() => HTML_NEAR_BLACK,
+            None => HTML_WHITE_DEFAULT,
+        };
+        (color, room)
+    }
+
+    /// How far in from the corner of the box the words start.
+    pub fn pad(&self) -> i32 {
+        if self.background {
+            HTML_BACKGROUND_PAD
+        } else {
+            0
+        }
+    }
+
+    /// How far the words scroll at most in a box `height` tall, for words
+    /// `text_height` tall.
+    pub fn most_scroll(&self, text_height: i32, height: i32) -> i32 {
+        let room = if self.background {
+            HTML_BACKGROUND_ROOM
+        } else {
+            0
+        };
+        (text_height - height + room).max(0)
+    }
+}
+
+/// The 15-bit color of the game as red, green, blue and alpha bytes.
+pub fn game_rgba(color: u32) -> Rgba {
+    let channel = |shift: u32| {
+        (((color >> shift) & COLOR_CHANNEL_MAX) * u32::from(u8::MAX) / COLOR_CHANNEL_MAX) as u8
+    };
+    [channel(RED_SHIFT), channel(GREEN_SHIFT), channel(0), OPAQUE]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const WHITE: Rgba = [0xFF, 0xFF, 0xFF, OPAQUE];
 
+    const CHAR_WIDTH: u32 = 5;
+
     fn base() -> CharLook {
-        CharLook {
-            font: FONT_NORMAL,
-            color: WHITE,
-            bold: false,
-            italic: false,
-            underline: false,
-            indent: false,
-            align: TextAlign::Left,
-        }
+        html_base_look(WHITE)
+    }
+
+    fn chars(words: &str, look: CharLook) -> Vec<HtmlChar> {
+        words.chars().map(|ch| HtmlChar { ch, look }).collect()
+    }
+
+    fn texts(chars: &[HtmlChar], lines: &[HtmlLine]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| chars[l.start..l.end].iter().map(|c| c.ch).collect())
+            .collect()
+    }
+
+    #[test]
+    fn html_lines_break_at_spaces_and_new_lines() {
+        let words = chars("aaa bbb ccc\ndd", base());
+        let lines = html_lines(&words, 7 * CHAR_WIDTH, |_| CHAR_WIDTH);
+        assert_eq!(texts(&words, &lines), ["aaa bbb", "ccc", "dd"]);
+        assert_eq!(lines[0].width, 7 * CHAR_WIDTH);
+        let long = chars("abcdefg", base());
+        let lines = html_lines(&long, 3 * CHAR_WIDTH, |_| CHAR_WIDTH);
+        assert_eq!(texts(&long, &lines), ["abc", "def", "g"]);
+        let ending = chars("a\n", base());
+        assert_eq!(
+            texts(&ending, &html_lines(&ending, 50, |_| CHAR_WIDTH)),
+            ["a", ""]
+        );
+    }
+
+    #[test]
+    fn a_paragraph_line_on_the_left_is_indented_and_others_are_aligned() {
+        let para = chars(
+            "ab",
+            CharLook {
+                indent: true,
+                ..base()
+            },
+        );
+        let lines = html_lines(&para, 100, |_| CHAR_WIDTH);
+        assert_eq!(lines[0].left(100), HTML_INDENT);
+        let centered = chars(
+            "ab",
+            CharLook {
+                align: TextAlign::Center,
+                ..base()
+            },
+        );
+        let lines = html_lines(&centered, 100, |_| CHAR_WIDTH);
+        assert_eq!(lines[0].left(100), (100 - 2 * CHAR_WIDTH) / 2);
+    }
+
+    #[test]
+    fn a_line_runs_where_its_look_changes() {
+        let text = parse_html("a<b>bc</b>d", base(), &every_font);
+        let lines = html_lines(&text.chars, 100, |_| CHAR_WIDTH);
+        let runs: Vec<String> = lines[0]
+            .runs(&text.chars)
+            .map(|run| run.iter().map(|c| c.ch).collect())
+            .collect();
+        assert_eq!(runs, ["a", "bc", "d"]);
+    }
+
+    #[test]
+    fn html_colors_and_room_follow_the_classic_rules() {
+        let plain = HtmlBox {
+            background: false,
+            scroll: GumpScroll::None,
+            color: None,
+        };
+        assert_eq!(plain.color_and_room(), (HTML_NEAR_BLACK, 0));
+        let barred = HtmlBox {
+            scroll: GumpScroll::Bar,
+            ..plain
+        };
+        assert_eq!(barred.color_and_room(), (HTML_WHITE_DEFAULT, HTML_BAR_ROOM));
+        let paper = HtmlBox {
+            background: true,
+            ..plain
+        };
+        assert_eq!(
+            paper.color_and_room(),
+            (
+                HTML_NEAR_BLACK,
+                HTML_BACKGROUND_ROOM + HTML_BACKGROUND_EXTRA_ROOM
+            )
+        );
+        let colored = HtmlBox {
+            color: Some(0x7C00),
+            ..paper
+        };
+        assert_eq!(
+            colored.color_and_room(),
+            ([u8::MAX, 0, 0, u8::MAX], HTML_BACKGROUND_ROOM)
+        );
+        let white = HtmlBox {
+            color: Some(HTML_WHITE_15),
+            ..plain
+        };
+        assert_eq!(white.color_and_room().0, HTML_WHITE);
     }
 
     fn words(text: &HtmlText) -> String {

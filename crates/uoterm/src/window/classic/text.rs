@@ -6,11 +6,15 @@
 pub use crate::art::text::UoFonts;
 pub use uoterm_view::art::{TextLook, UoFont};
 
-use super::html::{parse_html, CharLook, HtmlChar, Rgba};
+pub use uoterm_view::ui::html::HTML_FONT;
+
 use eframe::egui::{self, ColorImage, TextureHandle, TextureId, TextureOptions, Vec2};
 use std::collections::HashMap;
 use std::hash::Hash;
 use uoterm_nav::{TextAlign, TextPicture, UnicodeStyle, UNICODE_PICTURE_PADDING};
+use uoterm_view::ui::html::{
+    html_base_look, html_lines, parse_html, HtmlChar, Rgba, HTML_LINE_HEIGHT,
+};
 
 /// How many drawn blocks of words the cache keeps. A busy screen shows a
 /// few hundred.
@@ -18,14 +22,7 @@ const TEXT_CACHE_CAPACITY: usize = 1024;
 const TEXTURE_NAME: &str = "uoterm-classic-text";
 const TEXTURE_OPTIONS: TextureOptions = TextureOptions::NEAREST;
 const RGBA_BYTES: usize = 4;
-/// Every line of HTML words is this tall, as in the classic client.
-const HTML_LINE_HEIGHT: u32 = 18;
-/// How far a line in a `<p>` starts from the left.
-const HTML_INDENT: u32 = 14;
-/// The Unicode font that gump HTML is written in.
-pub const HTML_FONT: u8 = 1;
 const SPACE: char = ' ';
-const NEW_LINE: char = '\n';
 
 /// How a block of gump HTML is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -46,16 +43,9 @@ fn html_advance(fonts: &UoFonts, ch: &HtmlChar) -> u32 {
 
 /// Draws gump HTML, wrapped to the width of `look`.
 pub fn render_html(fonts: &UoFonts, html: &str, look: &HtmlLook) -> Option<TextPicture> {
-    let base = CharLook {
-        font: HTML_FONT,
-        color: look.color,
-        bold: false,
-        italic: false,
-        underline: false,
-        indent: false,
-        align: TextAlign::Left,
-    };
-    let text = parse_html(html, base, &|font| fonts.unicode.has_font(font));
+    let text = parse_html(html, html_base_look(look.color), &|font| {
+        fonts.unicode.has_font(font)
+    });
     let lines = html_lines(&text.chars, look.width, |ch| html_advance(fonts, ch));
     if lines.is_empty() {
         return None;
@@ -73,10 +63,9 @@ pub fn render_html(fonts: &UoFonts, html: &str, look: &HtmlLook) -> Option<TextP
         }
     }
     for (row, line) in lines.iter().enumerate() {
-        let chars = &text.chars[line.start..line.end];
         let mut x = line.left(look.width);
         let top = row * HTML_LINE_HEIGHT as usize;
-        for run in chars.chunk_by(|a, b| a.look == b.look) {
+        for run in line.runs(&text.chars) {
             let words: String = run.iter().map(|c| c.ch).collect();
             let look = run[0].look;
             let style = UnicodeStyle {
@@ -126,103 +115,6 @@ fn blit(onto: &mut TextPicture, top: &TextPicture, left: usize, upper: usize) {
             }
         }
     }
-}
-
-/// One line of HTML words: the chars it holds and how wide they are.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HtmlLine {
-    pub start: usize,
-    pub end: usize,
-    pub width: u32,
-    pub align: TextAlign,
-    pub indent: u32,
-}
-
-impl HtmlLine {
-    /// Where the line starts in a block of `width`.
-    pub fn left(&self, width: u32) -> u32 {
-        match self.align {
-            TextAlign::Left => self.indent,
-            TextAlign::Center => width.saturating_sub(self.width) / 2,
-            TextAlign::Right => width.saturating_sub(self.width),
-        }
-    }
-}
-
-/// Breaks HTML chars into lines no wider than `width`, as the classic
-/// client does: at the last space that fits, or where a word wider than the
-/// whole line overflows. The space a line breaks at, and each new line
-/// char, belong to no line. A line in a `<p>` that sits on the left starts
-/// a little to the right.
-pub fn html_lines(
-    chars: &[HtmlChar],
-    width: u32,
-    advance: impl Fn(&HtmlChar) -> u32,
-) -> Vec<HtmlLine> {
-    let mut lines = Vec::new();
-    let mut at = 0;
-    while at < chars.len() {
-        let first = chars[at].look;
-        let indent = if first.indent && first.align == TextAlign::Left {
-            HTML_INDENT
-        } else {
-            0
-        };
-        let room = width.saturating_sub(indent);
-        let start = at;
-        let mut used = 0;
-        let mut last_space = None;
-        let mut next = None;
-        while at < chars.len() {
-            let ch = &chars[at];
-            if ch.ch == NEW_LINE {
-                next = Some(at + 1);
-                break;
-            }
-            let step = advance(ch);
-            if at > start && used + step > room {
-                next = Some(match (ch.ch == SPACE, last_space) {
-                    (true, _) => at + 1,
-                    (false, Some(space)) => {
-                        at = space;
-                        space + 1
-                    }
-                    (false, None) => at,
-                });
-                break;
-            }
-            if ch.ch == SPACE {
-                last_space = Some(at);
-            }
-            used += step;
-            at += 1;
-        }
-        let end = at;
-        let width = chars[start..end].iter().map(&advance).sum();
-        lines.push(HtmlLine {
-            start,
-            end,
-            width,
-            align: first.align,
-            indent,
-        });
-        match next {
-            Some(after) => {
-                at = after;
-                if at == chars.len() && chars[at - 1].ch == NEW_LINE {
-                    lines.push(HtmlLine {
-                        start: at,
-                        end: at,
-                        width: 0,
-                        align: first.align,
-                        indent: 0,
-                    });
-                }
-            }
-            None => break,
-        }
-    }
-    lines
 }
 
 /// A cache that forgets the entry used least lately when it is full.
@@ -351,69 +243,6 @@ fn upload(ctx: &egui::Context, picture: TextPicture) -> Option<TextTexture> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const CHAR_WIDTH: u32 = 5;
-
-    fn chars(words: &str, look: CharLook) -> Vec<HtmlChar> {
-        words.chars().map(|ch| HtmlChar { ch, look }).collect()
-    }
-
-    fn plain() -> CharLook {
-        CharLook {
-            font: HTML_FONT,
-            color: [0, 0, 0, u8::MAX],
-            bold: false,
-            italic: false,
-            underline: false,
-            indent: false,
-            align: TextAlign::Left,
-        }
-    }
-
-    fn texts(chars: &[HtmlChar], lines: &[HtmlLine]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| chars[l.start..l.end].iter().map(|c| c.ch).collect())
-            .collect()
-    }
-
-    #[test]
-    fn html_lines_break_at_spaces_and_new_lines() {
-        let words = chars("aaa bbb ccc\ndd", plain());
-        let lines = html_lines(&words, 7 * CHAR_WIDTH, |_| CHAR_WIDTH);
-        assert_eq!(texts(&words, &lines), ["aaa bbb", "ccc", "dd"]);
-        assert_eq!(lines[0].width, 7 * CHAR_WIDTH);
-        let long = chars("abcdefg", plain());
-        let lines = html_lines(&long, 3 * CHAR_WIDTH, |_| CHAR_WIDTH);
-        assert_eq!(texts(&long, &lines), ["abc", "def", "g"]);
-        let ending = chars("a\n", plain());
-        assert_eq!(
-            texts(&ending, &html_lines(&ending, 50, |_| CHAR_WIDTH)),
-            ["a", ""]
-        );
-    }
-
-    #[test]
-    fn a_paragraph_line_on_the_left_is_indented_and_others_are_aligned() {
-        let para = chars(
-            "ab",
-            CharLook {
-                indent: true,
-                ..plain()
-            },
-        );
-        let lines = html_lines(&para, 100, |_| CHAR_WIDTH);
-        assert_eq!(lines[0].left(100), HTML_INDENT);
-        let centered = chars(
-            "ab",
-            CharLook {
-                align: TextAlign::Center,
-                ..plain()
-            },
-        );
-        let lines = html_lines(&centered, 100, |_| CHAR_WIDTH);
-        assert_eq!(lines[0].left(100), (100 - 2 * CHAR_WIDTH) / 2);
-    }
 
     #[test]
     fn the_cache_forgets_the_entry_used_least_lately() {

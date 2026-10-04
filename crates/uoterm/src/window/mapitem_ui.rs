@@ -10,43 +10,23 @@
 
 use super::boxes_ui::{Tools, CELL_RADIUS};
 use super::bridge;
-use super::control::{Act, Answer, Ask, Asker, Hand};
+use super::control::{Asker, Hand};
 use super::model::host::map_item::LandPicture;
-use super::model::map_item::{pixel_at, pixel_of, point_of, UNKNOWN};
+use super::model::map_item::{pixel_at, point_of, UNKNOWN};
 use super::modern::frame::{self, FrameEvent, PanelSpec};
-use super::modern::layout::{self, Spot};
 use super::settings::Profile;
 use super::theme::{self, number_font, text_font};
 use crate::view::{WatchFrame, WatchMap};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::HashMap;
-
-const MAP_PLACE_ID: &str = "modern:map_item:";
-const PROFILE_ID: &str = "modern:profile";
-const TITLE_ROW: f32 = 32.0;
-const FOOT_ROW: f32 = 40.0;
-const PIN_RADIUS: f32 = 4.0;
-/// A pin takes clicks this far round it.
-const PIN_REACH: f32 = 8.0;
-const PIN_RING: f32 = 1.5;
-const COURSE_WIDTH: f32 = 1.5;
-const PAPER_EDGE: f32 = 2.0;
-
-const WORDS_TITLE: &str = "Map";
-const WORDS_CLEAR: &str = "Clear pins";
-const WORDS_EDIT: &str = "Plot course";
-const WORDS_STOP: &str = "Stop plotting";
-const WORDS_CLOSE: &str = "Close";
-const WORDS_NO_FILES: &str = "The picture needs the client files.";
-const HINT_PIN: &str = "Click: put a pin here.";
-const HINT_PIN_MOVE: &str = "Drag: move the pin.  Double-click: take it off.";
-const WORDS_MARK: &str = "Mark";
-const HINT_WISH: &str = "Say the place in plain words, for example: Britain bank";
-const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
-const WORDS_ASKING: &str = "Jev looks for the place...";
-const MARK_WIDTH: f32 = 70.0;
-const FIELD_ROW: f32 = 30.0;
-const GAP: f32 = 10.0;
+use uoterm_view::ui::map_item::{
+    foot_place, map_item_first_place, map_item_id, map_item_land, place_ask, plotting,
+    profile_first_place, profile_words, take_place_answer, MapItemButton, PinDeed, ProfilePanel,
+    COURSE_WIDTH, FIELD_ROW, GAP, HINT_PIN, HINT_PIN_MOVE, HINT_PROFILE, HINT_WISH, HINT_WISH_OFF,
+    MAP_ITEM_BUTTONS, MARK_WIDTH, PIN_RADIUS, PIN_REACH, PIN_RING, PROFILE_ID, PROFILE_LINE,
+    PROFILE_ROWS, PROFILE_TITLE_ROW, WORDS_ASKING, WORDS_CLOSE, WORDS_MARK, WORDS_NO_FILES,
+    WORDS_TITLE,
+};
 
 /// A pin the player drags: its map, its place in the list, and where it
 /// is now.
@@ -67,12 +47,6 @@ pub struct MapItemUi {
     /// Words for the human about the last thing Jev did.
     note: Option<(String, bool)>,
     dragging: Option<DraggedPin>,
-}
-
-/// What the player did to a pin in one frame.
-enum PinDeed {
-    Moved(usize, (u16, u16)),
-    Removed(usize),
 }
 
 impl MapItemUi {
@@ -111,16 +85,16 @@ impl MapItemUi {
             let map = self
                 .asked_for
                 .and_then(|serial| frame.maps.iter().find(|map| map.serial == serial));
-            match (answer, map) {
-                (Answer::Place(Ok((x, y))), Some(map)) => {
-                    let (x, y) = pixel_of(map, x, y);
-                    hand.act(Act::MapPin { x, y });
-                    self.wishes.remove(&map.serial);
+            match take_place_answer(map, answer) {
+                Ok(Some(act)) => {
+                    hand.act(act);
+                    if let Some(map) = map {
+                        self.wishes.remove(&map.serial);
+                    }
                     self.note = None;
                 }
-                (Answer::Place(Err(words)), _) => self.note = Some((words, true)),
-                // The map item asks only for a place, and its map is gone.
-                _ => {}
+                Ok(None) => {}
+                Err(words) => self.note = Some((words, true)),
             }
         }
     }
@@ -137,36 +111,28 @@ impl MapItemUi {
         profile: &mut Profile,
     ) -> Rect {
         let live = frame.human_control;
-        let paper = Vec2::new(f32::from(map.width.max(1)), f32::from(map.height.max(1)));
-        let size = paper
-            + Vec2::new(
-                theme::PANEL_PAD * 2.0,
-                frame::TITLE_ROW + FIELD_ROW + GAP * 2.0 + FOOT_ROW + theme::PANEL_PAD * 2.0,
-            );
-        let id = format!("{MAP_PLACE_ID}{}", index + 1);
+        let id = map_item_id(index);
         let spec = PanelSpec {
             id: &id,
             title: WORDS_TITLE,
-            default: layout::first_place(rect, Spot::Middle(index), size),
+            default: bridge::rect(map_item_first_place(bridge::area(rect), index, map)),
             min_size: None,
             closable: live,
         };
         let panel = frame::place(rect, &spec, profile);
         let body = frame::draw(ui.painter(), panel, WORDS_TITLE);
-        // The rows are laid from the bottom up, so every one of them stays
-        // inside the panel whatever size the map has.
-        let foot = Pos2::new(body.left(), body.bottom() - FOOT_ROW + theme::ROW_GAP);
+        let foot = bridge::pos2(foot_place(bridge::area(body)));
         let wish_row = Rect::from_min_size(
             Pos2::new(body.left(), foot.y - GAP - FIELD_ROW),
             Vec2::new(body.width(), FIELD_ROW),
         );
-        let picture = Rect::from_min_max(body.min, Pos2::new(body.right(), wish_row.top() - GAP));
+        let (picture, land) = map_item_land(bridge::area(body));
+        let (picture, land) = (bridge::rect(picture), bridge::rect(land));
         ui.painter().rect_filled(
             picture,
             CornerRadius::same(CELL_RADIUS),
             bridge::color(UNKNOWN),
         );
-        let land = picture.shrink(PAPER_EDGE);
         let scene = &mut *tools.scene;
         let texture =
             self.pictures
@@ -192,7 +158,7 @@ impl MapItemUi {
                 );
             }
         }
-        let plotting = live && map.may_plot;
+        let plotting = plotting(frame, map);
         if plotting {
             let response = ui.interact(land, Id::new(("map-item", map.serial)), Sense::click());
             if response.hovered() {
@@ -203,23 +169,13 @@ impl MapItemUi {
                 .filter(|_| response.clicked())
             {
                 let (x, y) = pixel_at(map, bridge::area(land), bridge::point(at));
-                tools.hand.act(Act::MapPin { x, y });
+                tools.hand.act(uoterm_view::act::Act::MapPin { x, y });
             }
         } else {
             self.dragging = None;
         }
-        match self.pins(ui, land, map, plotting) {
-            Some(PinDeed::Moved(pin, (x, y))) => tools.hand.act(Act::MapPinMove {
-                pin: u8::try_from(pin).unwrap_or(u8::MAX),
-                x,
-                y,
-            }),
-            Some(PinDeed::Removed(pin)) => {
-                tools
-                    .hand
-                    .act(Act::MapPinRemove(u8::try_from(pin).unwrap_or(u8::MAX)));
-            }
-            None => {}
+        if let Some(deed) = self.pins(ui, land, map, plotting) {
+            tools.hand.act(deed.act());
         }
         if live {
             self.ask_field(ui, wish_row, map, tools);
@@ -240,7 +196,7 @@ impl MapItemUi {
             );
         }
         if frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) && live {
-            tools.hand.act(Act::MapClose(map.serial));
+            tools.hand.act(MapItemButton::Close.act(map));
         }
         panel
     }
@@ -324,30 +280,24 @@ impl MapItemUi {
     }
 
     fn buttons(&self, ui: &egui::Ui, foot: Pos2, map: &WatchMap, tools: &Tools<'_>) {
-        let (clear, cleared) = theme::button(ui, foot, WORDS_CLEAR, theme::TEXT);
-        let (edit_words, edit_color) = if map.may_plot {
-            (WORDS_STOP, theme::WAITING)
-        } else {
-            (WORDS_EDIT, theme::GOAL)
-        };
-        let (edit, edited) = theme::button(
-            ui,
-            Pos2::new(clear.right() + theme::ROW_GAP, foot.y),
-            edit_words,
-            edit_color,
-        );
-        let (_, closed) = theme::button(
-            ui,
-            Pos2::new(edit.right() + theme::ROW_GAP, foot.y),
-            WORDS_CLOSE,
-            theme::TEXT_DIM,
-        );
-        if cleared {
-            tools.hand.act(Act::MapClear);
-        } else if edited {
-            tools.hand.act(Act::MapEdit);
-        } else if closed {
-            tools.hand.act(Act::MapClose(map.serial));
+        let mut at = foot;
+        let mut pressed = None;
+        for button in MAP_ITEM_BUTTONS {
+            let (words, waiting) = button.words(map);
+            let color = match button {
+                MapItemButton::Clear => theme::TEXT,
+                MapItemButton::Plot if waiting => theme::WAITING,
+                MapItemButton::Plot => theme::GOAL,
+                MapItemButton::Close => theme::TEXT_DIM,
+            };
+            let (area, clicked) = theme::button(ui, at, words, color);
+            at = Pos2::new(area.right() + theme::ROW_GAP, foot.y);
+            if clicked {
+                pressed = Some(button);
+            }
+        }
+        if let Some(button) = pressed {
+            tools.hand.act(button.act(map));
         }
     }
 
@@ -385,39 +335,19 @@ impl MapItemUi {
             if on { theme::GOAL } else { theme::TEXT_FAINT },
         );
         let asked = mark || (typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-        if asked && on && !wish.trim().is_empty() {
-            tools.hand.ask(
-                Asker::MapItem,
-                Ask::PlaceOnMap {
-                    wish: wish.trim().to_string(),
-                    map: map.facet,
-                    from: (map.start_x, map.start_y),
-                    to: (map.end_x, map.end_y),
-                },
-            );
+        if let Some(ask) = place_ask(map, wish).filter(|_| asked && on) {
+            tools.hand.ask(Asker::MapItem, ask);
             self.asked_for = Some(map.serial);
             self.note = Some((WORDS_ASKING.into(), false));
         }
     }
 }
 
-const PROFILE_WIDTH: f32 = 420.0;
-const PROFILE_ROWS: usize = 8;
-const PROFILE_LINE: f32 = 20.0;
-const WORDS_PROFILE: &str = "Profile";
-const WORDS_WRITE: &str = "Write";
-const WORDS_SAVE: &str = "Save";
-const HINT_PROFILE: &str = "What your character says about himself";
-
 /// The window that shows the profile of a character. Only the owner of a
 /// character may change his profile, so the shard refuses the rest.
 #[derive(Default)]
 pub struct ProfileUi {
-    /// The character whose profile shows, and the words being written.
-    shown: Option<u32>,
-    writing: Option<String>,
-    /// Show the profile of the character with the first picture.
-    show_own: bool,
+    panel: ProfilePanel,
 }
 
 impl ProfileUi {
@@ -425,25 +355,21 @@ impl ProfileUi {
     /// character as soon as the first picture names him.
     pub fn starting(show_own: bool) -> Self {
         Self {
-            show_own,
-            ..Self::default()
+            panel: ProfilePanel::starting(show_own),
         }
     }
 
     /// Asks the session for the profile of a character and shows it.
     pub fn show(&mut self, serial: u32, hand: &Hand) {
-        self.shown = Some(serial);
-        self.writing = None;
-        hand.act(Act::ProfileRead(serial));
+        hand.act(self.panel.show(serial));
     }
 
     pub fn close(&mut self) {
-        self.shown = None;
-        self.writing = None;
+        self.panel.close();
     }
 
     pub fn shows(&self, serial: u32) -> bool {
-        self.shown == Some(serial)
+        self.panel.shows(serial)
     }
 
     pub fn draw(
@@ -454,30 +380,22 @@ impl ProfileUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Option<Rect> {
-        if std::mem::take(&mut self.show_own) && frame.serial != 0 {
-            self.show(frame.serial, tools.hand);
+        if let Some(act) = self.panel.follow(frame) {
+            tools.hand.act(act);
         }
-        let serial = self.shown?;
-        let known = frame.profiles.iter().find(|kept| kept.serial == serial);
+        self.panel.shown?;
+        let known = self.panel.known(frame);
         let body_rows = PROFILE_ROWS as f32 * PROFILE_LINE;
-        let name = known.map_or("", |kept| kept.name.as_str());
-        let title = if name.is_empty() { WORDS_PROFILE } else { name };
+        let title = self.panel.title(frame);
         let spec = PanelSpec {
             id: PROFILE_ID,
-            title,
-            default: layout::first_place(
-                rect,
-                Spot::Middle(0),
-                Vec2::new(
-                    PROFILE_WIDTH,
-                    frame::TITLE_ROW + TITLE_ROW + body_rows + FOOT_ROW + theme::PANEL_PAD * 2.0,
-                ),
-            ),
+            title: &title,
+            default: bridge::rect(profile_first_place(bridge::area(rect))),
             min_size: None,
             closable: true,
         };
         let panel = frame::place(rect, &spec, profile);
-        let inner = frame::draw(ui.painter(), panel, title);
+        let inner = frame::draw(ui.painter(), panel, &title);
         ui.painter().text(
             inner.left_top(),
             Align2::LEFT_TOP,
@@ -486,10 +404,10 @@ impl ProfileUi {
             theme::TEXT_DIM,
         );
         let body = Rect::from_min_size(
-            inner.left_top() + Vec2::new(0.0, TITLE_ROW),
+            inner.left_top() + Vec2::new(0.0, PROFILE_TITLE_ROW),
             Vec2::new(inner.width(), body_rows),
         );
-        match self.writing.as_mut() {
+        match self.panel.writing.as_mut() {
             Some(words) => {
                 ui.painter()
                     .rect_filled(body, CornerRadius::same(CELL_RADIUS), theme::TRACK);
@@ -504,13 +422,7 @@ impl ProfileUi {
                 );
             }
             None => {
-                let shard = known.map_or("", |kept| kept.shard_words.as_str());
-                let own = known.map_or("", |kept| kept.own_words.as_str());
-                let words = if shard.is_empty() {
-                    own.to_string()
-                } else {
-                    format!("{shard}\n\n{own}")
-                };
+                let words = profile_words(known);
                 let mut job = egui::text::LayoutJob::single_section(
                     words,
                     egui::TextFormat::simple(text_font(theme::SIZE_BODY), theme::TEXT),
@@ -522,27 +434,14 @@ impl ProfileUi {
                     .galley(body.left_top(), galley, theme::TEXT);
             }
         }
-        let foot = Pos2::new(inner.left(), inner.bottom() - FOOT_ROW + theme::ROW_GAP);
-        let mine = serial == frame.serial;
+        let foot = bridge::pos2(foot_place(bridge::area(inner)));
         let mut next = foot;
-        if frame.human_control && mine {
-            let words = if self.writing.is_some() {
-                WORDS_SAVE
-            } else {
-                WORDS_WRITE
-            };
+        if let Some(words) = self.panel.write_words(frame) {
             let (area, pressed) = theme::button(ui, foot, words, theme::GOAL);
             next = Pos2::new(area.right() + theme::ROW_GAP, foot.y);
             if pressed {
-                match self.writing.take() {
-                    Some(words) => tools.hand.act(Act::ProfileWrite {
-                        serial,
-                        text: words,
-                    }),
-                    None => {
-                        self.writing =
-                            Some(known.map_or_else(String::new, |kept| kept.own_words.clone()));
-                    }
+                if let Some(act) = self.panel.press_write(frame) {
+                    tools.hand.act(act);
                 }
             }
         }

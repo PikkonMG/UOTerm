@@ -14,7 +14,7 @@ use crate::frame::WatchFrame;
 use crate::settings::WorldMapOptions;
 /// The zoom steps of the world map: points for each tile.
 pub use crate::settings::MAP_ZOOMS as ZOOMS;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uoterm_protocol::types::TARGET_GROUND;
 use uoterm_world::landmarks::Landmarks;
 
@@ -166,7 +166,7 @@ pub fn parse_goto(words: &str) -> Option<(u16, u16)> {
 }
 
 /// One marked place.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Marker {
     pub name: String,
     pub map: u8,
@@ -223,7 +223,7 @@ pub fn parse_markers_csv(text: &str) -> Vec<Marker> {
 }
 
 /// One file of markers, by its name with no extension.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkerFile {
     pub name: String,
     pub markers: Vec<Marker>,
@@ -467,7 +467,7 @@ pub fn flip_hidden(hidden: &mut Vec<String>, name: String) {
 }
 
 /// One zone of a zone file: a named area drawn in a color.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Zone {
     pub label: String,
     pub color: String,
@@ -475,11 +475,23 @@ pub struct Zone {
 }
 
 /// The zones of one file, and the facet they lie on.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ZoneFile {
     pub name: String,
     pub map: u8,
     pub zones: Vec<Zone>,
+}
+
+/// The name a web page reads every marker file and zone file of the map
+/// folder under, from the kept files of the server. The page may not
+/// write them.
+pub const MAP_FILES_KEPT: &str = "markers";
+
+/// Every marker file and zone file of the map folder, hidden or not.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MapFolder {
+    pub markers: Vec<MarkerFile>,
+    pub zones: Vec<ZoneFile>,
 }
 
 #[derive(Deserialize)]
