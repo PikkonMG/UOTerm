@@ -249,6 +249,32 @@ impl JournalLog {
     }
 }
 
+/// A time of the computer's clock, as each window reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalTime {
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+    pub second: u32,
+}
+
+impl LocalTime {
+    /// The time as the journal stamps a line: hours and minutes.
+    pub fn line_stamp(&self) -> String {
+        format!("{:02}:{:02}", self.hour, self.minute)
+    }
+
+    /// The time as a saved journal is named: the date, then the time.
+    pub fn file_stamp(&self) -> String {
+        format!(
+            "{:04}{:02}{:02}-{:02}{:02}{:02}",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
+        )
+    }
+}
+
 /// The wheel reads this many lines back for each turn.
 pub const LINES_PER_TURN: usize = 3;
 /// The kind of lines a new tab shows first.
@@ -393,6 +419,20 @@ mod tests {
         delete_tab(&mut tabs, "Chat");
         assert_eq!(tabs.len(), 1);
         assert_eq!(delete_question("All"), "Delete [All] tab?");
+    }
+
+    #[test]
+    fn a_time_stamps_a_line_and_names_a_saved_journal() {
+        let time = LocalTime {
+            year: 2026,
+            month: 10,
+            day: 4,
+            hour: 9,
+            minute: 5,
+            second: 7,
+        };
+        assert_eq!(time.line_stamp(), "09:05");
+        assert_eq!(time.file_stamp(), "20261004-090507");
     }
 
     #[test]

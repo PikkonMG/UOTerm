@@ -10,6 +10,8 @@ use crate::settings::JournalOptions;
 pub const JOURNAL_WIDTH: f32 = 400.0;
 pub const JOURNAL_HEIGHT: f32 = 330.0;
 pub const JOURNAL_LEAST: Vector = Vector::new(260.0, 200.0);
+/// The row of the chat line at the foot of the journal.
+pub const JOURNAL_CHAT_ROW: f32 = 30.0;
 
 pub const WORDS_JOURNAL: &str = "Journal";
 pub const WORDS_SAVE: &str = "Save";

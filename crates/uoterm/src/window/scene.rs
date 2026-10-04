@@ -30,8 +30,8 @@ use uoterm_view::geom::Rgba;
 use uoterm_view::scene::plates::{self, Overhead, PlacedPlate};
 pub use uoterm_view::scene::DOLL_FACING;
 use uoterm_view::scene::{
-    overlays, standing_figure, Mesh, Overlay, Plate, SceneInput, SceneState, DEATH_FONT, DEATH_HUE,
-    DEATH_WORDS,
+    doll_figure, overlays, standing_figure, Mesh, Overlay, Plate, SceneInput, SceneState,
+    DEATH_FONT, DEATH_HUE, DEATH_WORDS,
 };
 
 /// A fire or a fountain shows its next picture this often, so the window
@@ -480,8 +480,7 @@ impl Scene {
     /// The picture of a mobile as he stands and faces the watcher, for a
     /// paperdoll. It carries what he wears.
     pub fn doll_picture(&mut self, look: &WatchLook) -> Option<(egui::TextureId, Sprite)> {
-        let ring = Paint::outlined(bridge::rgba(theme::SELF_FIGURE));
-        self.standing_picture(look, DOLL_FACING, ring)
+        picture(&mut self.art, &doll_figure(look))
     }
 
     /// The picture of a mobile as he stands turned to `direction`, with no

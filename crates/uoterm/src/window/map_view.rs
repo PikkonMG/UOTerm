@@ -17,9 +17,8 @@ use eframe::egui::{
     self, epaint::Vertex, Align2, Color32, ColorImage, CornerRadius, FontId, Mesh, Painter, Pos2,
     Rect, Shape, Stroke, TextureHandle, TextureId, TextureOptions, Vec2,
 };
+use uoterm_view::ui::places::PANEL_WHEEL_POINTS;
 
-/// The wheel gives its step in points. This many points are one notch.
-const WHEEL_NOTCH: f32 = 50.0;
 /// The whole-world picture is at most this many pixels on its longer side.
 const WORLD_PICTURE_SIDE: u16 = 1024;
 /// The whole-world picture grows this many rows in each frame, so the
@@ -33,7 +32,7 @@ const WHOLE_UV: Rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
 /// The notches the wheel turned over a field this frame: up is positive.
 pub fn wheel_notches(ui: &egui::Ui, response: &egui::Response) -> f32 {
     if response.hovered() {
-        ui.input(|input| input.raw_scroll_delta.y) / WHEEL_NOTCH
+        ui.input(|input| input.raw_scroll_delta.y) / PANEL_WHEEL_POINTS
     } else {
         0.0
     }

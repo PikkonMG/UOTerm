@@ -52,6 +52,8 @@ pub enum OutCall {
     SaveKept { name: String, data: Value },
     /// Take a picture of the window, and give where it went back.
     Screenshot,
+    /// Give the player a text file to keep, as the journal saves one.
+    Download { name: String, text: String },
     /// A command for the windows of the style.
     Window { command: WindowCommand },
 }
@@ -246,6 +248,22 @@ impl Hand {
             },
             self.time,
         ));
+    }
+
+    /// Tells the player of something that failed, as a failed act.
+    pub fn fail(&mut self, words: &str) {
+        self.report = Some((
+            Report {
+                text: words.to_string(),
+                failed: true,
+            },
+            self.time,
+        ));
+    }
+
+    /// The clock of the last frame.
+    pub fn time(&self) -> f64 {
+        self.time
     }
 
     /// The newest report, and when it came.

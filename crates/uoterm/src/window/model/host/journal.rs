@@ -5,13 +5,14 @@
 
 use crate::view::WatchFrame;
 use crate::window::settings::SpeechOptions;
+use chrono::{Datelike, Timelike};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use uoterm_view::model::journal::{log_line, saved_file_name, saved_text, Entry, NewLines};
+use uoterm_view::model::journal::{
+    log_line, saved_file_name, saved_text, Entry, LocalTime, NewLines,
+};
 
 const JOURNALS_DIR: &str = "journals";
-const LINE_STAMP: &str = "%H:%M";
-const JOURNAL_FILE_STAMP: &str = "%Y%m%d-%H%M%S";
 /// The journal files the Speech page keeps lie here in the journals folder,
 /// each named for the time it began, as the reference client names them.
 const JOURNAL_LOGS_DIR: &str = "logs";
@@ -19,9 +20,22 @@ const JOURNAL_LOG_STAMP: &str = "%Y_%m_%d_%H_%M_%S";
 const JOURNAL_LOG_SUFFIX: &str = "_journal.txt";
 const JOURNAL_LOG_TIME: &str = "%Y-%m-%d %H:%M:%S";
 
+/// The time of the computer now.
+fn local_now() -> LocalTime {
+    let now = chrono::Local::now();
+    LocalTime {
+        year: now.year(),
+        month: now.month(),
+        day: now.day(),
+        hour: now.hour(),
+        minute: now.minute(),
+        second: now.second(),
+    }
+}
+
 /// The time of the computer as the journal stamps a line.
 pub fn stamp_now() -> String {
-    chrono::Local::now().format(LINE_STAMP).to_string()
+    local_now().line_stamp()
 }
 
 /// The folder the journals are saved in.
@@ -117,7 +131,7 @@ pub fn save(
     with_stamp: bool,
 ) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let stamp = chrono::Local::now().format(JOURNAL_FILE_STAMP).to_string();
+    let stamp = local_now().file_stamp();
     let file = dir.join(saved_file_name(character, &stamp));
     std::fs::write(&file, saved_text(lines, with_stamp))?;
     Ok(file)

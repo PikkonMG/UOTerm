@@ -33,6 +33,10 @@ pub const NEAR_ROW: f32 = 20.0;
 /// The width of a bar of its own.
 pub const BAR_WIDTH: f32 = 210.0;
 pub const LINE_GAP: f32 = 4.0;
+/// The box of a drag-select on the map: a faint fill of the goal color
+/// and an edge this wide.
+pub const SELECTION_FILL_ALPHA: f32 = 0.12;
+pub const SELECTION_EDGE: f32 = 1.0;
 pub const BUTTON_ROW: f32 = 24.0;
 
 /// The id a bar of a mobile keeps its place and its being open under.

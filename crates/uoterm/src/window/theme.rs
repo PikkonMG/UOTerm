@@ -46,7 +46,6 @@ egui_colors!(
     STAM,
     BAR_GHOST,
     NOTO_SELF,
-    SELF_FIGURE,
     PLATE_BACK,
     VIGNETTE,
 );

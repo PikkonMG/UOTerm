@@ -25,14 +25,18 @@ pub enum InputEvent {
     },
     /// Words typed: the page gives the characters a key types.
     Text { text: String },
-    /// A button went down. `double` is the second press of a double click.
-    /// Where the mouse is comes with each tick.
+    /// A button went down at `x`, `y`. `double` is the second press of a
+    /// double click. A press with no place is one of a key or a pad.
     PointerDown {
         button: PointerButton,
         #[serde(default)]
         mods: Mods,
         #[serde(default)]
         double: bool,
+        #[serde(default)]
+        x: Option<f32>,
+        #[serde(default)]
+        y: Option<f32>,
     },
     /// A button came up at `x`, `y`: a click there.
     PointerUp {
@@ -69,6 +73,11 @@ pub enum InputEvent {
     Panel { panel: String, action: Value },
 }
 
+/// A button that comes up this far from where it went down, in points, or
+/// this long after, makes no click, as egui counts a click: it was a drag.
+pub const CLICK_DISTANCE: f32 = 6.0;
+pub const CLICK_SECONDS: f64 = 0.8;
+
 /// A click of the primary button, where it was let go.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Click {
@@ -84,6 +93,8 @@ pub struct FrameInput {
     pub presses: Vec<KeyPress>,
     pub texts: Vec<String>,
     pub clicks: Vec<Click>,
+    /// Where clicks of the secondary button came up.
+    pub menu_clicks: Vec<Point>,
     pub primary_pressed: bool,
     pub secondary_pressed: bool,
     /// How far the wheel turned, in points of `SceneInput::scroll`.
@@ -98,6 +109,7 @@ impl Default for FrameInput {
             presses: Vec::new(),
             texts: Vec::new(),
             clicks: Vec::new(),
+            menu_clicks: Vec::new(),
             primary_pressed: false,
             secondary_pressed: false,
             scroll: 0.0,
@@ -117,6 +129,11 @@ pub struct Inputs {
     /// The last press of the primary button was the second of a double
     /// click.
     double_down: bool,
+    /// Where and when each button went down, when the page told where.
+    primary_press: Option<(Point, f64)>,
+    secondary_press: Option<(Point, f64)>,
+    /// The drag of the primary button was told to the map.
+    drag_told: bool,
     chat_focused: bool,
     other_field_focused: bool,
     sticks: [f32; 4],
@@ -124,9 +141,10 @@ pub struct Inputs {
 }
 
 impl Inputs {
-    /// Keeps one event for the next frame. The words of the chat line and
-    /// a panel action are the view's to take; they are not kept here.
-    pub fn read(&mut self, event: InputEvent) {
+    /// Keeps one event for the next frame, at `now`. The words of the chat
+    /// line and a panel action are the view's to take; they are not kept
+    /// here.
+    pub fn read(&mut self, event: InputEvent, now: f64) {
         match event {
             InputEvent::Key {
                 key,
@@ -154,17 +172,23 @@ impl Inputs {
                 button,
                 mods,
                 double,
+                x,
+                y,
             } => {
                 self.mods = mods;
+                let pressed = x.zip(y).map(|(x, y)| (Point::new(x, y), now));
                 match button {
                     PointerButton::Primary => {
                         self.primary_down = true;
                         self.double_down = double;
                         self.frame.primary_pressed = true;
+                        self.primary_press = pressed;
+                        self.drag_told = false;
                     }
                     PointerButton::Secondary => {
                         self.secondary_down = true;
                         self.frame.secondary_pressed = true;
+                        self.secondary_press = pressed;
                     }
                     PointerButton::Middle => {}
                 }
@@ -175,14 +199,23 @@ impl Inputs {
                 match button {
                     PointerButton::Primary if self.primary_down => {
                         self.primary_down = false;
-                        self.frame.clicks.push(Click {
-                            at,
-                            double: self.double_down,
-                            mods,
-                        });
+                        if is_click(self.primary_press.take(), at, now) {
+                            self.frame.clicks.push(Click {
+                                at,
+                                double: self.double_down,
+                                mods,
+                            });
+                        }
                     }
                     PointerButton::Primary => {}
-                    PointerButton::Secondary => self.secondary_down = false,
+                    PointerButton::Secondary => {
+                        self.secondary_down = false;
+                        if let Some(pressed) = self.secondary_press.take() {
+                            if is_click(Some(pressed), at, now) {
+                                self.frame.menu_clicks.push(at);
+                            }
+                        }
+                    }
                     PointerButton::Middle => {}
                 }
             }
@@ -237,10 +270,34 @@ impl Inputs {
         self.secondary_down
     }
 
+    pub fn primary_down(&self) -> bool {
+        self.primary_down
+    }
+
+    /// Where the primary button went down, the first time the mouse at
+    /// `mouse` is far enough from there that it drags; None otherwise.
+    pub fn drag_start(&mut self, mouse: Option<Point>) -> Option<Point> {
+        let (from, _) = self.primary_press?;
+        let mouse = mouse?;
+        if !self.primary_down || self.drag_told || (mouse - from).length() <= CLICK_DISTANCE {
+            return None;
+        }
+        self.drag_told = true;
+        Some(from)
+    }
+
     /// The controller as the page last read it.
     pub fn pad(&self) -> ([f32; 4], &[PadButton]) {
         (self.sticks, &self.pad_buttons)
     }
+}
+
+/// True when a button that went down at `pressed` and came up at `at` at
+/// `now` makes a click. A press of no place clicks where it comes up.
+fn is_click(pressed: Option<(Point, f64)>, at: Point, now: f64) -> bool {
+    pressed.is_none_or(|(from, when)| {
+        (at - from).length() <= CLICK_DISTANCE && now - when <= CLICK_SECONDS
+    })
 }
 
 #[cfg(test)]
@@ -250,6 +307,37 @@ mod tests {
 
     fn event(value: Value) -> InputEvent {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_button_that_moved_away_drags_and_makes_no_click() {
+        let mut inputs = Inputs::default();
+        inputs.read(
+            event(json!({ "kind": "PointerDown", "button": "Primary", "x": 10, "y": 10 })),
+            0.0,
+        );
+        assert_eq!(inputs.drag_start(Some(Point::new(12.0, 10.0))), None);
+        let far = Some(Point::new(40.0, 10.0));
+        assert_eq!(inputs.drag_start(far), Some(Point::new(10.0, 10.0)));
+        assert_eq!(inputs.drag_start(far), None, "a drag starts once");
+        inputs.read(
+            event(json!({ "kind": "PointerUp", "x": 40, "y": 10, "button": "Primary" })),
+            0.1,
+        );
+        assert!(inputs.take_frame().clicks.is_empty());
+    }
+
+    #[test]
+    fn a_short_right_click_asks_for_the_menu_and_a_long_hold_does_not() {
+        let mut inputs = Inputs::default();
+        let down = json!({ "kind": "PointerDown", "button": "Secondary", "x": 5, "y": 5 });
+        let up = json!({ "kind": "PointerUp", "x": 5, "y": 5, "button": "Secondary" });
+        inputs.read(event(down.clone()), 0.0);
+        inputs.read(event(up.clone()), 0.1);
+        assert_eq!(inputs.take_frame().menu_clicks, [Point::new(5.0, 5.0)]);
+        inputs.read(event(down), 1.0);
+        inputs.read(event(up), 1.0 + CLICK_SECONDS * 2.0);
+        assert!(inputs.take_frame().menu_clicks.is_empty(), "it walked");
     }
 
     #[test]
@@ -279,16 +367,19 @@ mod tests {
     #[test]
     fn a_press_and_a_release_make_a_click_and_a_held_key_stays_down() {
         let mut inputs = Inputs::default();
-        inputs.read(event(
-            json!({ "kind": "Key", "key": "Up", "pressed": true }),
-        ));
-        inputs.read(event(
-            json!({ "kind": "PointerDown", "button": "Primary", "double": true }),
-        ));
-        inputs.read(event(
-            json!({ "kind": "PointerUp", "x": 3, "y": 4, "button": "Primary" }),
-        ));
-        inputs.read(event(json!({ "kind": "Wheel", "notches": 1 })));
+        inputs.read(
+            event(json!({ "kind": "Key", "key": "Up", "pressed": true })),
+            0.0,
+        );
+        inputs.read(
+            event(json!({ "kind": "PointerDown", "button": "Primary", "double": true })),
+            0.0,
+        );
+        inputs.read(
+            event(json!({ "kind": "PointerUp", "x": 3, "y": 4, "button": "Primary" })),
+            0.0,
+        );
+        inputs.read(event(json!({ "kind": "Wheel", "notches": 1 })), 0.0);
         let frame = inputs.take_frame();
         assert_eq!(
             frame.clicks,
@@ -307,9 +398,12 @@ mod tests {
     #[test]
     fn the_wheel_with_ctrl_zooms_and_scrolls_nothing() {
         let mut inputs = Inputs::default();
-        inputs.read(event(
-            json!({ "kind": "Wheel", "notches": 1, "mods": { "ctrl": true, "alt": false, "shift": false, "command": true } }),
-        ));
+        inputs.read(
+            event(
+                json!({ "kind": "Wheel", "notches": 1, "mods": { "ctrl": true, "alt": false, "shift": false, "command": true } }),
+            ),
+            0.0,
+        );
         let frame = inputs.take_frame();
         assert_eq!(frame.scroll, 0.0);
         assert!(frame.zoom_delta > 1.0);
@@ -321,9 +415,12 @@ mod tests {
     fn the_wheel_with_shift_scrolls_and_zooms_nothing() {
         let mut inputs = Inputs::default();
         for ctrl in [false, true] {
-            inputs.read(event(
-                json!({ "kind": "Wheel", "notches": 1, "mods": { "ctrl": ctrl, "alt": false, "shift": true, "command": ctrl } }),
-            ));
+            inputs.read(
+                event(
+                    json!({ "kind": "Wheel", "notches": 1, "mods": { "ctrl": ctrl, "alt": false, "shift": true, "command": ctrl } }),
+                ),
+                0.0,
+            );
             assert_eq!(inputs.take_frame(), FrameInput::default(), "ctrl {ctrl}");
         }
     }

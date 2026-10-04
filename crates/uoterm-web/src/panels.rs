@@ -1,220 +1,484 @@
 //! The Modern panels as the page draws them: the data of each panel, built
 //! by the shared rules, and the small actions its buttons send, which turn
 //! into the same acts the panels of the Rust window make. Each panel has
-//! one field of [`PanelData`] and one action type here.
+//! one field of [`PanelData`] and one action type in its module.
+//!
+//! Every panel the player moves stands in a frame: the page reports where
+//! he dragged or sized it, and that he locked, folded, closed or put it
+//! back; the view keeps it by the rules of `uoterm_view::ui::places`, as
+//! the Rust window does, and saves the profile.
 
-use crate::{TooltipData, WebView};
+mod bar;
+mod bars;
+mod deck;
+mod desk;
+mod hud;
+mod journal;
+mod radar;
+mod ring;
+mod sheet;
+
+pub use bar::{ChatData, ControlBarData, LauncherData, QuestionData, ReportData, WaitingData};
+pub use bars::{HealthBarData, NearData};
+pub use deck::{HotbarAction, HotbarData, HotbarSlot, PickerData};
+pub use desk::{CarriedData, DropZone, SplitData};
+pub use hud::{ActivityData, PackData, VitalsData};
+pub use journal::JournalData;
+pub use radar::RadarData;
+pub use ring::{RingData, TipKey};
+pub use sheet::SheetData;
+
+pub(crate) use bar::BarState;
+pub(crate) use bars::BarsState;
+pub(crate) use deck::DeckState;
+pub(crate) use journal::JournalState;
+pub(crate) use radar::RadarState;
+pub(crate) use ring::RingState;
+pub(crate) use sheet::SheetState;
+
+use crate::{kept, TooltipData, WebView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use uoterm_view::act::Report;
-use uoterm_view::art::{ArtRequest, ItemPaint};
-use uoterm_view::clicks::report_shows;
-use uoterm_view::frame::WatchFrame;
-use uoterm_view::ui::deck::{
-    slot_picture, KeptHotbars, Press, SlotPicture, HOTBAR_FILE, HOTBAR_KEYS, HOTBAR_SLOTS,
-};
+use uoterm_view::geom::{Area, Point, Vector};
+use uoterm_view::model::places;
+use uoterm_view::scene::WHEEL_POINTS_PER_NOTCH;
+use uoterm_view::ui::places::{place, PANEL_WHEEL_POINTS};
 
 /// The names the page gives its panels in a `Panel` event.
-pub const PANEL_HOTBAR: &str = "hotbar";
+pub const PANEL_BAR: &str = "bar";
+pub const PANEL_CHAT: &str = "chat";
 pub const PANEL_QUESTION: &str = "question";
+pub const PANEL_LAUNCHER: &str = "launcher";
+pub const PANEL_ACTIVITY: &str = "activity";
+pub const PANEL_VITALS: &str = "vitals";
+pub const PANEL_PACK: &str = "pack";
+pub const PANEL_HOTBAR: &str = "hotbar";
+pub const PANEL_NEAR: &str = "near";
+pub const PANEL_JOURNAL: &str = "journal";
+pub const PANEL_RADAR: &str = "radar";
+pub const PANEL_SHEET: &str = "sheet";
+pub const PANEL_SPLIT: &str = "split";
+pub const PANEL_RING: &str = "ring";
+pub const PANEL_TIPS: &str = "tips";
+pub const PANEL_DESK: &str = "desk";
+/// A health bar of its own is the panel `"health:{serial}"`; the target
+/// bar is `"health:target"`.
+pub const PANEL_HEALTH_PREFIX: &str = "health:";
+const PERCENT: f32 = 100.0;
 
 /// What the page draws of the panels this frame.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PanelData {
+    /// The UI scale and the opacity of the panels, from the profile.
+    pub look: Look,
+    /// The title of the page.
+    pub title: String,
+    /// The message in the middle while no picture of the session shows.
+    pub waiting: Option<WaitingData>,
+    /// How strong the alarm color is over the edge of the map, 0 to 1.
+    pub alarm: f32,
+    pub bar: Option<ControlBarData>,
+    pub launcher: Option<Framed<LauncherData>>,
+    pub activity: Option<Framed<ActivityData>>,
+    pub vitals: Option<Framed<VitalsData>>,
+    pub pack: Option<Framed<PackData>>,
+    pub near: Option<Framed<NearData>>,
+    /// The health bars of their own, and the target bar.
+    pub bars: Vec<Framed<HealthBarData>>,
+    pub journal: Option<Framed<JournalData>>,
+    pub radar: Option<Framed<RadarData>>,
     /// The hotbar, while the human has control.
-    pub hotbar: Option<HotbarData>,
+    pub hotbar: Option<Framed<HotbarData>>,
+    /// The choices of the empty slot the player clicked.
+    pub picker: Option<PickerData>,
+    pub sheet: Option<Framed<SheetData>>,
+    /// The box that asks how many of a pile to move.
+    pub split: Option<Framed<SplitData>>,
+    pub ring: Option<RingData>,
     /// The words of the last act, while they show.
-    pub report: Option<Report>,
+    pub report: Option<ReportData>,
     /// The question that waits for Yes or No.
-    pub question: Option<&'static str>,
+    pub question: Option<QuestionData>,
     pub chat: ChatData,
-    /// The tooltip of the thing under the mouse on the map.
+    /// The tooltip of the thing under the mouse, on the map or on a panel.
     pub tooltip: Option<TooltipData>,
+    /// What the player carries on the mouse.
+    pub carried: Option<CarriedData>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct HotbarData {
-    pub slots: Vec<HotbarSlot>,
+/// How the panels look, from the profile.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct Look {
+    /// The UI scale of the Video page: the panels grow by it.
+    pub ui_scale: f32,
+    /// The opacity of the glass of the panels, 0 to 1.
+    pub opacity: f32,
 }
 
-/// One slot of the hotbar.
+/// A place on the page, in the points of the panel layer: its left, its
+/// top, its width and its height.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl From<Area> for Place {
+    fn from(area: Area) -> Self {
+        Self {
+            x: area.min.x,
+            y: area.min.y,
+            w: area.width(),
+            h: area.height(),
+        }
+    }
+}
+
+impl Place {
+    pub fn area(self) -> Area {
+        Area::from_min_size(Point::new(self.x, self.y), Vector::new(self.w, self.h))
+    }
+}
+
+/// Words and their color, as CSS: a theme token or a hue of the shard.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct HotbarSlot {
-    /// The first letters of its words, for a slot with no picture. Empty
-    /// for an empty slot.
+pub struct Colored {
     pub words: String,
-    /// The key that presses it.
-    pub key: &'static str,
-    /// The key of its picture in the page's cache of pictures.
-    pub picture: Option<String>,
-    /// All its words, for its tip.
-    pub tip: String,
+    pub color: String,
 }
 
-/// The chat line: its words, and whether it takes the keys or hides.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ChatData {
-    pub text: String,
-    pub open: bool,
-    pub hidden: bool,
+/// The frame of a panel the player moves.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct FrameData {
+    /// The name of the panel in its `Panel` events.
+    pub panel: String,
+    pub title: String,
+    /// The color of the title, when it is not the plain one.
+    pub title_color: Option<String>,
+    /// Words beside the marks of the title, such as how many are near.
+    pub aside: Option<Colored>,
+    /// The color of the edge, when it is not the glass edge.
+    pub edge: Option<String>,
+    /// The whole panel, unfolded.
+    pub area: Place,
+    pub locked: bool,
+    pub folded: bool,
+    pub foldable: bool,
+    pub closable: bool,
+    /// The player may size it by its corner.
+    pub sizable: bool,
 }
 
-/// What a button of the hotbar asks: `{"press": slot}` or `{"clear": slot}`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HotbarAction {
-    Press(usize),
-    /// A right click empties the slot.
-    Clear(usize),
+/// A panel in its frame.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Framed<T> {
+    pub frame: FrameData,
+    pub body: T,
 }
 
-/// The answer to the question: `{"answer": true}`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QuestionAction {
-    Answer(bool),
+/// What a panel is: its id in the profile, its title, where it stands
+/// before the player moves it, and how he may change its frame.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FrameSpec {
+    pub id: String,
+    pub title: String,
+    pub default: Area,
+    /// The least size of a panel the player sizes. None for a panel of a
+    /// fixed size.
+    pub min_size: Option<Vector>,
+    pub closable: bool,
+    pub foldable: bool,
 }
 
-impl WebView {
-    /// The data of every panel at `time`.
-    pub fn panel_data(&mut self, time: f64) -> PanelData {
-        let report = self
-            .hand
-            .newest_report()
-            .filter(|(_, since)| report_shows(*since, time))
-            .map(|(report, _)| report.clone());
-        let hotbar = self
-            .frame
-            .as_ref()
-            .filter(|frame| frame.human_control)
-            .cloned()
-            .map(|frame| self.hotbar_data(&frame));
-        PanelData {
-            hotbar,
-            report,
-            question: self.hand.question(),
-            chat: ChatData {
-                text: self.chat.text.clone(),
-                open: self.chat.is_open(&self.profile.speech),
-                hidden: self.chat.is_hidden(),
-            },
-            tooltip: self.tooltip.clone(),
+impl FrameSpec {
+    /// A panel of a fixed size that moves and locks only.
+    pub fn fixed(id: &str, title: &str, default: Area) -> Self {
+        Self {
+            id: id.to_string(),
+            title: title.to_string(),
+            default,
+            min_size: None,
+            closable: false,
+            foldable: false,
         }
     }
 
-    fn hotbar_data(&mut self, frame: &WatchFrame) -> HotbarData {
-        let slots = (0..HOTBAR_SLOTS)
-            .map(|slot| {
-                let key = HOTBAR_KEYS[slot];
-                let Some(what) = self.hotbars.slot(&frame.name, slot).cloned() else {
-                    return HotbarSlot {
-                        words: String::new(),
-                        key,
-                        picture: None,
-                        tip: String::new(),
-                    };
-                };
-                let picture = slot_picture(&what, frame).map(|picture| {
-                    let request = match picture {
-                        SlotPicture::Item { graphic, hue } => self.scene.item_request(
-                            &self.art,
-                            graphic,
-                            ItemPaint {
-                                hue,
-                                ..ItemPaint::default()
-                            },
-                            true,
-                        ),
-                        SlotPicture::Gump { gump, hue } => ArtRequest::Gump {
-                            gump,
-                            hue,
-                            partial: false,
-                        },
-                    };
-                    self.picture_key(&request)
-                });
-                HotbarSlot {
-                    words: what.face_words(frame),
-                    key,
-                    picture,
-                    tip: what.words(frame),
-                }
-            })
-            .collect();
-        HotbarData { slots }
+    pub fn closable(mut self) -> Self {
+        self.closable = true;
+        self
+    }
+
+    pub fn foldable(mut self) -> Self {
+        self.foldable = true;
+        self
+    }
+
+    pub fn sized(mut self, least: Vector) -> Self {
+        self.min_size = Some(least);
+        self
+    }
+}
+
+/// What the player did to the frame of a panel: `{"place": {x, y, w, h}}`
+/// after a drag of its title or its corner, `{"lock": true}`,
+/// `{"fold": true}`, `{"close": true}`, or `{"reset": true}` after a double
+/// click on its title.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameAction {
+    Place(Place),
+    Lock(bool),
+    Fold(bool),
+    Close(bool),
+    Reset(bool),
+}
+
+/// The panels the view keeps open and how each stands, apart from the
+/// profile.
+#[derive(Default)]
+pub(crate) struct PanelState {
+    pub bar: BarState,
+    pub bars: BarsState,
+    pub deck: DeckState,
+    pub journal: JournalState,
+    pub radar: RadarState,
+    pub ring: RingState,
+    pub sheet: SheetState,
+    pub desk: desk::DeskState,
+    pub hud: hud::HudBars,
+}
+
+impl WebView {
+    /// The room the panels stand in: the view, in the points of the panel
+    /// layer, which the UI scale grows.
+    pub(crate) fn panel_room(&self) -> Area {
+        let scale = self.profile.video.ui_scale.max(f32::EPSILON);
+        Area::from_min_size(Point::new(0.0, 0.0), self.view.size() / scale)
+    }
+
+    /// The data of every panel at `time`.
+    pub fn panel_data(&mut self, time: f64) -> PanelData {
+        let look = Look {
+            ui_scale: self.profile.video.ui_scale,
+            opacity: f32::from(self.profile.interface.gump_opacity) / PERCENT,
+        };
+        let chat = self.chat_data();
+        let report = self.report_data(time);
+        let question = self.question_data();
+        let tooltip = self.panel_tooltip(time).or_else(|| self.tooltip.clone());
+        let carried = self.carried_data();
+        let Some(frame) = self.frame.clone().filter(|frame| frame.error.is_empty()) else {
+            return PanelData {
+                look,
+                title: uoterm_view::model::info_bar::WINDOW_TITLE.to_string(),
+                waiting: Some(self.waiting_data()),
+                alarm: 0.0,
+                bar: None,
+                launcher: None,
+                activity: None,
+                vitals: None,
+                pack: None,
+                near: None,
+                bars: Vec::new(),
+                journal: None,
+                radar: None,
+                hotbar: None,
+                picker: None,
+                sheet: None,
+                split: None,
+                ring: None,
+                report,
+                question,
+                chat,
+                tooltip,
+                carried,
+            };
+        };
+        PanelData {
+            look,
+            title: uoterm_view::model::info_bar::window_title(&frame, &self.profile.interface),
+            waiting: None,
+            alarm: uoterm_view::ui::hud::alarm_share(frame.danger(), time),
+            bar: Some(self.control_bar_data(&frame)),
+            launcher: self.launcher_data(),
+            activity: Some(self.activity_data(&frame)),
+            vitals: Some(self.vitals_data(&frame)),
+            pack: Some(self.pack_data(&frame)),
+            near: Some(self.near_data(&frame)),
+            bars: self.health_bars_data(&frame),
+            journal: self.journal_data(&frame, time),
+            radar: self.radar_data(&frame),
+            hotbar: frame.human_control.then(|| self.hotbar_data(&frame)),
+            picker: self.picker_data(&frame),
+            sheet: self.sheet_data(&frame),
+            split: self.split_data(),
+            ring: self.ring_data(&frame),
+            report,
+            question,
+            chat,
+            tooltip,
+            carried,
+        }
+    }
+
+    /// The frame of panel `panel` by its spec, around `body`.
+    pub(crate) fn framed<T>(&self, panel: &str, spec: &FrameSpec, body: T) -> Framed<T> {
+        Framed {
+            frame: self.frame_data(panel, spec),
+            body,
+        }
+    }
+
+    /// The frame of panel `panel` as the profile keeps it.
+    pub(crate) fn frame_data(&self, panel: &str, spec: &FrameSpec) -> FrameData {
+        FrameData {
+            panel: panel.to_string(),
+            title: spec.title.clone(),
+            title_color: None,
+            aside: None,
+            edge: None,
+            area: Place::from(self.panel_area(spec)),
+            locked: places::is_locked(&self.profile, &spec.id),
+            folded: spec.foldable && places::is_folded(&self.profile, &spec.id),
+            foldable: spec.foldable,
+            closable: spec.closable,
+            sizable: spec.min_size.is_some(),
+        }
+    }
+
+    /// Where a panel stands now: where the player left it, or at its first
+    /// place, inside the room of the panels.
+    pub(crate) fn panel_area(&self, spec: &FrameSpec) -> Area {
+        place(
+            self.panel_room(),
+            &spec.id,
+            spec.default,
+            spec.min_size,
+            &self.profile,
+        )
+    }
+
+    /// The spec of the frame of panel `panel` now, when it shows one.
+    fn frame_spec(&self, panel: &str) -> Option<FrameSpec> {
+        let frame = self.frame.as_ref()?;
+        match panel {
+            PANEL_LAUNCHER => Some(self.launcher_spec()),
+            PANEL_ACTIVITY => Some(self.activity_spec(frame)),
+            PANEL_VITALS => Some(self.vitals_spec(frame)),
+            PANEL_PACK => Some(self.pack_spec(frame)),
+            PANEL_HOTBAR => Some(self.hotbar_spec()),
+            PANEL_NEAR => Some(self.near_spec(frame)),
+            PANEL_JOURNAL => Some(self.journal_spec()),
+            PANEL_RADAR => Some(self.radar_spec()),
+            PANEL_SHEET => Some(self.sheet_spec(frame)),
+            PANEL_SPLIT => self.split_spec(),
+            PANEL_QUESTION => self.question_spec(),
+            health => self.health_bar_spec(frame, health),
+        }
     }
 
     /// Takes the action of a panel. An action of a panel this view does not
     /// know, or one that does not read, does nothing.
     pub(crate) fn panel_action(&mut self, panel: &str, action: Value) {
+        if let Some(spec) = self.frame_spec(panel) {
+            if let Ok(done) = serde_json::from_value::<FrameAction>(action.clone()) {
+                self.frame_action(panel, &spec, done);
+                return;
+            }
+        }
         match panel {
-            PANEL_HOTBAR => {
-                if let Ok(action) = serde_json::from_value(action) {
-                    self.hotbar_action(action);
-                }
-            }
-            PANEL_QUESTION => {
-                if let Ok(QuestionAction::Answer(yes)) = serde_json::from_value(action) {
-                    self.hand.answer_question(yes);
-                }
-            }
-            _ => {}
+            PANEL_BAR => self.bar_action(action),
+            PANEL_CHAT => self.chat_action(action),
+            PANEL_QUESTION => self.question_action(action),
+            PANEL_LAUNCHER => self.launcher_action(action),
+            PANEL_HOTBAR => self.hotbar_action(action),
+            PANEL_NEAR => self.near_action(action),
+            PANEL_JOURNAL => self.journal_action(action),
+            PANEL_RADAR => self.radar_action(action),
+            PANEL_SHEET => self.sheet_action(action),
+            PANEL_SPLIT => self.split_action(action),
+            PANEL_RING => self.ring_action(action),
+            PANEL_TIPS => self.tips_action(action),
+            PANEL_DESK => self.desk_action(action),
+            health => self.health_bar_action(health, action),
         }
     }
 
-    fn hotbar_action(&mut self, action: HotbarAction) {
-        let Some(frame) = self.frame.clone().filter(|frame| frame.human_control) else {
-            return;
-        };
+    /// Does what the player did to the frame of a panel, by the rules of
+    /// the places, and keeps the profile.
+    fn frame_action(&mut self, panel: &str, spec: &FrameSpec, action: FrameAction) {
+        let sized = spec.min_size.is_some();
+        let locked = places::is_locked(&self.profile, &spec.id);
+        let now = self.panel_area(spec);
         match action {
-            HotbarAction::Press(slot) => self.press_slot(&frame, slot),
-            HotbarAction::Clear(slot) => {
-                self.hotbars.set(&frame.name, slot, None);
-                self.save_hotbars();
+            FrameAction::Place(moved) if !locked => {
+                let area = if sized {
+                    moved.area()
+                } else {
+                    Area::from_min_size(moved.area().min, now.size())
+                };
+                places::remember(&mut self.profile, &spec.id, area, sized);
             }
+            FrameAction::Lock(lock) => {
+                places::set_locked(&mut self.profile, &spec.id, now, sized, lock);
+            }
+            FrameAction::Fold(folded) if spec.foldable => {
+                places::set_folded(&mut self.profile, &spec.id, folded);
+            }
+            FrameAction::Reset(true) if !locked => places::forget(&mut self.profile, &spec.id),
+            FrameAction::Close(true) if spec.closable => return self.close_panel(panel, spec),
+            _ => return,
+        }
+        self.keep_profile();
+    }
+
+    /// Closes a panel the player closed by its mark.
+    fn close_panel(&mut self, panel: &str, spec: &FrameSpec) {
+        match panel {
+            PANEL_LAUNCHER => self.panels.bar.launcher_open = false,
+            PANEL_JOURNAL | PANEL_RADAR => {
+                places::set_shut(&mut self.profile, &spec.id, true);
+                self.keep_profile();
+            }
+            PANEL_SHEET => self.panels.sheet.open = false,
+            PANEL_SPLIT => self.panels.desk.split = None,
+            PANEL_QUESTION => self.answer_asked(false),
+            health => self.close_health_bar(health),
         }
     }
 
-    /// Does what a slot of the hotbar does.
-    pub(crate) fn press_slot(&mut self, frame: &WatchFrame, slot: usize) {
-        let Some(what) = self.hotbars.slot(&frame.name, slot) else {
-            return;
-        };
-        match what.press(frame, &self.profile) {
-            Some(Press::Act(act)) => self.hand.act(act),
-            Some(Press::Macro(steps)) => self.controls.run_macro(steps),
-            Some(Press::Report(words)) => self.hand.report(words),
-            None => {}
+    /// Keeps the profile where the page keeps it: with the places only
+    /// when the Interface page keeps them, in the UI style of the file.
+    pub(crate) fn keep_profile(&mut self) {
+        let saving = places::for_saving(&self.profile);
+        if let Ok(profile) = serde_json::to_value(kept(&saving, self.kept_style)) {
+            self.hand.push(crate::out::OutCall::SaveProfile { profile });
         }
-    }
-
-    fn save_hotbars(&mut self) {
-        if let Ok(data) = serde_json::to_value(&self.hotbars) {
-            self.hand.push(crate::out::OutCall::SaveKept {
-                name: HOTBAR_FILE.to_string(),
-                data,
-            });
-        }
-    }
-
-    /// Takes the hotbars the page read from the session.
-    pub(crate) fn keep_hotbars(&mut self, hotbars: KeptHotbars) {
-        self.hotbars = hotbars;
     }
 }
 
+/// The notches of a wheel over a panel's lines or map, from the notches
+/// of the mouse wheel the page counts, as the Rust window counts its
+/// points.
+pub(crate) fn panel_notches(notches: f32) -> f32 {
+    notches * WHEEL_POINTS_PER_NOTCH / PANEL_WHEEL_POINTS
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::out::OutCall;
-    use crate::tests::{fixture_watch_with_backpack, HATCHET, MARA};
+    use crate::tests::{settled, VIEW};
     use serde_json::json;
     use uoterm_view::act::PageAct;
     use uoterm_view::settings::Profile;
-    use uoterm_view::ui::deck::Slot;
+    use uoterm_view::ui::hud::VITALS_ID;
+    use uoterm_view::ui::launch::JOURNAL_ID;
 
     /// The acts among the calls for the page.
-    fn out_acts(out: &[OutCall]) -> Vec<PageAct> {
+    pub fn out_acts(out: &[OutCall]) -> Vec<PageAct> {
         out.iter()
             .filter_map(|call| match call {
                 OutCall::Act { act, .. } => Some(act.clone()),
@@ -223,71 +487,91 @@ mod tests {
             .collect()
     }
 
-    /// A view of Mara with the hatchet of her backpack in slot 0.
-    fn view_with_hatchet() -> (WebView, Slot) {
-        let mut view = WebView::new(&serde_json::to_string(&Profile::default()).unwrap());
-        view.frame(&fixture_watch_with_backpack(), 0.0);
-        let hatchet = Slot::Item {
-            serial: HATCHET,
-            graphic: 0x0F43,
-            hue: 0,
-            name: "hatchet".into(),
-        };
-        let mut hotbars = KeptHotbars::default();
-        hotbars.set(MARA, 0, Some(hatchet.clone()));
-        view.data_arrived_native(
-            &format!("{}{HOTBAR_FILE}", crate::KEPT_PREFIX),
-            &json!(hotbars),
-        );
-        (view, hatchet)
+    /// The profiles among the calls for the page.
+    pub fn saved_profiles(out: &[OutCall]) -> Vec<Profile> {
+        out.iter()
+            .filter_map(|call| match call {
+                OutCall::SaveProfile { profile } => serde_json::from_value(profile.clone()).ok(),
+                _ => None,
+            })
+            .collect()
     }
 
-    #[test]
-    fn a_hotbar_press_makes_the_same_act_as_the_window() {
-        let (mut view, slot) = view_with_hatchet();
-        let out = view.input_native(
-            &json!({"kind": "Panel", "panel": "hotbar", "action": {"press": 0}}).to_string(),
-            0.0,
-        );
-        let frame = view.frame_ref().unwrap().clone();
-        let Some(Press::Act(act)) = slot.press(&frame, &Profile::default()) else {
-            panic!("the hatchet slot uses the hatchet");
-        };
-        assert_eq!(out_acts(&out), vec![act.for_page()]);
-    }
-
-    #[test]
-    fn a_number_key_presses_its_slot_and_a_right_click_empties_it() {
-        let (mut view, _) = view_with_hatchet();
-        view.tick_native(0.0, crate::tests::VIEW, None);
-        view.take_out_native();
+    /// A `Panel` event of `panel` with `action`, given to the view.
+    pub fn press(view: &mut WebView, panel: &str, action: Value) -> Vec<OutCall> {
         view.input_native(
-            &json!({"kind": "Key", "key": "1", "pressed": true}).to_string(),
+            &json!({"kind": "Panel", "panel": panel, "action": action}).to_string(),
             0.0,
-        );
-        view.tick_native(0.0, crate::tests::VIEW, None);
-        assert_eq!(out_acts(&view.take_out_native()).len(), 1);
-        let out = view.input_native(
-            &json!({"kind": "Panel", "panel": "hotbar", "action": {"clear": 0}}).to_string(),
-            0.0,
-        );
-        assert!(matches!(out.as_slice(), [OutCall::SaveKept { name, .. }] if name == HOTBAR_FILE));
-        let data = view.panel_data(0.0);
-        let hotbar = data.hotbar.unwrap();
-        assert_eq!(hotbar.slots.len(), HOTBAR_SLOTS);
-        assert_eq!(hotbar.slots[0].words, "", "empty now");
-        assert_eq!(hotbar.slots[0].key, "1");
+        )
     }
 
     #[test]
-    fn a_slot_with_an_item_shows_its_picture_once_it_is_asked_for() {
-        let (mut view, _) = view_with_hatchet();
-        let data = view.panel_data(0.0);
-        let slot = &data.hotbar.unwrap().slots[0];
-        assert_eq!(slot.words, "hatche");
-        assert_eq!(slot.tip, "hatchet");
-        let key = slot.picture.clone().unwrap();
-        let wanted = view.art.take_wanted();
-        assert!(wanted.iter().any(|wanted| wanted.key == key));
+    fn a_drag_of_the_title_keeps_the_new_place_as_the_window_does() {
+        let mut view = settled();
+        let vitals = view.panel_data(0.0).vitals.unwrap().frame.area;
+        let moved = Place {
+            x: vitals.x + 40.0,
+            y: vitals.y - 30.0,
+            ..vitals
+        };
+        let out = press(&mut view, PANEL_VITALS, json!({ "place": moved }));
+        let saved = saved_profiles(&out);
+        assert_eq!(saved.len(), 1, "the move is kept once");
+        let kept = places::kept(&saved[0], VITALS_ID).unwrap();
+        assert_eq!((kept.x, kept.y), (moved.x, moved.y));
+        assert_eq!(kept.size, None, "the vitals have a size of their own");
+        assert_eq!(view.panel_data(0.0).vitals.unwrap().frame.area, moved);
+    }
+
+    #[test]
+    fn a_locked_panel_stays_and_a_double_click_puts_a_free_one_back() {
+        let mut view = settled();
+        let first = view.panel_data(0.0).vitals.unwrap().frame.area;
+        press(&mut view, PANEL_VITALS, json!({ "lock": true }));
+        assert!(view.panel_data(0.0).vitals.unwrap().frame.locked);
+        let away = Place { x: 0.0, ..first };
+        assert!(press(&mut view, PANEL_VITALS, json!({ "place": away })).is_empty());
+        assert_eq!(view.panel_data(0.0).vitals.unwrap().frame.area, first);
+        press(&mut view, PANEL_VITALS, json!({ "lock": false }));
+        press(&mut view, PANEL_VITALS, json!({ "place": away }));
+        press(&mut view, PANEL_VITALS, json!({ "reset": true }));
+        assert_eq!(view.panel_data(0.0).vitals.unwrap().frame.area, first);
+    }
+
+    #[test]
+    fn a_place_held_off_the_window_comes_back_inside_it() {
+        let mut view = settled();
+        let far = Place {
+            x: VIEW.max.x * 4.0,
+            y: VIEW.max.y * 4.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        press(&mut view, PANEL_VITALS, json!({ "place": far }));
+        let shown = view.panel_data(0.0).vitals.unwrap().frame.area.area();
+        assert!(view
+            .panel_room()
+            .contains(shown.max - Vector::new(1.0, 1.0)));
+    }
+
+    #[test]
+    fn the_journal_folds_and_shuts_by_its_marks() {
+        let mut view = settled();
+        press(&mut view, PANEL_JOURNAL, json!({ "fold": true }));
+        assert!(view.panel_data(0.0).journal.unwrap().frame.folded);
+        let out = press(&mut view, PANEL_JOURNAL, json!({ "close": true }));
+        assert!(places::is_shut(&saved_profiles(&out)[0], JOURNAL_ID));
+        assert!(view.panel_data(0.0).journal.is_none());
+    }
+
+    #[test]
+    fn the_panels_grow_by_the_ui_scale() {
+        let mut view = settled();
+        let small = view.panel_room();
+        let mut profile = Profile::default();
+        profile.video.ui_scale = 2.0;
+        view.set_profile(&serde_json::to_string(&profile).unwrap());
+        assert_eq!(view.panel_room().width(), small.width() / 2.0);
+        assert_eq!(view.panel_data(0.0).look.ui_scale, 2.0);
     }
 }

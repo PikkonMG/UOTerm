@@ -4692,6 +4692,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "uoterm-assist",
  "uoterm-nav",
  "uoterm-protocol",
  "uoterm-view",

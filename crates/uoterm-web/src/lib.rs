@@ -25,8 +25,8 @@ pub use creation::{CreationScreen, CreationView};
 pub use input::{Click, FrameInput, InputEvent, Inputs};
 pub use out::{Hand, OutCall, JEV_ORDER};
 pub use panels::{
-    ChatData, HotbarAction, HotbarData, HotbarSlot, PanelData, QuestionAction, PANEL_HOTBAR,
-    PANEL_QUESTION,
+    ChatData, FrameAction, FrameData, Framed, HotbarAction, HotbarData, HotbarSlot, PanelData,
+    Place, PANEL_HOTBAR, PANEL_QUESTION,
 };
 pub use synth::{render, render_midi};
 pub use web_art::{Post, Upload, Wanted, WebArt, BLOCK_KEEP_FRAMES, MEASURES_KEPT};
@@ -129,6 +129,10 @@ pub struct WebView {
     tips: Tips,
     reports: ShardReports,
     hotbars: KeptHotbars,
+    /// The Modern panels the view keeps open and how each stands.
+    panels: panels::PanelState,
+    /// The view of the last tick, in points.
+    view: Area,
     /// The kept files to read, each one time.
     kept_wanted: Vec<String>,
     /// Where the panels of the page lie: the world takes no clicks there.
@@ -192,6 +196,8 @@ impl WebView {
             tips: Tips::default(),
             reports: ShardReports::default(),
             hotbars: KeptHotbars::default(),
+            panels: panels::PanelState::default(),
+            view: Area::default(),
             kept_wanted: [HOTBAR_FILE, GRAB_BAGS_FILE]
                 .iter()
                 .map(|name| format!("{KEPT_PREFIX}{name}"))
@@ -252,7 +258,7 @@ impl WebView {
                     self.panel_action(&panel, action);
                 }
                 InputEvent::ChatWords { text } => self.chat.text = text,
-                other => self.inputs.read(other),
+                other => self.inputs.read(other, now),
             }
         }
         self.take_out_native()
@@ -316,6 +322,7 @@ impl WebView {
         clicks_of(self.controls.take_clicks(), mouse, &mut input);
         let seconds = self.last_tick.map_or(0.0, |last| (now - last).max(0.0)) as f32;
         self.last_tick = Some(now);
+        self.view = view;
         let (sticks, buttons) = self.inputs.pad();
         let buttons = buttons.to_vec();
         let pad = self.pad.read(sticks, &buttons, &self.profile, seconds);
@@ -342,12 +349,12 @@ impl WebView {
     }
 }
 
-/// The tooltip of the thing under the mouse on the map: the shard's words
-/// or its name, and what a click does.
+/// The tooltip of the thing under the mouse, on the map or on a panel:
+/// the shard's words or its name, and what a click does.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TooltipData {
     pub lines: Vec<String>,
-    pub footer: &'static str,
+    pub footer: String,
 }
 
 /// The view for the page. Each method turns the values of the page into
@@ -495,6 +502,29 @@ impl WebView {
     /// The data of the panels at `now`: `PanelData`.
     pub fn panels(&mut self, now: f64) -> JsValue {
         to_js(&self.panel_data(now))
+    }
+
+    /// The clock of the computer now, as the page reads it, for the times
+    /// of the journal: the year, the month and the day from one, the
+    /// hours, the minutes and the seconds.
+    #[wasm_bindgen(js_name = setLocalTime)]
+    pub fn set_local_time_js(
+        &mut self,
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) {
+        self.set_local_time(uoterm_view::model::journal::LocalTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        });
     }
 
     /// The profile as JSON, as it is kept.
@@ -980,5 +1010,92 @@ pub(crate) mod tests {
             view.panel_data(0.0).chat.open,
             "a prefix key opens the line"
         );
+    }
+
+    const ORC: u32 = 0x0000_0002;
+
+    /// A view of Mara in control with an orc beside her, drawn as a plain
+    /// figure, and the place of the orc on the map.
+    fn view_with_orc() -> (WebView, Point) {
+        let mut view = WebView::new("{}");
+        let mut watch: Value = serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
+        watch["mobiles"] = json!([{
+            "serial": ORC, "name": "an orc", "notoriety": 6,
+            "location": { "x": 1001, "y": 1000, "z": 0 }, "body": 17
+        }]);
+        view.frame(&watch.to_string(), 0.0);
+        view.tick_native(0.0, VIEW, None);
+        for path in view.data_wanted_native() {
+            if path.starts_with("/v1/data/frames/") {
+                view.data_missing_native(&path);
+            }
+        }
+        view.tick_native(0.1, VIEW, None);
+        view.take_out_native();
+        let orc = view
+            .scene
+            .picks()
+            .iter()
+            .find(|pick| pick.serial == ORC)
+            .map(|pick| pick.area.center())
+            .expect("the orc is drawn");
+        (view, orc)
+    }
+
+    #[test]
+    fn a_right_click_on_a_mobile_of_the_map_opens_its_ring() {
+        let (mut view, orc) = view_with_orc();
+        let down = json!({"kind": "PointerDown", "button": "Secondary", "x": orc.x, "y": orc.y});
+        let up = json!({"kind": "PointerUp", "x": orc.x, "y": orc.y, "button": "Secondary"});
+        view.input_native(&event(down), 0.2);
+        view.input_native(&event(up), 0.25);
+        view.tick_native(0.3, VIEW, Some(orc));
+        assert!(acts(&view.take_out_native()).contains(&Act::Menu(ORC).for_page()));
+        assert_eq!(view.panel_data(0.3).ring.unwrap().name, "an orc");
+    }
+
+    #[test]
+    fn a_drag_off_a_mobile_of_the_map_pulls_out_its_health_bar() {
+        let (mut view, orc) = view_with_orc();
+        let down = json!({"kind": "PointerDown", "button": "Primary", "x": orc.x, "y": orc.y});
+        view.input_native(&event(down), 0.2);
+        let away = orc + Vector::new(80.0, 40.0);
+        view.tick_native(0.3, VIEW, Some(away));
+        view.tick_native(0.4, VIEW, Some(away));
+        let bars = view.panel_data(0.4).bars;
+        assert_eq!(bars.len(), 1);
+        let up = json!({"kind": "PointerUp", "x": away.x, "y": away.y, "button": "Primary"});
+        view.input_native(&event(up), 0.5);
+        view.tick_native(0.5, VIEW, Some(away));
+        let clicked = acts(&view.take_out_native()).into_iter().any(|act| {
+            act.calls.iter().any(|call| {
+                [
+                    uoterm_world::tool_names::TOOL_USE,
+                    uoterm_world::tool_names::TOOL_MOVE_TO,
+                ]
+                .contains(&call.tool.as_str())
+            })
+        });
+        assert!(!clicked, "a drag is no click");
+    }
+
+    #[test]
+    fn the_window_commands_of_the_panels_are_the_views_and_the_rest_the_pages() {
+        let mut view = settled();
+        let frame = view.frame_ref().unwrap().clone();
+        let toggle = |kind| WindowCommand::Gump(uoterm_view::actions::GumpOp::Toggle, kind);
+        view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::Journal));
+        assert!(view.panel_data(0.0).journal.is_none());
+        view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::Skills));
+        let sheet = view.panel_data(0.0).sheet.unwrap().body;
+        assert!(sheet.skills.is_some());
+        view.style_command(&frame, WindowCommand::QuitGame);
+        assert!(view.panel_data(0.0).question.is_some());
+        view.take_out_native();
+        view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::WorldMap));
+        assert!(matches!(
+            view.take_out_native().as_slice(),
+            [OutCall::Window { .. }]
+        ));
     }
 }

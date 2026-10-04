@@ -89,6 +89,16 @@ pub fn standing_figure(look: &WatchLook, direction: u8, paint: Paint) -> ArtRequ
     }
 }
 
+/// The picture of the character on the sheet: standing, facing the
+/// watcher, with the ring of the character round it.
+pub fn doll_figure(look: &WatchLook) -> ArtRequest {
+    standing_figure(
+        look,
+        DOLL_FACING,
+        Paint::outlined(crate::ui::theme::SELF_FIGURE),
+    )
+}
+
 /// A color faded to `alpha`, held between none and all of it.
 fn faded(color: Rgba, alpha: f32) -> Rgba {
     color.with_alpha(alpha.clamp(0.0, 1.0))

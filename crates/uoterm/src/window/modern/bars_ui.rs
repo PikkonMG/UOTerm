@@ -37,8 +37,8 @@ use uoterm_view::geom::{Area, Point};
 use uoterm_view::ui::bars::{
     self as rules, bar_id, bar_size, line_count, near_list_size, party_buttons, restore_bars,
     subject_bar_id, BUTTON_ROW, HINT_ROW, HINT_TARGETING, LINE_GAP, NEAR_ID, NEAR_LEAST,
-    NEAR_ROW as ROW, WORDS_CLOSE_BAR as WORDS_CLOSE, WORDS_CURE, WORDS_HEAL, WORDS_NEAR,
-    WORDS_NOBODY, WORDS_RENAME, WORDS_TARGET,
+    NEAR_ROW as ROW, SELECTION_EDGE, SELECTION_FILL_ALPHA, WORDS_CLOSE_BAR as WORDS_CLOSE,
+    WORDS_CURE, WORDS_HEAL, WORDS_NEAR, WORDS_NOBODY, WORDS_RENAME, WORDS_TARGET,
 };
 
 const DOT_RADIUS: f32 = 4.0;
@@ -46,8 +46,6 @@ const GAP: f32 = 6.0;
 const PIP_WIDTH: f32 = 40.0;
 const DIST_WIDTH: f32 = 30.0;
 const NAME_ROOM: f32 = 60.0;
-const SELECTION_FILL_ALPHA: f32 = 0.12;
-const SELECTION_EDGE: f32 = 1.0;
 /// Each notch of the wheel moves the near list this many rows.
 const ROWS_PER_NOTCH: usize = 1;
 

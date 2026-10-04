@@ -25,13 +25,14 @@ use eframe::egui::{
 use uoterm_view::ui::launch::JOURNAL_ID;
 use uoterm_view::ui::lists::{
     back_words, saved_words, HINT_NEW_TAB, HINT_SEARCH, HINT_TAB, HINT_TAB_NAME,
-    JOURNAL_NOTE_SECONDS as NOTE_SECONDS, WORDS_DELETE_TAB, WORDS_JOURNAL as WORDS_TITLE,
-    WORDS_NEW_TAB, WORDS_NO_LINES, WORDS_RENAME, WORDS_SAVE,
+    JOURNAL_CHAT_ROW as CHAT_ROW_HEIGHT, JOURNAL_NOTE_SECONDS as NOTE_SECONDS, WORDS_DELETE_TAB,
+    WORDS_JOURNAL as WORDS_TITLE, WORDS_NEW_TAB, WORDS_NO_LINES, WORDS_RENAME, WORDS_SAVE,
 };
 use uoterm_view::ui::lists::{
     journal_waiting_words, journal_wheel_turns, journal_words_color, WordsColor, JOURNAL_FILTERS,
     JOURNAL_HEIGHT, JOURNAL_LEAST, JOURNAL_WIDTH,
 };
+use uoterm_view::ui::places::PANEL_WHEEL_POINTS;
 
 const TAB_ROW: f32 = 24.0;
 const TAB_GAP: f32 = 4.0;
@@ -41,10 +42,7 @@ const TOOL_ROW: f32 = 24.0;
 const FILTER_ROW: f32 = 20.0;
 const SAVE_WIDTH: f32 = 54.0;
 const LINE_GAP: f32 = 4.0;
-const CHAT_ROW_HEIGHT: f32 = 30.0;
 const PERCENT: f32 = 100.0;
-/// The wheel gives its step in points. This many points are one notch.
-const WHEEL_NOTCH: f32 = 50.0;
 
 /// What the journal tells the Modern panels after it is drawn.
 pub struct JournalDrawn {
@@ -469,7 +467,7 @@ fn lines(
     let notches = ui.input(|i| {
         let over = i.pointer.hover_pos().is_some_and(|p| area.contains(p));
         if over {
-            i.raw_scroll_delta.y / WHEEL_NOTCH
+            i.raw_scroll_delta.y / PANEL_WHEEL_POINTS
         } else {
             0.0
         }

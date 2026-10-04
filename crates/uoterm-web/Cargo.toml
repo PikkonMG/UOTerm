@@ -12,6 +12,7 @@ description = "The UOTerm play window for the browser, as WebAssembly"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+uoterm-assist.workspace = true
 uoterm-nav.workspace = true
 uoterm-protocol.workspace = true
 uoterm-world.workspace = true

@@ -8,19 +8,28 @@ use crate::buffers::{DrawBuffers, MeshArrays, PlacedWords, Shapes};
 use crate::input::FrameInput;
 use crate::out::{Hand, OutCall};
 use crate::{kept, TooltipData, WebView};
+use uoterm_assist::spells::School;
 use uoterm_view::act::Act;
 use uoterm_view::actions::controls::{ControlHost, FrameIn};
-use uoterm_view::actions::{LocalAim, WindowCommand};
+use uoterm_view::actions::windows::{
+    character_view, deck_tab, shown_panel, wanted, CharacterView, Tab,
+};
+use uoterm_view::actions::{GumpKind, GumpOp, LocalAim, WindowCommand};
 use uoterm_view::art::{hue_color, ArtRequest, ItemPaint, TextLook, WorldArt};
-use uoterm_view::clicks::{act_for_click, escape_on_map, EscapeOnMap, GroundClicks};
+use uoterm_view::clicks::{
+    act_for_click, escape_on_map, grabbed, EscapeOnMap, GroundClicks, PickKind,
+};
 use uoterm_view::floats::{self, SPEECH_LINE};
 use uoterm_view::frame::WatchFrame;
+use uoterm_view::frame::WatchPackItem;
 use uoterm_view::geom::{Area, Point, Rgba, Vector};
 use uoterm_view::input::KeyPress;
 use uoterm_view::keys::chat::{LineKey, Said};
 use uoterm_view::keys::Focus;
 use uoterm_view::model::asked::asked_commands;
 use uoterm_view::model::counters::slot_act;
+use uoterm_view::model::health_bars::{MapDrag, Pointer};
+use uoterm_view::model::spell_data::book_of;
 use uoterm_view::scene::plates::lay_out;
 use uoterm_view::scene::{
     overlays, SceneDraw, SceneInput, SceneState, DEATH_FONT, DEATH_HUE, DEATH_WORDS,
@@ -32,6 +41,8 @@ use uoterm_view::sky::{
 };
 use uoterm_view::steer::{Movement, SteerInput};
 use uoterm_view::ui::deck::hotbar_key_slot;
+use uoterm_view::ui::launch::{self, JOURNAL_ID, RADAR_ID};
+use uoterm_view::ui::ring::Subject;
 
 const ESCAPE_KEY: &str = "Escape";
 const ENTER_KEY: &str = "Enter";
@@ -175,6 +186,20 @@ impl WebView {
         self.tooltip = None;
         // The hotbar, the chat line, then the map, as the Rust window draws
         // them.
+        let escape = unused.iter().any(|press| press.key.0 == ESCAPE_KEY);
+        // The question of the Modern style takes Escape for its No; the
+        // ring and the picker of the hotbar shut on it, and the map sees it
+        // too.
+        let escape = if escape && self.panels.bar.question.is_some() {
+            self.answer_asked(false);
+            false
+        } else {
+            if escape {
+                self.close_ring();
+                self.panels.deck.picking = None;
+            }
+            escape
+        };
         if frame.human_control {
             if focus == Focus::Free {
                 for slot in unused
@@ -187,7 +212,6 @@ impl WebView {
             if !self.chat.is_hidden() {
                 self.chat_keys(frame, focus, &unused, texts);
             }
-            let escape = unused.iter().any(|press| press.key.0 == ESCAPE_KEY);
             let on_map = MapInput {
                 view,
                 mouse,
@@ -196,6 +220,13 @@ impl WebView {
             };
             self.act_on_map(frame, now, &input, on_map, &mut overlay);
             buffers.moving |= self.steer.walks();
+        } else {
+            self.panels.deck.picking = None;
+            self.panels.desk.dragging = None;
+        }
+        buffers.moving |= self.follow_panels(frame, now, mouse);
+        if let Some(area) = self.panels.bars.selecting {
+            overlay.select_box(area);
         }
         self.hand.ask_due();
         self.scene.set_panels(self.covered.clone());
@@ -207,19 +238,156 @@ impl WebView {
         buffers
     }
 
-    /// Does a command of the windows of the Modern style. The chat line
-    /// and the counter bar are the view's; the page does the others.
-    fn style_command(&mut self, frame: &WatchFrame, command: WindowCommand) {
+    /// The panels in one frame, as the Rust window draws them: the
+    /// journal keeps its lines, the vitals move, the health bars follow
+    /// the map and the shard, and the sheet takes its answers. True while
+    /// something of them still moves.
+    fn follow_panels(&mut self, frame: &WatchFrame, now: f64, mouse: Option<Point>) -> bool {
+        self.follow_journal(frame);
+        let moving = self.follow_vitals(frame, now);
+        let pointer = Pointer {
+            at: mouse,
+            down: self.inputs.primary_down(),
+            mods: self.inputs.mods(),
+        };
+        self.follow_bars(frame, pointer);
+        self.follow_sheet(frame, now);
+        moving || frame.danger() != uoterm_view::frame::Danger::Calm
+    }
+
+    /// Does a command of the windows of the Modern style, as the Modern
+    /// windows of the Rust window do. The windows of the page that the
+    /// view does not keep go to the page.
+    pub(crate) fn style_command(&mut self, frame: &WatchFrame, command: WindowCommand) {
+        let before = self.profile.clone();
         match command {
             WindowCommand::ToggleChat => self.chat.toggle_hidden(),
+            WindowCommand::PasteToChat => {
+                self.chat.paste();
+            }
             WindowCommand::UseCounterSlot(slot) => {
                 let act = slot_act(frame, &self.profile.counters, slot);
                 if let Some(act) = act.filter(|_| frame.human_control) {
                     self.hand.act(act);
                 }
             }
+            WindowCommand::QuitGame => self.ask_quit(),
+            WindowCommand::CloseHealthBars { inactive_only } => {
+                self.close_health_bars(frame, inactive_only);
+            }
+            WindowCommand::CloseAllGumps => self.close_all(frame),
+            WindowCommand::Gump(op, kind) => {
+                if !self.gump(frame, op, kind) {
+                    self.hand.push(OutCall::Window {
+                        command: WindowCommand::Gump(op, kind),
+                    });
+                }
+            }
             command => self.hand.push(OutCall::Window { command }),
         }
+        if self.profile != before {
+            self.keep_profile();
+        }
+    }
+
+    /// Closes every panel of the view that closes, as the classic client's
+    /// "close all gumps": the launcher, the sheet, the panels of the
+    /// launcher, the health bars and the question; and the book, the board
+    /// and the map items the shard opened.
+    fn close_all(&mut self, frame: &WatchFrame) {
+        self.panels.bar.launcher_open = false;
+        self.panels.bar.question = None;
+        self.panels.sheet.open = false;
+        launch::close_all(&mut self.profile);
+        self.close_health_bars(frame, false);
+        if frame.human_control {
+            if frame.book.is_some() {
+                self.hand.act(Act::BookClose);
+            }
+            if frame.board.is_some() {
+                self.hand.act(Act::BoardClose);
+            }
+            for map in &frame.maps {
+                self.hand.act(Act::MapClose(map.serial));
+            }
+        }
+    }
+
+    /// Opens or closes a window of the view. False when the view keeps no
+    /// such window: the page has it.
+    fn gump(&mut self, frame: &WatchFrame, op: GumpOp, kind: GumpKind) -> bool {
+        if let Some(school) = kind.school() {
+            return self.spellbook(frame, op, school);
+        }
+        let sheet = &self.panels.sheet;
+        if let Some(view) = character_view(kind) {
+            let shows = sheet.open && sheet.tab == Tab::Character && sheet.view == view;
+            self.show_sheet(op, shows, Tab::Character, Some(view));
+            return true;
+        }
+        if let Some(tab) = deck_tab(kind) {
+            let shows = sheet.open && sheet.tab == tab;
+            self.show_sheet(op, shows, tab, None);
+            return true;
+        }
+        match kind {
+            GumpKind::Journal => shown_panel(op, JOURNAL_ID, &mut self.profile),
+            GumpKind::Minimap => shown_panel(op, RADAR_ID, &mut self.profile),
+            GumpKind::Counters => {
+                self.profile.counters.enabled = wanted(op, self.profile.counters.enabled);
+            }
+            GumpKind::InfoBar => {
+                self.profile.info_bar.enabled = wanted(op, self.profile.info_bar.enabled);
+            }
+            GumpKind::Buffs => {
+                let combat = &mut self.profile.combat;
+                combat.improved_buff_bar = wanted(op, combat.improved_buff_bar);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Opens the sheet on a tab and a view, or closes it when it shows them
+    /// and the command closes.
+    fn show_sheet(&mut self, op: GumpOp, shows: bool, tab: Tab, view: Option<CharacterView>) {
+        let sheet = &mut self.panels.sheet;
+        if wanted(op, shows) {
+            sheet.open = true;
+            sheet.tab = tab;
+            if let Some(view) = view {
+                sheet.view = view;
+            }
+        } else if shows {
+            sheet.open = false;
+        }
+    }
+
+    /// Opens or closes the spells tab on a book of a school. Without a
+    /// book of it the shard is asked to open one, and the tab turns to it
+    /// when it comes. A book of masteries has no open command.
+    fn spellbook(&mut self, frame: &WatchFrame, op: GumpOp, school: School) -> bool {
+        let Some(book) = book_of(school) else {
+            return false;
+        };
+        let sheet = &self.panels.sheet;
+        let shows =
+            sheet.open && sheet.tab == Tab::Spells && self.shown_school(frame) == Some(school);
+        if !wanted(op, shows) {
+            if shows {
+                self.panels.sheet.open = false;
+            }
+            return true;
+        }
+        if !shows && !self.choose_school(frame, school) {
+            if school == School::Mastery {
+                return false;
+            }
+            self.hand.act(Act::OpenSpellbook(book.name));
+        }
+        self.panels.sheet.open = true;
+        self.panels.sheet.tab = Tab::Spells;
+        true
     }
 
     /// The world, the marks over it and the name plates; the death screen
@@ -384,7 +552,10 @@ impl WebView {
         let covered = self.covered.clone();
         let on_map =
             |at: &Point| view.contains(*at) && !covered.iter().any(|area| area.contains(*at));
-        let mouse_on_map = mouse.filter(on_map);
+        // While the ring is open the map takes no input: a click away
+        // shuts the ring.
+        let ring_open = self.ring_is_open();
+        let mouse_on_map = mouse.filter(on_map).filter(|_| !ring_open);
         let character = self
             .scene
             .place_of(frame, frame.serial)
@@ -404,7 +575,7 @@ impl WebView {
             return;
         };
         // The house designer takes the clicks on the house while it is open.
-        if self.steer.by_mouse() || frame.designing.is_some() {
+        if self.carries() || self.steer.by_mouse() || frame.designing.is_some() {
             return;
         }
         if let Some(shapes) = self
@@ -425,7 +596,7 @@ impl WebView {
         self.tooltip = match (self.hand.aiming(), &thing) {
             (Some(aim), _) => Some(TooltipData {
                 lines: vec![uoterm_view::guard::aim_words(aim).to_string()],
-                footer: "",
+                footer: String::new(),
             }),
             (None, Some(thing)) => {
                 let hand = &mut self.hand;
@@ -438,11 +609,21 @@ impl WebView {
                         .into_iter()
                         .map(str::to_string)
                         .collect(),
-                    footer: uoterm_view::clicks::hint_for(frame, thing.kind),
+                    footer: uoterm_view::clicks::hint_for(frame, thing.kind).to_string(),
                 })
             }
             (None, None) => None,
         };
+        // A right click opens the ring of the thing it came up on.
+        for at in input.menu_clicks.iter().filter(|at| on_map(at)) {
+            if let Some(thing) = self.scene.thing_at(*at).cloned() {
+                self.open_ring(*at, thing.serial, &thing.name, Subject::OnMap(thing.kind));
+                return;
+            }
+        }
+        if self.drag_on_map(frame, mouse) {
+            return;
+        }
         // A click acts on what lies where its button came up.
         for click in input.clicks.iter().filter(|click| on_map(&click.at)) {
             let picked = self
@@ -455,6 +636,41 @@ impl WebView {
                 self.hand.act(act);
             }
         }
+    }
+
+    /// A drag the human started on the map: an item goes on the mouse; a
+    /// drag from a mobile pulls off its health bar, and one from the ground
+    /// draws the box of a drag-select. True when a drag started.
+    fn drag_on_map(&mut self, frame: &WatchFrame, mouse: Point) -> bool {
+        let Some(from) = self.inputs.drag_start(Some(mouse)) else {
+            return false;
+        };
+        let pressed_on = self.scene.thing_at(from).cloned();
+        let hovered = self.scene.thing_at(mouse).cloned();
+        let easy_grab = self.profile.general.sallos_easy_grab;
+        let grabbed = grabbed(pressed_on, hovered, easy_grab);
+        if let Some(item) = grabbed
+            .as_ref()
+            .filter(|thing| thing.kind == PickKind::Item)
+            .and_then(|thing| frame.items.iter().find(|item| item.serial == thing.serial))
+        {
+            self.pick_up(&WatchPackItem {
+                serial: item.serial,
+                graphic: item.graphic,
+                hue: item.hue,
+                amount: item.amount,
+                name: item.name.clone(),
+                ..WatchPackItem::default()
+            });
+            return true;
+        }
+        let mobile = match &grabbed {
+            None => None,
+            Some(thing) if thing.kind == PickKind::Mobile => Some(thing.serial),
+            Some(_) => return false,
+        };
+        self.panels.bars.map_drag = Some(MapDrag { from, mobile });
+        true
     }
 
     /// The keys of the chat line, by the field that has them, and the
@@ -479,6 +695,16 @@ impl WebView {
         let keys: Vec<LineKey> = typed.chain(pressed).collect();
         let speech = &self.profile.speech;
         let out = self.chat.take_keys(focus, &keys, speech);
+        // The field of the page takes the keys while the line is open, and
+        // lets them go when the line closes.
+        if out.closed {
+            self.panels.bar.chat_focus = Some(false);
+        } else if focus == Focus::Free && self.chat.is_open(speech) {
+            self.panels.bar.chat_focus = Some(true);
+        }
+        if focus == Focus::Free && self.chat.take_paste() {
+            self.panels.bar.chat_paste = true;
+        }
         for words in out.sent {
             match self
                 .chat_mode

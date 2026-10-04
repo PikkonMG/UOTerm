@@ -12,6 +12,8 @@ use uoterm_view::geom::{Area, Point, Rgba, Vector};
 use uoterm_view::lights::{LightCells, LIGHT_CELL};
 use uoterm_view::scene::plates::PlacedPlate;
 use uoterm_view::scene::{Mesh, Overlay, Vertex};
+use uoterm_view::ui::bars::{SELECTION_EDGE, SELECTION_FILL_ALPHA};
+use uoterm_view::ui::theme::GOAL;
 use wasm_bindgen::prelude::*;
 
 /// The points round a whole circle.
@@ -121,6 +123,18 @@ impl Shapes {
             [white; 4],
             color,
         );
+    }
+
+    /// The box of a drag-select on the map.
+    pub fn select_box(&mut self, area: Area) {
+        self.fill(area, GOAL.with_alpha(SELECTION_FILL_ALPHA));
+        let corners = [
+            area.min,
+            Point::new(area.max.x, area.min.y),
+            area.max,
+            Point::new(area.min.x, area.max.y),
+        ];
+        self.line(&corners, true, SELECTION_EDGE, GOAL);
     }
 
     /// A line through the points, back to the first when `closed`.

@@ -11,6 +11,9 @@ use crate::settings::Profile;
 pub const TITLE_ROW: f32 = 28.0;
 /// A panel is at least this wide, so its title and marks fit.
 pub const PANEL_MIN_WIDTH: f32 = 170.0;
+/// The wheel over the lines or the map of a panel turns it one notch for
+/// this many points of scroll.
+pub const PANEL_WHEEL_POINTS: f32 = 50.0;
 /// A folded panel shows its title alone.
 pub const FOLDED_HEIGHT: f32 = TITLE_ROW + PANEL_PAD * 2.0;
 

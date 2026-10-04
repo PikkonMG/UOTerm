@@ -43,7 +43,8 @@ use uoterm_view::clicks::{
     report_shows, ChatMode, EscapeOnMap, GroundClicks, Press, WordsEdge,
 };
 use uoterm_view::ui::control_bar::{
-    BAR_WIDTH, RULE_GAP, SEGMENT_HEIGHT, STRIP_PAD, STRIP_ROW, WORDS_PIN, WORDS_TAKE_TO_TALK,
+    bar_size, place_numbers, GUARD_QUESTION_SIZE, REPORT_GAP, RULE_GAP, SEGMENT_HEIGHT, STRIP_PAD,
+    STRIP_ROW, WORDS_FACES, WORDS_MAP_LABEL, WORDS_PIN, WORDS_TAKE_TO_TALK,
 };
 use uoterm_view::ui::deck::WORDS_BAR_FULL as REPORT_BAR_FULL;
 use uoterm_view::ui::question::{WORDS_NO, WORDS_YES};
@@ -59,11 +60,9 @@ const FOLD_ARROW_SHARE: f32 = 0.5;
 const FOLD_STROKE: f32 = 2.0;
 const BUTTON_GAP: f32 = 8.0;
 const FIELD_RADIUS: u8 = 6;
-const REPORT_GAP: f32 = 8.0;
 const MODE_WIDTH: f32 = 58.0;
 
 const PIN_WIDTH: f32 = 48.0;
-const QUESTION_SIZE: Vec2 = Vec2::new(300.0, 110.0);
 /// The id of the chat line. The keys know it by this id.
 const CHAT_BOX: &str = "chat-box";
 
@@ -121,15 +120,11 @@ fn location_job(frame: &WatchFrame) -> LayoutJob {
     let mut job = LayoutJob::default();
     let words = TextFormat::simple(text_font(theme::SIZE_BODY), theme::TEXT_DIM);
     let numbers = TextFormat::simple(number_font(theme::SIZE_BODY), theme::TEXT);
-    job.append(
-        &format!("{}, {}, {}", frame.x, frame.y, frame.z),
-        0.0,
-        numbers.clone(),
-    );
-    job.append("map", LOCATION_GAP, words.clone());
+    job.append(&place_numbers(frame), 0.0, numbers.clone());
+    job.append(WORDS_MAP_LABEL, LOCATION_GAP, words.clone());
     job.append(&frame.map.to_string(), WORD_GAP, numbers);
     if !frame.facing.is_empty() {
-        job.append("faces", LOCATION_GAP, words);
+        job.append(WORDS_FACES, LOCATION_GAP, words);
         job.append(
             &frame.facing,
             WORD_GAP,
@@ -277,7 +272,7 @@ impl ControlUi {
 /// while it waits for the answer.
 fn question(ui: &egui::Ui, rect: Rect, hand: &Hand) -> Option<Rect> {
     let words = hand.question()?;
-    let panel = Rect::from_center_size(rect.center(), QUESTION_SIZE);
+    let panel = Rect::from_center_size(rect.center(), bridge::vec2(GUARD_QUESTION_SIZE));
     theme::panel(ui.painter(), panel);
     let inner = panel.shrink(theme::PANEL_PAD);
     ui.painter().text(
@@ -475,12 +470,7 @@ impl ControlUi {
     ) -> Rect {
         let buttons = bar_buttons(frame);
         let status = bar_status(frame, hand.aiming());
-        let menu_height = if self.folded {
-            0.0
-        } else {
-            RULE_GAP * 2.0 + status.map_or(0.0, |_| STRIP_ROW) + SEGMENT_HEIGHT
-        };
-        let size = Vec2::new(BAR_WIDTH, STRIP_PAD * 2.0 + STRIP_ROW + menu_height);
+        let size = bridge::vec2(bar_size(self.folded, status.is_some()));
         // The Classic style keeps the top for its menu bar and its game
         // window, so there the bar stands at the foot of the window.
         let panel = if places.classic {
