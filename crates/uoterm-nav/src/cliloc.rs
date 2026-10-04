@@ -16,6 +16,7 @@
 //! instance serves every character on a shard. Read it through the same cache
 //! the runtime shares a [`crate::MulMap`] with, never once per character.
 
+use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::Path;
@@ -65,6 +66,7 @@ enum Slot<'a> {
 }
 
 /// Every message the client files describe.
+#[derive(Serialize, Deserialize)]
 pub struct ClilocData {
     entries: HashMap<u32, String>,
 }

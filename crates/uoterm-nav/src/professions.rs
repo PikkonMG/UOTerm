@@ -7,6 +7,7 @@
 //! category the professions under it. The client adds the Advanced choice,
 //! where the player sets the skills and the stats himself.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::mul::{first_existing, read_file, MapError};
@@ -115,14 +116,14 @@ const CITY_TEXT_END: u8 = b'.';
 const PARAGRAPH: &str = "\n\n";
 
 /// Whether a block is a group of professions or one profession.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProfessionKind {
     Category,
     Profession,
 }
 
 /// One profession, or one category of professions, of the list.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profession {
     pub name: String,
     pub true_name: String,
@@ -215,7 +216,7 @@ fn skill_number(name: &str, skill_names: &[String]) -> Option<u8> {
 
 /// The professions of the client: the top level in file order with Advanced
 /// last, and the professions of each category.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfessionList {
     all: Vec<Profession>,
 }
