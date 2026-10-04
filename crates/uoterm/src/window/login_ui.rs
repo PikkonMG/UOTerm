@@ -256,19 +256,11 @@ enum SavedAct {
 /// session, or words for the human.
 pub type Connect = Arc<dyn Fn(LoginForm, LoginPicker) -> Result<Link, String> + Send + Sync>;
 
-/// Which list the login waits for a pick from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PickOf {
-    Shard,
-    Character,
-}
-
 enum Stage {
     Form,
     Connecting,
-    /// The login waits for a pick from this list.
+    /// The login waits for a pick from this list of shards.
     Picking {
-        of: PickOf,
         names: Vec<String>,
         reply: tokio::sync::oneshot::Sender<usize>,
     },
@@ -284,7 +276,7 @@ enum Stage {
 enum Shown {
     Form,
     Connecting,
-    Picking(PickOf, Vec<String>),
+    Picking(Vec<String>),
     Characters(Vec<String>),
 }
 
@@ -293,7 +285,7 @@ impl Stage {
         match self {
             Stage::Form => Shown::Form,
             Stage::Connecting => Shown::Connecting,
-            Stage::Picking { of, names, .. } => Shown::Picking(*of, names.clone()),
+            Stage::Picking { names, .. } => Shown::Picking(names.clone()),
             Stage::Characters { names, .. } => Shown::Characters(names.clone()),
         }
     }
@@ -334,9 +326,6 @@ struct LoginFlow {
     connect_at_once: bool,
     /// The slot waiting to be deleted once the human says yes.
     delete_asked: Option<usize>,
-    /// The character the human played, whose name answers the question of
-    /// the login which character to play.
-    played: Option<String>,
     /// The new character the human makes, while he makes one.
     creating: Option<Creation>,
     files: CreationFiles,
@@ -366,7 +355,6 @@ impl LoginFlow {
             note: None,
             connect_at_once: start.connect_at_once,
             delete_asked: None,
-            played: None,
             creating: None,
             files: read_creation_files(start.uopath),
             version: start.version,
@@ -499,7 +487,6 @@ impl LoginFlow {
         self.done = Some(done);
         self.stage = Stage::Connecting;
         self.note = None;
-        self.played = None;
     }
 
     /// Asks Jev which of `options` the wish names. The answer comes back
@@ -565,8 +552,7 @@ impl LoginFlow {
         let Stage::Characters { names, .. } = &self.stage else {
             return;
         };
-        if let Some(name) = names.get(slot).filter(|name| !name.is_empty()) {
-            self.played = Some(name.clone());
+        if names.get(slot).is_some_and(|name| !name.is_empty()) {
             self.answer_request(CharacterRequest::Play(slot));
         }
     }
@@ -602,13 +588,17 @@ impl LoginFlow {
     }
 
     fn take_questions(&mut self, ctx: &egui::Context) {
-        let question = self.questions.as_mut().and_then(|q| q.try_recv().ok());
-        let (of, ask, names, reply) = match question {
+        match self.questions.as_mut().and_then(|q| q.try_recv().ok()) {
             Some(LoginQuestion::Shard { names, reply }) => {
-                (PickOf::Shard, orders::ASK_SHARD, names, reply)
-            }
-            Some(LoginQuestion::Character { names, reply }) => {
-                (PickOf::Character, orders::ASK_CHARACTER, names, reply)
+                self.stage = Stage::Picking {
+                    names: names.clone(),
+                    reply,
+                };
+                // The wish may name the shard already. Jev answers, or the
+                // human clicks.
+                if !self.wish.trim().is_empty() {
+                    self.ask_jev(Asked::Pick, orders::ASK_SHARD, names, ctx);
+                }
             }
             Some(LoginQuestion::Characters {
                 names,
@@ -626,27 +616,8 @@ impl LoginFlow {
                     choices,
                     reply,
                 };
-                return;
             }
-            None => return,
-        };
-        // The character the human played in the list answers at once.
-        let played = self
-            .played
-            .as_ref()
-            .filter(|_| of == PickOf::Character)
-            .and_then(|name| names.iter().position(|known| known == name));
-        self.stage = Stage::Picking { of, names, reply };
-        if let Some(place) = played {
-            self.answer_pick(place);
-            return;
-        }
-        // The wish may name the pick already. Jev answers, or the human clicks.
-        if !self.wish.trim().is_empty() {
-            if let Stage::Picking { names, .. } = &self.stage {
-                let names = names.clone();
-                self.ask_jev(Asked::Pick, ask, names, ctx);
-            }
+            None => {}
         }
     }
 
@@ -770,12 +741,8 @@ impl LoginUi {
                     theme::WAITING,
                 );
             }
-            Shown::Picking(of, names) => {
-                let title = match of {
-                    PickOf::Shard => WORDS_PICK_SHARD,
-                    PickOf::Character => WORDS_PICK_CHARACTER,
-                };
-                if let Some(place) = pick_list(ui, body, title, &names) {
+            Shown::Picking(names) => {
+                if let Some(place) = pick_list(ui, body, WORDS_PICK_SHARD, &names) {
                     flow.answer_pick(place);
                 }
             }
@@ -1319,8 +1286,7 @@ mod tests {
         let mut screen = flow();
         let (reply, mut answer) = tokio::sync::oneshot::channel();
         screen.stage = Stage::Picking {
-            of: PickOf::Character,
-            names: vec!["Mara".into(), "Cedric".into()],
+            names: vec!["Atlantic".into(), "Test Center".into()],
             reply,
         };
         screen.jev_asks.send((Asked::Pick, Ok(None))).unwrap();
@@ -1440,7 +1406,7 @@ mod tests {
     }
 
     #[test]
-    fn the_played_character_answers_the_question_which_one_to_play() {
+    fn a_click_on_a_character_plays_its_slot() {
         let mut screen = flow();
         let (reply, mut request) = tokio::sync::oneshot::channel();
         screen.stage = Stage::Characters {
@@ -1452,16 +1418,6 @@ mod tests {
         assert!(matches!(screen.stage, Stage::Characters { .. }), "empty");
         screen.play(1);
         assert_eq!(request.try_recv().ok(), Some(CharacterRequest::Play(1)));
-        let (ask, questions) = tokio::sync::mpsc::unbounded_channel();
-        screen.questions = Some(questions);
-        let (reply, mut pick) = tokio::sync::oneshot::channel();
-        ask.send(LoginQuestion::Character {
-            names: vec!["Cedric".into(), "Mara".into()],
-            reply,
-        })
-        .unwrap();
-        screen.take_questions(&egui::Context::default());
-        assert_eq!(pick.try_recv().ok(), Some(1));
     }
 
     #[test]

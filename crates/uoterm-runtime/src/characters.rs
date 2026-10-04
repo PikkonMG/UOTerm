@@ -175,7 +175,7 @@ fn scripted(plan: Plan) -> (LoginPicker, Arc<Mutex<Seen>>) {
         let mut plan = Some(plan);
         while let Some(question) = rx.recv().await {
             match question {
-                LoginQuestion::Shard { reply, .. } | LoginQuestion::Character { reply, .. } => {
+                LoginQuestion::Shard { reply, .. } => {
                     let _ = reply.send(FIRST);
                 }
                 LoginQuestion::Characters {

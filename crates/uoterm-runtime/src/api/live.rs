@@ -287,6 +287,7 @@ fn answer_letter(id: u64, answer: ToolResult) -> String {
 pub(super) mod tests {
     use super::*;
     use crate::api::router_for;
+    use crate::config::AppConfig;
     use crate::manager::Runtime;
     use crate::mock::test_login::{mock_opts, wait_for_login};
     use crate::mock::{MockServer, MOCK_BACKPACK, MOCK_HATCHET};
@@ -338,7 +339,7 @@ pub(super) mod tests {
     ) -> (SocketAddr, ServerTask) {
         let listener = tokio::net::TcpListener::bind(ANY_LOCAL_PORT).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = router_for(runtime, token, local_only);
+        let app = router_for(runtime, AppConfig::default(), token, local_only);
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });

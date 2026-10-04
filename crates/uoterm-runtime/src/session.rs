@@ -112,6 +112,11 @@ const LOGIN_CLOSED: &str = "login closed";
 const FIRST_LOGIN_FAILED: &str = "the first login failed";
 /// Why a login that was asked to play no character ended.
 pub(crate) const LEFT_AT_CHARACTER_LIST: &str = "the login stopped at the character list";
+/// Why a login ended whose screen closed before it answered. The login
+/// never guesses the answer of a person.
+pub(crate) const LOGIN_SCREEN_GONE: &str = "the login screen closed before it answered";
+/// Why a login ended whose screen asked to play an empty slot.
+const NO_CHARACTER_IN_SLOT: &str = "no character in slot";
 /// One shared budget covering the double-click, the lift, the drop and the
 /// bandage command. The server adds this much to a single delay of its own on
 /// each of them, and answers anything sent inside it with the line
@@ -1511,7 +1516,7 @@ async fn login_steps(
             match msg {
                 Inbound::ServerList { servers, .. } => {
                     progress.server_list = true;
-                    let idx = pick_shard(opts, servers).await;
+                    let idx = pick_shard(opts, servers).await?;
                     write_sealed(inner, &mut writer, encode::select_server(idx)).await?;
                     deadline = answer_deadline();
                 }
@@ -1585,18 +1590,20 @@ async fn login_steps(
                         refused: progress.refused.take(),
                         choices: &choices,
                     };
-                    if let Some(sent) = character_request(inner, &mut writer, opts, asked).await? {
-                        tcp_flush(&mut writer).await?;
-                        deadline = answer_deadline();
-                        if let crate::config::CharacterRequest::Make(wish) = sent {
-                            tracing::info!(name = wish.name.as_str(), "login new character");
-                            progress.making = Some(wish.name);
+                    let slot = match character_request(inner, &mut writer, opts, asked).await? {
+                        Some(crate::config::CharacterRequest::Play(slot)) => slot,
+                        Some(sent) => {
+                            tcp_flush(&mut writer).await?;
+                            deadline = answer_deadline();
+                            if let crate::config::CharacterRequest::Make(wish) = sent {
+                                tracing::info!(name = wish.name.as_str(), "login new character");
+                                progress.making = Some(wish.name);
+                            }
+                            continue;
                         }
-                        continue;
-                    }
-                    let slot = pick_character(opts, characters)
-                        .await
-                        .ok_or_else(|| RuntimeError::NoCharacter(opts.character.clone()))?;
+                        None => pick_character(opts, characters)
+                            .ok_or_else(|| RuntimeError::NoCharacter(opts.character.clone()))?,
+                    };
                     let name = characters[slot].name.clone();
                     tracing::info!(
                         slot,
@@ -1692,60 +1699,37 @@ fn opening_seed(opts: &ConnectOptions) -> (u32, Vec<u8>) {
 }
 
 /// The shard of the list to play on. A screen picks it when the options
-/// name no shard of the list and the list has more than one.
-async fn pick_shard(opts: &ConnectOptions, servers: &[uoterm_protocol::ServerEntry]) -> u16 {
+/// name no shard of the list and the list has more than one. A screen that
+/// closed before it picked ends the login.
+async fn pick_shard(
+    opts: &ConnectOptions,
+    servers: &[uoterm_protocol::ServerEntry],
+) -> Result<u16> {
     let named = opts
         .shard
         .as_deref()
         .is_some_and(|name| servers.iter().any(|s| s.name.eq_ignore_ascii_case(name)));
     if let Some(picker) = opts.picker.as_ref().filter(|_| !named && servers.len() > 1) {
         let names = servers.iter().map(|s| s.name.clone()).collect();
-        if let Some(place) = picker.pick(names, shard_question).await {
-            return servers[place].index;
-        }
+        return match picker.shard(names).await {
+            Some(place) => Ok(servers[place].index),
+            None => Err(RuntimeError::Usage(LOGIN_SCREEN_GONE.into())),
+        };
     }
-    select_shard(servers, opts.shard.as_deref())
+    Ok(select_shard(servers, opts.shard.as_deref()))
 }
 
-fn shard_question(
-    names: Vec<String>,
-    reply: tokio::sync::oneshot::Sender<usize>,
-) -> crate::config::LoginQuestion {
-    crate::config::LoginQuestion::Shard { names, reply }
-}
-
-fn character_question(
-    names: Vec<String>,
-    reply: tokio::sync::oneshot::Sender<usize>,
-) -> crate::config::LoginQuestion {
-    crate::config::LoginQuestion::Character { names, reply }
-}
-
-/// The slot of the character to play. The name in the options wins. With
-/// no such character, a screen picks one; with no screen, the first one.
-async fn pick_character(
+/// The slot of the character to play when no screen picked one: the one
+/// the options name, else the first of the account.
+fn pick_character(
     opts: &ConnectOptions,
     characters: &[uoterm_protocol::CharacterSlot],
 ) -> Option<usize> {
-    let named = characters
-        .iter()
-        .position(|c| !c.name.is_empty() && c.name.eq_ignore_ascii_case(&opts.character));
-    if named.is_some() {
-        return named;
-    }
-    let filled: Vec<usize> = (0..characters.len())
-        .filter(|slot| !characters[*slot].name.is_empty())
-        .collect();
-    if let Some(picker) = opts.picker.as_ref().filter(|_| filled.len() > 1) {
-        let names = filled
-            .iter()
-            .map(|slot| characters[*slot].name.clone())
-            .collect();
-        if let Some(place) = picker.pick(names, character_question).await {
-            return Some(filled[place]);
-        }
-    }
-    filled.first().copied()
+    let filled = |slot: &usize| !characters[*slot].name.is_empty();
+    (0..characters.len())
+        .filter(filled)
+        .find(|slot| characters[*slot].name.eq_ignore_ascii_case(&opts.character))
+        .or_else(|| (0..characters.len()).find(filled))
 }
 
 /// The corners of the multi a house item stands on. None when the client
@@ -1773,8 +1757,9 @@ struct CharacterAsk<'a> {
 }
 
 /// Asks the screen what to do with the characters of the account. The
-/// request when it asked the shard to make or delete one, so the login
-/// waits for the answer. A login with no screen never asks.
+/// request when the screen played a slot, or asked the shard to make or
+/// delete one, so the login waits for the answer. A login with no screen
+/// never asks. A screen that closed before it answered ends the login.
 async fn character_request(
     inner: &mut Inner,
     writer: &mut tokio::net::tcp::OwnedWriteHalf,
@@ -1798,10 +1783,19 @@ async fn character_request(
         return Ok(None);
     }
     let Some(request) = picker.characters(names, refused, choices.clone()).await else {
-        return Ok(None);
+        return Err(RuntimeError::Usage(LOGIN_SCREEN_GONE.into()));
     };
     let packet = match &request {
-        crate::config::CharacterRequest::Play(_) => return Ok(None),
+        crate::config::CharacterRequest::Play(slot) => {
+            let filled = characters.get(*slot).is_some_and(|c| !c.name.is_empty());
+            return if filled {
+                Ok(Some(request))
+            } else {
+                Err(RuntimeError::NoCharacter(format!(
+                    "{NO_CHARACTER_IN_SLOT} {slot}"
+                )))
+            };
+        }
         crate::config::CharacterRequest::Leave => {
             return Err(RuntimeError::Usage(LEFT_AT_CHARACTER_LIST.into()))
         }
@@ -5706,39 +5700,39 @@ mod relay_tests {
             .collect()
     }
 
-    /// A screen that picks the last name of each list it is asked about.
+    /// A screen that picks the last shard of the list it is asked about.
     fn screen_that_picks_the_last() -> crate::config::LoginPicker {
         let (ask, mut questions) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Some(question) = questions.recv().await {
-                let (crate::config::LoginQuestion::Shard { names, reply }
-                | crate::config::LoginQuestion::Character { names, reply }) = question
-                else {
-                    continue;
-                };
-                let _ = reply.send(names.len() - 1);
+                if let crate::config::LoginQuestion::Shard { names, reply } = question {
+                    let _ = reply.send(names.len() - 1);
+                }
             }
         });
         crate::config::LoginPicker(ask)
     }
 
-    #[tokio::test]
-    async fn a_named_character_needs_no_screen_and_an_unknown_one_asks_it() {
-        let listed = slots(&["Mara", "", "Cedric", "Aldreth"]);
+    /// A screen that closed: every question it is asked goes nowhere.
+    fn closed_screen() -> crate::config::LoginPicker {
+        crate::config::LoginPicker(tokio::sync::mpsc::unbounded_channel().0)
+    }
+
+    #[test]
+    fn with_no_screen_the_named_character_plays_else_the_first() {
+        let listed = slots(&["", "Mara", "Cedric"]);
         let mut opts = ConnectOptions {
             character: "cedric".into(),
             ..ConnectOptions::default()
         };
-        assert_eq!(pick_character(&opts, &listed).await, Some(2));
+        assert_eq!(pick_character(&opts, &listed), Some(2));
         opts.character = "Nobody".into();
-        assert_eq!(pick_character(&opts, &listed).await, Some(0), "no screen");
-        opts.picker = Some(screen_that_picks_the_last());
         assert_eq!(
-            pick_character(&opts, &listed).await,
-            Some(3),
+            pick_character(&opts, &listed),
+            Some(1),
             "the empty slot is no pick"
         );
-        assert_eq!(pick_character(&opts, &slots(&["", ""])).await, None);
+        assert_eq!(pick_character(&opts, &slots(&["", ""])), None);
     }
 
     #[tokio::test]
@@ -5755,13 +5749,22 @@ mod relay_tests {
             picker: Some(screen_that_picks_the_last()),
             ..ConnectOptions::default()
         };
-        assert_eq!(pick_shard(&opts, &listed).await, 7);
+        assert_eq!(pick_shard(&opts, &listed).await.unwrap(), 7);
         opts.shard = Some("atlantic".into());
         assert_eq!(
-            pick_shard(&opts, &listed).await,
+            pick_shard(&opts, &listed).await.unwrap(),
             0,
             "a named shard needs no screen"
         );
+        opts.picker = Some(closed_screen());
+        assert_eq!(
+            pick_shard(&opts, &listed).await.unwrap(),
+            0,
+            "a named shard needs no screen, open or closed"
+        );
+        opts.shard = None;
+        let gone = pick_shard(&opts, &listed).await.unwrap_err();
+        assert!(gone.to_string().contains(LOGIN_SCREEN_GONE), "{gone}");
     }
 
     #[test]

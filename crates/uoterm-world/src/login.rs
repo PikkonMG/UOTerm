@@ -48,8 +48,8 @@ pub struct NewCharacterWish {
     pub slot: u16,
 }
 
-/// What a login asks a human: which shard of the list, or which character.
-/// The answer is a [`LoginReply`].
+/// What a login asks a human: which shard of the list, and what to do with
+/// the characters of the account. The answer is a [`LoginReply`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum LoginAsk {
@@ -65,13 +65,10 @@ pub enum LoginAsk {
         /// What a new character may be: the start towns and the flags.
         choices: CharacterChoices,
     },
-    Character {
-        names: Vec<String>,
-    },
 }
 
-/// The answer to a [`LoginAsk`]: the place of the pick in the names, or what
-/// to do with the characters of the account.
+/// The answer to a [`LoginAsk`]: the place of the shard in the names, or
+/// what to do with the characters of the account.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum LoginReply {

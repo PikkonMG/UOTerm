@@ -9,7 +9,7 @@ mod login;
 pub use auth::{api_token_from_env, bind_is_loopback, checked_api_token, guard_layer, Guard};
 pub use live::LIVE_POLL_MS;
 
-use crate::config::{client_version, era_from_str, load_app_config, AppConfig, ConnectOptions};
+use crate::config::{client_version, era_from_str, AppConfig, ConnectOptions};
 use crate::manager::Runtime;
 use crate::tools::{ToolCall, ToolResult, TOOL_OBSERVE};
 use axum::extract::{Path, State};
@@ -37,14 +37,19 @@ pub struct ApiState {
 /// Every route of the API on `runtime`, behind the guard. `uoterm web`
 /// merges its own routes with these and puts the same guard on them with
 /// [`guard_layer`]. The sessions the API makes read the client files and
-/// the markers `uoterm.toml` names.
-pub fn router_for(runtime: Runtime, token: Option<String>, local_only: bool) -> Router {
+/// the markers of `config`, the one the command runs with.
+pub fn router_for(
+    runtime: Runtime,
+    config: AppConfig,
+    token: Option<String>,
+    local_only: bool,
+) -> Router {
     let guard = Guard { token, local_only };
     let state = Arc::new(ApiState {
         runtime,
         guard: guard.clone(),
         acts: live::ActLines::default(),
-        config: load_app_config(None),
+        config,
     });
     let routes = Router::new()
         .route("/v1/sessions", get(list_sessions).post(create_session))
@@ -59,14 +64,16 @@ pub fn router_for(runtime: Runtime, token: Option<String>, local_only: bool) -> 
     guard_layer(routes, guard)
 }
 
-pub async fn serve(bind: &str, runtime: Runtime) -> crate::error::Result<()> {
+/// Serves the API of `runtime` on `bind`. The sessions it makes take
+/// their client files and markers from `config`.
+pub async fn serve(bind: &str, runtime: Runtime, config: AppConfig) -> crate::error::Result<()> {
     let token = checked_api_token(bind, api_token_from_env())?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|e| crate::error::RuntimeError::Network(e.to_string()))?;
     tracing::info!(bind, "HTTP API listening");
     let local_only = bind_is_loopback(bind);
-    axum::serve(listener, router_for(runtime, token, local_only))
+    axum::serve(listener, router_for(runtime, config, token, local_only))
         .await
         .map_err(|e| crate::error::RuntimeError::Network(e.to_string()))
 }

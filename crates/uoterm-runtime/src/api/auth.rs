@@ -227,8 +227,10 @@ fn unauthorized() -> Response {
 mod tests {
     use super::*;
     use crate::api::live::tests::{
-        serve_with_mock_session, serve_with_mock_session_token, try_connect_live,
+        serve_api, serve_with_mock_session, serve_with_mock_session_token, try_connect,
+        try_connect_live,
     };
+    use crate::api::login::LOGIN_PATH;
     use crate::api::{router_for, ApiState};
     use crate::manager::Runtime;
     use axum::body::Body;
@@ -275,11 +277,16 @@ mod tests {
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
-        router_for(Runtime::new(TEST_SESSIONS), Some(TOKEN.to_string()), true)
-            .oneshot(request.body(body).unwrap())
-            .await
-            .unwrap()
-            .status()
+        router_for(
+            Runtime::new(TEST_SESSIONS),
+            crate::config::AppConfig::default(),
+            Some(TOKEN.to_string()),
+            true,
+        )
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap()
+        .status()
     }
 
     fn token_body(token: &str) -> Body {
@@ -410,6 +417,26 @@ mod tests {
         }
         let link = try_connect_live(server.addr, &server.id, &[(ORIGIN.as_str(), &own_page)]).await;
         assert!(link.is_ok());
+    }
+
+    /// The login link, which carries a password, is guarded as every
+    /// other route: a page of another site and a caller with no token are
+    /// refused before the socket opens.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_login_link_wants_this_api_and_the_token() {
+        let (open, _open_server) = serve_api(Runtime::new(TEST_SESSIONS), None, true).await;
+        let foreign = try_connect(open, LOGIN_PATH, &[(ORIGIN.as_str(), FOREIGN_PAGE)]).await;
+        assert_eq!(foreign.err(), Some(StatusCode::FORBIDDEN.as_u16()));
+        let own_page = format!("http://{open}");
+        let own = try_connect(open, LOGIN_PATH, &[(ORIGIN.as_str(), &own_page)]).await;
+        assert!(own.is_ok());
+        let (guarded, _guarded_server) =
+            serve_api(Runtime::new(TEST_SESSIONS), Some(TOKEN.to_string()), false).await;
+        let no_token = try_connect(guarded, LOGIN_PATH, &[]).await;
+        assert_eq!(no_token.err(), Some(StatusCode::UNAUTHORIZED.as_u16()));
+        let cookie = format!("{TOKEN_COOKIE}={TOKEN}");
+        let with_token = try_connect(guarded, LOGIN_PATH, &[(COOKIE.as_str(), &cookie)]).await;
+        assert!(with_token.is_ok());
     }
 
     #[tokio::test]

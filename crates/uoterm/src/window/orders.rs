@@ -238,8 +238,6 @@ pub const ASK_CHANNEL: &str = "A player of an online role-playing game wants to 
 pub const ASK_LANDMARK: &str = "A player of an online role-playing game marks a place on a map of the land. `wish` says which place he means. Each option is a named place that lies on the map. Which one does he mean?";
 /// The question of the login screen about the shards of the login server.
 pub const ASK_SHARD: &str = "A player of an online role-playing game says in `wish` who he wants to play and where. Each option is the name of one game server. Which one does he mean?";
-/// The question of the login screen about the characters of the account.
-pub const ASK_CHARACTER: &str = "A player of an online role-playing game says in `wish` who he wants to play. Each option is the name of one character of his account. Which one does he mean?";
 /// How many names of a group tell Jev what the group holds.
 const GROUP_SAMPLE: usize = 8;
 /// A group such as the spells has hundreds of hotkeys. Jev gets this many,

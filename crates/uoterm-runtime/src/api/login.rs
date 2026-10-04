@@ -11,8 +11,11 @@
 //!
 //! A page that closes before the end plays no character: the open question
 //! of the character list is answered with [`CharacterRequest::Leave`]. A
-//! pick of a shard or a character is never guessed for the page; its
-//! question is let go, and a session the login still makes is stopped.
+//! shard pick is never guessed for the page: its question is let go, and
+//! the login ends. A session the login still makes is stopped.
+//!
+//! The words of a message the link cannot read name only the kind of the
+//! fault and where it is, never the text, which may hold the password.
 
 use super::live::LIVE_SEND_TIMEOUT;
 use super::ApiState;
@@ -27,6 +30,7 @@ use futures_util::SinkExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use uoterm_world::login::{CharacterRequest, LoginReply};
 
@@ -39,6 +43,9 @@ const KIND_ASK: &str = "ask";
 const KIND_READY: &str = "ready";
 const KIND_FAILED: &str = "failed";
 const LOGIN_FIRST: &str = "the first message must be a login";
+/// How long the link waits for the login of a page that opened it.
+const LOGIN_FIRST_WAIT: Duration = Duration::from_secs(10);
+const LOGIN_LATE: &str = "no login came in time";
 
 /// What the page sends.
 #[derive(Deserialize)]
@@ -63,11 +70,17 @@ async fn run_login(socket: WebSocket, st: Arc<ApiState>) {
         here: true,
         open: None,
     };
-    let login = match next_from_page(&mut page.socket).await {
-        Some(Ok(FromPage::Login(login))) => login,
-        Some(Ok(FromPage::Reply { .. })) => return page.fail(LOGIN_FIRST.into()).await,
-        Some(Err(error)) => return page.fail(format!("{LOGIN_FIRST}: {error}")).await,
-        None => return,
+    let first = tokio::time::timeout(LOGIN_FIRST_WAIT, next_from_page(&mut page.socket)).await;
+    let login = match first {
+        Ok(Some(Ok(FromPage::Login(login)))) => login,
+        Ok(Some(Ok(FromPage::Reply { .. }))) => return page.fail(LOGIN_FIRST.into()).await,
+        Ok(Some(Err(error))) => {
+            return page
+                .fail(format!("{LOGIN_FIRST}: {}", fault_place(&error)))
+                .await
+        }
+        Ok(None) => return,
+        Err(_) => return page.fail(LOGIN_LATE.into()).await,
     };
     let (asks, mut questions) = mpsc::unbounded_channel();
     let opts = ConnectOptions::for_screen(login, &st.config, LoginPicker(asks));
@@ -143,7 +156,8 @@ impl PageLogin {
                 tracing::debug!("the login link read a second login");
             }
             Some(Err(error)) => {
-                tracing::debug!(%error, "the login link read a message it does not know");
+                let fault = fault_place(&error);
+                tracing::debug!(fault, "the login link read a message it does not know");
             }
         }
     }
@@ -182,8 +196,20 @@ impl PageLogin {
     }
 }
 
+/// The kind of a fault in a message of the page and where it is. The text
+/// of the fault is left out: it may quote what the page sent.
+fn fault_place(error: &serde_json::Error) -> String {
+    format!(
+        "{:?} fault at line {}, column {}",
+        error.classify(),
+        error.line(),
+        error.column()
+    )
+    .to_lowercase()
+}
+
 /// Ends the login at the character list, for a page that is gone. A
-/// question of a shard or a character pick is let go unanswered.
+/// shard question is let go unanswered, which ends the login as well.
 fn leave(question: LoginQuestion) {
     let _ = question.answer(LoginReply::Request {
         request: CharacterRequest::Leave,
@@ -197,6 +223,7 @@ mod tests {
         next_json, send_json, serve_api, try_connect, ServerTask, WsClient,
     };
     use crate::manager::Runtime;
+    use crate::mock::test_login::SECOND_CHAR;
     use crate::mock::{MockServer, MOCK_CHAR};
     use serde_json::{json, Value};
     use std::net::SocketAddr;
@@ -294,11 +321,14 @@ mod tests {
         assert_eq!(next_json(&mut ws).await, ask);
     }
 
-    /// A page that closes at the character list plays no character: the
-    /// login leaves the list, and no session is left behind.
+    /// A page that closes at the character list plays no character, not
+    /// even the first of an account of two: the login leaves the list, and
+    /// no session is left behind.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_closed_page_ends_the_login_at_the_character_list() {
-        let shard = MockServer::start().await.unwrap();
+        let shard = MockServer::start_with_characters(&[MOCK_CHAR, SECOND_CHAR])
+            .await
+            .unwrap();
         let runtime = Runtime::new(TEST_SESSIONS);
         let (addr, _server) = serve_api(runtime.clone(), None, true).await;
         let (ws, ask) = begin_login(addr, shard.addr).await;
@@ -310,6 +340,71 @@ mod tests {
             .heard()
             .iter()
             .any(|packet| packet.first() == Some(&PKT_PLAY_CHARACTER)));
+    }
+
+    /// One answer plays the slot it names, on an account of two: the page
+    /// is asked nothing more.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_play_answer_plays_its_slot() {
+        let shard = MockServer::start_with_characters(&[MOCK_CHAR, SECOND_CHAR])
+            .await
+            .unwrap();
+        let runtime = Runtime::new(TEST_SESSIONS);
+        let (addr, _server) = serve_api(runtime.clone(), None, true).await;
+        let (mut ws, ask) = begin_login(addr, shard.addr).await;
+        let names = ask["ask"]["names"].as_array().unwrap();
+        let slot = names.iter().position(|name| name == SECOND_CHAR).unwrap();
+        send_json(
+            &mut ws,
+            json!({"kind": KIND_REPLY, "reply": {"kind": "Request", "request": {"Play": slot}}}),
+        )
+        .await;
+        let end = next_json(&mut ws).await;
+        assert_eq!(end["kind"], KIND_READY);
+        let session = runtime.get(end["session"].as_str().unwrap()).unwrap();
+        assert_eq!(session.world.read().self_state.name, SECOND_CHAR);
+    }
+
+    /// A slot with no character in it is no answer: the link asks again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slot_with_no_character_brings_the_question_again() {
+        let shard = MockServer::start().await.unwrap();
+        let (addr, _server) = serve_runtime().await;
+        let (mut ws, ask) = begin_login(addr, shard.addr).await;
+        let past_the_list = ask["ask"]["names"].as_array().unwrap().len();
+        send_json(
+            &mut ws,
+            json!({"kind": KIND_REPLY, "reply": {"kind": "Request", "request": {"Play": past_the_list}}}),
+        )
+        .await;
+        assert_eq!(next_json(&mut ws).await, ask);
+    }
+
+    /// The words of a login the link cannot read never quote it: a bad
+    /// value may be the password.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreadable_login_is_not_quoted_back() {
+        const SECRET: u64 = 9_876_543_210;
+        let (addr, _server) = serve_runtime().await;
+        let mut ws = connect(addr, LOGIN_PATH).await;
+        let mut login = login_to(addr);
+        login["password"] = json!(SECRET);
+        send_json(&mut ws, login).await;
+        let end = next_json(&mut ws).await;
+        assert_eq!(end["kind"], KIND_FAILED);
+        let words = end["words"].as_str().unwrap();
+        assert!(words.starts_with(LOGIN_FIRST), "{words}");
+        assert!(!words.contains(&SECRET.to_string()), "{words}");
+    }
+
+    /// A page that opens the link and sends no login is let go.
+    #[tokio::test(start_paused = true)]
+    async fn a_page_that_sends_no_login_is_let_go() {
+        let (addr, _server) = serve_runtime().await;
+        let mut ws = connect(addr, LOGIN_PATH).await;
+        let end = next_json(&mut ws).await;
+        assert_eq!(end["kind"], KIND_FAILED);
+        assert_eq!(end["words"], LOGIN_LATE);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

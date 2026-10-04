@@ -211,12 +211,19 @@ impl MockServer {
     /// every packet the way the client on the other end reads it.
     pub async fn start_era(era: Era) -> std::io::Result<Self> {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        spawn_listener(addr, true, None, era).await
+        spawn_listener(addr, true, None, era, account(&[MOCK_CHAR])).await
     }
 
     pub async fn start_osi(version: ClientVersion) -> std::io::Result<Self> {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        spawn_listener(addr, true, Some(version), MOCK_ERA).await
+        spawn_listener(addr, true, Some(version), MOCK_ERA, account(&[MOCK_CHAR])).await
+    }
+
+    /// A shard whose account holds these characters, from the first slot
+    /// on, instead of [`MOCK_CHAR`] alone.
+    pub async fn start_with_characters(names: &[&str]) -> std::io::Result<Self> {
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        spawn_listener(addr, true, None, MOCK_ERA, account(names)).await
     }
 
     /// Every packet the clients sent in the world loop so far, from the play
@@ -247,6 +254,9 @@ pub(crate) mod test_login {
 
     const LOGIN_POLLS: usize = 25;
     const LOGIN_POLL_MS: u64 = 100;
+    /// A second character, for an account of two: see
+    /// [`MockServer::start_with_characters`].
+    pub(crate) const SECOND_CHAR: &str = "Cedric";
 
     pub(crate) fn mock_opts(server: &MockServer) -> ConnectOptions {
         ConnectOptions {
@@ -273,10 +283,29 @@ pub(crate) mod test_login {
 }
 
 pub async fn serve(addr: SocketAddr) -> std::io::Result<SocketAddr> {
-    let mut server = spawn_listener(addr, false, None, MOCK_ERA).await?;
+    let mut server = spawn_listener(addr, false, None, MOCK_ERA, account(&[MOCK_CHAR])).await?;
     let addr = server.addr;
     server.abort.take();
     Ok(addr)
+}
+
+/// The slots of an account: these characters, then empty slots.
+fn account(names: &[&str]) -> Arc<[String]> {
+    names
+        .iter()
+        .map(|name| name.to_string())
+        .chain(std::iter::repeat(String::new()))
+        .take(MOCK_SLOTS.max(names.len()))
+        .collect()
+}
+
+/// What every client of one mock shard shares.
+#[derive(Clone)]
+struct Shared {
+    era: ClientEra,
+    heard: Heard,
+    /// The slots of the account when a client logs in.
+    account: Arc<[String]>,
 }
 
 async fn spawn_listener(
@@ -284,14 +313,18 @@ async fn spawn_listener(
     with_shutdown: bool,
     osi: Option<ClientVersion>,
     era: Era,
+    account: Arc<[String]>,
 ) -> std::io::Result<MockServer> {
     let listener = TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     let (shutdown, _) = broadcast::channel::<()>(1);
     let shutdown_tx = shutdown.clone();
-    let client_era = ClientEra::new(era);
     let heard = Heard::default();
-    let heard_by_clients = heard.clone();
+    let shared = Shared {
+        era: ClientEra::new(era),
+        heard: heard.clone(),
+        account,
+    };
     let task = tokio::spawn(async move {
         if with_shutdown {
             let mut sd = shutdown.subscribe();
@@ -301,11 +334,10 @@ async fn spawn_listener(
                         match acc {
                             Ok((stream, _)) => {
                                 let mut client_sd = sd.resubscribe();
-                                let era = client_era.clone();
-                                let heard = heard_by_clients.clone();
+                                let shared = shared.clone();
                                 tokio::spawn(async move {
                                     tokio::select! {
-                                        _ = handle_client(stream, osi, &era, &heard) => {}
+                                        _ = handle_client(stream, osi, &shared) => {}
                                         _ = client_sd.recv() => {}
                                     }
                                 });
@@ -318,10 +350,9 @@ async fn spawn_listener(
             }
         } else {
             while let Ok((stream, _)) = listener.accept().await {
-                let era = client_era.clone();
-                let heard = heard_by_clients.clone();
+                let shared = shared.clone();
                 tokio::spawn(async move {
-                    let _ = handle_client(stream, osi, &era, &heard).await;
+                    let _ = handle_client(stream, osi, &shared).await;
                 });
             }
         }
@@ -420,8 +451,7 @@ async fn read_unwrapped(
 async fn handle_client(
     stream: TcpStream,
     osi: Option<ClientVersion>,
-    client_era: &ClientEra,
-    heard: &Heard,
+    shared: &Shared,
 ) -> std::io::Result<()> {
     let huff = Huffman::new();
     let port = stream.local_addr()?.port();
@@ -434,7 +464,7 @@ async fn handle_client(
             }
         }
     });
-    let result = handle_client_io(&mut reader, &tx, &huff, port, osi, client_era, heard).await;
+    let result = handle_client_io(&mut reader, &tx, &huff, port, osi, shared).await;
     drop(tx);
     let _ = write_task.await;
     result
@@ -446,8 +476,7 @@ async fn handle_client_io(
     huff: &Huffman,
     port: u16,
     osi: Option<ClientVersion>,
-    client_era: &ClientEra,
-    heard: &Heard,
+    shared: &Shared,
 ) -> std::io::Result<()> {
     let mut first = [0u8; 1];
     reader.read_exact(&mut first).await?;
@@ -483,9 +512,9 @@ async fn handle_client_io(
         }
     }
     let era = if peek[0] == PKT_LOGIN_REQUEST {
-        client_era.on_login(extended_seed)
+        shared.era.on_login(extended_seed)
     } else {
-        client_era.current()
+        shared.era.current()
     };
     let table = PacketTable::for_era(era);
     match peek[0] {
@@ -519,9 +548,7 @@ async fn handle_client_io(
     send_h(tx, huff, &mut wire, &table, &features(era))?;
     // The characters of the account, each in its slot. A delete empties its
     // slot and a new one takes the first empty slot.
-    let mut characters: Vec<String> = std::iter::once(MOCK_CHAR.to_string())
-        .chain(std::iter::repeat_n(String::new(), MOCK_SLOTS - 1))
-        .collect();
+    let mut characters: Vec<String> = shared.account.to_vec();
     let version = osi.unwrap_or(era.default_version());
     send_h(
         tx,
@@ -536,7 +563,7 @@ async fn handle_client_io(
     let mut entering: Option<String> = None;
     loop {
         // The packet before this one has been read and answered.
-        heard.file(&mut wire);
+        shared.heard.file(&mut wire);
         let mut id = [0u8; 1];
         if read_unwrapped(reader, &mut wire, &mut id).await.is_err() {
             break;
@@ -1529,7 +1556,7 @@ mod tests {
                         };
                         let _ = reply.send(request);
                     }
-                    LoginQuestion::Shard { reply, .. } | LoginQuestion::Character { reply, .. } => {
+                    LoginQuestion::Shard { reply, .. } => {
                         let _ = reply.send(FIRST);
                     }
                 }
@@ -1583,6 +1610,34 @@ mod tests {
                 "{version}"
             );
         }
+    }
+
+    /// A login whose screen closed plays no character, on an account of
+    /// more than one: it does not guess the first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_closed_screen_ends_the_login_and_plays_no_character() {
+        let server = MockServer::start_with_characters(&[MOCK_CHAR, test_login::SECOND_CHAR])
+            .await
+            .unwrap();
+        let mut opts = test_login::mock_opts(&server);
+        opts.character.clear();
+        opts.reconnect = false;
+        opts.picker = Some(crate::config::LoginPicker(
+            tokio::sync::mpsc::unbounded_channel().0,
+        ));
+        let Err(ended) = Runtime::new(1).connect(opts).await else {
+            panic!("a login with a closed screen entered the world");
+        };
+        assert!(
+            ended
+                .to_string()
+                .contains(crate::session::LOGIN_SCREEN_GONE),
+            "{ended}"
+        );
+        assert!(!server
+            .heard()
+            .iter()
+            .any(|packet| packet.first() == Some(&PKT_PLAY_CHARACTER)));
     }
 
     /// A shard with no such start town closes the link on a new character

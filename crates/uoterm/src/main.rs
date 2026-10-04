@@ -386,13 +386,13 @@ async fn run(cli: Cli) -> Result<u8, RuntimeError> {
             let cfg = load_app_config(None);
             let rt = Runtime::new(cfg.max_sessions);
             let ids = uoterm_runtime::populate::run(&rt, &manifest).await?;
-            let bind = api_bind.unwrap_or(cfg.api_bind);
+            let bind = api_bind.unwrap_or_else(|| cfg.api_bind.clone());
             if json {
                 println!("{}", json!({ "sessions": ids, "api": bind }));
             } else {
                 println!("started {} sessions; api {bind}", ids.len());
             }
-            serve_until_ctrl_c(rt, bind).await
+            serve_until_ctrl_c(rt, bind, cfg).await
         }
         Commands::MockShard { bind } => {
             let addr: SocketAddr = bind
@@ -491,7 +491,7 @@ fn connect_choice(
 
 async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     let json = cli.json;
-    let cfg = load_app_config(None);
+    let mut cfg = load_app_config(None);
     let saved = match &cli.command {
         Commands::Connect {
             profile: Some(path),
@@ -536,14 +536,17 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         port,
         encryption,
     } = target;
-    let uopath = uopath.or(cfg.uopath);
+    // The command line wins over the file, for the API's sessions too.
+    cfg.uopath = uopath.or(cfg.uopath.take());
+    cfg.markers = markers.or(cfg.markers.take());
+    let uopath = cfg.uopath.clone();
     let version =
         uoterm_runtime::config::client_version(version.as_deref(), era, uopath.as_deref());
     let view_uopath = uopath.clone();
     let view_shard = window::shard_address(&host, port);
     // The file may ask for the window. The terminal view takes its place.
     let view = view || (cfg.view && !text_view);
-    let markers = markers.or(cfg.markers);
+    let markers = cfg.markers.clone();
     let encryption_name = EncryptionMode::from(encryption).as_str();
     tracing::info!(
         encryption = encryption_name,
@@ -574,7 +577,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
     };
     let rt = Runtime::new(cfg.max_sessions);
     let handle = rt.connect(opts).await?;
-    let bind = api_bind.unwrap_or(cfg.api_bind);
+    let bind = api_bind.unwrap_or_else(|| cfg.api_bind.clone());
     if json {
         println!(
             "{}",
@@ -602,7 +605,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         std::thread::spawn(move || text_watch_loop(api, sid));
     }
     if view {
-        start_api(rt.clone(), bind.clone());
+        start_api(rt.clone(), bind.clone(), cfg.clone());
         // The window and the session are one program, so the window reaches
         // the session with no delay. The window needs the main thread. The
         // session runs on the other threads. When the window closes, the
@@ -623,7 +626,7 @@ async fn connect(cli: Cli) -> Result<u8, RuntimeError> {
         // world as she does on Ctrl+C.
         return Ok(EXIT_OK as u8);
     }
-    serve_until_ctrl_c(rt, bind).await
+    serve_until_ctrl_c(rt, bind, cfg).await
 }
 
 fn text_watch_loop(api: String, session: String) {
@@ -858,7 +861,7 @@ fn play(
             .map_err(|e| e.to_string())?;
         if !api_started.swap(true, std::sync::atomic::Ordering::SeqCst) {
             let _guard = tokio.enter();
-            start_api(rt.clone(), bind.clone());
+            start_api(rt.clone(), bind.clone(), cfg.clone());
         }
         Ok(window::Link::SameProgram {
             runtime: rt.clone(),
@@ -878,9 +881,11 @@ fn play(
     Ok(EXIT_OK as u8)
 }
 
-fn start_api(rt: Runtime, bind: String) {
+/// Serves the API in the background. Its sessions take their client files
+/// from `cfg`, with the overrides of the command line in it.
+fn start_api(rt: Runtime, bind: String, cfg: AppConfig) {
     tokio::spawn(async move {
-        if let Err(e) = uoterm_runtime::api::serve(&bind, rt).await {
+        if let Err(e) = uoterm_runtime::api::serve(&bind, rt, cfg).await {
             tracing::error!(error = %e, "api ended");
         }
     });
@@ -893,8 +898,8 @@ async fn wait_ctrl_c() -> Result<u8, RuntimeError> {
     Ok(EXIT_OK as u8)
 }
 
-async fn serve_until_ctrl_c(rt: Runtime, bind: String) -> Result<u8, RuntimeError> {
-    start_api(rt, bind);
+async fn serve_until_ctrl_c(rt: Runtime, bind: String, cfg: AppConfig) -> Result<u8, RuntimeError> {
+    start_api(rt, bind, cfg);
     wait_ctrl_c().await
 }
 

@@ -194,10 +194,11 @@ impl LoginTarget {
     }
 }
 
-/// What a login asks a human: which shard of the list, or which character.
-/// The answer is the place of the pick in `names`.
+/// What a login asks a human: which shard of the list, and what to do
+/// with the characters of the account.
 #[derive(Debug)]
 pub enum LoginQuestion {
+    /// The answer is the place of the pick in `names`.
     Shard {
         names: Vec<String>,
         reply: tokio::sync::oneshot::Sender<usize>,
@@ -211,10 +212,6 @@ pub enum LoginQuestion {
         /// What a new character may be: the start towns and the flags.
         choices: CharacterChoices,
         reply: tokio::sync::oneshot::Sender<CharacterRequest>,
-    },
-    Character {
-        names: Vec<String>,
-        reply: tokio::sync::oneshot::Sender<usize>,
     },
 }
 
@@ -235,27 +232,46 @@ impl LoginQuestion {
                 refused: refused.clone(),
                 choices: choices.clone(),
             },
-            Self::Character { names, .. } => LoginAsk::Character {
-                names: names.clone(),
-            },
         }
     }
 
-    /// Gives the reply to the login. A reply of the wrong kind gives the
-    /// question back, still open. A login that stopped waiting takes the
-    /// reply as well: there is nothing left to answer.
+    /// Gives the reply to the login. A reply that does not fit gives the
+    /// question back, still open: one of the wrong kind, a pick past the
+    /// end of the list, or a slot to play or delete with no character in
+    /// it. A login that stopped waiting takes the reply as well: there is
+    /// nothing left to answer.
     pub fn answer(self, reply: LoginReply) -> Result<(), LoginQuestion> {
         match (self, reply) {
-            (
-                Self::Shard { reply, .. } | Self::Character { reply, .. },
-                LoginReply::Pick { index },
-            ) => {
+            (Self::Shard { names, reply }, LoginReply::Pick { index }) if index < names.len() => {
                 let _ = reply.send(index);
                 Ok(())
             }
-            (Self::Characters { reply, .. }, LoginReply::Request { request }) => {
-                let _ = reply.send(request);
-                Ok(())
+            (
+                Self::Characters {
+                    names,
+                    refused,
+                    choices,
+                    reply,
+                },
+                LoginReply::Request { request },
+            ) => {
+                let filled = |slot: usize| names.get(slot).is_some_and(|name| !name.is_empty());
+                match request {
+                    CharacterRequest::Play(slot) | CharacterRequest::Delete(slot)
+                        if !filled(slot) =>
+                    {
+                        Err(Self::Characters {
+                            names,
+                            refused,
+                            choices,
+                            reply,
+                        })
+                    }
+                    request => {
+                        let _ = reply.send(request);
+                        Ok(())
+                    }
+                }
             }
             (question, _) => Err(question),
         }
@@ -288,16 +304,13 @@ impl LoginPicker {
         answer.await.ok()
     }
 
-    /// Asks the screen, and waits for the pick. None when the screen is
-    /// gone, or when its answer is not a place of the list.
-    pub async fn pick(
-        &self,
-        names: Vec<String>,
-        question: fn(Vec<String>, tokio::sync::oneshot::Sender<usize>) -> LoginQuestion,
-    ) -> Option<usize> {
+    /// Asks the screen which shard of the list to play on, and waits for
+    /// the pick. None when the screen is gone, or when its answer is not a
+    /// place of the list.
+    pub async fn shard(&self, names: Vec<String>) -> Option<usize> {
         let count = names.len();
         let (reply, answer) = tokio::sync::oneshot::channel();
-        self.0.send(question(names, reply)).ok()?;
+        self.0.send(LoginQuestion::Shard { names, reply }).ok()?;
         answer.await.ok().filter(|place| *place < count)
     }
 }
@@ -1295,11 +1308,35 @@ answer_when_named = false
     fn a_question_the_login_stopped_waiting_for_takes_its_reply() {
         let (reply, answer) = tokio::sync::oneshot::channel();
         drop(answer);
-        let question = LoginQuestion::Character {
-            names: vec!["Mara".into()],
+        let question = LoginQuestion::Shard {
+            names: vec!["Atlantic".into()],
             reply,
         };
         assert!(question.answer(LoginReply::Pick { index: 0 }).is_ok());
+    }
+
+    #[test]
+    fn a_pick_past_the_list_or_an_empty_slot_is_no_answer() {
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let shard = LoginQuestion::Shard {
+            names: vec!["Atlantic".into()],
+            reply,
+        };
+        assert!(shard.answer(LoginReply::Pick { index: 1 }).is_err());
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let mut question = LoginQuestion::Characters {
+            names: vec!["Mara".into(), String::new()],
+            refused: None,
+            choices: CharacterChoices::default(),
+            reply,
+        };
+        for slot in [1, 2] {
+            for request in [CharacterRequest::Play(slot), CharacterRequest::Delete(slot)] {
+                question = question
+                    .answer(LoginReply::Request { request })
+                    .expect_err("an empty slot is no answer");
+            }
+        }
     }
 
     #[test]
