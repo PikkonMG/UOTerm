@@ -149,6 +149,7 @@ impl WebView {
             return;
         };
         match action {
+            RingAction::Pick(_) if !frame.human_control => self.panels.ring.open = None,
             RingAction::Pick(at) => {
                 let picked = self
                     .open_lines(&frame)
@@ -261,5 +262,17 @@ mod tests {
             .any(|call| matches!(call, OutCall::Read { tool, .. } if tool == TOOL_PROPERTIES)));
         press(&mut view, PANEL_TIPS, json!({ "over": null }));
         assert!(view.panel_tooltip(1.0).is_none());
+    }
+
+    #[test]
+    fn a_line_of_the_ring_does_nothing_without_control() {
+        let mut view = settled();
+        view.open_ring(Point::new(10.0, 10.0), ORC, "", Subject::Packed);
+        view.take_out_native();
+        let mut watch: serde_json::Value =
+            serde_json::from_str(&crate::tests::fixture_watch_with_backpack()).unwrap();
+        watch["human_control"] = json!(false);
+        view.frame(&watch.to_string(), 0.1);
+        assert!(out_acts(&press(&mut view, PANEL_RING, json!({ "pick": 0 }))).is_empty());
     }
 }

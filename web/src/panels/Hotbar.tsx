@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'preact/hooks';
 import { ZONE_ATTRIBUTE } from './drag';
 import { hoverOn, type Hover } from './hover';
 import { Picture } from './Picture';
@@ -17,8 +18,21 @@ interface HotbarProps {
  * slot takes an item, a skill or a spell dropped on it.
  */
 export function Hotbar({ data, picker, send, hover }: HotbarProps) {
+  const bar = useRef<HTMLDivElement>(null);
+  const picking = data.picking !== null;
+
+  // A click away from the bar and its picker shuts the picker; one on the bar picks another slot.
+  useEffect(() => {
+    if (!picking) return;
+    const away = (event: PointerEvent) => {
+      if (!bar.current?.contains(event.target as Node)) send({ close_picker: true });
+    };
+    window.addEventListener('pointerdown', away);
+    return () => window.removeEventListener('pointerdown', away);
+  }, [picking]);
+
   return (
-    <div class="hotbar">
+    <div class="hotbar" ref={bar}>
       {picker && data.picking !== null && (
         <div class="picker panel">
           <h2 class="heading">{picker.title}</h2>

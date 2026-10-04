@@ -176,10 +176,17 @@ impl WebView {
         let Some(frame) = self.frame.clone() else {
             return;
         };
+        // Nothing lands while the agent has the character: the item leaves
+        // the mouse.
+        if !frame.human_control {
+            self.panels.desk.dragging = None;
+            self.panels.desk.desk = Desk::default();
+            return;
+        }
         let at = Point::new(drop.x, drop.y);
         let zone = drop.zone.map(Zone::from);
         if let Some(slot) = self.panels.desk.dragging.take() {
-            if let Some(Zone::Slot(at)) = zone.filter(|_| frame.human_control) {
+            if let Some(Zone::Slot(at)) = zone {
                 self.set_slot(&frame.name, at, Some(slot));
             }
             return;
@@ -213,9 +220,7 @@ impl WebView {
                 hue: item.hue,
                 name: item.name,
             };
-            if frame.human_control {
-                self.set_slot(&frame.name, slot, Some(what));
-            }
+            self.set_slot(&frame.name, slot, Some(what));
         }
         match landing {
             Landing::AskAmount(split) => self.panels.desk.split = Some(split),
@@ -252,7 +257,8 @@ impl WebView {
                 }
             }
             SplitAction::Go(_) => {
-                if let Some(split) = self.panels.desk.split.take() {
+                let live = self.frame.as_ref().is_some_and(|frame| frame.human_control);
+                if let Some(split) = self.panels.desk.split.take().filter(|_| live) {
                     self.hand.act(Act::Move {
                         item: split.item.serial,
                         amount: split.amount,
@@ -368,5 +374,21 @@ mod tests {
         );
         assert!(view.hotbars.slot(MARA, 0).is_some());
         assert!(!view.carries());
+    }
+
+    #[test]
+    fn nothing_carried_lands_or_moves_without_control() {
+        let mut view = settled();
+        view.pick_up(&logs(10));
+        let drop = json!({"drop": {"x": 5, "y": 5, "zone": {"into": BAG}, "on_panel": true}});
+        press(&mut view, PANEL_DESK, drop.clone());
+        let mut watch: serde_json::Value =
+            serde_json::from_str(&crate::tests::fixture_watch_with_backpack()).unwrap();
+        watch["human_control"] = json!(false);
+        view.frame(&watch.to_string(), 0.1);
+        assert!(out_acts(&press(&mut view, PANEL_SPLIT, json!({"go": true}))).is_empty());
+        view.pick_up(&logs(1));
+        assert!(out_acts(&press(&mut view, PANEL_DESK, drop)).is_empty());
+        assert!(!view.carries(), "the item leaves the mouse");
     }
 }

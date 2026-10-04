@@ -20,6 +20,9 @@ interface FrameProps {
   sizable?: boolean;
   /** The UI scale: a move of the mouse is this many times the move of the panel. */
   scale?: number;
+  /** A glass of its own, as the journal in dark mode, and its own opacity under that of the panels. */
+  glass?: string;
+  glassOpacity?: number;
   hints?: FrameHints;
   children?: ComponentChildren;
   /** What shows at the foot even while the panel is folded, as the chat line of the journal. */
@@ -105,10 +108,12 @@ export function Frame(props: FrameProps) {
     width: `${shown.w}px`,
     height: folded ? undefined : `${shown.h}px`,
     '--edge': props.edge ?? undefined,
+    '--glass-fill': props.glass,
+    '--glass-opacity': props.glassOpacity,
   };
   return (
     <section
-      class={`frame panel${title ? ' titled' : ''}${folded ? ' folded' : ''}${locked ? ' locked' : ''}`}
+      class={`frame panel${title ? ' titled' : ''}${folded ? ' folded' : ''}${locked ? ' locked' : ''}${props.sizable ? ' sizable' : ''}`}
       style={style}
       {...{ [PANEL_ATTRIBUTE]: props.panel ?? title }}
     >

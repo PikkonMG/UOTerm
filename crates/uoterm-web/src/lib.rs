@@ -103,6 +103,13 @@ pub fn wheel_points_per_notch() -> f32 {
     WHEEL_POINTS_PER_NOTCH
 }
 
+/// How many times its size a small picture of a panel grows at most to
+/// fit its cell, as the Rust window fits one.
+#[wasm_bindgen(js_name = artMostScale)]
+pub fn art_most_scale() -> f32 {
+    uoterm_view::ui::theme::ART_MAX_SCALE
+}
+
 /// How far, in points, a button that went down moves before it drags and
 /// makes no click, as egui counts it: a drag of the page starts there.
 #[wasm_bindgen(js_name = clickDistance)]

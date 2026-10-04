@@ -14,11 +14,12 @@ import { ArtFeed } from './net/art';
 import { LiveLink } from './net/live';
 import { sendOut, type OutCall, type OutPlaces } from './out_calls';
 import { setDragDistance } from './panels/drag';
+import { setArtMostScale } from './panels/Picture';
 import { plateMeasure } from './panels/measure';
 import type { CoveredArea } from './panels/Panels';
 import type { PanelAction, PanelData } from './panels/types';
 import { tearDown } from './teardown';
-import init, { atlasSide, clickDistance, wheelPointsPerNotch, WebView, whiteSide } from './wasm/uoterm_web.js';
+import init, { artMostScale, atlasSide, clickDistance, wheelPointsPerNotch, WebView, whiteSide } from './wasm/uoterm_web.js';
 import { WorldRenderer } from './world/renderer';
 
 const MS_PER_SECOND = 1000;
@@ -78,6 +79,7 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   const view = new WebView(JSON.stringify(profile.value));
   view.setTextMeasure(plateMeasure());
   setDragDistance(clickDistance());
+  setArtMostScale(artMostScale());
   let stopped = false;
   let endGame = () => {};
   let failGame: (error: unknown) => void = () => {};

@@ -36,7 +36,7 @@ export function Journal({ data, send }: { data: JournalData; send: Send }) {
   const [renaming, setRenaming] = useState(false);
   const tab = menu === null ? undefined : data.tabs[menu];
   return (
-    <div class="journal" style={{ '--journal-glass': data.glass, '--journal-opacity': data.glass_opacity }}>
+    <div class="journal">
       <div class="journal-tabs">
         {data.tabs.map((each, at) => (
           <button

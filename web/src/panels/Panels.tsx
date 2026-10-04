@@ -121,7 +121,6 @@ export function Panels({ data, plates, floats, send, input, covered }: PanelsPro
             <ControlBar data={data.bar} send={to('bar')} />
           </section>
         )}
-        {data.report && <Report data={data.report} />}
         {data.activity && (
           <Frame {...frameOf(data.activity)}>
             <Activity data={data.activity.body} />
@@ -148,7 +147,7 @@ export function Panels({ data, plates, floats, send, input, covered }: PanelsPro
           </Frame>
         )}
         {journal && (
-          <Frame {...frameOf(journal)} foot={chat}>
+          <Frame {...frameOf(journal)} foot={chat} glass={journal.body.glass} glassOpacity={journal.body.glass_opacity}>
             <Journal data={journal.body} send={to('journal')} />
           </Frame>
         )}
@@ -192,6 +191,7 @@ export function Panels({ data, plates, floats, send, input, covered }: PanelsPro
               <Question data={question} send={to('question')} />
             </section>
           ))}
+        {data.report && <Report data={data.report} />}
         {data.ring && <Ring data={data.ring} send={to('ring')} />}
       </div>
       {data.tooltip && !data.carried && <Tooltip data={data.tooltip} at={mouse} />}

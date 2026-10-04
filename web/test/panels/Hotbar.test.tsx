@@ -37,6 +37,14 @@ describe('Hotbar', () => {
     expect(send).toHaveBeenCalledWith({ choose: 0 });
   });
 
+  it('shuts_the_picker_on_a_click_away_from_the_bar', () => {
+    const send = vi.fn();
+    const picker = { title: 'Put on slot 2', choices: ['bow'], no_macros: null };
+    render(<Hotbar data={{ ...data, picking: 1 }} picker={picker} send={send} />);
+    fireEvent.pointerDown(document.body);
+    expect(send).toHaveBeenCalledWith({ close_picker: true });
+  });
+
   it('names_each_slot_as_a_zone_for_a_drop', () => {
     const { getByText } = render(<Hotbar data={data} picker={null} send={vi.fn()} />);
     const cell = getByText('2').closest('[data-zone]');

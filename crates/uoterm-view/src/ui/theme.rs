@@ -116,7 +116,7 @@ sizes! {
 }
 
 /// Small pictures grow to this, so a coin is not a dot. More would blur.
-const ART_MAX_SCALE: f32 = 2.0;
+pub const ART_MAX_SCALE: f32 = 2.0;
 
 const NOTORIETY_INNOCENT: u8 = 1;
 const NOTORIETY_FRIEND: u8 = 2;
