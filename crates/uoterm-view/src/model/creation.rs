@@ -12,7 +12,14 @@
 //! not start with. The shard checks its own list of forbidden words and
 //! refuses such a name with words the screen shows.
 
+pub mod words;
+
+pub use words::*;
+
+use crate::art::{ArtRequest, Paint as FigurePaint};
 use crate::frame::{WatchEquip, WatchLook};
+use crate::geom::{Rgba, Vector};
+use crate::scene::{standing_figure, DOLL_FACING};
 use serde::{Deserialize, Serialize};
 use uoterm_nav::{ClilocData, Profession, ProfessionKind, ProfessionList};
 use uoterm_protocol::types::{
@@ -104,9 +111,19 @@ const CLOTH_HUE_STEP: u16 = 5;
 const FIRST_HAIR: usize = 1;
 /// The ways a figure can face. The preview turns through them.
 pub const FACINGS: u8 = 8;
+/// The figure grows by whole steps up to this, so each pixel of the art
+/// stays sharp.
+pub const PREVIEW_MOST_SCALE: f32 = 6.0;
+/// Tiles across the map of a start town.
+pub const TOWN_MAP_TILES: f32 = 160.0;
+/// Where a web page gets the creation files.
+pub const CREATION_FILES_PATH: &str = "/v1/data/creation";
+/// Separates the text numbers of the start towns in the query of
+/// [`CREATION_FILES_PATH`].
+pub const TOWNS_SEPARATOR: char = ',';
 
 /// The race of a new character, as the shard numbers it from zero.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Race {
     #[default]
     Human,
@@ -144,7 +161,7 @@ impl Race {
 }
 
 /// What a color of the look paints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Paint {
     Skin,
     Shirt,
@@ -485,6 +502,32 @@ pub fn character_slots(list_flags: u32) -> usize {
     } else {
         DEFAULT_SLOTS
     }
+}
+
+/// The scale a figure of `art` pixels is drawn at in `room`: the largest
+/// whole scale that fits, up to [`PREVIEW_MOST_SCALE`], so the pixels stay
+/// sharp. Art larger than the room shrinks to fit it.
+pub fn preview_scale(room: Vector, art: Vector) -> f32 {
+    let fit = (room.x / art.x).min(room.y / art.y);
+    if fit >= 1.0 {
+        fit.floor().min(PREVIEW_MOST_SCALE)
+    } else {
+        fit
+    }
+}
+
+/// The path a web page gets the creation files of `towns` from: the words
+/// about each placed start town come with them.
+pub fn creation_files_path(towns: &[StartTown]) -> String {
+    let numbers: Vec<String> = towns
+        .iter()
+        .filter_map(|town| town.place)
+        .map(|place| place.description.to_string())
+        .collect();
+    format!(
+        "{CREATION_FILES_PATH}?towns={}",
+        numbers.join(&TOWNS_SEPARATOR.to_string())
+    )
 }
 
 /// True when the account has room for one more character.
@@ -1022,6 +1065,21 @@ impl Creation {
         false
     }
 
+    /// The way the preview figure faces: the paperdoll way, turned.
+    pub fn facing(&self) -> u8 {
+        (DOLL_FACING + self.turns) % FACINGS
+    }
+
+    /// The picture of the preview figure, standing as it faces, with no
+    /// ring round it.
+    pub fn figure_request(&self) -> ArtRequest {
+        standing_figure(
+            &self.look(),
+            self.facing(),
+            FigurePaint::outlined(Rgba::TRANSPARENT),
+        )
+    }
+
     /// Turns the preview figure one eighth to the right, or to the left.
     pub fn turn(&mut self, right: bool) {
         let step = if right { 1 } else { FACINGS - 1 };
@@ -1375,6 +1433,39 @@ mod tests {
             },
         );
         assert_eq!(old.town, OLD_FIRST_TOWN);
+    }
+
+    #[test]
+    fn the_figure_grows_by_whole_steps_and_a_large_one_shrinks_to_fit() {
+        let room = Vector::new(250.0, 300.0);
+        assert_eq!(preview_scale(room, Vector::new(44.0, 70.0)), 4.0);
+        assert_eq!(
+            preview_scale(room, Vector::new(10.0, 10.0)),
+            PREVIEW_MOST_SCALE
+        );
+        let large = preview_scale(room, Vector::new(500.0, 300.0));
+        assert!((large - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_figure_faces_the_watcher_and_turns_from_there() {
+        let mut look = creation(NEW);
+        assert_eq!(look.facing(), DOLL_FACING);
+        look.turn(true);
+        let ArtRequest::Figure { look: drawn, .. } = look.figure_request() else {
+            panic!("a figure");
+        };
+        assert_eq!(drawn.direction, (DOLL_FACING + 1) % FACINGS);
+        assert_eq!(drawn.body, look.body());
+    }
+
+    #[test]
+    fn the_creation_files_of_a_page_bring_the_words_of_the_placed_towns() {
+        assert_eq!(
+            creation_files_path(&sample_choices().towns),
+            "/v1/data/creation?towns=0,0,1075074"
+        );
+        assert_eq!(creation_files_path(&[]), "/v1/data/creation?towns=");
     }
 
     #[test]

@@ -25,6 +25,13 @@ use super::creation_ui::{self, Art, Asked as CreationAsked};
 use super::link::Link;
 use super::map_view::MapPictures;
 use super::model::creation::{can_make, Creation, CreationFiles};
+use super::model::login::{
+    account_name, host_name, port_number, save_name, saved_detail, server_words, CHARACTER_SLOTS,
+    ENCRYPTIONS, LABELS, NEEDS_NAME, WORDS_CANCEL, WORDS_CONNECT, WORDS_CONNECTING, WORDS_DELETE,
+    WORDS_DELETE_SURE, WORDS_EMPTY_SLOT, WORDS_ENCRYPTION, WORDS_MAKE, WORDS_NOT_SAVED,
+    WORDS_NO_ROOM, WORDS_NO_SAVED, WORDS_PICK_CHARACTER, WORDS_PICK_SHARD, WORDS_SAVE, WORDS_SAVED,
+    WORDS_SAVED_AS, WORDS_SAVE_AS, WORDS_SAVE_LOGIN, WORDS_TITLE,
+};
 use super::orders;
 use super::scene::Scene;
 use super::theme::{self, text_font, title_font};
@@ -57,49 +64,19 @@ const FIELD_RADIUS: u8 = 6;
 const REPAINT_WHILE_WAITING_MS: u64 = 100;
 const SAVE_BUTTON_WIDTH: f32 = 76.0;
 
-const WORDS_TITLE: &str = "UOTerm";
-const WORDS_SAVED: &str = "Saved logins";
-const WORDS_NO_SAVED: &str = "No saved logins yet. Fill in the form and press Save login.";
-const WORDS_SAVE_LOGIN: &str = "Save login";
-const WORDS_SAVE: &str = "Save";
-const WORDS_CANCEL: &str = "Cancel";
-const WORDS_SAVE_AS: &str = "Save as";
 const WORDS_PASSWORD_VARIABLE: &str = "Password variable";
 const HINT_PASSWORD_VARIABLE: &str = "Optional: a variable that holds the password";
-const WORDS_NOT_SAVED: &str = "The password is not saved.";
 const WORDS_EDIT: &str = "Edit";
 const WORDS_YES: &str = "Yes";
 const WORDS_NO: &str = "No";
 const WORDS_DELETE_SAVED: &str = "Delete this saved login?";
 const WORDS_EDITING: &str = "Change the fields, then press Save.";
-const WORDS_SAVED_AS: &str = "Saved as";
-const WORDS_ENCRYPTION: &str = "Encryption";
-/// The encryption choices of the form, as `play --encryption` names them.
-const ENCRYPTIONS: [(EncryptionMode, &str); 2] = [
-    (EncryptionMode::None, "None (most free shards)"),
-    (EncryptionMode::Osi, "OSI (encrypted shards)"),
-];
-pub const NEEDS_ACCOUNT: &str = "Type the account.";
-pub const NEEDS_HOST: &str = "Type the host.";
-pub const BAD_PORT: &str = "The port must be a number from 1 to 65535.";
-const NEEDS_NAME: &str = "Type a name for the saved login.";
-const WORDS_CONNECT: &str = "Connect";
-const WORDS_CONNECTING: &str = "Connecting...";
-const WORDS_PICK_SHARD: &str = "Pick a shard";
-const WORDS_PICK_CHARACTER: &str = "Pick a character";
-const WORDS_MAKE: &str = "New character";
-const WORDS_DELETE: &str = "Delete";
-const WORDS_DELETE_SURE: &str = "Delete?";
-const WORDS_EMPTY_SLOT: &str = "(empty)";
-const WORDS_NO_ROOM: &str = "The account has no room for another character.";
-const CHARACTER_SLOTS: usize = 7;
 const WORDS_FIND: &str = "Find";
 const WORDS_ASKING: &str = "Jev looks at the list...";
 const WORDS_NOT_SURE: &str = "Jev is not sure which one you mean. Click one.";
 const HINT_WISH: &str = "Say who you want to play, for example: my miner on the test shard";
 const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
 const HINT_PASSWORD_ENV: &str = "From the environment when empty";
-const LABELS: [&str; 6] = ["Host", "Port", "Account", "Password", "Shard", "Character"];
 const PASSWORD_FIELD: usize = 3;
 const PASSWORD_ID: &str = "login-password";
 const FIND_WIDTH: f32 = 70.0;
@@ -123,24 +100,15 @@ pub struct LoginForm {
 impl LoginForm {
     /// The account, trimmed, or words for the human when there is none.
     pub fn account_name(&self) -> Result<&str, &'static str> {
-        Some(self.account.trim())
-            .filter(|account| !account.is_empty())
-            .ok_or(NEEDS_ACCOUNT)
+        account_name(&self.account)
     }
 
     pub fn host_name(&self) -> Result<&str, &'static str> {
-        Some(self.host.trim())
-            .filter(|host| !host.is_empty())
-            .ok_or(NEEDS_HOST)
+        host_name(&self.host)
     }
 
     pub fn port_number(&self) -> Result<u16, &'static str> {
-        self.port
-            .trim()
-            .parse()
-            .ok()
-            .filter(|port| *port != 0)
-            .ok_or(BAD_PORT)
+        port_number(&self.port)
     }
 
     /// The form as a saved login. The password is never in it; a variable
@@ -210,12 +178,12 @@ impl SavedLogin {
     }
 
     fn server(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+        server_words(&self.host, self.port)
     }
 
     /// The line under the name in the list.
     fn detail(&self) -> String {
-        format!("{} @ {}", self.account, self.server())
+        saved_detail(&self.account, &self.host, self.port)
     }
 }
 
@@ -400,7 +368,7 @@ impl LoginFlow {
             .and_then(|name| self.saved.iter().find(|saved| saved.name == name));
         self.saving = Some(SaveAsk {
             name: edited.map_or_else(
-                || format!("{}@{}", self.form.account.trim(), self.form.host.trim()),
+                || save_name(&self.form.account, &self.form.host),
                 |saved| saved.name.clone(),
             ),
             password_env: edited
@@ -1174,6 +1142,7 @@ fn pick_list(ui: &egui::Ui, body: Rect, title: &str, names: &[String]) -> Option
 mod tests {
     use super::super::modern::testing::{click, Canvas, ENV_PICTURES, SCREEN};
     use super::*;
+    use crate::window::model::login::{BAD_PORT, NEEDS_ACCOUNT};
     use std::sync::Mutex;
 
     const OLD_VERSION: ClientVersion = ClientVersion::new(5, 0, 9, 1);

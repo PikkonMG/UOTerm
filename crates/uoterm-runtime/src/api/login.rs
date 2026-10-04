@@ -2,7 +2,8 @@
 //!
 //! The page sends the login first. The link starts the session with a
 //! [`LoginPicker`], and sends each question of the login to the page as a
-//! [`LoginAsk`](uoterm_world::login::LoginAsk). The page answers each with
+//! [`LoginAsk`](uoterm_world::login::LoginAsk), with the client version the
+//! login speaks, which a new character follows. The page answers each with
 //! a [`LoginReply`]. At the end the link sends the id of the new session,
 //! which the page then opens the live link of, or the words of the fault.
 //!
@@ -69,6 +70,7 @@ async fn run_login(socket: WebSocket, st: Arc<ApiState>) {
         socket,
         here: true,
         open: None,
+        version: String::new(),
     };
     let first = tokio::time::timeout(LOGIN_FIRST_WAIT, next_from_page(&mut page.socket)).await;
     let login = match first {
@@ -84,6 +86,7 @@ async fn run_login(socket: WebSocket, st: Arc<ApiState>) {
     };
     let (asks, mut questions) = mpsc::unbounded_channel();
     let opts = ConnectOptions::for_screen(login, &st.config, LoginPicker(asks));
+    page.version = opts.version.to_string();
     let connecting = st.runtime.connect(opts);
     tokio::pin!(connecting);
     let ended = loop {
@@ -116,6 +119,8 @@ struct PageLogin {
     here: bool,
     /// The question the page has not answered yet.
     open: Option<LoginQuestion>,
+    /// The client version the login speaks, as the page reads it.
+    version: String,
 }
 
 impl PageLogin {
@@ -124,7 +129,7 @@ impl PageLogin {
     async fn ask(&mut self, question: LoginQuestion) {
         if self.here
             && self
-                .tell(json!({ "kind": KIND_ASK, "ask": question.ask() }))
+                .tell(json!({ "kind": KIND_ASK, "ask": question.ask(), "version": self.version }))
                 .await
         {
             self.open = Some(question);
@@ -228,7 +233,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::net::SocketAddr;
     use std::time::Duration;
-    use uoterm_protocol::types::PKT_PLAY_CHARACTER;
+    use uoterm_protocol::types::{ClientVersion, PKT_PLAY_CHARACTER};
 
     const KIND_LOGIN: &str = "login";
     const KIND_REPLY: &str = "reply";
@@ -271,6 +276,8 @@ mod tests {
         let (mut ws, ask) = begin_login(addr, shard.addr).await;
         assert_eq!(ask["kind"], KIND_ASK);
         assert_eq!(ask["ask"]["kind"], "Characters");
+        // A new character follows the client version the login speaks.
+        assert_eq!(ask["version"], ClientVersion::T2A.to_string());
         let slot = ask["ask"]["names"]
             .as_array()
             .unwrap()

@@ -8,10 +8,15 @@
 
 use super::map_view::{Lay, MapPictures};
 use super::model::creation::{
-    at_limit, facet_name, find_skills, Creation, CreationFiles, Limit, Paint, Palette, Race, Stage,
-    Step, Style, FACINGS, NAME_MAX, NAME_MIN, SKILL_RANGE, STAT_RANGE,
+    card_short, facet_name, name_rules, paint_words, preview_scale, profession_about,
+    profession_name, race_words, skill_rule, stat_rule, total_words, Creation, CreationFiles,
+    Palette, Progress, Stage, Step, Style, SKILL_RANGE, STAT_RANGE, STAT_WORDS, TOWN_MAP_TILES,
+    WORDS_BACK, WORDS_BEARD, WORDS_BODY, WORDS_COLORS, WORDS_FEMALE, WORDS_HAIR, WORDS_MALE,
+    WORDS_NAME, WORDS_NAME_HINT, WORDS_NO_ART, WORDS_PICK_SKILL, WORDS_PROFESSION,
+    WORDS_PROFESSION_HINT, WORDS_SEARCH, WORDS_SKILLS, WORDS_STATS, WORDS_SUMMARY, WORDS_TITLE,
+    WORDS_TOWN, WORDS_TURN_LEFT, WORDS_TURN_RIGHT,
 };
-use super::scene::{Scene, DOLL_FACING};
+use super::scene::Scene;
 use super::theme::{self, text_font, title_font};
 use crate::window::bridge;
 use eframe::egui::text::{LayoutJob, TextWrapping};
@@ -20,7 +25,7 @@ use eframe::egui::{
     StrokeKind, TextFormat, Vec2,
 };
 use std::sync::Arc;
-use uoterm_nav::{Profession, ProfessionKind};
+use uoterm_nav::Profession;
 use uoterm_protocol::StartTown;
 use uoterm_view::geom::Vector;
 
@@ -35,9 +40,6 @@ const PREVIEW_WIDTH: f32 = 250.0;
 const RADIUS: u8 = 8;
 
 // The figure.
-/// The figure grows by whole steps up to this, so each pixel of the art
-/// stays sharp.
-pub const PREVIEW_MOST_SCALE: f32 = 6.0;
 const TURN_ROW: f32 = 34.0;
 const CAPTION_ROW: f32 = 44.0;
 /// The feet of the figure stand this far above the bottom of its box.
@@ -90,8 +92,6 @@ const TOWN_MARK: f32 = 4.0;
 const MAP_MOST: f32 = 300.0;
 /// The words about a town keep at least this much room under its map.
 const TOWN_WORDS_LEAST: f32 = 140.0;
-/// Tiles across the map of a start town.
-const MAP_TILES: f32 = 160.0;
 const PIN_RADIUS: f32 = 6.0;
 const PIN_RING: f32 = 12.0;
 const NAME_FIELD_HEIGHT: f32 = 52.0;
@@ -102,62 +102,6 @@ const SUMMARY_LABEL_WIDTH: f32 = 96.0;
 const SUMMARY_SWATCH: f32 = 20.0;
 const HALF: f32 = 2.0;
 const ELLIPSIS: char = '…';
-
-// The words of the client have tags.
-const TAG_OPEN: char = '<';
-const TAG_CLOSE: char = '>';
-const LINE_BREAK_TAG: &str = "br";
-const SELF_CLOSING: char = '/';
-const SENTENCE_END: &str = ". ";
-
-const WORDS_TITLE: &str = "New character";
-const WORDS_BACK: &str = "Back";
-const WORDS_NEXT: &str = "Next";
-const WORDS_CREATE: &str = "Create";
-const WORDS_KEYS: &str = "Enter: next     Esc: back";
-const WORDS_TURN_LEFT: &str = "Turn left";
-const WORDS_TURN_RIGHT: &str = "Turn right";
-const WORDS_NO_ART: &str = "The figure needs the client files.";
-const WORDS_BODY: &str = "Body";
-const WORDS_MALE: &str = "Male";
-const WORDS_FEMALE: &str = "Female";
-const WORDS_MAN: &str = "man";
-const WORDS_WOMAN: &str = "woman";
-const WORDS_LOCKED: &str = "locked";
-const WORDS_HAIR: &str = "Hair";
-const WORDS_BEARD: &str = "Beard";
-const WORDS_PROFESSION: &str = "Pick a profession";
-const WORDS_PROFESSION_HINT: &str = "Or pick Custom to set your own stats and skills.";
-const WORDS_CUSTOM: &str = "Custom";
-const WORDS_CUSTOM_ABOUT: &str = "Set your own stats and skills on the next page.";
-const WORDS_NEEDS_SAMURAI: &str = "Needs Samurai Empire";
-const WORDS_CATEGORY: &str = "Opens a list of professions.";
-const WORDS_STATS: &str = "Stats";
-const WORDS_SKILLS: &str = "Skills";
-const WORDS_PICK_SKILL: &str = "Pick a skill";
-const WORDS_SEARCH: &str = "Search skills";
-const WORDS_TAKEN: &str = "(taken)";
-const WORDS_TOWN: &str = "Pick a start town";
-const WORDS_NAME: &str = "Name your character";
-const WORDS_NAME_HINT: &str = "Type a name";
-const WORDS_NAME_GOOD: &str = "The name is good.";
-const WORDS_SUMMARY: &str = "Your character";
-const WORDS_LOOK: &str = "Look";
-const WORDS_COLORS: &str = "Colors";
-const WORDS_TRADE: &str = "Profession";
-const WORDS_START: &str = "Town";
-const STAT_WORDS: [&str; 3] = ["Strength", "Intelligence", "Dexterity"];
-const STAT_SHORT: [&str; 3] = ["Str", "Int", "Dex"];
-const LIST_JOIN: &str = "  ·  ";
-const COLOR_ORDER: [Paint; 5] = [
-    Paint::Skin,
-    Paint::Hair,
-    Paint::Beard,
-    Paint::Shirt,
-    Paint::Pants,
-];
-const WORDS_LEAST: &str = "least";
-const WORDS_MOST: &str = "most";
 
 /// What the screen asks the login screens to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,57 +156,9 @@ fn frame(window: Rect) -> Frame {
     }
 }
 
-/// The scale a figure of `art` pixels is drawn at in `room`: the largest
-/// whole scale that fits, up to [`PREVIEW_MOST_SCALE`], so the pixels stay
-/// sharp. Art larger than the room shrinks to fit it.
-pub fn preview_scale(room: Vec2, art: Vec2) -> f32 {
-    let fit = (room.x / art.x).min(room.y / art.y);
-    if fit >= 1.0 {
-        fit.floor().min(PREVIEW_MOST_SCALE)
-    } else {
-        fit
-    }
-}
-
 /// How many boxes of `least` width fit in a row of `width`, with gaps.
 fn columns_in(width: f32, least: f32) -> usize {
     (((width + GAP) / (least + GAP)).floor() as usize).max(1)
-}
-
-/// Words of the client with their tags taken out: a line break tag starts
-/// a new line.
-fn plain_words(html: &str) -> String {
-    let mut words = String::with_capacity(html.len());
-    let mut tag: Option<String> = None;
-    for c in html.chars() {
-        match (&mut tag, c) {
-            (None, TAG_OPEN) => tag = Some(String::new()),
-            (Some(name), TAG_CLOSE) => {
-                let name = name.trim().trim_end_matches(SELF_CLOSING);
-                if name.eq_ignore_ascii_case(LINE_BREAK_TAG) {
-                    words.push('\n');
-                }
-                tag = None;
-            }
-            (Some(name), c) => name.push(c),
-            (None, c) => words.push(c),
-        }
-    }
-    words
-        .lines()
-        .map(str::trim)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
-}
-
-/// The first sentence of some words, as the short text of a card.
-fn first_sentence(words: &str) -> &str {
-    let line = words.lines().next().unwrap_or_default();
-    line.find(SENTENCE_END)
-        .map_or(line, |at| &line[..=at])
-        .trim()
 }
 
 /// Words wrapped to a width, cut after `rows` lines with an ellipsis.
@@ -426,7 +322,6 @@ fn header(ui: &egui::Ui, area: Rect, now: Stage) {
         title_font(theme::SIZE_TITLE),
         theme::TEXT,
     );
-    let at_now = Stage::ALL.iter().position(|stage| *stage == now);
     let pills: Vec<(usize, Arc<Galley>)> = Stage::ALL
         .iter()
         .enumerate()
@@ -449,10 +344,8 @@ fn header(ui: &egui::Ui, area: Rect, now: Stage) {
             Pos2::new(left, area.center().y - STEP_HEIGHT / HALF),
             Vec2::new(pill_width(&galley), STEP_HEIGHT),
         );
-        let (done, current) = match at_now {
-            Some(now) => (at < now, at == now),
-            None => (false, false),
-        };
+        let progress = Stage::ALL[at].progress(now);
+        let (done, current) = (progress == Progress::Done, progress == Progress::Current);
         let radius = CornerRadius::same(u8::MAX);
         ui.painter().rect_filled(
             pill,
@@ -522,10 +415,12 @@ fn footer(ui: &egui::Ui, area: Rect, creation: &Creation) -> (bool, bool) {
         button,
     );
     let blocker = creation.blocker();
-    let (words, color) = match blocker {
-        Some(blocker) => (blocker.words(), theme::WAITING),
-        None => (WORDS_KEYS.to_string(), theme::TEXT_FAINT),
+    let color = if blocker.is_some() {
+        theme::WAITING
+    } else {
+        theme::TEXT_FAINT
     };
+    let words = creation.footer_words();
     let room = back_area.left() - area.left() - PART_GAP;
     let galley = wrapped(ui, &words, text_font(theme::SIZE_PLATE), color, room, 1);
     ui.painter().galley(
@@ -533,53 +428,15 @@ fn footer(ui: &egui::Ui, area: Rect, creation: &Creation) -> (bool, bool) {
         galley,
         color,
     );
-    let last = creation.step == Step::Name;
     let back = big_button(ui, back_area, WORDS_BACK, false, true);
     let next = big_button(
         ui,
         next_area,
-        if last { WORDS_CREATE } else { WORDS_NEXT },
+        creation.next_words(),
         true,
         blocker.is_none(),
     );
     (back, next)
-}
-
-/// The words of the race and the sex, as "Human man".
-fn body_words(creation: &Creation) -> String {
-    let sex = if creation.female {
-        WORDS_WOMAN
-    } else {
-        WORDS_MAN
-    };
-    format!("{} {sex}", creation.race.words())
-}
-
-/// The name of a profession as the card shows it: Advanced is Custom.
-fn profession_name(profession: &Profession, files: &CreationFiles) -> String {
-    if profession.is_advanced() {
-        WORDS_CUSTOM.to_string()
-    } else {
-        name_case(&files.words(profession.name_id, &profession.name))
-    }
-}
-
-/// Words in capitals, as the client writes a profession ("SAMURAI"), with
-/// only the first letter of each word as a capital.
-fn name_case(words: &str) -> String {
-    if words.chars().any(char::is_lowercase) {
-        return words.to_string();
-    }
-    words
-        .split(' ')
-        .map(|word| {
-            let mut letters = word.chars();
-            letters.next().map_or(String::new(), |first| {
-                first.to_string() + &letters.as_str().to_lowercase()
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// The large figure of the new character, the turn buttons, and its words.
@@ -596,12 +453,12 @@ fn preview(
     );
     ui.painter()
         .rect_filled(figure_box, CornerRadius::same(RADIUS), theme::TRACK);
-    let direction = (DOLL_FACING + creation.turns) % FACINGS;
-    let picture = scene.and_then(|scene| scene.turned_picture(&creation.look(), direction));
+    let picture = scene.and_then(|scene| scene.turned_picture(&creation.look(), creation.facing()));
     match picture {
         Some((texture, sprite)) => {
             let room = Vec2::new(figure_box.width(), figure_box.height() - FLOOR_PAD * HALF);
-            let scale = preview_scale(room, Vec2::new(sprite.width, sprite.height));
+            let art = Vec2::new(sprite.width, sprite.height);
+            let scale = preview_scale(bridge::vector(room), bridge::vector(art));
             let size = Vec2::new(sprite.width, sprite.height) * scale;
             let floor = figure_box.bottom() - FLOOR_PAD;
             let left = (figure_box.center().x - bridge::vec2(sprite.anchor).x * scale)
@@ -643,19 +500,7 @@ fn preview(
         creation.turn(true);
     }
     let caption_top = left_turn.bottom() + GAP;
-    let name = creation.name.trim();
-    let profession = creation
-        .profession
-        .as_ref()
-        .map(|profession| profession_name(profession, files));
-    let (title, about) = match (name.is_empty(), profession) {
-        (true, profession) => (body_words(creation), profession.unwrap_or_default()),
-        (false, Some(profession)) => (
-            name.to_string(),
-            format!("{}, {profession}", body_words(creation)),
-        ),
-        (false, None) => (name.to_string(), body_words(creation)),
-    };
+    let (title, about) = creation.caption(files);
     ui.painter().text(
         Pos2::new(area.center().x, caption_top),
         Align2::CENTER_TOP,
@@ -670,17 +515,6 @@ fn preview(
         text_font(theme::SIZE_BODY),
         theme::TEXT_DIM,
     );
-}
-
-fn paint_words(paint: Paint, race: Race) -> &'static str {
-    match paint {
-        Paint::Skin => "Skin",
-        Paint::Shirt if race == Race::Gargoyle => "Robe",
-        Paint::Shirt => "Shirt",
-        Paint::Pants => "Pants",
-        Paint::Hair => "Hair color",
-        Paint::Beard => "Beard color",
-    }
 }
 
 /// The look: the body, the hair and beard styles, and every color grid.
@@ -699,11 +533,7 @@ fn look_page(ui: &egui::Ui, area: Rect, creation: &mut Creation, scene: Option<&
     left += PART_GAP;
     for race in creation.races_shown() {
         let allowed = creation.race_allowed(race);
-        let words = if allowed {
-            race.words().to_string()
-        } else {
-            format!("{} ({WORDS_LOCKED})", race.words())
-        };
+        let words = race_words(race, allowed);
         let spot = Rect::from_min_size(Pos2::new(left, row_top), Vec2::new(RACE_WIDTH, CHOICE_ROW));
         let key = Id::new(("creation-race", race.words()));
         if choice(ui, spot, key, &words, creation.race == race, !allowed) {
@@ -799,20 +629,10 @@ fn grid_layout(room: Vec2, palettes: &[Palette]) -> (usize, f32) {
         .unwrap_or((palettes.len(), CELL_MOST))
 }
 
-/// The colors of the look in the order the page shows them: the body
-/// first, then the clothes.
-fn shown_paints(creation: &Creation) -> Vec<Paint> {
-    let paints = creation.paints();
-    COLOR_ORDER
-        .into_iter()
-        .filter(|paint| paints.contains(paint))
-        .collect()
-}
-
 /// Every color of the look, each as a grid of its hues with the picked one
 /// ringed.
 fn color_grids(ui: &egui::Ui, area: Rect, creation: &mut Creation, scene: Option<&Scene>) {
-    let paints = shown_paints(creation);
+    let paints = creation.shown_paints();
     let palettes: Vec<Palette> = paints
         .iter()
         .map(|paint| creation.palette(*paint))
@@ -965,13 +785,7 @@ fn card(
         .as_ref()
         .is_some_and(|known| known.true_name == profession.true_name);
     let key = Id::new(("creation-profession", &profession.true_name));
-    let about = if profession.is_advanced() {
-        WORDS_CUSTOM_ABOUT.to_string()
-    } else if profession.kind == ProfessionKind::Category {
-        WORDS_CATEGORY.to_string()
-    } else {
-        plain_words(&files.words(profession.description_id, ""))
-    };
+    let about = profession_about(profession, files);
     let mut response = ui.interact(spot, key, Sense::click());
     if !about.is_empty() {
         response = response.on_hover_text(about.clone());
@@ -1023,11 +837,8 @@ fn card(
         title_font(theme::SIZE_HEADING),
         name_color,
     );
-    let (short, short_color) = if locked {
-        (WORDS_NEEDS_SAMURAI, theme::WAITING)
-    } else {
-        (first_sentence(&about), about_color)
-    };
+    let short = card_short(&about, locked);
+    let short_color = if locked { theme::WAITING } else { about_color };
     let galley = wrapped(
         ui,
         short,
@@ -1044,38 +855,9 @@ fn card(
     response.clicked() && !locked
 }
 
-/// The stats and skills the picked profession gives, in words.
-fn trade_words(creation: &Creation, files: &CreationFiles) -> (String, String) {
-    let stats = STAT_SHORT
-        .iter()
-        .zip(creation.stats)
-        .map(|(words, value)| format!("{words} {value}"))
-        .collect::<Vec<_>>()
-        .join(LIST_JOIN);
-    let skills = creation
-        .skills
-        .iter()
-        .filter_map(|pick| {
-            let name = files.skill_names.get(usize::from(pick.skill?))?;
-            Some(format!("{name} {}", pick.value))
-        })
-        .collect::<Vec<_>>()
-        .join(LIST_JOIN);
-    (stats, skills)
-}
-
 fn profession_details(ui: &egui::Ui, area: Rect, creation: &Creation, files: &CreationFiles) {
-    let Some(profession) = creation.profession.as_ref() else {
+    let Some(lines) = creation.profession_details(files) else {
         return;
-    };
-    let lines = if profession.is_advanced() {
-        [WORDS_CUSTOM_ABOUT.to_string(), String::new()]
-    } else {
-        let (stats, skills) = trade_words(creation, files);
-        [
-            format!("{WORDS_STATS}: {stats}"),
-            format!("{WORDS_SKILLS}: {skills}"),
-        ]
     };
     for (at, line) in lines.iter().enumerate() {
         let galley = wrapped(
@@ -1169,20 +951,14 @@ fn total_heading(ui: &egui::Ui, area: Rect, words: &str, values: i32, total: i32
     ui.painter().text(
         Pos2::new(area.right(), area.top()),
         Align2::RIGHT_TOP,
-        format!("Total {values} of {total}"),
+        total_words(values, total),
         text_font(theme::SIZE_PLATE),
         color,
     );
 }
 
 /// The rule of a group of values, and a note when one is at an end.
-fn limit_words(
-    ui: &egui::Ui,
-    at: Pos2,
-    width: f32,
-    rule: &str,
-    limit: Option<(String, Limit, i32)>,
-) {
+fn limit_words(ui: &egui::Ui, at: Pos2, width: f32, rule: &str, limit: Option<String>) {
     let galley = wrapped(
         ui,
         rule,
@@ -1193,15 +969,11 @@ fn limit_words(
     );
     let below = at.y + galley.size().y + GAP / HALF;
     ui.painter().galley(at, galley, theme::TEXT_DIM);
-    if let Some((name, limit, value)) = limit {
-        let end = match limit {
-            Limit::Least => WORDS_LEAST,
-            Limit::Most => WORDS_MOST,
-        };
+    if let Some(note) = limit {
         ui.painter().text(
             Pos2::new(at.x, below),
             Align2::LEFT_TOP,
-            format!("{name} is at its {end}: {value}."),
+            note,
             text_font(theme::SIZE_BODY),
             theme::WAITING,
         );
@@ -1240,18 +1012,12 @@ fn trade_page(ui: &mut egui::Ui, area: Rect, creation: &mut Creation, files: &Cr
         }
         top = row.bottom();
     }
-    let stat_rule = format!(
-        "Each stat is {} to {}. Moving one moves the others.",
-        STAT_RANGE.0, STAT_RANGE.1
-    );
-    let stat_limit = at_limit(&creation.stats, STAT_RANGE)
-        .map(|(at, limit)| (STAT_WORDS[at].to_string(), limit, creation.stats[at]));
     limit_words(
         ui,
         Pos2::new(stats_area.left(), top + GAP),
         stats_area.width(),
-        &stat_rule,
-        stat_limit,
+        &stat_rule(),
+        creation.stat_limit_note(),
     );
 
     let skills_area = Rect::from_min_max(
@@ -1285,23 +1051,12 @@ fn trade_page(ui: &mut egui::Ui, area: Rect, creation: &mut Creation, files: &Cr
         }
         top = row.bottom();
     }
-    let skill_rule = format!(
-        "Each skill is {} to {}. Pick a different skill in each row. Moving one moves the others.",
-        SKILL_RANGE.0, SKILL_RANGE.1
-    );
-    let skill_limit = at_limit(&values, SKILL_RANGE).map(|(at, limit)| {
-        let name = creation.skills[at]
-            .skill
-            .and_then(|skill| files.skill_names.get(usize::from(skill)).cloned())
-            .unwrap_or_else(|| format!("Skill {}", at + 1));
-        (name, limit, values[at])
-    });
     limit_words(
         ui,
         Pos2::new(skills_area.left(), top + GAP),
         skills_area.width(),
-        &skill_rule,
-        skill_limit,
+        &skill_rule(),
+        creation.skill_limit_note(files),
     );
 }
 
@@ -1315,10 +1070,7 @@ fn skill_picker(
     menu: &[(u8, String)],
 ) {
     let key = Id::new(("creation-skill", row));
-    let pick = creation.skills[row].skill;
-    let shown = pick
-        .and_then(|skill| menu.iter().find(|(known, _)| *known == skill))
-        .map(|(_, name)| name.as_str());
+    let shown = creation.skill_row_name(menu, row);
     let response = ui.interact(area, key, Sense::click());
     let fill = if response.hovered() {
         theme::BUTTON_HOVER
@@ -1373,16 +1125,10 @@ fn skill_picker(
             egui::ScrollArea::vertical()
                 .max_height(PICKER_LIST_HEIGHT)
                 .show(ui, |ui| {
-                    for (skill, name) in find_skills(menu, &search) {
-                        let taken = creation.skill_taken(*skill, row);
-                        let words = if taken {
-                            format!("{name} {WORDS_TAKEN}")
-                        } else {
-                            name.clone()
-                        };
-                        let item = egui::SelectableLabel::new(pick == Some(*skill), words);
-                        if ui.add_enabled(!taken, item).clicked() {
-                            chosen = Some(*skill);
+                    for choice in creation.skill_choices(menu, row, &search) {
+                        let item = egui::SelectableLabel::new(choice.picked, choice.words);
+                        if ui.add_enabled(!choice.taken, item).clicked() {
+                            chosen = Some(choice.skill);
                         }
                     }
                 });
@@ -1443,7 +1189,7 @@ fn town_page(
     } else {
         right.top()
     };
-    let words = plain_words(&files.town_words(&town, creation.town));
+    let words = creation.town_about(files);
     let words_area = Rect::from_min_max(Pos2::new(right.left(), words_top), right.max);
     ui.scope_builder(egui::UiBuilder::new().max_rect(words_area), |ui| {
         egui::ScrollArea::vertical()
@@ -1531,7 +1277,7 @@ fn town_map(ui: &egui::Ui, area: Rect, town: &StartTown, art: &mut Art<'_>) -> b
     let lay = Lay::NorthUp {
         center: bridge::point(area.center()),
         middle: Vector::new(x, y),
-        scale: area.width() / MAP_TILES,
+        scale: area.width() / TOWN_MAP_TILES,
     };
     art.town_map.draw_near(&painter, lay);
     let pin = bridge::pos2(lay.screen(x, y));
@@ -1557,15 +1303,6 @@ fn town_map(ui: &egui::Ui, area: Rect, town: &StartTown, art: &mut Art<'_>) -> b
         StrokeKind::Inside,
     );
     true
-}
-
-/// The rules of a name, as the page lists them.
-fn name_rules() -> [String; 3] {
-    [
-        format!("{NAME_MIN} to {NAME_MAX} characters."),
-        "Letters, spaces and the marks - . ' only. Start with a letter, and put a letter between two marks.".into(),
-        "No title at the start, such as Lord, Lady, GM or Seer.".into(),
-    ]
 }
 
 /// The name field with its rules, and all the choices before Create.
@@ -1609,9 +1346,11 @@ fn name_page(
         Stroke::new(LINE_WIDTH / HALF, edge),
         StrokeKind::Inside,
     );
-    let (verdict, color) = match fault {
-        Some(blocker) => (blocker.words(), theme::WAITING),
-        None => (WORDS_NAME_GOOD.to_string(), theme::GOAL),
+    let verdict = creation.name_verdict();
+    let color = if fault.is_some() {
+        theme::WAITING
+    } else {
+        theme::GOAL
     };
     let mut top = field.bottom() + GAP;
     ui.painter().text(
@@ -1658,49 +1397,11 @@ fn summary(
         .rect_filled(area, CornerRadius::same(RADIUS), theme::TRACK);
     let inner = area.shrink(PART_GAP);
     heading(ui, inner.min, WORDS_SUMMARY);
-    let hair = creation
-        .hair_styles()
-        .get(creation.hair)
-        .map_or(String::new(), |style| {
-            format!(", {WORDS_HAIR}: {}", style.words)
-        });
-    let beard = creation
-        .beard_styles()
-        .and_then(|styles| styles.get(creation.beard))
-        .map_or(String::new(), |style| {
-            format!(", {WORDS_BEARD}: {}", style.words)
-        });
-    let profession = creation
-        .profession
-        .as_ref()
-        .map_or(String::new(), |profession| {
-            profession_name(profession, files)
-        });
-    let (stats, skills) = trade_words(creation, files);
-    let town = creation
-        .towns()
-        .get(creation.town)
-        .map_or(String::new(), |town| match town.place {
-            Some(place) => format!(
-                "{}, {} ({})",
-                town.name,
-                town.building,
-                facet_name(place.map)
-            ),
-            None => format!("{}, {}", town.name, town.building),
-        });
     let mut top = inner.top() + HEADING_ROW + GAP;
     let value_left = inner.left() + SUMMARY_LABEL_WIDTH;
     let value_width = inner.right() - value_left;
-    let rows = [
-        (WORDS_LOOK, format!("{}{hair}{beard}", body_words(creation))),
-        (WORDS_COLORS, String::new()),
-        (WORDS_TRADE, profession),
-        (WORDS_STATS, stats),
-        (WORDS_SKILLS, skills),
-        (WORDS_START, town),
-    ];
-    for (words, value) in rows {
+    for row in creation.summary_rows(files) {
+        let (words, value) = (row.label, row.value);
         label(ui, Pos2::new(inner.left(), top), words);
         let height = if words == WORDS_COLORS {
             summary_swatches(ui, Pos2::new(value_left, top), creation, scene)
@@ -1726,7 +1427,7 @@ fn summary(
 /// the height of the row.
 fn summary_swatches(ui: &egui::Ui, at: Pos2, creation: &Creation, scene: Option<&Scene>) -> f32 {
     let mut left = at.x;
-    for paint in shown_paints(creation) {
+    for paint in creation.shown_paints() {
         let spot = Rect::from_min_size(Pos2::new(left, at.y), Vec2::splat(SUMMARY_SWATCH));
         let color = scene.map_or(theme::BUTTON, |scene| {
             scene.words_color(creation.hue(paint))
@@ -1753,7 +1454,7 @@ mod tests {
     use super::super::{save_png, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
     use super::*;
     use crate::creation_files::read_creation_files;
-    use crate::window::model::creation::{sample_choices, Blocker, NameFault};
+    use crate::window::model::creation::{sample_choices, Blocker, NameFault, Paint, Race};
     use uoterm_protocol::ClientVersion;
     use uoterm_runtime::CharacterChoices;
 
@@ -1889,26 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn the_words_of_the_client_lose_their_tags_and_a_card_keeps_one_sentence() {
-        assert_eq!(
-            plain_words("<b>Yew</b> is a town.<BR>In the woods."),
-            "Yew is a town.\nIn the woods."
-        );
-        assert_eq!(plain_words("<br/>plain"), "plain");
-        assert_eq!(first_sentence("A mage. Casts spells."), "A mage.");
-        assert_eq!(first_sentence("One line\nTwo"), "One line");
-    }
-
-    #[test]
-    fn the_figure_grows_by_whole_steps_and_a_large_one_shrinks_to_fit() {
-        let room = Vec2::new(250.0, 300.0);
-        assert_eq!(preview_scale(room, Vec2::new(44.0, 70.0)), 4.0);
-        assert_eq!(
-            preview_scale(room, Vec2::new(10.0, 10.0)),
-            PREVIEW_MOST_SCALE
-        );
-        let large = preview_scale(room, Vec2::new(500.0, 300.0));
-        assert!((large - 0.5).abs() < f32::EPSILON);
+    fn the_cards_fill_the_row_by_their_least_width() {
         assert_eq!(columns_in(726.0, CARD_MIN_WIDTH), 2);
         assert_eq!(columns_in(10.0, CARD_MIN_WIDTH), 1);
     }
@@ -1926,7 +1608,8 @@ mod tests {
             assert!(parts.header.bottom() < parts.content.top());
             assert!(parts.content.bottom() < parts.footer.top());
             let creation = Creation::new(ClientVersion::MODERN, CharacterChoices::default());
-            let palettes: Vec<Palette> = shown_paints(&creation)
+            let palettes: Vec<Palette> = creation
+                .shown_paints()
                 .iter()
                 .map(|paint| creation.palette(*paint))
                 .collect();
@@ -1943,7 +1626,8 @@ mod tests {
     #[test]
     fn the_color_grids_take_two_rows_when_that_makes_the_boxes_larger() {
         let creation = Creation::new(ClientVersion::MODERN, CharacterChoices::default());
-        let palettes: Vec<Palette> = shown_paints(&creation)
+        let palettes: Vec<Palette> = creation
+            .shown_paints()
             .iter()
             .map(|paint| creation.palette(*paint))
             .collect();
@@ -1953,7 +1637,7 @@ mod tests {
         let tall = Vec2::new(894.0, 380.0);
         let (split, cell) = grid_layout(tall, &palettes);
         assert_eq!(
-            shown_paints(&creation)[split..],
+            creation.shown_paints()[split..],
             [Paint::Shirt, Paint::Pants],
             "the body colors, then the clothes"
         );
@@ -2098,6 +1782,6 @@ mod tests {
             }
         }
         let look = Creation::new(ClientVersion::MODERN, sample_choices());
-        assert!(scene.turned_picture(&look.look(), DOLL_FACING).is_some());
+        assert!(scene.turned_picture(&look.look(), look.facing()).is_some());
     }
 }

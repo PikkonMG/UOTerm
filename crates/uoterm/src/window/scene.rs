@@ -28,16 +28,15 @@ use uoterm_nav::CursorShape;
 use uoterm_view::art::{ArtRequest, ItemPaint, Paint, Sprite, TextLook, WorldArt};
 use uoterm_view::geom::Rgba;
 use uoterm_view::scene::plates::{self, Overhead, PlacedPlate};
+pub use uoterm_view::scene::DOLL_FACING;
 use uoterm_view::scene::{
-    overlays, Mesh, Overlay, Plate, SceneInput, SceneState, DEATH_FONT, DEATH_HUE, DEATH_WORDS,
-    STANDING,
+    overlays, standing_figure, Mesh, Overlay, Plate, SceneInput, SceneState, DEATH_FONT, DEATH_HUE,
+    DEATH_WORDS,
 };
 
 /// A fire or a fountain shows its next picture this often, so the window
 /// draws again at least this often.
 const ART_CYCLE_SECONDS: f64 = 0.1;
-/// A paperdoll faces the watcher.
-pub const DOLL_FACING: u8 = 4;
 
 pub const NOTE_NO_UOPATH: &str = "No client files. Give --uopath to see the real map.";
 
@@ -512,15 +511,7 @@ impl Scene {
         direction: u8,
         paint: Paint,
     ) -> Option<(egui::TextureId, Sprite)> {
-        let request = ArtRequest::Figure {
-            look: WatchLook {
-                direction,
-                ..look.clone()
-            },
-            pose: STANDING,
-            paint,
-        };
-        picture(&mut self.art, &request)
+        picture(&mut self.art, &standing_figure(look, direction, paint))
     }
 
     /// Makes the texture the pictures go into, as the first draw of the

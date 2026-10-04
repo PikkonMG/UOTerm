@@ -105,10 +105,11 @@ pub struct Shown {
 
 pub use actions::screenshot;
 pub use login_ui::{Connect, KeepLogin, KeepLogins, LoginForm, SavedLogin};
-#[cfg(test)]
-pub use login_ui::{BAD_PORT, NEEDS_ACCOUNT, NEEDS_HOST};
 pub use model::host::fonts;
 pub use settings::{shard_address, CharacterKey, ProfileStore};
+pub use uoterm_view::model::login::NEEDS_PASSWORD;
+#[cfg(test)]
+pub use uoterm_view::model::login::{BAD_PORT, NEEDS_ACCOUNT, NEEDS_HOST};
 
 /// What `uoterm play` starts with: the login screens, then the game.
 pub struct PlayOptions {

@@ -18,9 +18,9 @@ pub use overlays::Overlay;
 pub use pick::Pick;
 pub use plates::Plate;
 
-use crate::art::{Pose, WorldArt};
+use crate::art::{ArtRequest, Paint, Pose, WorldArt};
 use crate::audio::Step;
-use crate::frame::WatchFrame;
+use crate::frame::{WatchFrame, WatchLook};
 use crate::geom::{Area, Point, Rgba, Vector};
 use crate::lights::LightSource;
 use crate::look::WorldLook;
@@ -73,6 +73,21 @@ pub const STANDING: Pose = Pose {
     action: Action::Stand,
     tick: 0,
 };
+/// A paperdoll faces the watcher.
+pub const DOLL_FACING: u8 = 4;
+
+/// The picture of a mobile standing, facing `direction`, painted as
+/// `paint` says.
+pub fn standing_figure(look: &WatchLook, direction: u8, paint: Paint) -> ArtRequest {
+    ArtRequest::Figure {
+        look: WatchLook {
+            direction,
+            ..look.clone()
+        },
+        pose: STANDING,
+        paint,
+    }
+}
 
 /// A color faded to `alpha`, held between none and all of it.
 fn faded(color: Rgba, alpha: f32) -> Rgba {

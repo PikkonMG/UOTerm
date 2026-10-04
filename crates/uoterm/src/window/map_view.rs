@@ -25,7 +25,6 @@ use uoterm_runtime::tools::TOOL_FIND_LANDMARKS;
 const WHEEL_NOTCH: f32 = 50.0;
 /// The near picture is made again when its middle is this far away.
 const REDRAW_TILES: u16 = 48;
-const UNKNOWN: Color32 = Color32::from_rgb(10, 12, 18);
 /// The whole-world picture is at most this many pixels on its longer side.
 const WORLD_PICTURE_SIDE: u16 = 1024;
 /// The whole-world picture grows this many rows in each frame, so the
@@ -129,26 +128,14 @@ impl MapPictures {
         if fresh {
             return true;
         }
-        let half = (SPAN / 2) as i32;
-        let mut image = ColorImage::new([SPAN, SPAN], UNKNOWN);
-        let mut any = false;
-        for row in 0..SPAN {
-            for column in 0..SPAN {
-                let x = i32::from(middle.0) + column as i32 - half;
-                let y = i32::from(middle.1) + row as i32 - half;
-                let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
-                    continue;
-                };
-                if let Some([r, g, b]) = scene.radar_rgb(map, x, y) {
-                    image.pixels[row * SPAN + column] = Color32::from_rgb(r, g, b);
-                    any = true;
-                }
-            }
-        }
-        if !any {
+        let Some(pixels) = near_pixels(middle, |x, y| scene.radar_rgb(map, x, y)) else {
             self.near = None;
             return false;
-        }
+        };
+        let image = ColorImage {
+            size: [SPAN, SPAN],
+            pixels: pixels.into_iter().map(bridge::color).collect(),
+        };
         self.near = Some(NearPicture {
             map,
             middle,
@@ -185,7 +172,7 @@ impl MapPictures {
             self.world = Some(WorldPicture {
                 map,
                 step,
-                image: ColorImage::new(size, UNKNOWN),
+                image: ColorImage::new(size, bridge::color(UNKNOWN_LAND)),
                 next_row: 0,
                 texture: None,
             });

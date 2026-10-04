@@ -2,7 +2,7 @@
 //! goes on the tile in a header. And what a page needs to lay out what it
 //! draws: the lines of words in a UO font, and the drawn pixels of a gump.
 
-use super::{kept, on_art, WebState, CONTENT_JSON};
+use super::{kept, on_art, WebState, CONTENT_JSON, CONTENT_PNG};
 use crate::art::client_art::ArtTooLarge;
 use crate::art::png::encode;
 use axum::extract::{Path, State};
@@ -22,7 +22,6 @@ pub(super) const MEASURE_PATH: &str = "/v1/text/measure";
 /// The point of the picture that goes on the tile, as `x,y` from its top
 /// left.
 const ANCHOR_HEADER: &str = "x-uoterm-anchor";
-const CONTENT_PNG: &str = "image/png";
 
 pub(super) fn routes() -> Router<WebState> {
     Router::new()

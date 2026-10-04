@@ -14,9 +14,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use uoterm_nav::{frames_question_fits, Action};
 use uoterm_view::model::compare::ItemLayers;
-
-/// Separates the text numbers of the start towns in a query.
-const TOWNS_SEPARATOR: char = ',';
+use uoterm_view::model::creation::{CREATION_FILES_PATH, TOWNS_SEPARATOR};
 
 pub(super) fn routes() -> Router<WebState> {
     Router::new()
@@ -32,7 +30,7 @@ pub(super) fn routes() -> Router<WebState> {
             "/v1/data/frames/{body}/{action}/{direction}/{mounted}",
             get(frames),
         )
-        .route("/v1/data/creation", get(creation))
+        .route(CREATION_FILES_PATH, get(creation))
         .route("/v1/data/item-layers", get(item_layers))
         .route("/v1/data/hues-text/{hue}", get(text_rgb))
 }

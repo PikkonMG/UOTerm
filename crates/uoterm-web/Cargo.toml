@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 uoterm-nav.workspace = true
+uoterm-protocol.workspace = true
 uoterm-world.workspace = true
 uoterm-view.workspace = true
 serde.workspace = true
@@ -22,3 +23,6 @@ rustysynth.workspace = true
 wasm-bindgen.workspace = true
 serde-wasm-bindgen.workspace = true
 js-sys.workspace = true
+
+[dev-dependencies]
+uoterm-view = { workspace = true, features = ["test-fixtures"] }

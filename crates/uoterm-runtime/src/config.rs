@@ -710,6 +710,20 @@ impl LoginStore {
         Ok(path)
     }
 
+    /// Saves a login a screen typed over the one of that name. It keeps
+    /// the era and the version the old one names, which a screen does not
+    /// show, and its password variable when the new one names none.
+    pub fn save_over(&self, name: &str, typed: Profile) -> crate::error::Result<PathBuf> {
+        let old = self.load(name).ok().unwrap_or_default();
+        let profile = Profile {
+            password_env: typed.password_env.or(old.password_env),
+            era: old.era,
+            version: old.version,
+            ..typed
+        };
+        self.save(name, &profile)
+    }
+
     /// Deletes the saved login of this name from the config folder. An
     /// older file is left as it is.
     pub fn delete(&self, name: &str) -> crate::error::Result<()> {
@@ -1082,6 +1096,32 @@ answer_when_named = false
         );
         assert!(root.join(PROFILES_DIR).join("mara.toml").is_file());
         assert!(store.load("../mara").is_err(), "no way out of the folders");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A save over a saved login keeps what a screen does not show: the
+    /// era, the version, and the password variable when it names none.
+    #[test]
+    fn a_save_over_a_saved_login_keeps_what_the_screen_does_not_show() {
+        let (store, root) = test_store();
+        store.save("mara", &full_profile()).unwrap();
+        let typed = Profile {
+            account: "other".into(),
+            host: Some("10.0.0.7".into()),
+            port: Some(2593),
+            ..Profile::default()
+        };
+        store.save_over("mara", typed.clone()).unwrap();
+        let kept = store.load("mara").unwrap();
+        assert_eq!(kept.account, "other");
+        assert_eq!(kept.host.as_deref(), Some("10.0.0.7"));
+        assert_eq!(kept.password_env.as_deref(), Some("MY_PASS"));
+        assert_eq!(
+            (kept.era.as_deref(), kept.version.as_deref()),
+            (Some("modern"), Some("7.0.102.3"))
+        );
+        store.save_over("new", typed.clone()).unwrap();
+        assert_eq!(store.load("new").unwrap(), typed);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

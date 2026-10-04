@@ -30,6 +30,7 @@ pub mod hue_grid;
 pub mod info_bar;
 pub mod journal;
 pub mod key_macros;
+pub mod login;
 pub mod loot;
 pub mod map_item;
 pub mod options_draft;

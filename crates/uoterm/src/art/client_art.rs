@@ -20,6 +20,7 @@ use uoterm_view::art::{
 };
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::Vector;
+use uoterm_view::map_lay::{near_pixels, SPAN};
 
 /// How many tiles the window remembers. A full window shows about four
 /// thousand, so this is a few windows of walking.
@@ -492,6 +493,19 @@ impl ClientArt {
 
     /// The color of one tile on a map of the world: the color of its
     /// highest item, or of its land. None past the edge of the map.
+    /// The picture of the land round `middle` in its radar colors, as the
+    /// map of a start town shows it. None when no tile round it has a
+    /// color.
+    pub fn near_picture(&mut self, map_index: u8, middle: (u16, u16)) -> Option<Picture> {
+        let pixels = near_pixels(middle, |x, y| self.radar_rgb(map_index, x, y))?;
+        Some(Picture {
+            width: SPAN,
+            height: SPAN,
+            rgba: pixels.iter().flat_map(|pixel| pixel.to_array()).collect(),
+            anchor: Vector::ZERO,
+        })
+    }
+
     pub fn radar_rgb(&mut self, map_index: u8, x: u16, y: u16) -> Option<[u8; 3]> {
         let radar = self.radar.as_ref()?;
         let map = facet_files(&mut self.maps, &self.uopath, map_index)?;

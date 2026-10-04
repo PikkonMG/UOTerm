@@ -1,23 +1,33 @@
 import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import './app.css';
-import { DEFAULT_PROFILE_PATH, loadView, type GameProfile } from './game';
+import { loadView, type GameProfile } from './game';
 import { api, SESSIONS_PATH, TokenNeeded, whenTokenNeeded } from './net/api';
 import { SESSION_ENDED } from './net/live';
+import { login } from './net/login';
+import type { CreationWords } from './screens/creation_model';
 import { Game } from './screens/Game';
+import { LoginScreens } from './screens/LoginScreens';
+import { profilePath, readPlace, sessionSearch, type CharacterPlace, type LoginRules, type LoginWords } from './screens/login_state';
 import { Token } from './screens/Token';
 import './theme.css';
+import { canMake, creationWords, CreationView, loginFault, loginWords, savedDetail, saveName } from './wasm/uoterm_web.js';
 
 const APP_ROOT = 'app';
-/** The query that opens a running session, so a reload of the page needs no new login: `?session=<id>`. */
-const SESSION_QUERY = 'session';
 const NO_SUCH_SESSION = 'That session is not running.';
 /** Before the words of a fault that stopped the game; a reload opens the session again. */
 const GAME_FAILED = 'The game stopped (reload the page to go on):';
 
+/** The words and the rules of the screens before the game, from the view. */
+interface LoginParts {
+  words: LoginWords;
+  creationWords: CreationWords;
+  rules: LoginRules;
+}
+
 type Screen =
   | { kind: 'checking' }
-  | { kind: 'ready' }
+  | ({ kind: 'login' } & LoginParts)
   | { kind: 'game'; session: string; profile: GameProfile }
   | { kind: 'fault'; words: string };
 
@@ -28,23 +38,40 @@ interface Sessions {
   sessions: string[];
 }
 
+/** The rules of the login screens, as the view runs them. */
+const VIEW_RULES: LoginRules = {
+  fault: (host, port, account, password) => loginFault(host, port, account, password) ?? null,
+  saveName,
+  detail: savedDetail,
+  canMake: (names, listFlags) => canMake(JSON.stringify(names), listFlags),
+};
+
+/** The game of `session`, with the profile of its character (the default profile with none). */
+async function gameOf(session: string, place: CharacterPlace | null): Promise<Screen> {
+  const path = profilePath(place);
+  const value = await api<unknown>(path);
+  return { kind: 'game', session, profile: { path, value } };
+}
+
+const faultOf = (error: unknown): Screen => ({ kind: 'fault', words: error instanceof Error ? error.message : String(error) });
+
 /**
- * Asks the API whether the page may call it, and opens the session the
- * query names when it runs. A call that wants the token brings the token
- * screen up (through `whenTokenNeeded`); its acceptance asks again.
+ * Asks the API whether the page may call it, then opens the session the
+ * address names when it runs, or the login. A call that wants the token
+ * brings the token screen up (through `whenTokenNeeded`); its acceptance
+ * asks again.
  */
 async function firstScreen(): Promise<Screen | null> {
   try {
     const { sessions } = await api<Sessions>(SESSIONS_PATH);
-    const session = new URLSearchParams(location.search).get(SESSION_QUERY);
-    if (session === null) return { kind: 'ready' };
-    if (!sessions.includes(session)) return { kind: 'fault', words: NO_SUCH_SESSION };
-    const value = await api<unknown>(DEFAULT_PROFILE_PATH);
     await loadView();
-    return { kind: 'game', session, profile: { path: DEFAULT_PROFILE_PATH, value } };
+    const place = readPlace(new URLSearchParams(location.search));
+    if (place === null) return { kind: 'login', words: loginWords(), creationWords: creationWords(), rules: VIEW_RULES };
+    if (!sessions.includes(place.session)) return { kind: 'fault', words: NO_SUCH_SESSION };
+    return await gameOf(place.session, place.character);
   } catch (error) {
     if (error instanceof TokenNeeded) return null;
-    return { kind: 'fault', words: error instanceof Error ? error.message : String(error) };
+    return faultOf(error);
   }
 }
 
@@ -66,13 +93,20 @@ function App() {
   // A game keeps running under the token screen: what waited for the token goes on once it is given.
   const accepted = () => {
     setTokenWanted(false);
-    if (screen.kind !== 'game') void check();
+    if (screen.kind === 'checking' || screen.kind === 'fault') void check();
+  };
+
+  // The address names the session and its character, so a reload opens the same game.
+  const ready = (session: string, place: CharacterPlace | null) => {
+    history.replaceState(null, '', sessionSearch(session, place));
+    gameOf(session, place).then(setScreen, (error: unknown) => setScreen(faultOf(error)));
   };
 
   return (
     <>
       <Body
         screen={screen}
+        onReady={ready}
         onEnded={() => setScreen({ kind: 'fault', words: SESSION_ENDED })}
         onFault={(words) => setScreen({ kind: 'fault', words: `${GAME_FAILED} ${words}` })}
       />
@@ -81,12 +115,28 @@ function App() {
   );
 }
 
-function Body({ screen, onEnded, onFault }: { screen: Screen; onEnded: () => void; onFault: (words: string) => void }) {
+interface BodyProps {
+  screen: Screen;
+  onReady(session: string, place: CharacterPlace | null): void;
+  onEnded(): void;
+  onFault(words: string): void;
+}
+
+function Body({ screen, onReady, onEnded, onFault }: BodyProps) {
   switch (screen.kind) {
     case 'checking':
       return null;
-    case 'ready':
-      return <p class="panel screen">UOTerm answers.</p>;
+    case 'login':
+      return (
+        <LoginScreens
+          words={screen.words}
+          creationWords={screen.creationWords}
+          rules={screen.rules}
+          start={login}
+          newCreation={(version, choices) => new CreationView(version, JSON.stringify(choices))}
+          onReady={onReady}
+        />
+      );
     case 'game':
       return <Game session={screen.session} profile={screen.profile} onEnded={onEnded} onFault={onFault} />;
     case 'fault':

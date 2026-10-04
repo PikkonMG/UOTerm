@@ -1,4 +1,6 @@
-//! The play window of the browser, as WebAssembly. The page gives the view
+//! The play window of the browser, as WebAssembly, and the screens before
+//! it: the rules of the login screens (`login`) and the making of a new
+//! character (`creation`). The page gives the view
 //! each picture of the session, its input and the art it fetched; each
 //! frame the view runs the same rules as the Modern style of the Rust
 //! window (`uoterm_view`) and gives back what to draw, the calls to make on
@@ -9,14 +11,17 @@
 //! methods only turn JavaScript values into Rust ones and back.
 
 mod buffers;
+mod creation;
 mod frame_flow;
 mod input;
+mod login;
 mod out;
 mod panels;
 mod synth;
 mod web_art;
 
 pub use buffers::{DrawBuffers, PlacedWords, Shapes};
+pub use creation::{CreationScreen, CreationView};
 pub use input::{Click, FrameInput, InputEvent, Inputs};
 pub use out::{Hand, OutCall, JEV_ORDER};
 pub use panels::{

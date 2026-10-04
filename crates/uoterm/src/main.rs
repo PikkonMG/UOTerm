@@ -738,8 +738,6 @@ async fn remote_tool(
     Ok(EXIT_OK as u8)
 }
 
-const NEEDS_PASSWORD: &str = "Type the password.";
-
 /// The era and the client version of a login: the saved login's, or the
 /// era of the config and its version.
 fn login_era_version(cfg: &AppConfig, profile: Option<&Profile>) -> (Era, ClientVersion) {
@@ -783,16 +781,7 @@ fn keep_login(
     asked: window::KeepLogin,
 ) -> Result<Vec<window::SavedLogin>, String> {
     match asked {
-        window::KeepLogin::Save { name, profile } => {
-            let old = store.load(&name).ok().unwrap_or_default();
-            let profile = Profile {
-                password_env: profile.password_env.or(old.password_env),
-                era: old.era,
-                version: old.version,
-                ..profile
-            };
-            store.save(&name, &profile).map(drop)
-        }
+        window::KeepLogin::Save { name, profile } => store.save_over(&name, profile).map(drop),
         window::KeepLogin::Delete(name) => store.delete(&name),
     }
     .map_err(|e| e.to_string())?;
@@ -814,7 +803,7 @@ fn play_options(
         profile
             .and_then(|p| p.password_env.as_deref())
             .and_then(|var| password_from_env(var).ok())
-            .ok_or(NEEDS_PASSWORD)?
+            .ok_or(window::NEEDS_PASSWORD)?
     } else {
         form.password.clone()
     };
@@ -937,6 +926,7 @@ async fn web_client(
     })
     .await
     .map_err(|e| RuntimeError::Network(e.to_string()))?;
+    let state = state.with_login_config(cfg.clone());
     let web_dir = web_dir.unwrap_or_else(|| PathBuf::from(WEB_DIR_DEFAULT));
     let app = web::app(runtime, cfg, state, web_dir, guard);
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -1275,7 +1265,7 @@ mod tests {
         assert_eq!(options(&no_host).unwrap_err(), window::NEEDS_HOST);
         assert_eq!(
             options(&typed("acct", "2593", "")).unwrap_err(),
-            NEEDS_PASSWORD
+            window::NEEDS_PASSWORD
         );
         let ready = options(&typed(" acct ", "2593", "pw")).unwrap();
         assert_eq!((ready.account.as_str(), ready.port), ("acct", 2593));

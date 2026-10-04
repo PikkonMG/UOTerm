@@ -1,7 +1,8 @@
 /**
  * The login link: the page sends the login, answers each question of the
  * login, and gets the id of the new session, or the words of the fault.
- * The password goes out in the first message only.
+ * Each question comes with the client version the login speaks, which a
+ * new character follows. The password goes out in the first message only.
  */
 
 import { readMessage, socketUrl } from './api';
@@ -79,7 +80,7 @@ export type LoginAsk =
 /** The answer to a `LoginAsk`. */
 export type LoginReply = { kind: 'Pick'; index: number } | { kind: 'Request'; request: CharacterRequest };
 
-type LoginIn = { kind: 'ask'; ask: LoginAsk } | { kind: 'ready'; session: string } | { kind: 'failed'; words: string };
+type LoginIn = { kind: 'ask'; ask: LoginAsk; version: string } | { kind: 'ready'; session: string } | { kind: 'failed'; words: string };
 
 /** The login did not end in a session: the words say why. */
 export class LoginFailed extends Error {
@@ -90,11 +91,12 @@ export class LoginFailed extends Error {
 }
 
 /**
- * Logs in with `form`, and asks `onAsk` each question of the login. Gives
- * the id of the new session; rejects with `LoginFailed`, or with the error
- * of `onAsk`, which closes the link and so ends the login.
+ * Logs in with `form`, and asks `onAsk` each question of the login, with
+ * the client version of the login (`7.0.102.3`). Gives the id of the new
+ * session; rejects with `LoginFailed`, or with the error of `onAsk`, which
+ * closes the link and so ends the login.
  */
-export function login(form: LoginForm, onAsk: (ask: LoginAsk) => Promise<LoginReply>): Promise<string> {
+export function login(form: LoginForm, onAsk: (ask: LoginAsk, version: string) => Promise<LoginReply>): Promise<string> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(socketUrl(LOGIN_PATH));
     let ended = false;
@@ -106,8 +108,8 @@ export function login(form: LoginForm, onAsk: (ask: LoginAsk) => Promise<LoginRe
       socket.close();
       finish();
     };
-    const answer = (ask: LoginAsk) =>
-      onAsk(ask).then(
+    const answer = (ask: LoginAsk, version: string) =>
+      onAsk(ask, version).then(
         (reply) => {
           if (!ended) socket.send(JSON.stringify({ kind: 'reply', reply }));
         },
@@ -119,7 +121,7 @@ export function login(form: LoginForm, onAsk: (ask: LoginAsk) => Promise<LoginRe
       const message = readMessage<LoginIn>(event.data);
       switch (message?.kind) {
         case 'ask':
-          void answer(message.ask);
+          void answer(message.ask, message.version);
           break;
         case 'ready':
           end(() => resolve(message.session));

@@ -180,7 +180,7 @@ impl DataPath {
                 "{FRAMES_PREFIX}{}/{}/{}/{}",
                 key.body, key.action, key.direction, key.mounted
             ),
-            Self::TextRgb(hue) => format!("{TEXT_RGB_PREFIX}{hue}"),
+            Self::TextRgb(hue) => text_rgb_path(*hue),
             Self::GumpMask(id) => format!("{GUMP_MASK_PREFIX}{id}"),
             Self::Block((map, bx, by)) => format!("{MAP_PREFIX}{map}/{bx}/{by}"),
         }
@@ -210,8 +210,8 @@ impl DataPath {
                         direction: direction.parse().ok()?,
                         mounted: mounted.parse().ok()?,
                     })
-                } else if let Some(hue) = path.strip_prefix(TEXT_RGB_PREFIX) {
-                    Self::TextRgb(hue.parse().ok()?)
+                } else if let Some(hue) = text_rgb_of(path) {
+                    Self::TextRgb(hue)
                 } else if let Some(id) = path.strip_prefix(GUMP_MASK_PREFIX) {
                     Self::GumpMask(id.parse().ok()?)
                 } else if let Some(rest) = path.strip_prefix(MAP_PREFIX) {
@@ -226,6 +226,16 @@ impl DataPath {
             }
         })
     }
+}
+
+/// The path of the color of words in a hue.
+pub(crate) fn text_rgb_path(hue: u16) -> String {
+    format!("{TEXT_RGB_PREFIX}{hue}")
+}
+
+/// The hue whose color a path names. None for another path.
+pub(crate) fn text_rgb_of(path: &str) -> Option<u16> {
+    path.strip_prefix(TEXT_RGB_PREFIX)?.parse().ok()
 }
 
 /// The mask of a gump as the server sends it, with its bits in base64.

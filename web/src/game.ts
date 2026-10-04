@@ -13,15 +13,13 @@ import { attachPointer } from './input/pointer';
 import { ArtFeed } from './net/art';
 import { LiveLink } from './net/live';
 import { sendOut, type OutCall, type OutPlaces } from './out_calls';
+import { tearDown } from './teardown';
 import init, { atlasSide, wheelPointsPerNotch, WebView, whiteSide } from './wasm/uoterm_web.js';
 import { WorldRenderer } from './world/renderer';
 
 const MS_PER_SECOND = 1000;
 
-/** Where the profile of every character is kept until the page knows the shard and the character. */
-export const DEFAULT_PROFILE_PATH = '/v1/profiles/default';
-
-/** The profile the view starts with, and the path it is kept at. */
+/** The profile the view starts with, and the path it is kept at (`profilePath` of `screens/login_state`). */
 export interface GameProfile {
   path: string;
   value: unknown;
@@ -114,17 +112,21 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   function stop() {
     if (stopped) return;
     stopped = true;
-    frames.stop();
-    detachKeys();
-    pointer.detach();
-    link.close();
-    feed.close();
-    renderer.dispose();
-    try {
-      view.free();
-    } catch {
-      // A view whose WebAssembly failed may fail to free too; it is gone either way.
-    }
+    tearDown([
+      () => frames.stop(),
+      detachKeys,
+      () => pointer.detach(),
+      () => link.close(),
+      () => feed.close(),
+      () => renderer.dispose(),
+      () => {
+        try {
+          view.free();
+        } catch {
+          // A view whose WebAssembly failed may fail to free too; it is gone either way.
+        }
+      },
+    ]);
   }
 
   return { ended, stop };

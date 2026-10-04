@@ -141,8 +141,13 @@ const EGUI_CODE: Record<string, string> = {
 const BROWSER_KEYS = new Set(['F11', 'F12']);
 /** Keys the browser keeps with Ctrl or the command key: reload, and copy, paste and cut. */
 const BROWSER_SHORTCUTS = new Set(['R', 'C', 'V', 'X']);
-/** Keys the browser keeps with Ctrl or the command key and Shift: the developer tools. */
-const BROWSER_SHIFT_SHORTCUTS = new Set(['I']);
+/**
+ * Keys the browser keeps with Ctrl or the command key and Shift: the hard
+ * reload, and the developer tools, the inspector and the console.
+ */
+const BROWSER_SHIFT_SHORTCUTS = new Set(['R', 'I', 'C', 'J']);
+/** Keys a Mac browser keeps with the command and the option keys: the developer tools, the console and the inspector. */
+const MAC_OPTION_SHORTCUTS = new Set(['I', 'J', 'C']);
 const MAC_PLATFORM = /Mac|iPhone|iPad|iPod/;
 
 /** The egui name of `word` in `table`; null when it has none. */
@@ -180,6 +185,9 @@ function isField(target: EventTarget | null): boolean {
 /** True when the browser keeps `key` for itself even while the world has the keys. */
 function browserKeeps(key: string, held: Mods): boolean {
   const command = held.ctrl || held.command;
+  // The command key without Ctrl is only a Mac's: elsewhere Ctrl+Alt stays the world's.
+  const macOption = held.command && !held.ctrl && held.alt;
+  if (macOption) return MAC_OPTION_SHORTCUTS.has(key);
   return BROWSER_KEYS.has(key) || (command && (held.shift ? BROWSER_SHIFT_SHORTCUTS : BROWSER_SHORTCUTS).has(key));
 }
 

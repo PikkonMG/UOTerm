@@ -152,6 +152,35 @@ describe('attachKeys', () => {
     expect(prevented).toEqual(keys.map(() => false));
   });
 
+  it('leaves_the_browser_its_hard_reload_and_developer_tools', () => {
+    const detach = attachKeys(window, () => {});
+    const keys: KeyboardEventInit[] = [
+      { key: 'R', code: 'KeyR', ctrlKey: true, shiftKey: true },
+      { key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true },
+      { key: 'J', code: 'KeyJ', ctrlKey: true, shiftKey: true },
+    ];
+    const prevented = keys.map((init) => {
+      const event = new KeyboardEvent('keydown', { ...init, cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    detach();
+    expect(prevented).toEqual(keys.map(() => false));
+  });
+
+  it('leaves_the_mac_browser_its_developer_tools_and_keeps_ctrl_alt_for_the_world', () => {
+    vi.stubGlobal('navigator', { ...navigator, platform: 'MacIntel' });
+    const detach = attachKeys(window, () => {});
+    const devTools = new KeyboardEvent('keydown', { key: 'ˆ', code: 'KeyI', metaKey: true, altKey: true, cancelable: true });
+    window.dispatchEvent(devTools);
+    vi.unstubAllGlobals();
+    const worldChord = new KeyboardEvent('keydown', { key: 'i', code: 'KeyI', ctrlKey: true, altKey: true, cancelable: true });
+    window.dispatchEvent(worldChord);
+    detach();
+    expect(devTools.defaultPrevented).toBe(false);
+    expect(worldChord.defaultPrevented).toBe(true);
+  });
+
   it('sends_no_text_for_a_key_held_with_ctrl', () => {
     const events: InputEvent[] = [];
     const detach = attachKeys(window, (event) => events.push(event));

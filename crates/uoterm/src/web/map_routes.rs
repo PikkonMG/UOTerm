@@ -3,7 +3,8 @@
 //! browser does not keep a block; it sends the live map of its pictures
 //! here, and asks again for the blocks that changed.
 
-use super::{on_art_mut, WebState};
+use super::{kept, on_art_mut, WebState, CONTENT_PNG};
+use crate::art::png::encode;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::header::CACHE_CONTROL;
 use axum::http::StatusCode;
@@ -12,6 +13,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::Value;
 use uoterm_view::frame::watch_live_map;
+use uoterm_view::map_lay::NEAR_MAP_PREFIX;
 
 const KEEP_NOTHING: &str = "no-store";
 pub(super) const LIVE_MAP_PATH: &str = "/v1/map/live";
@@ -22,6 +24,7 @@ pub(super) const LIVE_MAP_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub(super) fn routes() -> Router<WebState> {
     Router::new()
         .route("/v1/map/{map}/{block_x}/{block_y}", get(block))
+        .route(&format!("{NEAR_MAP_PREFIX}/{{map}}/{{x}}/{{y}}"), get(near))
         .route(
             LIVE_MAP_PATH,
             post(live_map).layer(DefaultBodyLimit::max(LIVE_MAP_MAX_BYTES)),
@@ -46,6 +49,22 @@ async fn block(
     .await
 }
 
+/// The land round a tile in its radar colors, as a PNG with the tile in
+/// the middle: the map of a start town. Not found when no tile round it
+/// has a color. The browser keeps it for this version of the client files.
+async fn near(State(state): State<WebState>, Path((map, x, y)): Path<(u8, u16, u16)>) -> Response {
+    let etag = format!("{}-near-{map}-{x}-{y}", state.files_tag);
+    on_art_mut(
+        &state,
+        move |art| art.near_picture(map, (x, y)),
+        move |picture| match picture.as_ref().and_then(encode) {
+            Some(png) => kept(&etag, CONTENT_PNG, png),
+            None => StatusCode::NOT_FOUND.into_response(),
+        },
+    )
+    .await
+}
+
 /// Lays the live map of a picture, the `live_map` value of the `watch`
 /// tool, over the map files. Gives the blocks that changed, for the page
 /// to ask for again.
@@ -61,12 +80,13 @@ async fn live_map(State(state): State<WebState>, Json(live): Json<Value>) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{send, test_state};
+    use super::super::tests::{fixture_uopath, send, state_in, test_state};
     use super::LIVE_MAP_PATH;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use uoterm_nav::fixtures::{FIXTURE_WALL_CX, FIXTURE_WALL_CY, FIXTURE_WALL_GRAPHIC};
     use uoterm_view::art::{Cell, MapBlockAt};
+    use uoterm_view::map_lay::SPAN;
 
     const BLOCK_SIDE: usize = 8;
 
@@ -90,6 +110,46 @@ mod tests {
         let wall_at = usize::from(FIXTURE_WALL_CY) * BLOCK_SIDE + usize::from(FIXTURE_WALL_CX);
         assert_eq!(walls, [wall_at], "row by row from the north west");
         assert_eq!(cells[wall_at].statics[0].graphic, FIXTURE_WALL_GRAPHIC);
+    }
+
+    /// The land round a place is a PNG of its radar colors, the place in
+    /// the middle; a place with no known land round it has none.
+    #[tokio::test]
+    async fn the_land_near_a_place_is_a_picture_of_its_radar_colors() {
+        const RADARCOL_NAME: &str = "radarcol.mul";
+        const ITEM_BASE: usize = 0x4000;
+        const ALL_LAND_GREEN: u16 = 31 << 5;
+        const PNG_SIGNATURE: &[u8] = b"\x89PNG";
+        let files = fixture_uopath();
+        let colors: Vec<u8> = (0..ITEM_BASE * 2)
+            .flat_map(|_| ALL_LAND_GREEN.to_le_bytes())
+            .collect();
+        std::fs::write(files.path().join(RADARCOL_NAME), colors).unwrap();
+        let state = state_in(Some(files.path()), files.path().join("config"));
+        let answer = send(
+            state.clone(),
+            Request::get("/v1/map/near/0/4/4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(answer.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(answer.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(bytes.starts_with(PNG_SIGNATURE));
+        let picture = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(picture.dimensions(), (SPAN as u32, SPAN as u32));
+        let middle = (SPAN / 2) as u32;
+        assert_eq!(picture.get_pixel(middle, middle).0, [0, 255, 0, 255]);
+        let nowhere = send(
+            state,
+            Request::get("/v1/map/near/0/60000/60000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(nowhere.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

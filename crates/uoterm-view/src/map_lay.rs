@@ -12,6 +12,11 @@ use serde_json::Value;
 
 /// How many tiles one side of the picture near a place covers.
 pub const SPAN: usize = 256;
+/// Where a web page gets the picture of the land near a tile:
+/// `{NEAR_MAP_PREFIX}/{map}/{x}/{y}`.
+pub const NEAR_MAP_PREFIX: &str = "/v1/map/near";
+/// A tile of a map picture whose color the client files do not give.
+pub const UNKNOWN_LAND: Rgba = Rgba::from_rgb(10, 12, 18);
 /// The least zoom of a Modern map: the whole picture fits the field.
 pub const ZOOM_MIN: f32 = 1.0;
 /// How much one notch of the wheel changes the zoom of a Modern map.
@@ -33,6 +38,37 @@ const GRID_TILES: f32 = 8.0;
 const GRID_MIN_GAP: f32 = 24.0;
 const GRID_STROKE: f32 = 0.5;
 const HALF: f32 = 2.0;
+
+/// The picture of the land round `middle`: [`SPAN`] tiles on a side, row
+/// by row from the north west corner, each tile in the color `radar` gives
+/// it, or [`UNKNOWN_LAND`]. None when `radar` gives no tile a color.
+pub fn near_pixels(
+    middle: (u16, u16),
+    mut radar: impl FnMut(u16, u16) -> Option<[u8; 3]>,
+) -> Option<Vec<Rgba>> {
+    let half = (SPAN / 2) as i32;
+    let mut pixels = vec![UNKNOWN_LAND; SPAN * SPAN];
+    let mut any = false;
+    for row in 0..SPAN {
+        for column in 0..SPAN {
+            let x = i32::from(middle.0) + column as i32 - half;
+            let y = i32::from(middle.1) + row as i32 - half;
+            let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                continue;
+            };
+            if let Some([r, g, b]) = radar(x, y) {
+                pixels[row * SPAN + column] = Rgba::from_rgb(r, g, b);
+                any = true;
+            }
+        }
+    }
+    any.then_some(pixels)
+}
+
+/// The path of the picture of the land near tile `x`, `y` of `map`.
+pub fn near_map_path(map: u8, x: u16, y: u16) -> String {
+    format!("{NEAR_MAP_PREFIX}/{map}/{x}/{y}")
+}
 
 /// Where a tile is on the turned map, as a step from the middle. One tile
 /// east goes right and down, one tile south goes left and down.
@@ -462,6 +498,20 @@ fn world_round_me(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_land_near_a_place_is_its_radar_colors_with_the_place_in_the_middle() {
+        const GRASS: [u8; 3] = [20, 120, 30];
+        let middle = (1_000, 2_000);
+        let pixels = near_pixels(middle, |x, y| ((x, y) == middle).then_some(GRASS)).unwrap();
+        let half = SPAN / 2;
+        assert_eq!(pixels.len(), SPAN * SPAN);
+        assert_eq!(pixels[half * SPAN + half], Rgba::from_rgb(20, 120, 30));
+        assert_eq!(pixels[0], UNKNOWN_LAND);
+        assert_eq!(near_pixels(middle, |_, _| None), None);
+        let corner = near_pixels((0, 0), |_, _| Some(GRASS)).unwrap();
+        assert_eq!(corner[0], UNKNOWN_LAND, "no tile west of the edge");
+    }
 
     #[test]
     fn the_wheel_zooms_between_the_two_bounds() {

@@ -2,7 +2,7 @@
 //! from a list of names, and the script lines of a wish. They run here, so
 //! the key of TypeSafe never goes to the browser.
 
-use super::WebState;
+use super::{refused, WebState};
 use crate::orders;
 use crate::window::Link;
 use axum::extract::{Path, State};
@@ -25,10 +25,6 @@ pub(super) fn routes() -> Router<WebState> {
         .route("/v1/sessions/{id}/jev/order", post(order))
         .route("/v1/sessions/{id}/jev/pick", post(pick))
         .route("/v1/sessions/{id}/jev/lines", post(lines))
-}
-
-fn refused(status: StatusCode, words: &str) -> Response {
-    (status, Json(json!({ "error": words }))).into_response()
 }
 
 /// The key, when Jev may be asked about session `id`, or the status and

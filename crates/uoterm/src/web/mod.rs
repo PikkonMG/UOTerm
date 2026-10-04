@@ -1,13 +1,14 @@
 //! The routes of `uoterm web` that are not the runtime API: the pictures,
 //! the map and the tables of the client files, the sounds and the music,
-//! the files of the config folder (profiles, kept files, fonts,
-//! screenshots), the questions to Jev, and the page itself. [`app`] merges
+//! the files of the config folder (profiles, saved logins, kept files,
+//! fonts, screenshots), the questions to Jev, and the page itself. [`app`] merges
 //! them with the routes of the runtime API, behind the same guard.
 
 mod art_routes;
 mod data_routes;
 mod files;
 mod jev_routes;
+mod login_routes;
 mod map_routes;
 mod profile_routes;
 mod sound_routes;
@@ -21,8 +22,9 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use axum::Router;
+use axum::{Json, Router};
 use serde::Serialize;
+use serde_json::json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -32,13 +34,15 @@ use tokio::sync::Semaphore;
 use tower_http::services::ServeFile;
 use uoterm_nav::{MusicList, SoundData, SEASONS_NAME};
 use uoterm_runtime::api::{guard_layer, not_found, router_for, Guard};
-use uoterm_runtime::{AppConfig, Runtime};
+use uoterm_runtime::config::{LOGINS_DIR, PROFILES_DIR};
+use uoterm_runtime::{AppConfig, LoginStore, Runtime};
 
 /// The browser keeps a picture or a table for a year and never asks again:
 /// other client files, or another build of UOTerm, have another tag, so
 /// another ETag.
 const KEEP_FOREVER: &str = "public, max-age=31536000, immutable";
 const CONTENT_JSON: &str = "application/json";
+const CONTENT_PNG: &str = "image/png";
 /// How many pictures are made and turned into PNG at one time. Each can
 /// take tens of megabytes while it is made.
 const PICTURES_AT_ONCE: usize = 4;
@@ -68,6 +72,12 @@ pub struct WebState {
     /// The key of TypeSafe. None turns the questions to Jev off. It never
     /// goes to the browser.
     pub jev_key: Option<String>,
+    /// The saved logins: those of the config folder, and the older ones of
+    /// the profiles folder in the working directory, as `uoterm play`
+    /// lists them.
+    pub logins: LoginStore,
+    /// The config a saved login takes its server from when it names none.
+    pub login_config: AppConfig,
 }
 
 impl WebState {
@@ -99,9 +109,19 @@ impl WebState {
             music: uopath
                 .and_then(|path| MusicList::open(path).ok())
                 .map(Arc::new),
+            logins: LoginStore::at(config_dir.join(LOGINS_DIR), PathBuf::from(PROFILES_DIR)),
             config_dir,
             runtime,
             jev_key,
+            login_config: AppConfig::default(),
+        }
+    }
+
+    /// The state with the config the saved logins take their server from.
+    pub fn with_login_config(self, login_config: AppConfig) -> Self {
+        Self {
+            login_config,
+            ..self
         }
     }
 }
@@ -120,6 +140,7 @@ pub fn router(state: WebState) -> Router {
         .merge(sound_routes::routes())
         .merge(profile_routes::routes())
         .merge(jev_routes::routes())
+        .merge(login_routes::routes())
         .route(API_PATHS, any(|| async { not_found() }))
         .with_state(state)
 }
@@ -198,6 +219,11 @@ async fn on_art_mut<T: 'static>(
         answer,
     )
     .await
+}
+
+/// A refusal with its words, as `{"error": words}`.
+fn refused(status: StatusCode, words: &str) -> Response {
+    (status, Json(json!({ "error": words }))).into_response()
 }
 
 /// Runs `read` on the lock of the client files on a blocking thread, then
@@ -378,7 +404,12 @@ mod tests {
             call("/health", None).await.unwrap().status(),
             StatusCode::OK
         );
-        for path in ["/v1/fonts", "/v1/sessions", "/v1/profiles/default"] {
+        for path in [
+            "/v1/fonts",
+            "/v1/sessions",
+            "/v1/profiles/default",
+            "/v1/logins",
+        ] {
             let refused = call(path, None).await.unwrap();
             assert_eq!(refused.status(), StatusCode::UNAUTHORIZED, "{path}");
             let answered = call(path, Some(TOKEN)).await.unwrap();
