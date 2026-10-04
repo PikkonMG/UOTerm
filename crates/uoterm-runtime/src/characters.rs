@@ -24,11 +24,9 @@ use crate::config::{
 use crate::manager::Runtime;
 use crate::tools::ToolResult;
 
-pub const TOOL_CONNECT: &str = "connect";
-pub const TOOL_DISCONNECT: &str = "disconnect";
-pub const TOOL_CHARACTERS: &str = "characters";
-pub const TOOL_CHARACTER_CREATE: &str = "character_create";
-pub const TOOL_CHARACTER_DELETE: &str = "character_delete";
+pub use uoterm_world::tool_names::{
+    TOOL_CHARACTERS, TOOL_CHARACTER_CREATE, TOOL_CHARACTER_DELETE, TOOL_CONNECT, TOOL_DISCONNECT,
+};
 
 /// The runtime's own tools: each name, what it does, and what it needs.
 pub const RUNTIME_TOOLS: [(&str, &str, &str); 5] = [

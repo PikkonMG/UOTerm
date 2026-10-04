@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 pub use uoterm_protocol::crypto::EncryptionMode;
 use uoterm_protocol::crypto::{for_mode, StreamCipher};
 use uoterm_protocol::types::{ClientVersion, Era, LOGIN_NEXT_KEY_DEFAULT};
+pub use uoterm_world::login::{CharacterChoices, CharacterRequest, NewCharacterWish};
 
 pub const APP_NAME: &str = "uoterm";
 pub const DEFAULT_API_PORT: u16 = 7733;
@@ -205,49 +206,6 @@ pub enum LoginQuestion {
         names: Vec<String>,
         reply: tokio::sync::oneshot::Sender<usize>,
     },
-}
-
-/// What a login screen may ask the shard to do with the characters of the
-/// account, before it plays one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CharacterRequest {
-    /// Play the character in this slot.
-    Play(usize),
-    Delete(usize),
-    Make(Box<NewCharacterWish>),
-    /// Play none: the login ends at the character list.
-    Leave,
-}
-
-/// What the shard lets a new character be: the towns he may start in, the
-/// features of the account (`0xB9`) and the flags of the character list.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CharacterChoices {
-    pub towns: Vec<uoterm_protocol::StartTown>,
-    pub features: u32,
-    pub list_flags: u32,
-}
-
-/// What a player picked for a new character, in the words of a screen.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NewCharacterWish {
-    pub name: String,
-    pub female: bool,
-    pub race: u8,
-    pub strength: u8,
-    pub dexterity: u8,
-    pub intelligence: u8,
-    pub skills: Vec<(u8, u8)>,
-    pub skin_hue: u16,
-    pub hair: u16,
-    pub hair_hue: u16,
-    pub beard: u16,
-    pub beard_hue: u16,
-    pub shirt_hue: u16,
-    pub pants_hue: u16,
-    pub profession: u8,
-    pub start_city: u16,
-    pub slot: u16,
 }
 
 /// The way from a login to the screen that answers its questions. With no

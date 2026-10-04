@@ -14,7 +14,7 @@ use crate::window::settings::WorldMapOptions;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use uoterm_protocol::types::TARGET_GROUND;
-use uoterm_runtime::landmarks::Landmarks;
+use uoterm_runtime::landmarks;
 
 /// The width and the height of each facet, in tiles: Felucca, Trammel, Ilshenar, Malas,
 /// Tokuno, Ter Mur.
@@ -282,7 +282,7 @@ pub fn load_markers(dir: &Path, hidden: &[String]) -> Vec<MarkerFile> {
             let markers = if has_extension(&path, &CSV_EXTENSIONS) {
                 parse_csv(&std::fs::read_to_string(&path).ok()?)
             } else if has_extension(&path, &LANDMARK_EXTENSIONS) {
-                let landmarks = Landmarks::load(&path).ok()?;
+                let landmarks = landmarks::load(&path).ok()?;
                 landmarks
                     .find(None, None)
                     .into_iter()

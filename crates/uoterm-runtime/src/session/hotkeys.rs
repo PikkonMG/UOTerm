@@ -159,18 +159,6 @@ const METER: [(&str, &str); 4] = [
 
 const STOP_ALL_SCRIPTS: &str = "Stop All Scripts";
 
-/// The names of the hotkeys every character has, whatever he knows, so a
-/// window can offer them for a key.
-pub fn fixed_names() -> Vec<&'static str> {
-    FIXED
-        .iter()
-        .map(|&(_, name, _)| name)
-        .chain(AGENT_TOGGLES.iter().map(|&(name, _)| name))
-        .chain(METER.iter().map(|&(name, _)| name))
-        .chain([STOP_ALL_SCRIPTS])
-        .collect()
-}
-
 /// Every hotkey the character has now.
 fn all(inner: &Inner) -> Vec<Hotkey> {
     let mut keys: Vec<Hotkey> = FIXED
@@ -375,6 +363,7 @@ pub(super) fn press(inner: &mut Inner, args: &Value) -> ToolResult {
 mod tests {
     use super::super::relay_tests::{armed_session, ready_to_act, PACK};
     use super::*;
+    use uoterm_world::hotkeys::FIXED_HOTKEY_NAMES;
 
     const ME: Serial = Serial(0x0000_0001);
 
@@ -392,9 +381,22 @@ mod tests {
     fn every_fixed_name_is_a_hotkey_of_any_character() {
         let inner = player();
         let names: Vec<String> = all(&inner).iter().map(|k| name_key(&k.name)).collect();
-        for fixed in fixed_names() {
+        for fixed in FIXED_HOTKEY_NAMES {
             assert!(names.contains(&name_key(fixed)), "{fixed}");
         }
+    }
+
+    /// The names the window offers are the names the tables below carry.
+    #[test]
+    fn the_names_of_the_fixed_tables_are_the_names_the_window_offers() {
+        let from_tables: Vec<&str> = FIXED
+            .iter()
+            .map(|&(_, name, _)| name)
+            .chain(AGENT_TOGGLES.iter().map(|&(name, _)| name))
+            .chain(METER.iter().map(|&(name, _)| name))
+            .chain([STOP_ALL_SCRIPTS])
+            .collect();
+        assert_eq!(from_tables, FIXED_HOTKEY_NAMES);
     }
 
     #[test]

@@ -7,13 +7,17 @@ mod cues;
 mod events;
 mod gump;
 mod gump_layout;
+pub mod hotkeys;
 mod house;
 mod journal;
+pub mod landmarks;
+pub mod login;
 mod names;
 mod observe;
 mod radar;
 mod sounds;
 mod state;
+pub mod tool_names;
 
 pub use addressed::{
     asks_if_bot, names_character, Channel, ChannelGroup, SpokenTo, SpokenToLog, CHAT_MODE_BASIC,
