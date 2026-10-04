@@ -7,3 +7,4 @@
 pub mod frame;
 pub mod geom;
 pub mod input;
+pub mod settings;

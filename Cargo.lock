@@ -4548,6 +4548,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "toml",
  "uoterm-assist",
  "uoterm-nav",
  "uoterm-protocol",

@@ -1,0 +1,365 @@
+[general]
+highlight_objects = false
+pathfinding = true
+shift_pathfinding = false
+click_to_run = false
+run_click_key = "Alt"
+wasd_movement = false
+always_run = false
+always_run_unless_hidden = false
+auto_open_doors = false
+auto_open_corpses = false
+corpse_open_range = 2
+skip_empty_corpses = false
+corpse_open_rule = "UnlessTargetingOrHidden"
+out_of_range_no_color = false
+sallos_easy_grab = false
+show_house_content = false
+show_mobile_hp = false
+mobile_hp_style = "Percentage"
+mobile_hp_when = "Always"
+highlight_poisoned = true
+poisoned_hue = 68
+highlight_paralyzed = true
+paralyzed_hue = 332
+highlight_invulnerable = true
+invulnerable_hue = 48
+show_incoming_mobiles = true
+show_incoming_corpses = true
+aura_under_feet = "Never"
+party_aura = false
+party_aura_hue = 68
+hidden_layers_enabled = false
+hide_layers_for_self = true
+hidden_layers = []
+hide_menu_bar = false
+alt_right_click_closes_anchored = true
+alt_moves_gumps = false
+right_click_closes_anchored_group = false
+standard_skills_gump = true
+old_status_gump = false
+status_and_bar_exclusive = true
+party_invite_gump = false
+custom_health_bars = false
+opaque_health_bars = false
+save_health_bars = false
+close_health_bar = "Never"
+grid_loot = "Off"
+shift_for_context_menus = false
+shift_to_split_stacks = false
+circle_of_transparency = false
+circle_radius = 100
+circle_style = "Full"
+hide_screenshot_message = false
+object_fading = true
+text_fading = true
+target_range_indicator = false
+drag_select_health_bars = false
+drag_select_key = "None"
+drag_select_humanoids_only = false
+drag_select_hostiles_only = false
+drag_select_start_x = 100.0
+drag_select_start_y = 100.0
+drag_select_anchored = false
+stat_change_messages = true
+skill_change_messages = true
+skill_change_tenths = 1
+hide_roofs = false
+trees_to_stumps = false
+hide_vegetation = false
+mark_cave_tiles = false
+field_style = "Normal"
+
+[sound]
+muted = false
+master_volume = 0.800000011920929
+sound_on = true
+sound_volume = 0.800000011920929
+music_on = true
+music_volume = 0.5
+footsteps_on = true
+footsteps_volume = 0.4000000059604645
+combat_music = true
+play_in_background = false
+rain_sound = true
+max_sounds_at_once = 32
+sound_filter = []
+music_filter = []
+
+[video]
+window_mode = "Windowed"
+window_width = 1280.0
+window_height = 800.0
+fps = 60
+reduce_fps_when_inactive = true
+inactive_fps = 15
+vsync = false
+ui_scale = 1.0
+game_window_full_size = false
+game_window_locked = false
+game_window_x = 10.0
+game_window_y = 10.0
+game_window_width = 600.0
+game_window_height = 480.0
+default_zoom = 1.0
+wheel_zoom = false
+ctrl_release_restores_zoom = false
+keep_zoom_after_close = false
+alternative_lights = false
+custom_light_level = false
+light_level = 0
+light_level_rule = "Absolute"
+dark_nights = false
+colored_lights = true
+candle_flicker = false
+death_screen = true
+black_and_white_when_dead = true
+aura_on_mouse = true
+animated_water = false
+shadows = true
+statics_shadows = true
+terrain_shadows_level = 15
+weather_effects = true
+
+[macros]
+controller_enabled = false
+controller_mouse_sensitivity = 10
+
+[[macros.key_bindings]]
+name = "Heal"
+chord = "Ctrl+Shift+F1"
+
+[[macros.key_bindings.steps]]
+action = "cast"
+argument = "Heal"
+
+[tooltip]
+enabled = true
+delay_ms = 250
+zoom = 100
+background_opacity = 70
+text_hue = 65535
+font = 1
+
+[fonts]
+override_game_font = false
+game_font_kind = "Unicode"
+force_unicode_journal = false
+speech_font = 1
+truetype_size = 16.0
+
+[speech]
+speech_delay = 100
+scale_speech_delay = true
+save_journal = false
+max_journal_files = 100
+journal_file_with_serial = false
+chat_on_enter = false
+chat_prefix_keys = true
+shift_enter_sends = true
+hide_chat_gradient = false
+hide_guild_chat = false
+hide_alliance_chat = false
+overhead_party_messages = false
+speech_hue = 690
+emote_hue = 33
+yell_hue = 33
+whisper_hue = 51
+party_hue = 68
+guild_hue = 68
+alliance_hue = 87
+chat_hue = 598
+
+[combat]
+new_target_system = true
+hold_tab_for_combat = true
+query_before_attack = true
+query_beneficial_acts = false
+spell_format_on = false
+spell_hue_on = false
+single_click_buttons = false
+buff_duration = false
+fast_spell_assign = false
+dps_with_damage = true
+innocent_hue = 90
+friend_hue = 68
+criminal_hue = 946
+can_attack_hue = 946
+murderer_hue = 35
+enemy_hue = 49
+benefic_spell_hue = 89
+harmful_spell_hue = 32
+neutral_spell_hue = 945
+spell_format = "{power} [{spell}]"
+cooldown_bars = true
+spell_cast_indicator = false
+improved_buff_bar = false
+range_circle = false
+range_circle_tiles = 12
+range_circle_hue = 34
+cooldowns = []
+
+[counters]
+enabled = false
+highlight_on_change = true
+abbreviate = false
+abbreviate_at = 1000
+highlight_when_low = false
+low_amount = 5
+rows = 1
+columns = 1
+cell_size = 40
+read_only = false
+items = []
+
+[info_bar]
+enabled = false
+highlight = "TextColor"
+
+[[info_bar.items]]
+label = ""
+hue = 978
+data = "Name"
+
+[[info_bar.items]]
+label = "Hits"
+hue = 438
+data = "HitPoints"
+
+[[info_bar.items]]
+label = "Mana"
+hue = 493
+data = "Mana"
+
+[[info_bar.items]]
+label = "Stam"
+hue = 558
+data = "Stamina"
+
+[[info_bar.items]]
+label = "Weight"
+hue = 978
+data = "Weight"
+
+[containers]
+backpack_style = "Default"
+scale = 100
+scale_items = false
+large_gumps = false
+double_click_loots = false
+relative_drag_and_drop = false
+highlight_on_hover = false
+hue_gumps = true
+override_place = false
+place = "NearContainer"
+grid_columns = 5
+grid_rows = 5
+grid_scale = 100
+grid_opacity = 100
+grid_border_hue = 0
+grid_search = "Highlight"
+grid_compare_tooltip = true
+grid_highlight_properties = []
+grid_highlight_rules = []
+grid_preview = true
+
+[containers.grid_layouts]
+
+[experimental]
+disable_default_hotkeys = false
+disable_arrow_keys = false
+disable_tab_war_mode = false
+disable_message_history = false
+disable_click_automove = false
+
+[ignore]
+names = []
+
+[interface]
+ui_style = "Modern"
+gump_opacity = 100
+remember_gump_places = true
+durability_bars = true
+durability_warning = 20
+title_bar_stats = false
+title_bar_mode = "Numbers"
+open_panels = []
+screenshot_on_death = false
+nearby_loot_window = false
+
+[nameplates]
+enabled = false
+filter = "All"
+health_bar = true
+opacity = 75
+hide_at_full_health = false
+avoid_overlap = true
+
+[journal]
+show_client_lines = true
+show_object_lines = true
+show_system_lines = true
+show_guild_and_alliance = true
+dark_mode = false
+opacity = 100
+hide_timestamps = false
+max_lines = 1500
+alternate_journal = false
+
+[[journal.tabs]]
+name = "All"
+kinds = ["Speech", "Emote", "Whisper", "Yell", "System", "Label", "Spell", "Party", "Guild", "Alliance", "Chat"]
+
+[[journal.tabs]]
+name = "Chat"
+kinds = ["Speech", "Emote", "Whisper", "Yell", "Party", "Guild", "Alliance", "Chat"]
+
+[[journal.tabs]]
+name = "Guild & Party"
+kinds = ["Party", "Guild", "Alliance"]
+
+[[journal.tabs]]
+name = "System"
+kinds = ["System"]
+
+[world_map]
+show_party = true
+show_coordinates = true
+show_mouse_coordinates = true
+sextant_coordinates = false
+show_mobiles = true
+show_player_name = true
+show_player_bar = true
+show_group_names = true
+show_group_bars = true
+show_markers = true
+show_marker_names = true
+show_multis = true
+grid_when_zoomed = true
+free_view = false
+always_on_top = false
+whole_world = false
+flip_map = true
+allow_positional_target = false
+zoom_step = 4
+marker_font_style = 1
+minimap_large = false
+hidden_marker_files = []
+hidden_zone_files = []
+
+[agents]
+loot = true
+scavenger = true
+bandage = true
+self_heal = true
+buy = true
+sell = true
+dress = true
+organizer = true
+skinning = true
+remount = true
+friends = true
+
+[gumps]
+
+[anchored]

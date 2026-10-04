@@ -63,7 +63,7 @@ pub use link::Link;
 use options_ui::OptionsUi;
 use scene::Scene;
 use serde_json::json;
-use settings::{Profile, ProfileHome};
+use settings::{Profile, ProfileHome, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -72,8 +72,6 @@ use std::time::{Duration, Instant};
 use uoterm_protocol::ClientVersion;
 use uoterm_runtime::tools::TOOL_WATCH;
 
-const WINDOW_MIN_WIDTH: f32 = 1080.0;
-const WINDOW_MIN_HEIGHT: f32 = 640.0;
 /// A snapshot waits this long after the first picture, so the bars and the
 /// camera are at rest in it.
 const SNAPSHOT_SETTLE: Duration = Duration::from_millis(2500);

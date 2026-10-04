@@ -14,6 +14,10 @@ const HOSTILE_NEAR_TILES: u16 = 10;
 const NOTORIETY_ENEMY: u8 = 5;
 const NOTORIETY_MURDERER: u8 = 6;
 
+/// The size the play window opens at by default, in points.
+pub const WINDOW_WIDTH: f32 = 1280.0;
+pub const WINDOW_HEIGHT: f32 = 800.0;
+
 pub const SYM_SELF: char = '@';
 pub const SYM_BLOCK: char = '#';
 pub const SYM_WALK: char = '.';

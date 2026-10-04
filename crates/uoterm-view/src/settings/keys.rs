@@ -2,7 +2,7 @@
 //! controller, and the macro it runs. A chord is kept as words, such as
 //! `Ctrl+Shift+F1` or `LeftTrigger+South`.
 
-use eframe::egui;
+use crate::input::{KeyName, Mods};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -14,7 +14,7 @@ const WORD_SHIFT: &str = "Shift";
 const OTHER_WORD_CTRL: &str = "Control";
 
 /// A key and the modifier keys held with it. `key` is the name egui gives
-/// the key (`egui::Key::name`), such as `F1`, `A` or `Tab`.
+/// the key (`KeyName`), such as `F1`, `A` or `Tab`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct KeyChord {
@@ -27,23 +27,32 @@ pub struct KeyChord {
 impl KeyChord {
     /// The chord of a key the player pressed. Ctrl is the command key on
     /// a Mac.
-    pub fn from_egui(key: egui::Key, modifiers: egui::Modifiers) -> Self {
+    pub fn from_press(key: &KeyName, mods: Mods) -> Self {
         Self {
-            key: key.name().to_string(),
-            ctrl: modifiers.command,
-            alt: modifiers.alt,
-            shift: modifiers.shift,
+            key: key.0.clone(),
+            ctrl: mods.command,
+            alt: mods.alt,
+            shift: mods.shift,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyChordError {
-    #[error("the key chord has no key")]
     NoKey,
-    #[error("\"{0}\" is not Ctrl, Alt or Shift")]
     NotAModifier(String),
 }
+
+impl fmt::Display for KeyChordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoKey => f.write_str("the key chord has no key"),
+            Self::NotAModifier(word) => write!(f, "\"{word}\" is not Ctrl, Alt or Shift"),
+        }
+    }
+}
+
+impl std::error::Error for KeyChordError {}
 
 impl FromStr for KeyChord {
     type Err = KeyChordError;
@@ -208,15 +217,15 @@ mod tests {
 
     #[test]
     fn a_pressed_key_becomes_the_chord_that_reads_back_the_same() {
-        let modifiers = egui::Modifiers {
+        let mods = Mods {
             command: true,
             alt: true,
-            ..egui::Modifiers::default()
+            ..Mods::default()
         };
-        let chord = KeyChord::from_egui(egui::Key::F5, modifiers);
+        let chord = KeyChord::from_press(&KeyName("F5".into()), mods);
         assert_eq!(chord.to_string(), "Ctrl+Alt+F5");
         assert_eq!(chord.to_string().parse::<KeyChord>().unwrap(), chord);
-        assert_eq!(egui::Key::from_name(&chord.key), Some(egui::Key::F5));
+        assert_eq!(chord.key, "F5");
     }
 
     #[test]
@@ -260,5 +269,35 @@ mod tests {
         assert_eq!(chord.to_string(), "LeftTrigger+South");
         assert_eq!("".parse::<PadChord>(), Err(KeyChordError::NoKey));
         assert_eq!("+South".parse::<PadChord>(), Err(KeyChordError::NoKey));
+    }
+}
+
+#[cfg(test)]
+mod press_tests {
+    use super::*;
+    use crate::settings::Profile;
+
+    #[test]
+    fn a_press_becomes_the_saved_chord_words() {
+        // On Linux and Windows, Ctrl sets both `ctrl` and `command`.
+        let mods = Mods {
+            ctrl: true,
+            command: true,
+            shift: true,
+            ..Mods::default()
+        };
+        let chord = KeyChord::from_press(&KeyName("F1".into()), mods);
+        assert_eq!(chord.to_string(), "Ctrl+Shift+F1");
+    }
+
+    #[test]
+    fn a_saved_profile_reads_the_same_after_the_move() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/profile_before_move.toml"
+        ))
+        .unwrap();
+        let profile: Profile = toml::from_str(&text).unwrap();
+        assert_eq!(toml::to_string(&profile).unwrap(), text);
     }
 }

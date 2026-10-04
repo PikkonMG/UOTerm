@@ -6,11 +6,11 @@
 
 use super::choices::*;
 use super::keys::KeyBinding;
-use super::pages::{CooldownRule, CounterItem, HighlightRule, InfoBarItem, JournalTab};
+use super::pages::{
+    CooldownRule, CounterItem, HighlightRule, InfoBarItem, JournalTab, MAP_ZOOMS,
+    WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH, WORN_LAYERS,
+};
 use super::Profile;
-use crate::window::figure::WORN_LAYERS;
-use crate::window::model::world_map::ZOOMS;
-use crate::window::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
 use std::path::PathBuf;
 
 const VOLUME_MIN: f32 = 0.0;
@@ -79,7 +79,7 @@ const MARKER_FONT_STYLE_MIN: f32 = 1.0;
 const MARKER_FONT_STYLE_MAX: f32 = 6.0;
 /// The zoom steps of the world map, from the farthest to the closest.
 const WORLD_MAP_ZOOM_STEP_MIN: f32 = 0.0;
-const WORLD_MAP_ZOOM_STEP_MAX: f32 = (ZOOMS.len() - 1) as f32;
+const WORLD_MAP_ZOOM_STEP_MAX: f32 = (MAP_ZOOMS.len() - 1) as f32;
 const CONTROLLER_SENSITIVITY_MIN: f32 = 1.0;
 const CONTROLLER_SENSITIVITY_MAX: f32 = 20.0;
 

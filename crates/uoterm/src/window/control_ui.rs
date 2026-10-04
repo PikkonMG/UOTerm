@@ -13,6 +13,7 @@
 use super::actions::guard::aim_words;
 use super::actions::WindowCommand;
 use super::boxes_ui::{BoxesUi, Tools};
+use super::bridge;
 use super::build_ui::{BuildUi, ChatUi};
 use super::control::{Act, Hand, Report};
 use super::deck_ui::DeckUi;
@@ -268,7 +269,7 @@ struct GroundClicks {
 impl GroundClicks {
     fn of(general: &GeneralOptions, modifiers: Modifiers) -> Self {
         Self {
-            run: general.click_to_run || general.run_click_key.is_held(modifiers),
+            run: general.click_to_run || general.run_click_key.is_held(bridge::mods(modifiers)),
             double: general.pathfinding && (modifiers.shift || !general.shift_pathfinding),
         }
     }

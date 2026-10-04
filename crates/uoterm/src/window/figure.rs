@@ -18,6 +18,7 @@ use uoterm_protocol::types::{
     LAYER_PANTS, LAYER_RING, LAYER_ROBE, LAYER_SHIRT, LAYER_SHOES, LAYER_SKIRT, LAYER_TALISMAN,
     LAYER_TORSO, LAYER_TUNIC, LAYER_TWO_HANDED, LAYER_WAIST,
 };
+pub use uoterm_view::settings::WORN_LAYERS;
 
 /// The order the game paints worn items, first to last. The cloak is not
 /// here: its place depends on the way the mobile faces.
@@ -47,33 +48,6 @@ const PAINT_ORDER: [u8; 22] = [
 ];
 const FACING_NORTH: u8 = 0;
 const FACING_SOUTH_EAST: u8 = 3;
-
-/// Each layer the figure paints, with its name, in layer order.
-pub const WORN_LAYERS: [(u8, &str); 23] = [
-    (LAYER_ONE_HANDED, "Right hand"),
-    (LAYER_TWO_HANDED, "Left hand"),
-    (LAYER_SHOES, "Shoes"),
-    (LAYER_PANTS, "Pants"),
-    (LAYER_SHIRT, "Shirt"),
-    (LAYER_HELMET, "Helmet"),
-    (LAYER_GLOVES, "Gloves"),
-    (LAYER_RING, "Ring"),
-    (LAYER_TALISMAN, "Talisman"),
-    (LAYER_NECKLACE, "Necklace"),
-    (LAYER_HAIR, "Hair"),
-    (LAYER_WAIST, "Waist"),
-    (LAYER_TORSO, "Chest"),
-    (LAYER_BRACELET, "Bracelet"),
-    (LAYER_FACE, "Face"),
-    (LAYER_BEARD, "Beard"),
-    (LAYER_TUNIC, "Tunic"),
-    (LAYER_EARRINGS, "Earrings"),
-    (LAYER_ARMS, "Arms"),
-    (LAYER_CLOAK, "Cloak"),
-    (LAYER_ROBE, "Robe"),
-    (LAYER_SKIRT, "Skirt"),
-    (LAYER_LEGS, "Legs"),
-];
 
 /// The game lifts each mobile this far above the center of his tile.
 const LIFT: i32 = 3;

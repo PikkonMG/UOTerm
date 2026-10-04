@@ -10,6 +10,7 @@
 pub mod chat;
 
 use super::actions::{chosen, step_action, ActionId, Direction, Look};
+use super::bridge;
 use super::settings::{KeyChord, MacroStep, Profile};
 use eframe::egui::{self, Event, Id, Key, Modifiers};
 
@@ -228,7 +229,8 @@ impl KeyDispatch {
         let mut out = Dispatched::default();
         let experimental = &profile.experimental;
         for press in presses {
-            let chord = KeyChord::from_egui(press.key, press.modifiers);
+            let chord =
+                KeyChord::from_press(&bridge::key_name(press.key), bridge::mods(press.modifiers));
             let steps = bound_steps(&chord, profile);
             if !press.pressed {
                 self.held.retain(|held| held.key != press.key);

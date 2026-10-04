@@ -1,8 +1,7 @@
 //! The options that are one choice from a short list. Each list has the
 //! words a player reads, in the order the Options screen shows them.
 
-use eframe::egui::Modifiers;
-use serde::{Deserialize, Serialize};
+use crate::input::Mods;
 
 /// A choice from a fixed list. The index is the place in `LABELS`.
 pub trait Choice: Copy + 'static {
@@ -13,16 +12,20 @@ pub trait Choice: Copy + 'static {
     fn from_index(index: usize) -> Self;
 }
 
-/// Makes one list of choices and its words.
+/// Makes one list of choices and its words. Other parts of the window make
+/// their own lists of choices with it; the crate that calls it needs serde.
+#[macro_export]
 macro_rules! choices {
     ($(#[$doc:meta])* $name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
         $(#[$doc])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(
+            Clone, Copy, Debug, PartialEq, Eq, Hash, ::serde::Serialize, ::serde::Deserialize,
+        )]
         pub enum $name {
             $($variant),+
         }
 
-        impl Choice for $name {
+        impl $crate::settings::Choice for $name {
             const LABELS: &'static [&'static str] = &[$($label),+];
 
             fn index(self) -> usize {
@@ -36,9 +39,6 @@ macro_rules! choices {
         }
     };
 }
-
-/// Other parts of the window make their own lists of choices with it.
-pub(crate) use choices;
 
 choices! {
     /// The pages of the Options screen.
@@ -158,12 +158,12 @@ choices! {
 
 impl ModifierKey {
     /// True when this key is down. None is never down.
-    pub fn is_held(self, modifiers: Modifiers) -> bool {
+    pub fn is_held(self, mods: Mods) -> bool {
         match self {
             Self::None => false,
-            Self::Ctrl => modifiers.ctrl,
-            Self::Shift => modifiers.shift,
-            Self::Alt => modifiers.alt,
+            Self::Ctrl => mods.ctrl,
+            Self::Shift => mods.shift,
+            Self::Alt => mods.alt,
         }
     }
 }

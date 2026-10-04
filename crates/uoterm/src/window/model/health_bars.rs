@@ -6,6 +6,7 @@
 //! and the bar that follows the last target.
 
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use crate::window::control::{quoted, Act};
 use crate::window::scene::MapDrag;
 use crate::window::settings::{CloseHealthBar, GeneralOptions, ModifierKey};
@@ -264,7 +265,7 @@ pub fn drag_select_allowed(general: &GeneralOptions, modifiers: Modifiers) -> bo
     general.drag_select_health_bars
         && !(modifiers.ctrl && modifiers.shift)
         && (general.drag_select_key == ModifierKey::None
-            || general.drag_select_key.is_held(modifiers))
+            || general.drag_select_key.is_held(bridge::mods(modifiers)))
 }
 
 /// True when a drag-select takes this mobile, by the options.

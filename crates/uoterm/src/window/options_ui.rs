@@ -10,6 +10,7 @@ use super::actions::editor::{step_words, Capture, MacroEditor, Move};
 use super::actions::{ActionId, Group, ACTIONS};
 use super::audio::Audio;
 use super::boxes_ui::Tools;
+use super::bridge;
 use super::keys::default_keys;
 use super::model::highlight;
 use super::model::hue_grid::HuePick;
@@ -310,7 +311,10 @@ pub(super) fn take_pressed(ui: &egui::Ui) -> Option<Pressed> {
         Some(if key == Key::Escape {
             Pressed::Cancel
         } else {
-            Pressed::Chord(KeyChord::from_egui(key, modifiers))
+            Pressed::Chord(KeyChord::from_press(
+                &bridge::key_name(key),
+                bridge::mods(modifiers),
+            ))
         })
     })
 }

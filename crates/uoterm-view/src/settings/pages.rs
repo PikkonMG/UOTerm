@@ -9,10 +9,16 @@ use super::choices::{
     TitleStats, UiStyle, WindowMode,
 };
 use super::keys::KeyBinding;
-use crate::view::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::frame::{WINDOW_HEIGHT, WINDOW_WIDTH};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use uoterm_protocol::types::{
+    LAYER_ARMS, LAYER_BEARD, LAYER_BRACELET, LAYER_CLOAK, LAYER_EARRINGS, LAYER_FACE, LAYER_GLOVES,
+    LAYER_HAIR, LAYER_HELMET, LAYER_LEGS, LAYER_NECKLACE, LAYER_ONE_HANDED, LAYER_PANTS,
+    LAYER_RING, LAYER_ROBE, LAYER_SHIRT, LAYER_SHOES, LAYER_SKIRT, LAYER_TALISMAN, LAYER_TORSO,
+    LAYER_TUNIC, LAYER_TWO_HANDED, LAYER_WAIST,
+};
 
 // General.
 pub const DEFAULT_CORPSE_OPEN_RANGE: u8 = 2;
@@ -35,6 +41,33 @@ pub const DEFAULT_RUN_CLICK_KEY: ModifierKey = ModifierKey::Alt;
 pub const DEFAULT_DRAG_SELECT_START: f32 = 100.0;
 pub const DEFAULT_SKILL_CHANGE_TENTHS: u16 = 1;
 pub const DEFAULT_FIELD_STYLE: FieldStyle = FieldStyle::Normal;
+/// Each layer the figure paints, with its name, in layer order. The
+/// player hides layers by these names.
+pub const WORN_LAYERS: [(u8, &str); 23] = [
+    (LAYER_ONE_HANDED, "Right hand"),
+    (LAYER_TWO_HANDED, "Left hand"),
+    (LAYER_SHOES, "Shoes"),
+    (LAYER_PANTS, "Pants"),
+    (LAYER_SHIRT, "Shirt"),
+    (LAYER_HELMET, "Helmet"),
+    (LAYER_GLOVES, "Gloves"),
+    (LAYER_RING, "Ring"),
+    (LAYER_TALISMAN, "Talisman"),
+    (LAYER_NECKLACE, "Necklace"),
+    (LAYER_HAIR, "Hair"),
+    (LAYER_WAIST, "Waist"),
+    (LAYER_TORSO, "Chest"),
+    (LAYER_BRACELET, "Bracelet"),
+    (LAYER_FACE, "Face"),
+    (LAYER_BEARD, "Beard"),
+    (LAYER_TUNIC, "Tunic"),
+    (LAYER_EARRINGS, "Earrings"),
+    (LAYER_ARMS, "Arms"),
+    (LAYER_CLOAK, "Cloak"),
+    (LAYER_ROBE, "Robe"),
+    (LAYER_SKIRT, "Skirt"),
+    (LAYER_LEGS, "Legs"),
+];
 
 // Sound. Each volume is from 0 to 1.
 pub const DEFAULT_MASTER_VOLUME: f32 = 0.8;
@@ -44,6 +77,9 @@ pub const DEFAULT_FOOTSTEPS_VOLUME: f32 = 0.4;
 pub const DEFAULT_MAX_SOUNDS: u16 = 32;
 
 // Video.
+/// The play window does not get smaller than this, in points.
+pub const WINDOW_MIN_WIDTH: f32 = 1080.0;
+pub const WINDOW_MIN_HEIGHT: f32 = 640.0;
 pub const DEFAULT_WINDOW_MODE: WindowMode = WindowMode::Windowed;
 pub const DEFAULT_FPS: u16 = 60;
 pub const DEFAULT_INACTIVE_FPS: u16 = 15;
@@ -152,6 +188,8 @@ pub const JOURNAL_TAB_GROUPS: &str = "Guild & Party";
 pub const JOURNAL_TAB_SYSTEM: &str = "System";
 
 // World map.
+/// The zoom steps of the world map: points for each tile.
+pub const MAP_ZOOMS: [f32; 10] = [0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0, 6.0, 8.0];
 /// The zoom step the Classic world map opens at: one tile for each pixel.
 pub const DEFAULT_WORLD_MAP_ZOOM_STEP: u8 = 4;
 /// The first of the six font styles of the marker names.

@@ -3,7 +3,6 @@
 //! spell name, a window name, a number of milliseconds.
 
 use crate::window::settings::{choices, Choice};
-use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use uoterm_assist::items::POTIONS;
 use uoterm_assist::spells::{School, SpellBook};

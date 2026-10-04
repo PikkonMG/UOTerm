@@ -15,6 +15,8 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use uoterm_protocol::types::TARGET_GROUND;
 use uoterm_runtime::landmarks;
+/// The zoom steps of the world map: points for each tile.
+pub use uoterm_view::settings::MAP_ZOOMS as ZOOMS;
 
 /// The width and the height of each facet, in tiles: Felucca, Trammel, Ilshenar, Malas,
 /// Tokuno, Ter Mur.
@@ -59,8 +61,6 @@ const NEW_MARKER_ZOOM: u8 = 3;
 pub const DEFAULT_MARKER_NAME: &str = "MarkerName";
 /// A marker the player adds where he stands is blue, as in the reference client.
 pub const ON_PLAYER_COLOR: &str = "blue";
-/// The zoom steps of the world map: points for each tile.
-pub const ZOOMS: [f32; 10] = [0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0, 6.0, 8.0];
 const ICON_FIELD: usize = 4;
 const COLOR_FIELD: usize = 5;
 
