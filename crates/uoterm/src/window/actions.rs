@@ -26,6 +26,7 @@ mod select;
 pub mod view_range;
 
 pub use arguments::{chosen, ArgumentKind, Direction, GumpKind, Look, SelectKind, ZoomStep};
+pub use guard::LocalAim;
 
 use crate::window::settings::MacroStep;
 
@@ -282,20 +283,6 @@ pub enum SelectHow {
     Next,
     Previous,
     Nearest,
-}
-
-/// What the next click on a thing does, while the window waits for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LocalAim {
-    /// The item clicked goes into the grab bag.
-    Grab,
-    /// The container clicked becomes the grab bag.
-    SetGrabBag,
-    /// The thing clicked is kept for the window to read, as the eyedropper
-    /// of the color picker takes a hue.
-    PickThing,
-    /// The player clicked is kept for the ignore list to read.
-    IgnorePlayer,
 }
 
 /// A mouse click a controller button makes.
