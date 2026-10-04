@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use uoterm_view::act::{
     split_answers, string_list, tip_lines, Act, Answer, Ask, Asker, PageAct, Report, Tip,
 };
-use uoterm_view::actions::WindowCommand;
 use uoterm_view::asks::{AskCall, AskRun, AskStep, CallResult};
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::guard::{Guard, HandStep, KeptGrabBags, LocalAim, GRAB_BAGS_FILE};
@@ -58,8 +57,11 @@ pub enum OutCall {
     ChatPaste,
     /// Give the player a text file to keep, as the journal saves one.
     Download { name: String, text: String },
-    /// A command for the windows of the style.
-    Window { command: WindowCommand },
+    /// Keep the profile as the start of each new character.
+    SaveDefaultProfile { profile: Value },
+    /// The window mode of the profile asks for the full screen, or lets it
+    /// go. The browser grants it only during a press of the player.
+    Fullscreen { on: bool },
 }
 
 /// What a call the page makes for the view answers.

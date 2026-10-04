@@ -22,6 +22,7 @@ use uoterm_view::model::party::{
     invite_words, inviter_name, leads, leave_words, member_click_act, party_say, ACCEPT_COMMAND,
     DECLINE_COMMAND, INVITE_COMMAND,
 };
+use uoterm_view::model::places;
 use uoterm_view::model::skills::{
     group_name, move_skill, next_lock_command, points, remove_group, shown_groups, sorted, total,
     SkillSort, NEW_GROUP, WORDS_CANNOT_DELETE,
@@ -33,6 +34,7 @@ use uoterm_view::model::spell_data::{
 use uoterm_view::model::status::{stats, StatLocks, STAT_NAMES};
 use uoterm_view::scene::doll_figure;
 use uoterm_view::settings::SkillGroupSet;
+use uoterm_view::ui::abilities::SHEET_PANEL_BUTTONS;
 use uoterm_view::ui::deck::{layer_words, wear_choices, Slot, WearChoice, WORDS_BAR_FULL};
 use uoterm_view::ui::lists::{
     choose_school, next_sort, party_entries, skill_entries, spell_book_words, spell_chosen,
@@ -106,6 +108,9 @@ pub struct SheetData {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CharacterData {
     pub views: Vec<Choice>,
+    /// The buttons that open and close the ability panels, right to left;
+    /// an open panel is chosen.
+    pub panels: Vec<Choice>,
     pub worn: Option<WornData>,
     pub status: Option<Vec<StatusRow>>,
 }
@@ -405,6 +410,9 @@ enum SheetAction {
     Accept(bool),
     Decline(bool),
     Say(String),
+    /// A button of the character tab that opens or closes an ability
+    /// panel, by its place.
+    Panel(usize),
 }
 
 const POOL_PERCENT: f32 = 100.0;
@@ -507,6 +515,13 @@ impl WebView {
         let view = self.panels.sheet.view;
         CharacterData {
             views: choices(&CHARACTER_VIEWS, view),
+            panels: SHEET_PANEL_BUTTONS
+                .iter()
+                .map(|(id, words)| Choice {
+                    words: (*words).to_string(),
+                    chosen: places::is_open(&self.profile, id),
+                })
+                .collect(),
             worn: (view == CharacterView::Worn).then(|| self.worn_data(frame)),
             status: (view == CharacterView::Status).then(|| {
                 status_lines(frame)
@@ -881,6 +896,13 @@ impl WebView {
                     self.panels.sheet.view = *view;
                 }
             }
+            SheetAction::Panel(at) => {
+                if let Some((id, _)) = SHEET_PANEL_BUTTONS.get(at) {
+                    let open = places::is_open(&self.profile, id);
+                    places::set_open(&mut self.profile, id, !open);
+                    self.keep_profile();
+                }
+            }
             SheetAction::Sort(column) => {
                 if let Some(clicked) = SkillSort::COLUMNS.get(column) {
                     let state = &mut self.panels.sheet;
@@ -1081,7 +1103,7 @@ impl WebView {
     }
 
     /// Puts a slot of the sheet on the first free slot of the hotbar.
-    fn pin_slot(&mut self, frame: &WatchFrame, slot: Slot) {
+    pub(super) fn pin_slot(&mut self, frame: &WatchFrame, slot: Slot) {
         if !self.pin(&frame.name, slot) {
             self.hand.report(WORDS_BAR_FULL);
         }

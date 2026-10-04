@@ -434,7 +434,6 @@ mod tests {
     use crate::WebView;
     use serde_json::{json, Value};
     use uoterm_view::act::Act;
-    use uoterm_view::actions::{GumpKind, GumpOp, WindowCommand};
     use uoterm_view::clicks::{bar_buttons, Press};
     use uoterm_view::ui::launch::{Launch, LAUNCHES};
     use uoterm_view::ui::question::QUIT_WORDS;
@@ -496,19 +495,17 @@ mod tests {
     }
 
     #[test]
-    fn the_map_button_opens_the_map_and_macros_go_to_the_page() {
+    fn the_map_and_macros_buttons_open_their_panels() {
         let mut view = settled();
         let map = button(&view, |press| matches!(press, Press::Map));
         assert!(press(&mut view, PANEL_BAR, json!({ "press": map })).is_empty());
         assert!(view.panel_data(0.0).world_map.is_some());
         let macros = button(&view, |press| matches!(press, Press::Macros));
-        let out = press(&mut view, PANEL_BAR, json!({ "press": macros }));
-        assert_eq!(
-            out,
-            vec![OutCall::Window {
-                command: WindowCommand::Gump(GumpOp::Toggle, GumpKind::Macros)
-            }]
-        );
+        press(&mut view, PANEL_BAR, json!({ "press": macros }));
+        assert!(view.panel_data(0.0).macros.is_some());
+        let options = button(&view, |press| matches!(press, Press::Options));
+        press(&mut view, PANEL_BAR, json!({ "press": options }));
+        assert!(view.panel_data(0.0).options.is_some());
     }
 
     #[test]

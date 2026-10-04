@@ -115,16 +115,12 @@ impl WebView {
 
     /// The key of the picture of a slot in the page's cache, asked for.
     pub(super) fn slot_picture_key(&mut self, what: &Slot, frame: &WatchFrame) -> Option<String> {
-        slot_picture(what, frame).map(|picture| {
-            let request = match picture {
-                SlotPicture::Item { graphic, hue } => self.item_picture_request(graphic, hue),
-                SlotPicture::Gump { gump, hue } => ArtRequest::Gump {
-                    gump,
-                    hue,
-                    partial: false,
-                },
-            };
-            self.picture_key(&request)
+        slot_picture(what, frame).map(|picture| match picture {
+            SlotPicture::Item { graphic, hue } => {
+                let request = self.item_picture_request(graphic, hue);
+                self.picture_key(&request)
+            }
+            SlotPicture::Gump { gump, hue } => self.gump_picture(gump, hue),
         })
     }
 

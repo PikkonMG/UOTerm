@@ -51,22 +51,27 @@ pub struct SplitData {
 }
 
 /// The zone of a panel a drop lands on, as the panel data names it:
-/// `{"into": serial}`, `"wear"`, or `{"slot": index}`.
+/// `{"into": serial}`, `"wear"`, `{"slot": index}`, or `{"counter": cell}`
+/// for a cell of the counter bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DropZone {
     Into(u32),
     Wear,
     Slot(usize),
+    Counter(usize),
 }
 
-impl From<DropZone> for Zone {
-    fn from(zone: DropZone) -> Self {
-        match zone {
+impl DropZone {
+    /// The zone of the desk, for a drop that lands as the desk decides. A
+    /// cell of the counter bar counts the item and is no zone of the desk.
+    fn desk_zone(self) -> Option<Zone> {
+        Some(match self {
             DropZone::Into(serial) => Zone::Into(serial),
             DropZone::Wear => Zone::Wear,
             DropZone::Slot(slot) => Zone::Slot(slot),
-        }
+            DropZone::Counter(_) => return None,
+        })
     }
 }
 
@@ -194,7 +199,11 @@ impl WebView {
             return;
         }
         let at = Point::new(drop.x, drop.y);
-        let zone = drop.zone.map(Zone::from);
+        if let Some(DropZone::Counter(cell)) = drop.zone {
+            self.panels.desk.dragging = None;
+            return self.count_in_cell(cell);
+        }
+        let zone = drop.zone.and_then(DropZone::desk_zone);
         if let Some(slot) = self.panels.desk.dragging.take() {
             if let Some(Zone::Slot(at)) = zone {
                 self.set_slot(&frame.name, at, Some(slot));

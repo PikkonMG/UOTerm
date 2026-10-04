@@ -43,6 +43,11 @@ pub const WORDS_WEAPONS: &str = "Weapons: ";
 pub const HINT_SLOT: &str = "Click: arm or let go.  Drag: onto the hotbar.";
 pub const HINT_FLIGHT: &str = "Click: fly or land.  Drag: onto the hotbar.";
 
+/// The buttons of the character tab of the sheet that open and close the
+/// two panels, right to left: their place ids and words.
+pub const SHEET_PANEL_BUTTONS: [(&str, &str); 2] =
+    [(RACIAL_ID, "Racial"), (ABILITIES_ID, "Abilities")];
+
 /// Where the combat panel first stands in `window`.
 pub fn abilities_first_place(window: Area) -> Area {
     first_place(window, ABILITIES_SPOT, ABILITIES_SIZE)

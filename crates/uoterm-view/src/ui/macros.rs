@@ -152,6 +152,12 @@ pub fn add_line_color(orders_on: bool) -> Rgba {
     }
 }
 
+impl Default for MacroEditorPanel {
+    fn default() -> Self {
+        Self::starting(false)
+    }
+}
+
 impl MacroEditorPanel {
     /// The editor as the window starts. An open one asks for the list of
     /// macros with its first frame.

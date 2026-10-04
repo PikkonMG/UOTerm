@@ -13,8 +13,9 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Vec2};
 use uoterm_view::ui::launch::DURABILITY_ID;
 use uoterm_view::ui::lists;
 use uoterm_view::ui::meters::{
-    durability_first_place, DURABILITY_ART as ART_SIDE, DURABILITY_MAX_ROWS as MAX_ROWS,
-    DURABILITY_ROW as ROW, WORDS_DURABILITY as WORDS_TITLE, WORDS_NO_WEAR as WORDS_NONE,
+    durability_first_place, wear_words, DURABILITY_ART as ART_SIDE,
+    DURABILITY_MAX_ROWS as MAX_ROWS, DURABILITY_ROW as ROW, WORDS_DURABILITY as WORDS_TITLE,
+    WORDS_NO_WEAR as WORDS_NONE,
 };
 
 /// The color of a durability bar: the alarm under the warning.
@@ -77,7 +78,7 @@ pub fn draw(
         painter.text(
             Pos2::new(row.right(), row.top()),
             Align2::RIGHT_TOP,
-            format!("{} / {}", wear.now, wear.max),
+            wear_words(wear),
             number_font(theme::SIZE_SMALL),
             wear_color(wear, warning),
         );

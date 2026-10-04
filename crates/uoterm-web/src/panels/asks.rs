@@ -9,12 +9,11 @@ use crate::WebView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uoterm_view::act::Act;
-use uoterm_view::art::hue_color;
 use uoterm_view::frame::{WatchFrame, WatchPackItem};
 use uoterm_view::guard::LocalAim;
 use uoterm_view::model::asked::asked_dialog;
 use uoterm_view::model::hue_grid::{
-    grid_hue, GRADUATION_MAX, GRADUATION_MIN, GRID_COLUMNS, GRID_ROWS,
+    grid_hue, HuePick, GRADUATION_MAX, GRADUATION_MIN, GRID_COLUMNS, GRID_ROWS,
 };
 use uoterm_view::model::race_change::{paints, palette, palette_columns, style_lists};
 use uoterm_view::ui::hues::{
@@ -122,6 +121,13 @@ pub struct HueGridData {
     pub shade_least: i32,
     pub shade_most: i32,
     pub shade_words: &'static str,
+}
+
+impl HueGridData {
+    /// The shade of a grid, kept inside the shades the grid has.
+    pub(super) fn shade_in_range(shade: i32) -> i32 {
+        shade.clamp(GRADUATION_MIN, GRADUATION_MAX)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -281,7 +287,7 @@ impl WebView {
             .into_iter()
             .map(|(paint, (_, label))| PaintRow {
                 label,
-                color: css_color(hue_color(&self.art, picks.hue(change, paint))),
+                color: self.hue_css(picks.hue(change, paint)),
                 picking: picking == Some(paint),
             })
             .collect();
@@ -289,10 +295,7 @@ impl WebView {
             let hues = palette(change, paint);
             PaletteData {
                 columns: palette_columns(hues.len()),
-                hues: hues
-                    .iter()
-                    .map(|hue| css_color(hue_color(&self.art, *hue)))
-                    .collect(),
+                hues: hues.iter().map(|hue| self.hue_css(*hue)).collect(),
                 chosen: *picks.hue_place(paint),
             }
         });
@@ -417,9 +420,6 @@ impl WebView {
         let live = frame.human_control;
         let (_, pick) = self.panels.asks.dye.tub?;
         let picking = self.panels.asks.eyedropper.picking;
-        let cells = (0..GRID_ROWS * GRID_COLUMNS)
-            .map(|index| css_color(hue_color(&self.art, grid_hue(pick.graduation, index))))
-            .collect();
         let tub = WatchPackItem {
             graphic: dye.graphic,
             hue: pick.hue(),
@@ -427,15 +427,7 @@ impl WebView {
         };
         let body = DyeData {
             live,
-            grid: HueGridData {
-                columns: GRID_COLUMNS,
-                cells,
-                chosen: pick.index,
-                shade: pick.graduation,
-                shade_least: GRADUATION_MIN,
-                shade_most: GRADUATION_MAX,
-                shade_words: WORDS_SHADE,
-            },
+            grid: self.hue_grid(pick),
             tub: self.item_picture(&tub),
             hue: pick.hue().to_string(),
             okay: live.then_some(WORDS_DYE_OKAY),
@@ -445,6 +437,21 @@ impl WebView {
             }),
         };
         Some(self.framed(PANEL_DYE, &spec, body))
+    }
+
+    /// The grid of hues of a pick, each cell in its color.
+    pub(super) fn hue_grid(&self, pick: HuePick) -> HueGridData {
+        HueGridData {
+            columns: GRID_COLUMNS,
+            cells: (0..GRID_ROWS * GRID_COLUMNS)
+                .map(|index| self.hue_css(grid_hue(pick.graduation, index)))
+                .collect(),
+            chosen: pick.index,
+            shade: pick.graduation,
+            shade_least: GRADUATION_MIN,
+            shade_most: GRADUATION_MAX,
+            shade_words: WORDS_SHADE,
+        }
     }
 
     pub(super) fn dye_action(&mut self, action: Value) {
@@ -460,9 +467,7 @@ impl WebView {
         };
         match action {
             DyeAction::Cell(index) if index < GRID_ROWS * GRID_COLUMNS => pick.index = index,
-            DyeAction::Shade(shade) => {
-                pick.graduation = shade.clamp(GRADUATION_MIN, GRADUATION_MAX)
-            }
+            DyeAction::Shade(shade) => pick.graduation = HueGridData::shade_in_range(shade),
             DyeAction::Okay(_) => {
                 let hue = pick.hue();
                 self.hand.act(Act::Dye(hue));
@@ -486,7 +491,6 @@ mod tests {
     use crate::tests::{fixture_watch_with_backpack, settled};
     use serde_json::json;
     use uoterm_view::model::asked::TEXT_ENTRY;
-    use uoterm_view::model::hue_grid::HuePick;
     use uoterm_view::model::race_change::RacePicks;
     use uoterm_world::{Race, RaceChange};
 

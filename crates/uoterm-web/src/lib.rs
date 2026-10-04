@@ -353,7 +353,13 @@ impl WebView {
         self.view = view;
         let (sticks, buttons) = self.inputs.pad();
         let buttons = buttons.to_vec();
-        let pad = self.pad.read(sticks, &buttons, &self.profile, seconds);
+        let mut pad = self.pad.read(sticks, &buttons, &self.profile, seconds);
+        // A macro of the Options that waits for its key or its buttons
+        // takes them; the keys run nothing else, as in the Rust window.
+        if self.capturing_keys() {
+            self.capture_keys(&input.presses, pad.pressed.take());
+            input.presses.clear();
+        }
         self.controls.take_pad(pad);
         let frame = match self.frame.take() {
             Some(frame) if frame.error.is_empty() => frame,
@@ -653,7 +659,7 @@ pub(crate) mod tests {
     pub const MARA: &str = "Mara";
     const CORPSE: u32 = 0x4000_0200;
     pub const HATCHET: u32 = 0x4000_0010;
-    const BACKPACK: u32 = 0x4000_0001;
+    pub const BACKPACK: u32 = 0x4000_0001;
     pub const ME: u32 = 0x0000_0001;
     pub const VIEW: Area = Area {
         min: Point { x: 0.0, y: 0.0 },
@@ -1011,9 +1017,6 @@ pub(crate) mod tests {
         }
         assert!(view.panel_data(0.0).chat.hidden);
         assert!(view.panel_data(0.0).grids.is_empty(), "the corpse closed");
-        assert!(!view.take_out_native().contains(&OutCall::Window {
-            command: WindowCommand::CloseCorpses
-        }));
     }
 
     #[test]
@@ -1134,7 +1137,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_window_commands_of_the_panels_are_the_views_and_the_rest_the_pages() {
+    fn the_window_commands_of_the_panels_are_the_views() {
         let mut view = settled();
         let frame = view.frame_ref().unwrap().clone();
         let toggle = |kind| WindowCommand::Gump(uoterm_view::actions::GumpOp::Toggle, kind);
@@ -1150,11 +1153,39 @@ pub(crate) mod tests {
         view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::Chat));
         let data = view.panel_data(0.0);
         assert!(data.world_map.is_some() && data.channels.is_some());
-        view.style_command(&frame, toggle(uoterm_view::actions::GumpKind::Macros));
-        assert!(matches!(
-            view.take_out_native().as_slice(),
-            [OutCall::Window { .. }]
-        ));
+        for kind in [
+            uoterm_view::actions::GumpKind::Macros,
+            uoterm_view::actions::GumpKind::Options,
+            uoterm_view::actions::GumpKind::CombatBook,
+            uoterm_view::actions::GumpKind::RacialAbilities,
+        ] {
+            view.style_command(&frame, toggle(kind));
+        }
+        let data = view.panel_data(0.0);
+        assert!(data.macros.is_some() && data.options.is_some());
+        assert!(data.abilities.is_some() && data.racial.is_some());
+        view.style_command(&frame, WindowCommand::CloseAllGumps);
+        let data = view.panel_data(0.0);
+        assert!(data.macros.is_none() && data.options.is_none() && data.abilities.is_none());
+    }
+
+    #[test]
+    fn a_window_the_style_has_not_says_so_in_the_journal_as_the_window_does() {
+        let mut view = settled();
+        let frame = view.frame_ref().unwrap().clone();
+        let quest_log = WindowCommand::Gump(
+            uoterm_view::actions::GumpOp::Open,
+            uoterm_view::actions::GumpKind::QuestLog,
+        );
+        view.style_command(&frame, quest_log);
+        view.frame(&fixture_watch_with_backpack(), 0.1);
+        let journal = &view.frame_ref().unwrap().journal;
+        assert!(
+            journal
+                .iter()
+                .any(|line| line.contains("has no Quest log window")),
+            "{journal:?}"
+        );
     }
 
     #[test]

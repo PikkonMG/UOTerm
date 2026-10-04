@@ -36,6 +36,7 @@ use uoterm_assist::spells::School;
 use uoterm_view::art::Sprite;
 use uoterm_view::desk::CARRY_ALPHA;
 use uoterm_view::input::KeyName;
+use uoterm_view::ui::abilities::SHEET_PANEL_BUTTONS;
 use uoterm_view::ui::deck::{
     self, hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
     SlotPicture, WearChoice, HINT_EMPTY_SLOT, HINT_SLOT, HOTBAR_FILE, HOTBAR_ID, HOTBAR_KEYS,
@@ -65,8 +66,6 @@ const CARRY_SIDE: f32 = 40.0;
 const PICKER_COLUMNS: usize = 2;
 const PICKER_ROW: f32 = 28.0;
 
-const WORDS_ABILITIES: &str = "Abilities";
-const WORDS_RACIAL: &str = "Racial";
 const VIEW_WIDTH: f32 = 72.0;
 const PANEL_BUTTON_WIDTH: f32 = 84.0;
 /// The durability bar under a worn item.
@@ -485,13 +484,7 @@ impl DeckUi {
                 self.view = view;
             }
         }
-        for (at, (panel, words)) in [
-            (AbilityPanel::Racial, WORDS_RACIAL),
-            (AbilityPanel::Combat, WORDS_ABILITIES),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (at, (id, words)) in SHEET_PANEL_BUTTONS.into_iter().enumerate() {
             let area = Rect::from_min_size(
                 Pos2::new(
                     top.right() - (at + 1) as f32 * (PANEL_BUTTON_WIDTH + TAB_GAP) + TAB_GAP,
@@ -499,10 +492,10 @@ impl DeckUi {
                 ),
                 Vec2::new(PANEL_BUTTON_WIDTH, top.height()),
             );
-            let open = places::is_open(profile, panel.id());
+            let open = places::is_open(profile, id);
             let color = if open { theme::GOAL } else { theme::TEXT_DIM };
             if theme::segment_keyed(ui, area, Id::new(("sheet-panel", at)), words, color) {
-                places::set_open(profile, panel.id(), !open);
+                places::set_open(profile, id, !open);
                 tools.keep_profile(profile);
             }
         }

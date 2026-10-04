@@ -13,7 +13,7 @@ use crate::WebView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use uoterm_view::art::{hue_color, ArtRequest, TextLook, WorldArt};
+use uoterm_view::art::{ArtRequest, TextLook, WorldArt};
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::geom::{Area, Point, Rgba, Vector};
 use uoterm_view::ui::gump_frame::{frame_part_ids, frame_parts, rest_place, FRAME_PARTS};
@@ -548,7 +548,7 @@ impl WebView {
                     at,
                     size: size_of(*w, *h),
                     words: field.text().to_string(),
-                    color: css_color(hue_color(&self.art, shown_hue(*hue))),
+                    color: self.hue_css(shown_hue(*hue)),
                     most: field.max_chars,
                     focus,
                     alpha,

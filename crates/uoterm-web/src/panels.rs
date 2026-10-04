@@ -8,10 +8,13 @@
 //! back; the view keeps it by the rules of `uoterm_view::ui::places`, as
 //! the Rust window does, and saves the profile.
 
+mod abilities;
+mod agents;
 mod asks;
 mod bar;
 mod bars;
 mod build;
+mod combat;
 mod deals;
 mod deck;
 mod desk;
@@ -19,7 +22,10 @@ mod doll;
 mod grids;
 mod hud;
 mod journal;
+mod macros;
 mod map_items;
+mod meters;
+mod options;
 mod pages;
 mod radar;
 mod ring;
@@ -27,10 +33,13 @@ mod shard_gumps;
 mod sheet;
 mod world_map;
 
+pub use abilities::{AbilitiesData, InviteData, RacialData};
+pub use agents::AgentWindowData;
 pub use asks::{DyeData, EntryData, RaceData, TipData};
 pub use bar::{ChatData, ControlBarData, LauncherData, QuestionData, ReportData, WaitingData};
 pub use bars::{HealthBarData, NearData};
 pub use build::{BuildData, ChatPanelData};
+pub use combat::{BuffsData, CastData, CooldownsData, CountersData, InfoBarData};
 pub use deals::{ShopData, TradeData};
 pub use deck::{HotbarAction, HotbarData, HotbarSlot, PickerData};
 pub use desk::{CarriedData, DropZone, SplitData};
@@ -38,7 +47,10 @@ pub use doll::PaperdollData;
 pub use grids::{GridData, LootData};
 pub use hud::{ActivityData, PackData, VitalsData};
 pub use journal::JournalData;
+pub use macros::MacrosData;
 pub use map_items::{MapItemData, ProfileData};
+pub use meters::{DpsData, DurabilityData, StatsData};
+pub use options::{ColorPickerData, OptionsData};
 pub use pages::{BoardData, BookData, OldMenuData};
 pub use radar::RadarData;
 pub use ring::{RingData, TipKey};
@@ -50,12 +62,15 @@ pub(crate) use asks::AsksState;
 pub(crate) use bar::BarState;
 pub(crate) use bars::BarsState;
 pub(crate) use build::BuildState;
+pub(crate) use combat::CombatState;
 pub(crate) use deals::DealsState;
 pub(crate) use deck::DeckState;
 pub(crate) use doll::DollState;
 pub(crate) use grids::GridsState;
 pub(crate) use journal::JournalState;
 pub(crate) use map_items::MapItemsState;
+pub(crate) use meters::MetersState;
+pub(crate) use options::OptionsState;
 pub(crate) use pages::PagesState;
 pub(crate) use radar::RadarState;
 pub(crate) use ring::RingState;
@@ -72,7 +87,11 @@ use uoterm_view::geom::{Area, Point, Vector};
 use uoterm_view::model::clicks::ClickDelay;
 use uoterm_view::model::places;
 use uoterm_view::scene::WHEEL_POINTS_PER_NOTCH;
+use uoterm_view::settings::DEFAULT_TRUETYPE_SIZE;
+use uoterm_view::ui::agents::AgentsState;
 use uoterm_view::ui::gumps::single_or_double;
+use uoterm_view::ui::info_bar::StatsPanel;
+use uoterm_view::ui::macros::MacroEditorPanel;
 use uoterm_view::ui::places::{
     place, HINT_CLOSE, HINT_FOLD, HINT_LOCK, HINT_MOVE, HINT_SIZE, PANEL_WHEEL_POINTS,
 };
@@ -113,6 +132,27 @@ pub const PANEL_MARKERS: &str = "markers";
 pub const PANEL_MARKER_BOX: &str = "marker_box";
 pub const PANEL_PROFILE: &str = "profile";
 pub const PANEL_QUEST_ARROW: &str = "quest_arrow";
+pub const PANEL_BUFFS: &str = "buffs";
+pub const PANEL_COOLDOWNS: &str = "cooldowns";
+pub const PANEL_CAST: &str = "cast";
+pub const PANEL_COUNTERS: &str = "counters";
+pub const PANEL_INFO_BAR: &str = "info_bar";
+pub const PANEL_DPS: &str = "dps";
+pub const PANEL_DURABILITY: &str = "durability";
+pub const PANEL_NET_STATS: &str = "net_stats";
+pub const PANEL_DEBUG: &str = "debug";
+pub const PANEL_ABILITIES: &str = "abilities";
+pub const PANEL_RACIAL: &str = "racial";
+/// The box of a party invite, while the party tab is closed.
+pub const PANEL_INVITE: &str = "invite";
+/// The list of the agent windows, and the ignore list.
+pub const PANEL_AGENTS: &str = "agents";
+pub const PANEL_IGNORE: &str = "ignore";
+/// An agent's window is the panel of its place id, `"agent:{name}"`.
+pub const PANEL_AGENT_PREFIX: &str = "agent:";
+pub const PANEL_MACROS: &str = "macros";
+pub const PANEL_OPTIONS: &str = "options";
+pub const PANEL_COLOR_PICKER: &str = "color_picker";
 /// A map item is the panel `"map_item:{serial}"`.
 pub const PANEL_MAP_ITEM_PREFIX: &str = "map_item:";
 /// A grid container is the panel `"grid:{serial}"`.
@@ -188,6 +228,28 @@ pub struct PanelData {
     pub profile: Option<Framed<ProfileData>>,
     /// Where the quest arrow takes clicks.
     pub quest_arrow: Option<QuestArrowData>,
+    /// The buffs on the character, while the Combat page has the bar on.
+    pub buffs: Option<Framed<BuffsData>>,
+    pub cooldowns: Option<Framed<CooldownsData>>,
+    /// The spell being cast.
+    pub cast: Option<Framed<CastData>>,
+    pub counters: Option<Framed<CountersData>>,
+    pub info_bar: Option<Framed<InfoBarData>>,
+    /// The damage meter.
+    pub dps: Option<Framed<DpsData>>,
+    pub durability: Option<Framed<DurabilityData>>,
+    pub net_stats: Option<Framed<StatsData>>,
+    pub debug: Option<Framed<StatsData>>,
+    pub abilities: Option<Framed<AbilitiesData>>,
+    pub racial: Option<Framed<RacialData>>,
+    pub invite: Option<Framed<InviteData>>,
+    /// The agent windows that are open.
+    pub agents: Vec<Framed<AgentWindowData>>,
+    /// The macro editor, in the middle over the panels.
+    pub macros: Option<MacrosData>,
+    pub options: Option<Framed<OptionsData>>,
+    /// The color picker a hue row of the Options opened.
+    pub color_picker: Option<Framed<ColorPickerData>>,
     pub ring: Option<RingData>,
     /// The words of the last act, while they show.
     pub report: Option<ReportData>,
@@ -201,12 +263,22 @@ pub struct PanelData {
 }
 
 /// How the panels look, from the profile.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Look {
     /// The UI scale of the Video page: the panels grow by it.
     pub ui_scale: f32,
     /// The opacity of the glass of the panels, 0 to 1.
     pub opacity: f32,
+    /// The TrueType font of the Fonts page, when one is chosen.
+    pub font: Option<PlayerFont>,
+}
+
+/// A player font: its file name in the server's `Fonts` folder, and how
+/// much it grows the words, as the Fonts page sizes it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PlayerFont {
+    pub name: String,
+    pub scale: f32,
 }
 
 /// The tips of the title and the marks of every frame.
@@ -382,6 +454,11 @@ pub(crate) struct PanelState {
     pub world_map: WorldMapState,
     pub map_items: MapItemsState,
     pub hud: hud::HudBars,
+    pub combat: CombatState,
+    pub meters: MetersState,
+    pub agents: AgentsState,
+    pub macros: MacroEditorPanel,
+    pub options: OptionsState,
 }
 
 impl WebView {
@@ -394,9 +471,18 @@ impl WebView {
 
     /// The data of every panel at `time`.
     pub fn panel_data(&mut self, time: f64) -> PanelData {
+        let fonts = &self.profile.fonts;
         let look = Look {
             ui_scale: self.profile.video.ui_scale,
             opacity: f32::from(self.profile.interface.gump_opacity) / PERCENT,
+            font: fonts
+                .truetype_font
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .map(|name| PlayerFont {
+                    name: name.to_string_lossy().to_string(),
+                    scale: fonts.truetype_size / DEFAULT_TRUETYPE_SIZE,
+                }),
         };
         let chat = self.chat_data();
         let report = self.report_data(time);
@@ -444,6 +530,22 @@ impl WebView {
                 map_items: Vec::new(),
                 profile: None,
                 quest_arrow: None,
+                buffs: None,
+                cooldowns: None,
+                cast: None,
+                counters: None,
+                info_bar: None,
+                dps: None,
+                durability: None,
+                net_stats: None,
+                debug: None,
+                abilities: None,
+                racial: None,
+                invite: None,
+                agents: Vec::new(),
+                macros: None,
+                options: None,
+                color_picker: None,
                 ring: None,
                 report,
                 question,
@@ -492,6 +594,22 @@ impl WebView {
             map_items: self.map_items_data(&frame),
             profile: self.profile_data(&frame),
             quest_arrow: self.quest_arrow_data(&frame),
+            buffs: self.buffs_data(&frame),
+            cooldowns: self.cooldowns_data(time),
+            cast: self.cast_data(&frame, time),
+            counters: self.counters_data(&frame, time),
+            info_bar: self.info_bar_data(&frame),
+            dps: self.dps_data(&frame),
+            durability: self.durability_data(&frame),
+            net_stats: self.stats_data(StatsPanel::Network, &frame),
+            debug: self.stats_data(StatsPanel::Debug, &frame),
+            abilities: self.abilities_data(&frame),
+            racial: self.racial_data(&frame),
+            invite: self.invite_data(&frame),
+            agents: self.agents_data(&frame),
+            macros: self.macros_data(frame.human_control, time),
+            options: self.options_data(),
+            color_picker: self.color_picker_data(),
             ring: self.ring_data(&frame),
             report,
             question,
@@ -539,8 +657,8 @@ impl WebView {
     }
 
     /// The spec of the frame of panel `panel` now, when it shows one.
-    fn frame_spec(&self, panel: &str) -> Option<FrameSpec> {
-        let frame = self.frame.as_ref()?;
+    fn frame_spec(&mut self, panel: &str) -> Option<FrameSpec> {
+        let frame = &self.frame.clone()?;
         match panel {
             PANEL_LAUNCHER => Some(self.launcher_spec()),
             PANEL_ACTIVITY => Some(self.activity_spec(frame)),
@@ -569,6 +687,28 @@ impl WebView {
             PANEL_MARKERS => self.markers_spec(),
             PANEL_MARKER_BOX => self.marker_box_spec(),
             PANEL_PROFILE => self.profile_spec(frame),
+            PANEL_BUFFS => self.buffs_spec(frame),
+            PANEL_COOLDOWNS => self.cooldowns_spec(self.hand.time()),
+            PANEL_CAST => self.cast_spec(),
+            PANEL_COUNTERS => self.counters_spec(),
+            PANEL_INFO_BAR => self.info_bar_spec(frame),
+            PANEL_DPS => self.dps_spec(),
+            PANEL_DURABILITY => self.durability_spec(frame),
+            PANEL_NET_STATS => self.stats_spec(StatsPanel::Network, frame),
+            PANEL_DEBUG => self.stats_spec(StatsPanel::Debug, frame),
+            PANEL_ABILITIES => self.abilities_spec(),
+            PANEL_RACIAL => self.racial_spec(frame),
+            PANEL_INVITE => self.invite_spec(frame),
+            PANEL_OPTIONS => self.options_spec(),
+            PANEL_COLOR_PICKER => self.color_picker_spec(),
+            PANEL_MACROS => None,
+            agent
+                if agent == PANEL_AGENTS
+                    || agent == PANEL_IGNORE
+                    || agent.starts_with(PANEL_AGENT_PREFIX) =>
+            {
+                self.agent_spec(agent)
+            }
             map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.map_item_spec(frame, map),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.grid_panel_spec(frame, grid),
             trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.trade_spec(frame, trade),
@@ -617,6 +757,23 @@ impl WebView {
             PANEL_MARKER_BOX => self.marker_box_action(action),
             PANEL_PROFILE => self.profile_action(action),
             PANEL_QUEST_ARROW => self.quest_arrow_action(action),
+            PANEL_COUNTERS => self.counters_action(action),
+            PANEL_DPS => self.dps_action(action),
+            PANEL_NET_STATS => self.stats_action(StatsPanel::Network, action),
+            PANEL_DEBUG => self.stats_action(StatsPanel::Debug, action),
+            PANEL_ABILITIES => self.abilities_action(action),
+            PANEL_RACIAL => self.racial_action(action),
+            PANEL_INVITE => self.invite_action(action),
+            PANEL_MACROS => self.macros_action(action),
+            PANEL_OPTIONS => self.options_action(action),
+            PANEL_COLOR_PICKER => self.color_picker_action(action),
+            agent
+                if agent == PANEL_AGENTS
+                    || agent == PANEL_IGNORE
+                    || agent.starts_with(PANEL_AGENT_PREFIX) =>
+            {
+                self.agent_action(agent, action)
+            }
             map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.map_item_action(map, action),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.grid_action(grid, action),
             trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.trade_action(trade, action),
@@ -679,6 +836,20 @@ impl WebView {
             PANEL_MARKERS => self.close_markers(),
             PANEL_MARKER_BOX => self.close_marker_box(),
             PANEL_PROFILE => self.close_profile(),
+            PANEL_DPS | PANEL_DURABILITY | PANEL_NET_STATS | PANEL_DEBUG | PANEL_ABILITIES
+            | PANEL_RACIAL => {
+                places::set_open(&mut self.profile, &spec.id, false);
+                self.keep_profile();
+            }
+            PANEL_OPTIONS => self.close_options(),
+            PANEL_COLOR_PICKER => self.close_color_picker(),
+            agent
+                if agent == PANEL_AGENTS
+                    || agent == PANEL_IGNORE
+                    || agent.starts_with(PANEL_AGENT_PREFIX) =>
+            {
+                self.close_agent_window(agent)
+            }
             map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.close_map_item(map),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.close_grid(grid),
             trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.close_deal(trade),
@@ -851,5 +1022,17 @@ pub(crate) mod tests {
         view.set_profile(&serde_json::to_string(&profile).unwrap());
         assert_eq!(view.panel_room().width(), small.width() / 2.0);
         assert_eq!(view.panel_data(0.0).look.ui_scale, 2.0);
+    }
+
+    #[test]
+    fn the_player_font_goes_to_the_page_by_its_file_name_and_size() {
+        let mut view = settled();
+        assert_eq!(view.panel_data(0.0).look.font, None);
+        let mut profile = Profile::default();
+        profile.fonts.truetype_font = Some("Fonts/Avadonian.ttf".into());
+        profile.fonts.truetype_size = DEFAULT_TRUETYPE_SIZE * 2.0;
+        view.set_profile(&serde_json::to_string(&profile).unwrap());
+        let font = view.panel_data(0.0).look.font.unwrap();
+        assert_eq!((font.name.as_str(), font.scale), ("Avadonian.ttf", 2.0));
     }
 }

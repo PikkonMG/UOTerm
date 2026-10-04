@@ -12,7 +12,7 @@ use uoterm_assist::spells::School;
 use uoterm_view::act::Act;
 use uoterm_view::actions::controls::{ControlHost, FrameIn};
 use uoterm_view::actions::windows::{
-    character_view, deck_tab, shown_panel, wanted, CharacterView, Tab,
+    character_view, deck_tab, shown_panel, switch_panel, wanted, CharacterView, Tab,
 };
 use uoterm_view::actions::{GumpKind, GumpOp, LocalAim, WindowCommand};
 use uoterm_view::art::{hue_color, ArtRequest, ItemPaint, TextLook, WorldArt};
@@ -29,6 +29,7 @@ use uoterm_view::keys::Focus;
 use uoterm_view::model::asked::asked_commands;
 use uoterm_view::model::counters::slot_act;
 use uoterm_view::model::health_bars::{MapDrag, Pointer};
+use uoterm_view::model::places;
 use uoterm_view::model::spell_data::book_of;
 use uoterm_view::scene::plates::lay_out;
 use uoterm_view::scene::{
@@ -40,6 +41,7 @@ use uoterm_view::sky::{
     Drop, ShownEffect, LIGHTNING_WIDTH, RAIN_WIDTH, SNOW_RADIUS,
 };
 use uoterm_view::steer::{Movement, SteerInput};
+use uoterm_view::ui::abilities::{ABILITIES_ID, RACIAL_ID};
 use uoterm_view::ui::deck::hotbar_key_slot;
 use uoterm_view::ui::launch::{self, JOURNAL_ID, RADAR_ID};
 use uoterm_view::ui::ring::Subject;
@@ -261,12 +263,16 @@ impl WebView {
         self.follow_build(frame, now);
         self.follow_map_items(frame);
         self.follow_marker_changes(now);
+        self.follow_combat(frame, now);
+        self.follow_meters(now, mouse);
+        self.follow_macros(now);
+        self.follow_options(frame);
         moving || frame.danger() != uoterm_view::frame::Danger::Calm
     }
 
     /// Does a command of the windows of the Modern style, as the Modern
-    /// windows of the Rust window do. The windows of the page that the
-    /// view does not keep go to the page.
+    /// windows of the Rust window do. A window the style has not is told
+    /// in the journal, as the Rust window tells it.
     pub(crate) fn style_command(&mut self, frame: &WatchFrame, command: WindowCommand) {
         let before = self.profile.clone();
         match command {
@@ -288,12 +294,10 @@ impl WebView {
             WindowCommand::CloseCorpses => self.panels.grids.closed.close_open(frame, true),
             WindowCommand::Gump(op, kind) => {
                 if !self.gump(frame, op, kind) {
-                    self.hand.push(OutCall::Window {
-                        command: WindowCommand::Gump(op, kind),
-                    });
+                    self.controls.style_cannot(frame, &command);
                 }
             }
-            command => self.hand.push(OutCall::Window { command }),
+            command => self.controls.style_cannot(frame, &command),
         }
         if self.profile != before {
             self.keep_profile();
@@ -301,10 +305,18 @@ impl WebView {
     }
 
     /// Closes every panel of the view that closes, as the classic client's
-    /// "close all gumps": the launcher, the sheet, the panels of the
-    /// launcher, the health bars and the question; and the book, the board
-    /// and the map items the shard opened.
+    /// "close all gumps": the Options, the macros, the ability panels, the
+    /// launcher, the sheet, the panels of the launcher, the health bars and
+    /// the question; and the book, the board and the map items the shard
+    /// opened.
     fn close_all(&mut self, frame: &WatchFrame) {
+        if self.options_open() {
+            self.close_options();
+        }
+        self.panels.macros.open = false;
+        for id in [ABILITIES_ID, RACIAL_ID] {
+            places::set_open(&mut self.profile, id, false);
+        }
         self.panels.bar.launcher_open = false;
         self.panels.bar.question = None;
         self.panels.sheet.open = false;
@@ -346,6 +358,14 @@ impl WebView {
                 chat.open = wanted(op, chat.open);
                 return true;
             }
+            GumpKind::Options => {
+                switch_panel(op, self.options_open(), || self.toggle_options());
+                return true;
+            }
+            GumpKind::Macros => {
+                switch_panel(op, self.macros_open(), || self.toggle_macros());
+                return true;
+            }
             _ => {}
         }
         let sheet = &self.panels.sheet;
@@ -367,6 +387,15 @@ impl WebView {
                 if let Some(act) = self.panels.grids.closed.backpack(frame, bag, op) {
                     self.hand.act(act);
                 }
+            }
+            GumpKind::CombatBook | GumpKind::RacialAbilities => {
+                let id = if kind == GumpKind::CombatBook {
+                    ABILITIES_ID
+                } else {
+                    RACIAL_ID
+                };
+                let open = places::is_open(&self.profile, id);
+                places::set_open(&mut self.profile, id, wanted(op, open));
             }
             GumpKind::Journal => shown_panel(op, JOURNAL_ID, &mut self.profile),
             GumpKind::Minimap => shown_panel(op, RADAR_ID, &mut self.profile),

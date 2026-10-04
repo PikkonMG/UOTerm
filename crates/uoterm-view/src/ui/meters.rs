@@ -9,6 +9,7 @@ use super::theme::{GOAL, PANEL_PAD, TEXT_DIM};
 use crate::act::Act;
 use crate::geom::{Area, Rgba, Vector};
 use crate::model::dps::{DamageReport, Dealt};
+use crate::model::durability::Wear;
 use crate::model::reads::ReadKey;
 use serde_json::json;
 use uoterm_world::tool_names::TOOL_DAMAGE_METER;
@@ -93,6 +94,11 @@ pub fn durability_first_place(window: Area, rows: usize) -> Area {
     let rows = rows.clamp(1, DURABILITY_MAX_ROWS);
     let height = TITLE_ROW + rows as f32 * DURABILITY_ROW + PANEL_PAD * 2.0;
     first_place(window, Spot::Middle(0), Vector::new(METER_WIDTH, height))
+}
+
+/// The durability of a worn item now and at most, in words.
+pub fn wear_words(wear: &Wear) -> String {
+    format!("{} / {}", wear.now, wear.max)
 }
 
 #[cfg(test)]
