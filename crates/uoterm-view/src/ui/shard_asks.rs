@@ -160,12 +160,17 @@ pub struct ShownNotice<'a> {
 }
 
 impl NoticePanel {
-    /// What shows now. No words of the shard forget what was closed.
-    pub fn shown<'a>(&mut self, frame: &'a WatchFrame) -> Option<ShownNotice<'a>> {
-        let Some(words) = frame.shard_notice.as_deref() else {
+    /// Follows the words of the shard: with none, what was closed is
+    /// forgotten.
+    pub fn follow(&mut self, frame: &WatchFrame) {
+        if frame.shard_notice.is_none() {
             self.closed = None;
-            return None;
-        };
+        }
+    }
+
+    /// What shows now.
+    pub fn shown<'a>(&self, frame: &'a WatchFrame) -> Option<ShownNotice<'a>> {
+        let words = frame.shard_notice.as_deref()?;
         if self.closed.as_deref() == Some(words) {
             return None;
         }
@@ -254,7 +259,9 @@ mod tests {
         panel.close("Hail");
         assert!(panel.shown(&hail).is_none(), "closed");
         assert!(panel.shown(&notice("Welcome")).is_some());
-        assert!(panel.shown(&WatchFrame::default()).is_none());
+        let none = WatchFrame::default();
+        panel.follow(&none);
+        assert!(panel.shown(&none).is_none());
         assert_eq!(panel, NoticePanel::default(), "no words, nothing closed");
     }
 }

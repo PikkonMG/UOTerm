@@ -4,7 +4,9 @@
 //! what a click does are the rules of `uoterm_view::ui::deals` and
 //! `model::deals`. A double click on a good takes one, and with Shift all.
 
-use super::{Colored, DropZone, FrameSpec, Framed, TipKey, PANEL_SHOP, PANEL_TRADE_PREFIX};
+use super::{
+    click_item, Colored, DropZone, FrameSpec, Framed, TipKey, PANEL_SHOP, PANEL_TRADE_PREFIX,
+};
 use crate::WebView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,7 +21,6 @@ use uoterm_view::ui::deals::{
     trade_title, traded_footer, TradeOffer, HINT_GOOD, SHOP_ID, STEP_DOWN, STEP_UP, WORDS_CANCEL,
     WORDS_CLEAR, WORDS_CLOSE, WORDS_GOLD, WORDS_PLATINUM, WORDS_YOU,
 };
-use uoterm_view::ui::gumps::single_or_double;
 use uoterm_view::ui::theme::{css_color, GOAL, TEXT_DIM};
 
 /// What the shop and the trades keep between frames.
@@ -185,11 +186,7 @@ impl WebView {
         let (_, title) = shop_words(shop);
         let spec = FrameSpec::fixed(SHOP_ID, &title, shop_first_place(self.panel_room()))
             .sized(shop_least());
-        Some(if frame.human_control {
-            spec.closable()
-        } else {
-            spec
-        })
+        Some(spec.closable_if(frame.human_control))
     }
 
     pub(super) fn shop_data(&mut self, frame: &WatchFrame) -> Option<Framed<ShopData>> {
@@ -245,13 +242,13 @@ impl WebView {
         let Some(shop) = frame.shop.as_ref() else {
             return;
         };
-        let time = self.hand.time();
+        let good_of = |serial: u32| shop.goods.iter().find(|good| good.item.serial == serial);
         if let Ok(take) = serde_json::from_value::<Take>(action.clone()) {
-            let double = (false, true);
+            let Some(good) = good_of(take.take) else {
+                return;
+            };
             let deals = &mut self.panels.deals;
-            let (doubled, _) = single_or_double(double, &mut deals.clicks, &frame, take.take, time);
-            let good = shop.goods.iter().find(|good| good.item.serial == take.take);
-            if let Some(good) = good.filter(|_| doubled) {
+            if click_item(&mut deals.clicks, &mut self.hand, &frame, take.take, true) {
                 take_good(&mut deals.cart, good, take.all);
             }
             return;
@@ -261,19 +258,12 @@ impl WebView {
         };
         let deals = &mut self.panels.deals;
         match action {
-            ShopAction::Click(serial) => {
-                let (_, act) =
-                    single_or_double((true, false), &mut deals.clicks, &frame, serial, time);
-                if let Some(act) = act {
-                    self.hand.act(act);
-                }
+            ShopAction::Click(serial) if good_of(serial).is_some() => {
+                click_item(&mut deals.clicks, &mut self.hand, &frame, serial, false);
             }
+            ShopAction::Click(_) => {}
             ShopAction::Step(step) => {
-                if let Some(good) = shop
-                    .goods
-                    .iter()
-                    .find(|good| good.item.serial == step.serial)
-                {
+                if let Some(good) = good_of(step.serial) {
                     let count = deals.cart.count(step.serial);
                     let next = stepped(count, step.up, step.big, good.item.amount);
                     deals.cart.set(step.serial, next);
@@ -301,11 +291,7 @@ impl WebView {
         let (index, trade) = Self::trade_of(frame, panel)?;
         let default = trade_first_place(self.panel_room(), index);
         let spec = FrameSpec::fixed(&trade_id(index), &trade_title(trade), default);
-        Some(if frame.human_control {
-            spec.closable()
-        } else {
-            spec
-        })
+        Some(spec.closable_if(frame.human_control))
     }
 
     pub(super) fn trades_data(&mut self, frame: &WatchFrame) -> Vec<Framed<TradeData>> {
@@ -405,18 +391,23 @@ impl WebView {
         let Ok(action) = serde_json::from_value::<TradeAction>(action) else {
             return;
         };
-        let time = self.hand.time();
+        let traded = |serial: u32| {
+            trade
+                .mine_items
+                .iter()
+                .chain(&trade.their_items)
+                .any(|item| item.serial == serial)
+        };
         let clicks = &mut self.panels.deals.clicks;
         match action {
+            TradeAction::Click(serial) | TradeAction::Double(serial) if !traded(serial) => {}
             TradeAction::Click(serial) => {
-                let (_, act) = single_or_double((true, false), clicks, &frame, serial, time);
-                if let Some(act) = act {
-                    self.hand.act(act);
-                }
+                click_item(clicks, &mut self.hand, &frame, serial, false);
             }
             TradeAction::Double(serial) => {
-                single_or_double((false, true), clicks, &frame, serial, time);
-                self.hand.act(Act::Use(serial));
+                if click_item(clicks, &mut self.hand, &frame, serial, true) {
+                    self.hand.act(Act::Use(serial));
+                }
             }
             TradeAction::Drag(serial) => {
                 if let Some(item) = trade.mine_items.iter().find(|item| item.serial == serial) {
@@ -456,9 +447,8 @@ impl WebView {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{out_acts, press};
+    use super::super::tests::{out_acts, press, view_with};
     use super::super::{PANEL_SHOP, PANEL_TRADE_PREFIX};
-    use crate::tests::fixture_watch_with_backpack;
     use crate::WebView;
     use serde_json::json;
     use uoterm_view::act::Act;
@@ -469,22 +459,16 @@ mod tests {
     const BOX: u32 = 0x4000_0300;
     const SWORD: u32 = 0x4000_0301;
     const RING: u32 = 0x4000_0302;
+    /// A thing in no trade and in no shop.
+    const HATCHET_ELSEWHERE: u32 = crate::tests::HATCHET;
 
-    fn view_with(key: &str, value: serde_json::Value) -> WebView {
-        let mut watch: serde_json::Value =
-            serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
-        watch[key] = value;
-        let mut view = crate::tests::settled();
-        view.frame(&watch.to_string(), 0.1);
-        view
-    }
-
-    fn view_with_trade() -> WebView {
+    fn view_with_trade(control: bool) -> WebView {
         view_with(
             "trades",
             json!([{ "with": "Ann", "box_serial": BOX, "my_gold": 500,
                 "mine_items": [{ "serial": SWORD, "graphic": 3937, "amount": 1, "name": "sword" }],
                 "their_items": [{ "serial": RING, "graphic": 4234, "amount": 1, "name": "ring" }] }]),
+            control,
         )
     }
 
@@ -492,7 +476,7 @@ mod tests {
         format!("{PANEL_TRADE_PREFIX}{BOX}")
     }
 
-    fn view_with_shop(goods: &[(u32, u16)]) -> WebView {
+    fn view_with_shop(goods: &[(u32, u16)], control: bool) -> WebView {
         let goods: Vec<_> = goods
             .iter()
             .map(|(serial, amount)| {
@@ -503,20 +487,13 @@ mod tests {
         view_with(
             "shop",
             json!({"vendor": 9, "vendor_name": "Bob", "buying": true, "goods": goods}),
+            control,
         )
-    }
-
-    fn without_control(view: &mut WebView, key: &str, value: serde_json::Value) {
-        let mut watch: serde_json::Value =
-            serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
-        watch[key] = value;
-        watch["human_control"] = json!(false);
-        view.frame(&watch.to_string(), 0.2);
     }
 
     #[test]
     fn a_shift_take_puts_the_whole_stack_in_the_cart() {
-        let mut view = view_with_shop(&[(5, 100)]);
+        let mut view = view_with_shop(&[(5, 100)], true);
         view.input_native(
             &json!({"kind": "Panel", "panel": "shop", "action": {"take": 5, "all": true}})
                 .to_string(),
@@ -532,7 +509,7 @@ mod tests {
 
     #[test]
     fn a_double_click_takes_one_as_the_window_and_the_steps_count() {
-        let mut view = view_with_shop(&[(5, 100)]);
+        let mut view = view_with_shop(&[(5, 100)], true);
         let shop = view.panel_data(0.0).shop.unwrap();
         assert_eq!(shop.frame.title, "Buy from Bob");
         assert_eq!(shop.body.goods[0].left, "x100");
@@ -574,13 +551,7 @@ mod tests {
 
     #[test]
     fn the_shop_takes_nothing_without_control() {
-        let mut view = view_with_shop(&[(5, 100)]);
-        without_control(
-            &mut view,
-            "shop",
-            json!({"vendor": 9, "vendor_name": "Bob", "buying": true, "goods": [
-                {"serial": 5, "graphic": 3617, "amount": 100, "price": 2, "name": "Bandage"}]}),
-        );
+        let mut view = view_with_shop(&[(5, 100)], false);
         press(&mut view, PANEL_SHOP, json!({"take": 5, "all": true}));
         assert_eq!(view.cart_amount(5), 0);
         assert!(out_acts(&press(&mut view, PANEL_SHOP, json!({"deal": true}))).is_empty());
@@ -589,7 +560,7 @@ mod tests {
 
     #[test]
     fn a_trade_offers_gold_accepts_and_cancels_as_the_window() {
-        let mut view = view_with_trade();
+        let mut view = view_with_trade(true);
         let trade = view.panel_data(0.0).trades.remove(0);
         assert_eq!(trade.frame.title, "Trade with Ann");
         assert_eq!(trade.body.sides[0].items[0].serial, SWORD);
@@ -614,7 +585,7 @@ mod tests {
 
     #[test]
     fn an_own_traded_item_drags_back_and_a_double_click_uses_one() {
-        let mut view = view_with_trade();
+        let mut view = view_with_trade(true);
         let panel = trade_panel();
         press(&mut view, &panel, json!({"drag": RING}));
         assert!(!view.carries(), "the other side stays");
@@ -626,12 +597,7 @@ mod tests {
 
     #[test]
     fn a_trade_acts_not_without_control() {
-        let mut view = view_with_trade();
-        without_control(
-            &mut view,
-            "trades",
-            json!([{ "with": "Ann", "box_serial": BOX, "my_gold": 500 }]),
-        );
+        let mut view = view_with_trade(false);
         let panel = trade_panel();
         for action in [
             json!({"gold": "10"}),
@@ -643,5 +609,25 @@ mod tests {
             assert!(out_acts(&press(&mut view, &panel, action)).is_empty());
         }
         assert!(view.panel_data(0.0).trades[0].body.accept.is_none());
+    }
+
+    #[test]
+    fn a_click_on_a_thing_not_in_the_shop_or_the_trade_does_nothing() {
+        let mut view = view_with_shop(&[(5, 100)], true);
+        press(&mut view, PANEL_SHOP, json!({"take": 6, "all": true}));
+        press(&mut view, PANEL_SHOP, json!({"click": 6}));
+        view.follow_deals(&view.frame_ref().unwrap().clone(), 5.0);
+        assert!(out_acts(&view.take_out_native()).is_empty());
+        let mut view = view_with_trade(true);
+        let panel = trade_panel();
+        assert!(out_acts(&press(
+            &mut view,
+            &panel,
+            json!({"double": HATCHET_ELSEWHERE})
+        ))
+        .is_empty());
+        press(&mut view, &panel, json!({"click": HATCHET_ELSEWHERE}));
+        view.follow_deals(&view.frame_ref().unwrap().clone(), 5.0);
+        assert!(out_acts(&view.take_out_native()).is_empty());
     }
 }

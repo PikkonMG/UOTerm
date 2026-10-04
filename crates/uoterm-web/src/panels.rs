@@ -51,12 +51,16 @@ pub(crate) use radar::RadarState;
 pub(crate) use ring::RingState;
 pub(crate) use sheet::SheetState;
 
+use crate::out::Hand;
 use crate::{kept, TooltipData, WebView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uoterm_view::frame::WatchFrame;
 use uoterm_view::geom::{Area, Point, Vector};
+use uoterm_view::model::clicks::ClickDelay;
 use uoterm_view::model::places;
 use uoterm_view::scene::WHEEL_POINTS_PER_NOTCH;
+use uoterm_view::ui::gumps::single_or_double;
 use uoterm_view::ui::places::{
     place, HINT_CLOSE, HINT_FOLD, HINT_LOCK, HINT_MOVE, HINT_SIZE, PANEL_WHEEL_POINTS,
 };
@@ -279,6 +283,12 @@ impl FrameSpec {
         self
     }
 
+    /// Closable only while `live`: the human has control.
+    pub fn closable_if(mut self, live: bool) -> Self {
+        self.closable = live;
+        self
+    }
+
     pub fn foldable(mut self) -> Self {
         self.foldable = true;
         self
@@ -461,9 +471,8 @@ impl WebView {
     }
 
     /// The spec of the frame of panel `panel` now, when it shows one.
-    fn frame_spec(&mut self, panel: &str) -> Option<FrameSpec> {
-        let frame = self.frame.clone()?;
-        let frame = &frame;
+    fn frame_spec(&self, panel: &str) -> Option<FrameSpec> {
+        let frame = self.frame.as_ref()?;
         match panel {
             PANEL_LAUNCHER => Some(self.launcher_spec()),
             PANEL_ACTIVITY => Some(self.activity_spec(frame)),
@@ -595,6 +604,25 @@ impl WebView {
     }
 }
 
+/// A click on an item of a panel, as the panels of the Rust window take
+/// it: a single click targets the item while the shard waits for a
+/// target, and else asks its name once the double click time is over. A
+/// `double` click gives true: its act is the panel's.
+pub(crate) fn click_item(
+    clicks: &mut ClickDelay,
+    hand: &mut Hand,
+    frame: &WatchFrame,
+    serial: u32,
+    double: bool,
+) -> bool {
+    let time = hand.time();
+    let (doubled, act) = single_or_double((!double, double), clicks, frame, serial, time);
+    if let Some(act) = act {
+        hand.act(act);
+    }
+    doubled
+}
+
 /// The notches of a wheel over a panel's lines or map, from the notches
 /// of the mouse wheel the page counts, as the Rust window counts its
 /// points.
@@ -631,6 +659,20 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// A settled view whose picture holds `value` at `key`, with or
+    /// without control, after a frame and with what it sent taken.
+    pub fn view_with(key: &str, value: Value, control: bool) -> WebView {
+        let mut watch: Value =
+            serde_json::from_str(&crate::tests::fixture_watch_with_backpack()).unwrap();
+        watch[key] = value;
+        watch["human_control"] = json!(control);
+        let mut view = settled();
+        view.frame(&watch.to_string(), 0.1);
+        view.tick_native(0.1, VIEW, None);
+        view.take_out_native();
+        view
     }
 
     /// A `Panel` event of `panel` with `action`, given to the view.

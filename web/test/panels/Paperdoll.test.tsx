@@ -33,8 +33,9 @@ describe('Paperdoll', () => {
     expect(container.querySelector('.paperdoll')?.getAttribute('data-zone')).toBe('"wear"');
   });
 
-  it('says_when_the_mobile_is_out_of_sight', () => {
-    const { getByText } = render(<Paperdoll data={{ ...doll, out_of_sight: 'Out of sight.', rows: [] }} send={vi.fn()} />);
+  it('says_when_the_mobile_is_out_of_sight_and_closes_by_its_mark_alone_without_control', () => {
+    const { getByText, queryByText } = render(<Paperdoll data={{ ...doll, live: false, buttons: [], close: null, out_of_sight: 'Out of sight.', rows: [] }} send={vi.fn()} />);
     expect(getByText('Out of sight.')).toBeTruthy();
+    expect(queryByText('Close')).toBeNull();
   });
 });

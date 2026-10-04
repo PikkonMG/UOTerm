@@ -26,10 +26,10 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, V
 use std::collections::HashMap;
 use uoterm_view::ui::deals::{
     accept_button, deal_act, gold_words, left_words, owned_words, price_words, shop_first_place,
-    shop_least, shop_words, side_head, take_good, total_words, trade_first_place, trade_id,
-    trade_side, trade_title, traded_footer, TradeOffer, COIN_ROW, HINT_GOOD, SHOP_ID, SHOP_ROW,
-    SIDE_HEAD, STEP_DOWN, STEP_UP, TRADE_COLUMNS, TRADE_GAP, TRADE_ROWS, WORDS_CANCEL, WORDS_CLEAR,
-    WORDS_CLOSE, WORDS_GOLD, WORDS_PLATINUM, WORDS_YOU,
+    shop_least, shop_rows, shop_words, side_head, take_good, total_words, trade_first_place,
+    trade_id, trade_side, trade_title, traded_footer, TradeOffer, COIN_ROW, HINT_GOOD, SHOP_ID,
+    SHOP_ROW, SIDE_HEAD, STEP_DOWN, STEP_UP, TRADE_COLUMNS, TRADE_GAP, TRADE_ROWS, WORDS_CANCEL,
+    WORDS_CLEAR, WORDS_CLOSE, WORDS_GOLD, WORDS_PLATINUM, WORDS_YOU,
 };
 use uoterm_view::ui::places::FOOT_ROW;
 
@@ -157,7 +157,7 @@ impl DealUi {
             body.min,
             Pos2::new(body.right(), body.bottom() - FOOT_ROW * 2.0),
         );
-        let rows = ((list.height() / SHOP_ROW).floor() as usize).max(1);
+        let rows = shop_rows(panel.height());
         let last_first = shop.goods.len().saturating_sub(rows);
         self.first_good = scrolled(ui, list, self.first_good, last_first);
         let shown = shop.goods.iter().skip(self.first_good).take(rows);

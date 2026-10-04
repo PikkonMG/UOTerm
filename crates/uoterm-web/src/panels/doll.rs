@@ -4,7 +4,7 @@
 //! `uoterm_view::ui::doll`, as in the Rust window. The clicks work only
 //! while the human has control.
 
-use super::{DropZone, FrameSpec, Framed, TipKey, PANEL_PAPERDOLL};
+use super::{click_item, DropZone, FrameSpec, Framed, TipKey, PANEL_PAPERDOLL};
 use crate::WebView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,7 +18,6 @@ use uoterm_view::ui::doll::{
     doll_buttons, doll_first_place, doll_health, doll_look, doll_worn, doll_zone, worn_footer,
     DollPanel, ShownDoll, DOLL_ID, WORDS_CLOSE, WORDS_OUT_OF_SIGHT, WORDS_WEARS_NOTHING,
 };
-use uoterm_view::ui::gumps::single_or_double;
 
 /// The paperdoll that shows, and the click that waits for its name.
 #[derive(Default)]
@@ -40,7 +39,8 @@ pub struct PaperdollData {
     /// The character may take items off and put them on.
     pub dresses: bool,
     pub buttons: Vec<&'static str>,
-    pub close: &'static str,
+    /// Close, while the human has control.
+    pub close: Option<&'static str>,
     /// Where an item dropped on the doll goes, when he dresses it.
     pub zone: Option<DropZone>,
 }
@@ -122,7 +122,7 @@ impl WebView {
             } else {
                 Vec::new()
             },
-            close: WORDS_CLOSE,
+            close: live.then_some(WORDS_CLOSE),
             zone: (dresses && live).then(|| doll_zone(frame, doll.serial).into()),
         };
         Some(self.framed(PANEL_PAPERDOLL, &spec, body))
@@ -141,18 +141,17 @@ impl WebView {
         let worn = doll_look(&frame, doll.serial)
             .map(|look| doll_worn(look).into_iter().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
-        let time = self.hand.time();
         let clicks = &mut self.panels.doll.clicks;
+        let is_worn = |serial: u32| worn.iter().any(|item| item.serial == serial);
         match action {
+            DollAction::Click(serial) | DollAction::Double(serial) if !is_worn(serial) => {}
             DollAction::Click(serial) => {
-                let (_, act) = single_or_double((true, false), clicks, &frame, serial, time);
-                if let Some(act) = act {
-                    self.hand.act(act);
-                }
+                click_item(clicks, &mut self.hand, &frame, serial, false);
             }
             DollAction::Double(serial) => {
-                single_or_double((false, true), clicks, &frame, serial, time);
-                self.hand.act(Act::Use(serial));
+                if click_item(clicks, &mut self.hand, &frame, serial, true) {
+                    self.hand.act(Act::Use(serial));
+                }
             }
             DollAction::Drag(serial) => {
                 let lifts = dolls::dresses(&frame, doll.serial, doll.can_lift);
@@ -248,5 +247,23 @@ mod tests {
             assert!(out_acts(&press(&mut view, PANEL_PAPERDOLL, action)).is_empty());
         }
         assert!(!view.carries());
+    }
+
+    #[test]
+    fn a_thing_not_worn_takes_no_click_and_close_shows_only_with_control() {
+        let mut view = view_with_doll(true);
+        let elsewhere = crate::tests::HATCHET;
+        assert!(out_acts(&press(
+            &mut view,
+            PANEL_PAPERDOLL,
+            json!({"double": elsewhere})
+        ))
+        .is_empty());
+        press(&mut view, PANEL_PAPERDOLL, json!({"click": elsewhere}));
+        view.follow_doll(&view.frame_ref().unwrap().clone(), 5.0);
+        assert!(out_acts(&view.take_out_native()).is_empty());
+        assert!(view.panel_data(0.0).paperdoll.unwrap().body.close.is_some());
+        let mut view = view_with_doll(false);
+        assert!(view.panel_data(0.0).paperdoll.unwrap().body.close.is_none());
     }
 }

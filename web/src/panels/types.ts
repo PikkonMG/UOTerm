@@ -509,7 +509,7 @@ export interface PaperdollData {
   nothing: string | null;
   dresses: boolean;
   buttons: string[];
-  close: string;
+  close: string | null;
   zone: DropZone | null;
 }
 

@@ -46,9 +46,11 @@ export function Paperdoll({ data, send, hover }: { data: PaperdollData; send: Se
             {words}
           </button>
         ))}
-        <button type="button" class="button dim" onClick={() => send({ close: true })}>
-          {data.close}
-        </button>
+        {data.close && (
+          <button type="button" class="button dim" onClick={() => send({ close: true })}>
+            {data.close}
+          </button>
+        )}
       </div>
     </div>
   );

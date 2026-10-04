@@ -153,15 +153,6 @@ enum BoardAction {
     Remove(bool),
 }
 
-/// A spec closable only while the human has control.
-fn closable_while(spec: FrameSpec, live: bool) -> FrameSpec {
-    if live {
-        spec.closable()
-    } else {
-        spec
-    }
-}
-
 impl WebView {
     /// The book in one frame: it follows the book the shard has open, and
     /// a sealed one asks for the pages in sight.
@@ -180,7 +171,7 @@ impl WebView {
         let menu = frame.old_menu.as_ref()?;
         let default = menu_first_place(self.panel_room(), menu.entries.len());
         let spec = FrameSpec::fixed(MENU_ID, &menu.question, default);
-        Some(closable_while(spec, frame.human_control))
+        Some(spec.closable_if(frame.human_control))
     }
 
     pub(super) fn menu_data(&mut self, frame: &WatchFrame) -> Option<Framed<OldMenuData>> {
@@ -224,7 +215,7 @@ impl WebView {
     pub(super) fn book_spec(&self, frame: &WatchFrame) -> Option<FrameSpec> {
         let book = frame.book.as_ref()?;
         let spec = FrameSpec::fixed(BOOK_ID, &book.title, book_first_place(self.panel_room()));
-        Some(closable_while(spec, frame.human_control))
+        Some(spec.closable_if(frame.human_control))
     }
 
     pub(super) fn book_data(&mut self, frame: &WatchFrame) -> Option<Framed<BookData>> {
@@ -288,13 +279,15 @@ impl WebView {
                 Some((_, to)) => open.turn(*to, writing),
                 None => Vec::new(),
             },
-            BookAction::Page(typed) if writing => {
+            BookAction::Page(typed) if writing && typed.side < PAGES_SHOWN => {
                 let fits = |line: &str| measure.is_none_or(|measure| measure(line).x <= fits_room);
                 let number = open.left + typed.side;
                 state.edits += 1;
-                if let Some(caret) = open.write_page(number, &typed.words, typed.caret, fits) {
-                    state.caret = Some((number, caret));
-                }
+                // A rejected key keeps the caret where the page had it.
+                let caret = open
+                    .write_page(number, &typed.words, typed.caret, fits)
+                    .unwrap_or(typed.caret);
+                state.caret = Some((number, caret));
                 Vec::new()
             }
             BookAction::Cover(cover) if writing => {
@@ -325,7 +318,7 @@ impl WebView {
     pub(super) fn board_spec(&self, frame: &WatchFrame) -> Option<FrameSpec> {
         let board = frame.board.as_ref()?;
         let spec = FrameSpec::fixed(BOARD_ID, &board.name, board_first_place(self.panel_room()));
-        Some(closable_while(spec, frame.human_control))
+        Some(spec.closable_if(frame.human_control))
     }
 
     pub(super) fn board_data(&self, frame: &WatchFrame) -> Option<Framed<BoardData>> {
@@ -414,7 +407,7 @@ impl WebView {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{out_acts, press};
+    use super::super::tests::{out_acts, press, view_with};
     use super::super::{PANEL_BOARD, PANEL_BOOK, PANEL_OLD_MENU};
     use crate::tests::{fixture_watch_with_backpack, settled};
     use crate::WebView;
@@ -425,18 +418,6 @@ mod tests {
 
     const BOOK: u32 = 99;
     const POST: u32 = 52;
-
-    fn view_with(key: &str, value: serde_json::Value, control: bool) -> WebView {
-        let mut watch: serde_json::Value =
-            serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
-        watch[key] = value;
-        watch["human_control"] = json!(control);
-        let mut view = settled();
-        view.frame(&watch.to_string(), 0.1);
-        view.tick_native(0.1, crate::tests::VIEW, None);
-        view.take_out_native();
-        view
-    }
 
     fn menu(control: bool) -> WebView {
         view_with(
@@ -577,5 +558,35 @@ mod tests {
         assert!(out_acts(&press(&mut view, PANEL_BOOK, json!({"close": true}))).is_empty());
         let mut view = board(false);
         assert!(out_acts(&press(&mut view, PANEL_BOARD, json!({"read": 51}))).is_empty());
+    }
+
+    #[test]
+    fn words_for_a_page_that_does_not_show_are_not_written() {
+        let mut view = book(true, true);
+        press(
+            &mut view,
+            PANEL_BOOK,
+            json!({"page": {"side": 2, "words": "Hi", "caret": 2}}),
+        );
+        let data = view.panel_data(0.0).book.unwrap().body;
+        assert_eq!(data.edits, 0);
+        assert!(out_acts(&press(&mut view, PANEL_BOOK, json!({"save": true}))).is_empty());
+    }
+
+    #[test]
+    fn a_rejected_key_keeps_the_caret_the_page_sent() {
+        let mut view = book(true, true);
+        let full = "a\nb\nc\nd\ne\nf\ng\nh\ni";
+        press(
+            &mut view,
+            PANEL_BOOK,
+            json!({"page": {"side": 0, "words": full, "caret": 3}}),
+        );
+        let data = view.panel_data(0.0).book.unwrap().body;
+        assert_eq!(
+            data.pages[0].words, "Once\nupon",
+            "the full page takes no more"
+        );
+        assert_eq!(data.pages[0].caret, Some(3));
     }
 }

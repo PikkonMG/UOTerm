@@ -6,7 +6,9 @@
 //! keys); the view decides. The clicks work only while the human has
 //! control.
 
-use super::{Colored, DropZone, FrameSpec, Framed, TipKey, PANEL_GRID_PREFIX, PANEL_LOOT};
+use super::{
+    click_item, Colored, DropZone, FrameSpec, Framed, TipKey, PANEL_GRID_PREFIX, PANEL_LOOT,
+};
 use crate::WebView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,7 +34,7 @@ use uoterm_view::ui::grids::{
     toggle_lock, CellMark, ClosedBoxes, GridMemory, ShownGrid, DIMMED_ALPHA, HINT_FAVORITE,
     HINT_LOOT_ALL, HINT_LOOT_BAG, HINT_SEARCH, WORDS_FAVORITE, WORDS_LOOT_ALL, WORDS_LOOT_BAG,
 };
-use uoterm_view::ui::gumps::{single_or_double, CELL_GAP};
+use uoterm_view::ui::gumps::CELL_GAP;
 use uoterm_view::ui::launch::Launch;
 use uoterm_view::ui::lists::{
     corpse_state_words, loot_first_place, open_corpses, LOOT_ID, LOOT_MAX_ROWS,
@@ -442,7 +444,7 @@ impl WebView {
     /// The lines under the name in the tip of an item of a grid: the
     /// compare with the worn item, and what a bag holds.
     pub(crate) fn grid_tip_lines(&mut self, serial: u32) -> Vec<String> {
-        let Some(frame) = self.frame.clone() else {
+        let Some(frame) = self.frame.as_ref() else {
             return Vec::new();
         };
         let Some(item) = frame
@@ -453,30 +455,35 @@ impl WebView {
         else {
             return Vec::new();
         };
-        let layers = self.panels.grids.layers.clone().unwrap_or_default();
-        hover_lines(
-            item,
-            &[],
-            &frame,
-            (&layers, self.hand.reads()),
-            &self.profile,
-        )
+        let none = ItemLayers::default();
+        let layers = self.panels.grids.layers.as_ref().unwrap_or(&none);
+        hover_lines(item, &[], frame, (layers, self.hand.reads()), &self.profile)
     }
 
     pub(super) fn grid_action(&mut self, panel: &str, action: Value) {
-        let Some(frame) = self.frame.clone().filter(|frame| frame.human_control) else {
+        let Some(frame) = self.frame.clone() else {
             return;
         };
         let Some(shown) = self.shown_grid(&frame, panel) else {
             return;
         };
+        let action = serde_json::from_value::<GridAction>(action);
+        // The words of the search are the window's own: they need no
+        // control.
+        if let Ok(GridAction::Search(words)) = action {
+            self.panels.grids.memory.search.insert(shown.serial, words);
+            return;
+        }
+        if !frame.human_control {
+            return;
+        }
         let Some(spec) = self.grid_spec(&frame, &shown) else {
             return;
         };
         let Some(container) = frame.containers.iter().find(|c| c.serial == shown.serial) else {
             return;
         };
-        let Ok(action) = serde_json::from_value::<GridAction>(action) else {
+        let Ok(action) = action else {
             return;
         };
         let serial = container.serial;
@@ -505,9 +512,7 @@ impl WebView {
                 let at = Point::default();
                 self.cell_press(&frame, &shown, &spec, container, slot, cell, at);
             }
-            GridAction::Search(words) => {
-                self.panels.grids.memory.search.insert(serial, words);
-            }
+            GridAction::Search(_) => {}
             GridAction::Favorite(_) if !shown.corpse => {
                 toggle_favorite(&mut self.profile, serial);
                 self.keep_profile();
@@ -580,7 +585,6 @@ impl WebView {
         if look == Look::Hidden {
             return;
         }
-        let time = self.hand.time();
         match grid_click(press, shown.corpse, shown.grid_loot, frame.target_cursor) {
             GridClick::Choose => self.panels.grids.memory.chosen.toggle(item.serial),
             GridClick::Lock => {
@@ -596,12 +600,7 @@ impl WebView {
             GridClick::PickUp => self.pick_up(item),
             GridClick::Use | GridClick::Name => {
                 let clicks = &mut self.panels.grids.clicks;
-                let (double, act) =
-                    single_or_double((true, press.double), clicks, frame, item.serial, time);
-                if let Some(act) = act {
-                    self.hand.act(act);
-                }
-                if double {
+                if click_item(clicks, &mut self.hand, frame, item.serial, press.double) {
                     self.hand.act(Act::Use(item.serial));
                 }
             }
@@ -660,13 +659,19 @@ impl WebView {
     }
 
     pub(super) fn loot_action(&mut self, action: Value) {
-        if !self.frame.as_ref().is_some_and(|frame| frame.human_control) {
+        let Some(frame) = self.frame.as_ref().filter(|frame| frame.human_control) else {
             return;
-        }
+        };
         let Ok(action) = serde_json::from_value::<LootAction>(action) else {
             return;
         };
+        let near = |serial: u32| {
+            loot::nearby_corpses(frame, NEARBY_LOOT_TILES)
+                .iter()
+                .any(|corpse| corpse.serial == serial)
+        };
         match action {
+            LootAction::Open(corpse) | LootAction::Loot(corpse) if !near(corpse) => {}
             LootAction::Open(corpse) => {
                 self.panels.grids.loot_opened.insert(corpse);
                 self.hand.act(Act::Use(corpse));
@@ -946,5 +951,17 @@ mod tests {
         }
         assert!(!view.carries());
         assert!(out_acts(&press(&mut view, PANEL_LOOT, json!({"loot": CORPSE}))).is_empty());
+    }
+
+    #[test]
+    fn the_search_works_without_control_and_a_far_corpse_takes_no_click() {
+        let mut view = view_with_grids();
+        view.frame(&watch(false).to_string(), 0.2);
+        press(&mut view, &pack(), json!({"search": "hat"}));
+        assert_eq!(view.panel_data(0.0).grids[0].body.search, "hat");
+        let mut view = view_with_grids();
+        let far = CORPSE + 1;
+        assert!(out_acts(&press(&mut view, PANEL_LOOT, json!({"open": far}))).is_empty());
+        assert!(out_acts(&press(&mut view, PANEL_LOOT, json!({"loot": far}))).is_empty());
     }
 }

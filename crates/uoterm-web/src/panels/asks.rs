@@ -169,15 +169,6 @@ enum DyeAction {
     Eyedropper(bool),
 }
 
-/// A spec closable only while the human has control.
-fn closable_while(spec: FrameSpec, live: bool) -> FrameSpec {
-    if live {
-        spec.closable()
-    } else {
-        spec
-    }
-}
-
 impl WebView {
     /// The dialogs of the shard in one frame: a new question gets an empty
     /// field, a new race change starts over, and the dye takes the hue
@@ -185,6 +176,7 @@ impl WebView {
     pub(crate) fn follow_asks(&mut self, frame: &WatchFrame) {
         let asks = &mut self.panels.asks;
         asks.entry.follow(asked_dialog(frame).as_ref());
+        asks.notice.follow(frame);
         match frame.race_change {
             Some(change) => asks.race.follow(change),
             None => asks.race.stop(),
@@ -215,10 +207,7 @@ impl WebView {
         let height = self.description_height(&dialog.description);
         let default = entry_first_place(self.panel_room(), height);
         let spec = FrameSpec::fixed(ENTRY_ID, entry_title(&dialog), default);
-        Some(closable_while(
-            spec,
-            frame.human_control && dialog.can_cancel,
-        ))
+        Some(spec.closable_if(frame.human_control && dialog.can_cancel))
     }
 
     pub(super) fn entry_data(&self, frame: &WatchFrame) -> Option<Framed<EntryData>> {
@@ -270,7 +259,7 @@ impl WebView {
         let change = frame.race_change?;
         let title = race_change_words(change);
         let spec = FrameSpec::fixed(RACE_ID, &title, race_first_place(self.panel_room()));
-        Some(closable_while(spec, frame.human_control))
+        Some(spec.closable_if(frame.human_control))
     }
 
     pub(super) fn race_data(&mut self, frame: &WatchFrame) -> Option<Framed<RaceData>> {
@@ -366,7 +355,7 @@ impl WebView {
         self.race_action(serde_json::json!({ "keep": true }));
     }
 
-    pub(super) fn tip_spec(&mut self, frame: &WatchFrame) -> Option<FrameSpec> {
+    pub(super) fn tip_spec(&self, frame: &WatchFrame) -> Option<FrameSpec> {
         let shown = self.panels.asks.notice.shown(frame)?;
         let default = tip_first_place(self.panel_room());
         Some(
@@ -376,7 +365,7 @@ impl WebView {
         )
     }
 
-    pub(super) fn tip_data(&mut self, frame: &WatchFrame) -> Option<Framed<TipData>> {
+    pub(super) fn tip_data(&self, frame: &WatchFrame) -> Option<Framed<TipData>> {
         let spec = self.tip_spec(frame)?;
         let shown = self.panels.asks.notice.shown(frame)?;
         let buttons = shown.tip && frame.human_control;
@@ -491,7 +480,7 @@ impl WebView {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{out_acts, press};
+    use super::super::tests::{out_acts, press, view_with};
     use super::super::{PANEL_DYE, PANEL_ENTRY, PANEL_RACE, PANEL_TIP};
     use super::*;
     use crate::tests::{fixture_watch_with_backpack, settled};
@@ -506,18 +495,6 @@ mod tests {
         race: Race::Elf,
         female: true,
     };
-
-    fn view_with(key: &str, value: serde_json::Value, control: bool) -> WebView {
-        let mut watch: serde_json::Value =
-            serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
-        watch[key] = value;
-        watch["human_control"] = json!(control);
-        let mut view = settled();
-        view.frame(&watch.to_string(), 0.1);
-        view.tick_native(0.1, crate::tests::VIEW, None);
-        view.take_out_native();
-        view
-    }
 
     fn entry(control: bool) -> WebView {
         view_with(
@@ -630,5 +607,21 @@ mod tests {
         assert!(out_acts(&press(&mut view, PANEL_RACE, json!({"keep": true}))).is_empty());
         let mut view = view_with("dye", json!({ "serial": TUB, "graphic": 0x0FAB }), false);
         assert!(out_acts(&press(&mut view, PANEL_DYE, json!({"okay": true}))).is_empty());
+    }
+
+    #[test]
+    fn a_tip_sends_nothing_without_control() {
+        let mut watch: serde_json::Value =
+            serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
+        watch["shard_notice"] = json!("Hail");
+        watch["shard_tip"] = json!(4);
+        watch["human_control"] = json!(false);
+        let mut view = settled();
+        view.frame(&watch.to_string(), 0.1);
+        let tip = view.panel_data(0.0).tip.unwrap();
+        assert!(tip.body.next.is_none());
+        for action in [json!({"next": true}), json!({"previous": true})] {
+            assert!(out_acts(&press(&mut view, PANEL_TIP, action)).is_empty());
+        }
     }
 }

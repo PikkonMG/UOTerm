@@ -34,6 +34,7 @@ impl TipUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Option<Rect> {
+        self.notice.follow(frame);
         let shown = self.notice.shown(frame)?;
         let (title, words, tip) = (shown.title, shown.words, shown.tip);
         let spec = PanelSpec {
