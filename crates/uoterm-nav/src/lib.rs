@@ -8,6 +8,8 @@ mod bwt;
 mod client_program;
 mod cliloc;
 mod cursors;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fixtures;
 mod fonts;
 mod gumpart;
 mod housing;
@@ -34,10 +36,8 @@ mod unifont;
 mod uop;
 
 pub use anim::{Action, AnimData, AnimFrame, AnimRules, Deed, EquipConv, Facing, Stance};
-pub use animdata::{ArtCycles, TILE_ANIMATED};
-pub use art::{
-    ArtData, ArtPixels, ART_IDX_NAME, ART_MUL_NAME, ITEM_ART_BASE, LAND_ART_SIDE, PIXEL_DRAWN,
-};
+pub use animdata::{ArtCycle, ArtCycles, TILE_ANIMATED};
+pub use art::{ArtData, ArtPixels, LAND_ART_SIDE};
 pub use client_program::{client_program_version, CLIENT_PROGRAM_NAME};
 pub use cliloc::ClilocData;
 pub use cursors::{
@@ -65,7 +65,7 @@ pub use professions::{
     parse_professions, read_city_texts, read_professions, Profession, ProfessionKind,
     ProfessionList, ADVANCED_DESCRIPTION_INDEX,
 };
-pub use radarcol::RadarColors;
+pub use radarcol::{RadarColors, RadarTables};
 pub use seasons::{SeasonArt, SEASONS_NAME};
 pub use sight::{
     eyes_at, line_of_sight, middle_of, sight_trace, SightBlocker, SightMode, SightPoint,
@@ -104,12 +104,17 @@ mod tests {
         CLILOC_COMPRESSED_MARK, CLILOC_COMPRESSED_MARK_AT, CLILOC_ENU_NAMES, CLILOC_HEADER,
         CLILOC_RECORD_HEADER,
     };
+    use crate::fixtures::{
+        self, mini_tiledata, write_cliloc, FIXTURE_FLOOR_GRAPHIC, FIXTURE_FLOOR_HEIGHT,
+        FIXTURE_LAND_NAMES, FIXTURE_WALL_CX, FIXTURE_WALL_CY, FIXTURE_WALL_GRAPHIC,
+        FIXTURE_WALL_HEIGHT, FIXTURE_WALL_NAME, FIXTURE_WALL_Z, LAND_ID_BLOCK_0_1,
+        LAND_ID_BLOCK_1_0,
+    };
     use crate::mul::{
         block_index, tiledata_is_hs, BLOCK_BYTES, BLOCK_CELLS, BLOCK_HEADER, CELL_BYTES,
-        COLUMN_CACHE_CAP, GROUP_HEADER, IDX_EMPTY, LAND_COUNT, LAND_GROUP, LAND_NAME_AFTER_FLAGS,
-        LAND_RECORD_HS, LAND_RECORD_OLD, MAP_MALAS_BLOCKS_H, MAP_MALAS_BLOCKS_W, STAIDX_RECORD,
-        STATIC_GROUP, STATIC_HEIGHT_BYTES_AFTER_FLAGS, STATIC_RECORD, STATIC_RECORD_HS,
-        STATIC_RECORD_OLD, TILEDATA_FLAGS_OLD, TILE_NAME_LEN,
+        COLUMN_CACHE_CAP, GROUP_HEADER, IDX_EMPTY, LAND_COUNT, LAND_GROUP, LAND_RECORD_HS,
+        LAND_RECORD_OLD, MAP_MALAS_BLOCKS_H, MAP_MALAS_BLOCKS_W, STAIDX_RECORD, STATIC_GROUP,
+        STATIC_RECORD_HS, STATIC_RECORD_OLD,
     };
     use crate::multi::{
         multi_is_hs, MULTI_IDX_NAME, MULTI_IDX_RECORD, MULTI_MUL_LOOSE, MULTI_MUL_NAME,
@@ -1249,116 +1254,17 @@ mod tests {
         dir
     }
 
-    const LAND_ID_BLOCK_1_0: u16 = 2;
-    const LAND_ID_BLOCK_0_1: u16 = 1;
-
-    /// Every fixture block gets its own land id so a test can prove which block
-    /// a coordinate landed in.
-    fn fixture_land_id(bx: u16, by: u16) -> u8 {
-        (bx * 2 + by) as u8
-    }
-
+    /// The mini client of [`crate::fixtures`], with its map packed as a UOP
+    /// package as well when `as_uop`.
     fn write_mini_client(dir: &Path, as_uop: bool) {
-        let blocks_w = 2u16;
-        let blocks_h = 2u16;
-        let mut map = vec![0u8; BLOCK_BYTES * (blocks_w * blocks_h) as usize];
-        for by in 0..blocks_h {
-            for bx in 0..blocks_w {
-                let block = block_index(blocks_h, bx, by) as usize;
-                let base = block * BLOCK_BYTES + BLOCK_HEADER;
-                let land_id = fixture_land_id(bx, by);
-                for cell in 0..64 {
-                    let o = base + cell * CELL_BYTES;
-                    map[o] = land_id;
-                    map[o + 1] = 0;
-                    map[o + 2] = 0;
-                }
-            }
-        }
+        fixtures::write_mini_client(dir);
         if as_uop {
-            fs::write(dir.join("map0LegacyMUL.uop"), pack_legacy_uop(0, &map)).unwrap();
-        } else {
-            fs::write(dir.join("map0.mul"), &map).unwrap();
+            fs::write(
+                dir.join("map0LegacyMUL.uop"),
+                pack_legacy_uop(0, &fixtures::mini_map()),
+            )
+            .unwrap();
         }
-
-        let mut statics = vec![0u8; STATIC_RECORD];
-        statics[0..2].copy_from_slice(&FIXTURE_WALL_GRAPHIC.to_le_bytes());
-        statics[2] = FIXTURE_WALL_CX as u8;
-        statics[3] = FIXTURE_WALL_CY as u8;
-        statics[4] = FIXTURE_WALL_Z as u8;
-        fs::write(dir.join("statics0.mul"), statics).unwrap();
-
-        let mut staidx = vec![0u8; STAIDX_RECORD * (blocks_w * blocks_h) as usize];
-        staidx[0..4].copy_from_slice(&0u32.to_le_bytes());
-        staidx[4..8].copy_from_slice(&(STATIC_RECORD as u32).to_le_bytes());
-        for block in 1..(blocks_w * blocks_h) as usize {
-            let o = block * STAIDX_RECORD;
-            staidx[o..o + 4].copy_from_slice(&IDX_EMPTY.to_le_bytes());
-            staidx[o + 4..o + 8].copy_from_slice(&IDX_EMPTY.to_le_bytes());
-        }
-        fs::write(dir.join("staidx0.mul"), staidx).unwrap();
-        fs::write(dir.join("tiledata.mul"), mini_tiledata()).unwrap();
-    }
-
-    /// The bytes of a tiledata record that follow the flags field.
-    const LAND_REST_LEN: usize = LAND_RECORD_OLD - TILEDATA_FLAGS_OLD;
-    const STATIC_REST_LEN: usize = STATIC_RECORD_OLD - TILEDATA_FLAGS_OLD;
-    const STATIC_NAME_IN_REST: usize = STATIC_REST_LEN - TILE_NAME_LEN;
-    /// One fixture name per land id, so a test can prove a name comes from the
-    /// record of that id and not from a neighbour.
-    const FIXTURE_LAND_NAMES: [&str; 4] = ["dirt", "grass", "cave floor", "forest"];
-    /// The fixture holds one static: an impassable wall in the first block.
-    const FIXTURE_WALL_GRAPHIC: u16 = 0;
-    const FIXTURE_WALL_NAME: &str = "stone wall";
-    const FIXTURE_WALL_HEIGHT: u8 = 20;
-    const FIXTURE_WALL_Z: i8 = 0;
-    const FIXTURE_WALL_CX: u16 = 4;
-    const FIXTURE_WALL_CY: u16 = 0;
-    /// A second fixture tile, so a test can prove a height and a flag come
-    /// from the tiledata record of the graphic it asked about.
-    const FIXTURE_FLOOR_GRAPHIC: u16 = 1;
-    const FIXTURE_FLOOR_NAME: &str = "wooden floor";
-    const FIXTURE_FLOOR_HEIGHT: u8 = 5;
-
-    /// Writes a NUL-padded latin1 name the way a tiledata record stores it.
-    fn put_tile_name(rest: &mut [u8], offset: usize, name: &str) {
-        let bytes = name.as_bytes();
-        assert!(bytes.len() <= TILE_NAME_LEN, "fixture name is too long");
-        rest[offset..offset + bytes.len()].copy_from_slice(bytes);
-    }
-
-    fn mini_tiledata() -> Vec<u8> {
-        let land_groups = LAND_COUNT / LAND_GROUP;
-        let mut data = Vec::with_capacity(
-            land_groups * (GROUP_HEADER + LAND_GROUP * LAND_RECORD_OLD)
-                + GROUP_HEADER
-                + LAND_GROUP * STATIC_RECORD_OLD,
-        );
-        for group in 0..land_groups {
-            data.extend_from_slice(&0u32.to_le_bytes());
-            for slot in 0..LAND_GROUP {
-                data.extend_from_slice(&0u32.to_le_bytes());
-                let mut rest = [0u8; LAND_REST_LEN];
-                if let Some(&name) = FIXTURE_LAND_NAMES.get(group * LAND_GROUP + slot) {
-                    put_tile_name(&mut rest, LAND_NAME_AFTER_FLAGS, name);
-                }
-                data.extend_from_slice(&rest);
-            }
-        }
-        data.extend_from_slice(&0u32.to_le_bytes());
-        for i in 0..LAND_GROUP {
-            let (flags, height, name) = match i as u16 {
-                FIXTURE_WALL_GRAPHIC => (TILE_IMPASSABLE, FIXTURE_WALL_HEIGHT, FIXTURE_WALL_NAME),
-                FIXTURE_FLOOR_GRAPHIC => (TILE_SURFACE, FIXTURE_FLOOR_HEIGHT, FIXTURE_FLOOR_NAME),
-                _ => (0, 0, ""),
-            };
-            data.extend_from_slice(&flags.to_le_bytes());
-            let mut rest = [0u8; STATIC_REST_LEN];
-            rest[STATIC_HEIGHT_BYTES_AFTER_FLAGS] = height;
-            put_tile_name(&mut rest, STATIC_NAME_IN_REST, name);
-            data.extend_from_slice(&rest);
-        }
-        data
     }
 
     /// Trammel, the facet every New Haven test below reads.
@@ -3202,12 +3108,6 @@ mod tests {
     /// prove the reader did not stop after the first records.
     const MANY_MESSAGES: usize = 100_000;
 
-    /// The header of a written text database: a version field and a language
-    /// field, neither of which any reader uses.
-    const FIXTURE_CLILOC_VERSION: u32 = 2;
-    const FIXTURE_CLILOC_LANGUAGE: u16 = 1;
-    /// Every record of the client files carries this flag byte.
-    const FIXTURE_CLILOC_FLAG: u8 = 0;
     /// A message with one blank in it, and one with two.
     const ONE_BLANK_NUMBER: u32 = 1042971;
     const ONE_BLANK_TEXT: &str = "~1_NOTHING~";
@@ -3225,22 +3125,6 @@ mod tests {
         (TWO_BLANK_NUMBER, TWO_BLANK_TEXT),
         (NAMED_NUMBER, NAMED_TEXT),
     ];
-
-    /// Writes a plain text database the way the client files lay one out, and
-    /// gives back the bytes so a test can measure them.
-    fn write_cliloc(path: &Path, messages: &[(u32, &str)]) -> Vec<u8> {
-        let mut data = Vec::new();
-        data.extend_from_slice(&FIXTURE_CLILOC_VERSION.to_le_bytes());
-        data.extend_from_slice(&FIXTURE_CLILOC_LANGUAGE.to_le_bytes());
-        for (number, text) in messages {
-            data.extend_from_slice(&number.to_le_bytes());
-            data.push(FIXTURE_CLILOC_FLAG);
-            data.extend_from_slice(&(text.len() as u16).to_le_bytes());
-            data.extend_from_slice(text.as_bytes());
-        }
-        fs::write(path, &data).unwrap();
-        data
-    }
 
     fn fixture_cliloc(dir: &Path) -> ClilocData {
         let path = dir.join(CLILOC_ENU_NAMES[0]);

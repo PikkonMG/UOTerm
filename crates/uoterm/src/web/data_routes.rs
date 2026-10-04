@@ -1,0 +1,277 @@
+//! The tables the scene of the web client builds with, read from the
+//! client files. The browser keeps each one for as long as the client
+//! files do not change.
+
+use super::{on_art, table, WebState};
+use crate::art::client_art::ClientArt;
+use crate::window::model::host::creation::read_creation_tables;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use serde::Deserialize;
+use uoterm_nav::Action;
+use uoterm_view::model::compare::ItemLayers;
+
+/// Separates the text numbers of the start towns in a query.
+const TOWNS_SEPARATOR: char = ',';
+
+pub(super) fn routes() -> Router<WebState> {
+    Router::new()
+        .route("/v1/data/tiledata", get(tiledata))
+        .route("/v1/data/multis/{id}", get(multi))
+        .route("/v1/data/animdata", get(art_cycles))
+        .route("/v1/data/anim-rules", get(anim_rules))
+        .route("/v1/data/radarcol", get(radar))
+        .route("/v1/data/seasons", get(seasons))
+        .route("/v1/data/lights/{id}", get(light))
+        .route("/v1/data/cliloc", get(cliloc))
+        .route(
+            "/v1/data/frames/{body}/{action}/{direction}/{mounted}",
+            get(frames),
+        )
+        .route("/v1/data/creation", get(creation))
+        .route("/v1/data/item-layers", get(item_layers))
+        .route("/v1/data/hues-text/{hue}", get(text_rgb))
+}
+
+/// The answer `answer` makes from the client files, on a blocking thread.
+/// It gets the files tag for the ETag.
+async fn from_files(
+    state: &WebState,
+    answer: impl FnOnce(&mut ClientArt, &str) -> Response + Send + 'static,
+) -> Response {
+    let files_tag = state.files_tag.clone();
+    on_art(
+        state,
+        move |art| answer(art, &files_tag),
+        std::convert::identity,
+    )
+    .await
+}
+
+async fn tiledata(State(state): State<WebState>) -> Response {
+    from_files(&state, |art, tag| table(art.tiledata_tables(), tag)).await
+}
+
+/// The pieces of a house or a boat. Empty for a multi the files do not
+/// hold.
+async fn multi(State(state): State<WebState>, Path(id): Path<u16>) -> Response {
+    from_files(&state, move |art, tag| {
+        table(Some(art.multi_pieces(id)), tag)
+    })
+    .await
+}
+
+async fn art_cycles(State(state): State<WebState>) -> Response {
+    from_files(&state, |art, tag| table(art.art_cycles_table(), tag)).await
+}
+
+async fn anim_rules(State(state): State<WebState>) -> Response {
+    from_files(&state, |art, tag| table(art.anim_rules(), tag)).await
+}
+
+async fn radar(State(state): State<WebState>) -> Response {
+    from_files(&state, |art, tag| table(art.radar_tables(), tag)).await
+}
+
+async fn seasons(State(state): State<WebState>) -> Response {
+    from_files(&state, |art, tag| table(Some(art.season_tables()), tag)).await
+}
+
+async fn light(State(state): State<WebState>, Path(id): Path<u8>) -> Response {
+    from_files(&state, move |art, tag| table(art.light_shape(id), tag)).await
+}
+
+async fn cliloc(State(state): State<WebState>) -> Response {
+    from_files(&state, |art, tag| table(art.cliloc_table(), tag)).await
+}
+
+/// How many frames a body has for an action, facing a direction, on a
+/// mount or not. The action is `stand`, `walk`, `run` or a group number.
+async fn frames(
+    State(state): State<WebState>,
+    Path((body, action, direction, mounted)): Path<(u16, String, u8, bool)>,
+) -> Response {
+    let Ok(action) = action.parse::<Action>() else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    from_files(&state, move |art, tag| {
+        table(art.body_frame_count(body, direction, action, mounted), tag)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct CreationQuery {
+    /// The text numbers of the words about the start towns the shard
+    /// offers, comma separated.
+    #[serde(default)]
+    towns: String,
+}
+
+/// What the character creation reads, with only the words it reads.
+async fn creation(State(state): State<WebState>, Query(query): Query<CreationQuery>) -> Response {
+    let towns: Result<Vec<u32>, _> = query
+        .towns
+        .split(TOWNS_SEPARATOR)
+        .filter(|number| !number.is_empty())
+        .map(str::parse)
+        .collect();
+    let Ok(towns) = towns else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    from_files(&state, move |art, tag| {
+        let files = read_creation_tables(art.uopath()).with_needed_words(art.cliloc(), &towns);
+        table(Some(files), tag)
+    })
+    .await
+}
+
+async fn item_layers(State(state): State<WebState>) -> Response {
+    from_files(&state, |art, tag| {
+        table(art.tiledata_tables().map(ItemLayers::of_tiles), tag)
+    })
+    .await
+}
+
+/// The color of words written in a hue, as red, green and blue.
+async fn text_rgb(State(state): State<WebState>, Path(hue): Path<u16>) -> Response {
+    from_files(&state, move |art, tag| table(art.text_rgb(hue), tag)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{fixture_uopath, send, test_state};
+    use super::super::WebState;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serde_json::Value;
+    use uoterm_nav::fixtures::{write_cliloc, FIXTURE_LAND_NAMES, FIXTURE_WALL_NAME};
+    use uoterm_view::model::creation::CreationFiles;
+
+    const CLILOC_NAME: &str = "Cliloc.enu";
+    const RADARCOL_NAME: &str = "radarcol.mul";
+    /// The text numbers of the name of Advanced, the profession every
+    /// client has, of a start town, and of a message the creation does not
+    /// read.
+    const ADVANCED_NAME_ID: u32 = 1_061_176;
+    const BRITAIN_WORDS: u32 = 1_075_074;
+    const REFUSAL: u32 = 1_001_018;
+
+    fn get(path: &str) -> Request<Body> {
+        Request::get(path).body(Body::empty()).unwrap()
+    }
+
+    async fn json(state: WebState, path: &str) -> Value {
+        let answer = send(state, get(path)).await;
+        assert_eq!(answer.status(), StatusCode::OK, "{path}");
+        let bytes = axum::body::to_bytes(answer.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn tables_are_cached_by_the_files_tag() {
+        let (state, _files) = test_state();
+        let tag = state.files_tag.clone();
+        let answer = send(state, get("/v1/data/tiledata")).await;
+        assert!(answer.headers()["etag"].to_str().unwrap().contains(&tag));
+        assert_eq!(
+            answer.headers()["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_tiledata_holds_the_land_and_the_items() {
+        let (state, _files) = test_state();
+        let tiles = json(state, "/v1/data/tiledata").await;
+        assert_eq!(tiles["land"][0]["name"], FIXTURE_LAND_NAMES[0]);
+        assert_eq!(tiles["items"][0]["name"], FIXTURE_WALL_NAME);
+    }
+
+    #[tokio::test]
+    async fn tables_the_client_files_do_not_hold_are_not_found() {
+        let (state, _files) = test_state();
+        for path in [
+            "/v1/data/animdata",
+            "/v1/data/anim-rules",
+            "/v1/data/radarcol",
+            "/v1/data/lights/1",
+            "/v1/data/cliloc",
+            "/v1/data/frames/400/walk/2/false",
+            "/v1/data/hues-text/33",
+        ] {
+            let answer = send(state.clone(), get(path)).await;
+            assert_eq!(answer.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_with_no_name_is_a_bad_request() {
+        let (state, _files) = test_state();
+        let answer = send(state, get("/v1/data/frames/400/fly/2/false")).await;
+        assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn the_seasons_multis_and_item_layers_come_as_tables() {
+        const GRASS: &str = "196";
+        const SNOW: u64 = 282;
+        const WINTER: usize = 3;
+        let (state, _files) = test_state();
+        let seasons = json(state.clone(), "/v1/data/seasons").await;
+        assert_eq!(seasons["seasons"][WINTER]["land"][GRASS], SNOW);
+        let pieces = json(state.clone(), "/v1/data/multis/1").await;
+        assert_eq!(pieces, Value::Array(Vec::new()), "no houses in the files");
+        let layers = json(state, "/v1/data/item-layers").await;
+        assert_eq!(layers["layers"], serde_json::json!({}), "nothing is worn");
+    }
+
+    #[tokio::test]
+    async fn the_radar_colors_come_by_land_and_by_item() {
+        const ITEM_BASE: usize = 0x4000;
+        const ITEMS: usize = 2;
+        const PURE_RED: u16 = 31 << 10;
+        let files = fixture_uopath();
+        let mut colors = vec![0u8; (ITEM_BASE + ITEMS) * 2];
+        colors[..2].copy_from_slice(&PURE_RED.to_le_bytes());
+        std::fs::write(files.0.join(RADARCOL_NAME), colors).unwrap();
+        let radar = json(WebState::open(Some(&files.0)), "/v1/data/radarcol").await;
+        assert_eq!(radar["land"][0], serde_json::json!([255, 0, 0]));
+        assert_eq!(radar["items"].as_array().unwrap().len(), ITEMS);
+    }
+
+    #[tokio::test]
+    async fn the_text_database_comes_by_number() {
+        let files = fixture_uopath();
+        write_cliloc(&files.0.join(CLILOC_NAME), &[(REFUSAL, "No.")]);
+        let words = json(WebState::open(Some(&files.0)), "/v1/data/cliloc").await;
+        assert_eq!(words, serde_json::json!({ REFUSAL.to_string(): "No." }));
+    }
+
+    #[tokio::test]
+    async fn the_creation_gets_only_the_words_it_reads() {
+        let files = fixture_uopath();
+        write_cliloc(
+            &files.0.join(CLILOC_NAME),
+            &[
+                (ADVANCED_NAME_ID, "Advanced"),
+                (BRITAIN_WORDS, "Britain"),
+                (REFUSAL, "No."),
+            ],
+        );
+        let state = WebState::open(Some(&files.0));
+        let path = format!("/v1/data/creation?towns={BRITAIN_WORDS}");
+        let creation: CreationFiles =
+            serde_json::from_value(json(state.clone(), &path).await).unwrap();
+        assert_eq!(creation.words(ADVANCED_NAME_ID, ""), "Advanced");
+        assert_eq!(creation.words(BRITAIN_WORDS, ""), "Britain");
+        assert_eq!(creation.words(REFUSAL, "left out"), "left out");
+        let bad = send(state, get("/v1/data/creation?towns=Britain")).await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    }
+}

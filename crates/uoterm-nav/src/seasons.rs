@@ -5,6 +5,7 @@
 //! The table ships with UOTerm. A shard with its own art can replace it:
 //! put a `seasons.txt` of the same shape in the UOTerm config folder.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -19,12 +20,14 @@ const SEASON_WORDS: [&str; 5] = ["spring", "summer", "fall", "winter", "desolati
 /// Every season of a shard that is none of the above shows as summer.
 const SUMMER: usize = 1;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Swaps {
     land: HashMap<u16, u16>,
     statics: HashMap<u16, u16>,
 }
 
+/// The browser gets the swaps of every season as they are.
+#[derive(Serialize, Deserialize)]
 pub struct SeasonArt {
     /// One set of swaps for each season.
     seasons: Vec<Swaps>,
@@ -146,5 +149,16 @@ mod tests {
         const GRASS: u16 = 196;
         let art = SeasonArt::default();
         assert_eq!(art.land(u8::MAX, GRASS), art.land(SUMMER_SEASON, GRASS));
+    }
+
+    #[test]
+    fn the_swaps_survive_the_trip_to_the_browser() {
+        const GRASS: u16 = 196;
+        const GREEN_TREE: u16 = 0x0CD1;
+        let art = SeasonArt::default();
+        let back: SeasonArt = serde_json::from_str(&serde_json::to_string(&art).unwrap()).unwrap();
+        assert_eq!(back.land(WINTER, GRASS), art.land(WINTER, GRASS));
+        assert_eq!(back.item(FALL, GREEN_TREE), art.item(FALL, GREEN_TREE));
+        assert_eq!(back.land(SPRING, GRASS), GRASS);
     }
 }

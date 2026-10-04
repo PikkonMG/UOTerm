@@ -227,6 +227,11 @@ impl ProfessionList {
         self.all.iter().filter(|p| p.top_level).collect()
     }
 
+    /// Every profession and category of the file.
+    pub fn iter(&self) -> impl Iterator<Item = &Profession> {
+        self.all.iter()
+    }
+
     /// The professions of a category, in file order.
     pub fn children(&self, category: &Profession) -> Vec<&Profession> {
         self.all
@@ -457,6 +462,14 @@ End
         assert_eq!(children[0].name, "Smith");
         assert!(top[2].is_advanced());
         assert!(parse_professions("").top()[0].is_advanced());
+    }
+
+    #[test]
+    fn every_profession_of_the_file_is_listed_once() {
+        let list = parse_professions(FILE);
+        let mut names: Vec<&str> = list.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["Advanced", "Crafters", "Smith", "Warrior"]);
     }
 
     #[test]

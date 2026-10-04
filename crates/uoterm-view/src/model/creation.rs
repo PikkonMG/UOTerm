@@ -370,6 +370,29 @@ impl CreationFiles {
             .to_string()
     }
 
+    /// These files with only the text numbers the creation reads from
+    /// `words`: the name and the words of each profession, and the words of
+    /// the start towns `towns` names. The whole text database is too large
+    /// to send to the browser.
+    pub fn with_needed_words(self, words: Option<&ClilocData>, towns: &[u32]) -> Self {
+        let needed = words.map(|words| {
+            let numbers = self
+                .professions
+                .iter()
+                .flat_map(|profession| [profession.name_id, profession.description_id])
+                .chain(towns.iter().copied());
+            ClilocData::from_entries(
+                numbers
+                    .filter_map(|number| Some((number, words.text(number)?.to_string())))
+                    .collect(),
+            )
+        });
+        Self {
+            words: needed,
+            ..self
+        }
+    }
+
     /// The words about the start town at `at` of the list: its text number
     /// for a newer town, the town file of the client for an older one, or
     /// its building.
@@ -1362,6 +1385,38 @@ mod tests {
         assert!(!can_make(&["A".into()], LIST_ONE_SLOT));
         assert_eq!(facet_name(1), "Trammel");
         assert_eq!(facet_name(99), "Ter Mur");
+    }
+
+    #[test]
+    fn the_browser_gets_only_the_words_the_creation_reads() {
+        const WARRIOR_NAME: u32 = 1_061_180;
+        const WARRIOR_WORDS: u32 = 1_061_230;
+        const BRITAIN_WORDS: u32 = 1_075_074;
+        const OTHER: u32 = 500_000;
+        let text = "Begin\nName Warrior\nNameId 1061180\nDescId 1061230\nTopLevel true\n\
+                    Type Profession\nEnd\n";
+        let files = CreationFiles {
+            professions: uoterm_nav::parse_professions(text),
+            ..CreationFiles::default()
+        };
+        let words = ClilocData::from_entries(
+            [
+                (WARRIOR_NAME, "warrior"),
+                (WARRIOR_WORDS, "A fighter."),
+                (BRITAIN_WORDS, "Britain"),
+                (OTHER, "Not for the creation"),
+            ]
+            .into_iter()
+            .map(|(number, text)| (number, text.to_string()))
+            .collect(),
+        );
+        let files = files.with_needed_words(Some(&words), &[BRITAIN_WORDS]);
+        assert_eq!(files.words(WARRIOR_NAME, ""), "warrior");
+        assert_eq!(files.words(WARRIOR_WORDS, ""), "A fighter.");
+        assert_eq!(files.words(BRITAIN_WORDS, ""), "Britain");
+        assert_eq!(files.words(OTHER, "left out"), "left out");
+        let none = CreationFiles::default().with_needed_words(None, &[BRITAIN_WORDS]);
+        assert!(none.words.is_none());
     }
 
     #[test]

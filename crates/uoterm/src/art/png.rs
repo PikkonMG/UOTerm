@@ -1,10 +1,5 @@
 //! A picture as a PNG file, as the server sends it to the web client.
 
-// The web server of a later step of the web client sends each picture
-// with this. Until it does, only the tests call it. The expectation fails
-// once the server calls it: then remove it.
-#![cfg_attr(not(test), expect(dead_code))]
-
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use uoterm_view::art::Picture;

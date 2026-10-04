@@ -241,7 +241,7 @@ impl WorldArt for NativeArt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uoterm_nav::{ART_IDX_NAME, ART_MUL_NAME};
+    use uoterm_nav::fixtures::write_two_items;
 
     /// A body the default tables take for a person.
     const MAN: u16 = 0x0190;
@@ -250,9 +250,7 @@ mod tests {
     fn client_files_without_animation_files_have_no_real_tables() {
         let dir = std::env::temp_dir().join(format!("uoterm-art-host-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        for name in [ART_MUL_NAME, ART_IDX_NAME] {
-            std::fs::write(dir.join(name), []).unwrap();
-        }
+        write_two_items(&dir);
         let client = ClientArt::open(&dir).unwrap();
         let art = NativeArt::new(Some(client));
         assert!(art.has_art());

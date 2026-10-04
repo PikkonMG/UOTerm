@@ -55,8 +55,9 @@ pub struct ItemTile {
     pub name: String,
 }
 
-/// The whole tiledata file.
-#[derive(Clone, Debug, Default)]
+/// The whole tiledata file. The browser gets it whole, as the land tiles
+/// and the items.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TileData {
     land: Vec<LandTile>,
     items: Vec<ItemTile>,
@@ -346,5 +347,15 @@ mod tests {
         let lantern = tiles.item(ITEM_LANTERN).unwrap();
         assert!(lantern.flags.contains(TileFlagSet::LIGHT_SOURCE));
         assert!(lantern.name.contains("lantern"));
+    }
+
+    #[test]
+    fn the_tables_survive_the_trip_to_the_browser() {
+        let tiles = TileData::parse(&file(false));
+        let text = serde_json::to_string(&tiles).unwrap();
+        let back: TileData = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.land_count(), tiles.land_count());
+        assert_eq!(back.item(ITEM_ID as u16), tiles.item(ITEM_ID as u16));
+        assert_eq!(back.land(1), tiles.land(1));
     }
 }

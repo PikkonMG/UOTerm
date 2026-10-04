@@ -14,5 +14,10 @@ thiserror.workspace = true
 serde.workspace = true
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
+[features]
+# Small client files written by hand, for the tests of the crates that
+# use this one.
+test-fixtures = []
+
 [dev-dependencies]
 serde_json.workspace = true

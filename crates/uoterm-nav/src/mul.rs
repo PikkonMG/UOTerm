@@ -309,7 +309,7 @@ pub(crate) fn capped_len(file_len: u64, offset: u64, want: u32) -> usize {
 
 /// One record of an index file such as `artidx.mul`: where a record of the
 /// data file starts, how long it is, and an extra number.
-const IDX_RECORD: usize = 12;
+pub(crate) const IDX_RECORD: usize = 12;
 const IDX_EXTRA_AT: usize = 8;
 pub(crate) const IDX_WIDTH_SHIFT: u32 = 16;
 const IDX_HEIGHT_MASK: u32 = 0xFFFF;

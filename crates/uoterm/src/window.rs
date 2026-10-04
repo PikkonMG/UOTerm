@@ -33,7 +33,7 @@ mod macros_ui;
 mod map_ui;
 mod map_view;
 mod mapitem_ui;
-mod model;
+pub(crate) mod model;
 mod modern;
 mod options_ui;
 mod orders;

@@ -95,6 +95,25 @@ pub enum Action {
     Shown(u8),
 }
 
+/// The words of the actions every kind of body has, as a path of the web
+/// API names them. Any other action is named by its group.
+const ACTION_STAND: &str = "stand";
+const ACTION_WALK: &str = "walk";
+const ACTION_RUN: &str = "run";
+
+impl std::str::FromStr for Action {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        match word {
+            ACTION_STAND => Ok(Self::Stand),
+            ACTION_WALK => Ok(Self::Walk),
+            ACTION_RUN => Ok(Self::Run),
+            group => group.parse().map(Self::Shown),
+        }
+    }
+}
+
 impl Action {
     /// The group of the action, from the three groups of the kind of body.
     fn group(self, groups: [u32; 3]) -> u32 {
@@ -701,6 +720,16 @@ mod tests {
     const BODY_OGRE: u16 = 1;
     const SOUTH: u8 = 4;
     const EAST: u8 = 2;
+
+    #[test]
+    fn an_action_is_read_from_its_word_or_its_group() {
+        assert_eq!("stand".parse(), Ok(Action::Stand));
+        assert_eq!("walk".parse(), Ok(Action::Walk));
+        assert_eq!("run".parse(), Ok(Action::Run));
+        assert_eq!("12".parse(), Ok(Action::Shown(12)));
+        assert!("fly".parse::<Action>().is_err());
+        assert!("256".parse::<Action>().is_err(), "no group is that high");
+    }
 
     #[test]
     fn the_newer_packet_names_a_deed_and_each_kind_of_body_has_its_group() {

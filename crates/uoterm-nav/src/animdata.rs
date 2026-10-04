@@ -3,6 +3,7 @@
 //! tiledata has one record. The record lists, for each step of the cycle,
 //! how far the picture of that step is from the item's own picture.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::mul::{read_file, MapError};
@@ -23,14 +24,18 @@ const BLOCK_BYTES: usize = BLOCK_HEADER_BYTES + RECORDS_PER_BLOCK * RECORD_BYTES
 /// One unit of the step time of a record, in milliseconds.
 const INTERVAL_UNIT_MS: u64 = 50;
 
-struct Cycle {
-    offsets: Vec<i8>,
-    step_ms: u64,
+/// The picture cycle of one item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtCycle {
+    /// For each step, how far its picture is from the item's own picture.
+    pub offsets: Vec<i8>,
+    /// How long each step shows.
+    pub step_ms: u64,
 }
 
 pub struct ArtCycles {
     /// One place for each item graphic. None for an item with no cycle.
-    cycles: Vec<Option<Cycle>>,
+    cycles: Vec<Option<ArtCycle>>,
 }
 
 impl ArtCycles {
@@ -47,13 +52,21 @@ impl ArtCycles {
         for block in data.chunks_exact(BLOCK_BYTES) {
             for record in block[BLOCK_HEADER_BYTES..].chunks_exact(RECORD_BYTES) {
                 let count = usize::from(record[COUNT_AT]).min(OFFSETS_PER_RECORD);
-                cycles.push((count > 0).then(|| Cycle {
+                cycles.push((count > 0).then(|| ArtCycle {
                     offsets: record[..count].iter().map(|b| *b as i8).collect(),
                     step_ms: u64::from(record[INTERVAL_AT].max(1)) * INTERVAL_UNIT_MS,
                 }));
             }
         }
         Self { cycles }
+    }
+
+    /// Every item graphic that has a cycle, with its cycle.
+    pub fn entries(&self) -> impl Iterator<Item = (u16, &ArtCycle)> {
+        self.cycles
+            .iter()
+            .enumerate()
+            .filter_map(|(graphic, cycle)| Some((u16::try_from(graphic).ok()?, cycle.as_ref()?)))
     }
 
     /// The picture an animated item shows at `time_ms`. An item with no
@@ -98,5 +111,16 @@ mod tests {
         let cycles = ArtCycles::parse(&one_block());
         assert_eq!(cycles.graphic_at(FIRE + 1, 500), FIRE + 1);
         assert_eq!(cycles.graphic_at(u16::MAX, 500), u16::MAX);
+    }
+
+    #[test]
+    fn each_item_with_a_cycle_comes_out_with_its_steps() {
+        let cycles = ArtCycles::parse(&one_block());
+        let entries: Vec<_> = cycles.entries().collect();
+        assert_eq!(entries.len(), 1, "only the fire has a cycle");
+        let (graphic, cycle) = entries[0];
+        assert_eq!(graphic, FIRE);
+        assert_eq!(cycle.offsets, [0, 1, -1]);
+        assert_eq!(cycle.step_ms, u64::from(STEP_UNITS) * INTERVAL_UNIT_MS);
     }
 }

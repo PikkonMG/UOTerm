@@ -3,9 +3,8 @@
 //! An outline in the color of his notoriety goes round the whole figure, so
 //! he stays easy to find on busy ground.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 use uoterm_nav::{
     mount_of, Action, AnimData, AnimFrame, Facing, HueData, TileData, TILE_PARTIAL_HUE,
 };
@@ -55,16 +54,17 @@ const RGBA: usize = 4;
 const ALPHA: usize = 3;
 
 /// The frames of one body for one action, read from the files one time.
-type Frames = Rc<Vec<Option<AnimFrame>>>;
+type Frames = Arc<Vec<Option<AnimFrame>>>;
 
 /// Which frames: the body, the way it faces, what it does, and if it rides.
 type FramesOf = (u16, Facing, Action, bool);
 
-/// Each set of frames the window has asked for. None marks a body with no
-/// pictures.
+/// Each set of frames the window or the web server has asked for. None
+/// marks a body with no pictures. The web server reads the art from more
+/// than one thread.
 #[derive(Default)]
 pub struct FrameCache {
-    known: RefCell<HashMap<FramesOf, Option<Frames>>>,
+    known: Mutex<HashMap<FramesOf, Option<Frames>>>,
 }
 
 pub struct Source<'a> {
@@ -88,9 +88,14 @@ impl Source<'_> {
     fn frames(&self, body: u16, facing: Facing, action: Action, mounted: bool) -> Option<Frames> {
         self.cache
             .known
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .entry((body, facing, action, mounted))
-            .or_insert_with(|| self.anim.frames(body, facing, action, mounted).map(Rc::new))
+            .or_insert_with(|| {
+                self.anim
+                    .frames(body, facing, action, mounted)
+                    .map(Arc::new)
+            })
             .clone()
     }
 
@@ -101,12 +106,11 @@ impl Source<'_> {
         frames[pose.tick % frames.len()].clone()
     }
 
-    /// How many frames the body of this look has for an action. The window
-    /// makes one picture for each of them.
-    pub fn cycle(&self, look: &WatchLook, action: Action) -> usize {
-        let facing = Facing::from_direction(look.direction);
-        let mounted = mount_item(look).is_some();
-        self.frames(shown_body(look), facing, action, mounted)
+    /// How many frames a body has for an action, facing `direction` and
+    /// on a mount or not. A window makes one picture for each of them.
+    pub fn cycle(&self, body: u16, direction: u8, action: Action, mounted: bool) -> usize {
+        let facing = Facing::from_direction(direction);
+        self.frames(shown_body(body), facing, action, mounted)
             .map_or(1, |frames| frames.len())
     }
 
@@ -197,8 +201,8 @@ fn paint_order(direction: u8) -> Vec<u8> {
 
 /// A ghost shows as the body he had, and the window makes him pale. A ghost
 /// body has no pictures of its own in the client files.
-fn shown_body(look: &WatchLook) -> u16 {
-    uoterm_world::body_when_alive(look.body).unwrap_or(look.body)
+fn shown_body(body: u16) -> u16 {
+    uoterm_world::body_when_alive(body).unwrap_or(body)
 }
 
 /// The parts of a figure in paint order. `whole_hue` paints every part in
@@ -206,7 +210,7 @@ fn shown_body(look: &WatchLook) -> u16 {
 /// world.
 fn parts(source: &Source<'_>, look: &WatchLook, pose: Pose, whole_hue: Option<u16>) -> Vec<Part> {
     let facing = Facing::from_direction(look.direction);
-    let body = shown_body(look);
+    let body = shown_body(look.body);
     // A mount whose body has no pictures is left out, and the rider stands.
     let mount = mount_item(look).and_then(|item| {
         let mount = mount_of(item.graphic)?;
@@ -322,10 +326,7 @@ mod tests {
         };
         let anim = AnimData::open(&dir).expect("animation files open");
         for (ghost, alive) in uoterm_world::GHOST_BODIES {
-            let shown = shown_body(&WatchLook {
-                body: ghost,
-                ..WatchLook::default()
-            });
+            let shown = shown_body(ghost);
             assert_eq!(shown, alive, "ghost {ghost:#06x}");
             let frames = anim.frames(shown, Facing::from_direction(0), Action::Stand, false);
             assert!(frames.is_some(), "body {shown:#06x} for ghost {ghost:#06x}");

@@ -1,6 +1,7 @@
 //! The colors of `radarcol.mul`: one color for each land tile and each
 //! item, as a map of the world shows them from far above.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::art::channel;
@@ -15,6 +16,14 @@ const GREEN_SHIFT: u16 = 5;
 
 pub struct RadarColors {
     colors: Vec<u16>,
+}
+
+/// Every color of the file: the land by land id, then the items by
+/// graphic.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RadarTables {
+    pub land: Vec<[u8; 3]>,
+    pub items: Vec<[u8; 3]>,
 }
 
 impl RadarColors {
@@ -42,6 +51,16 @@ impl RadarColors {
             channel(color >> GREEN_SHIFT),
             channel(color),
         ])
+    }
+
+    /// Every color of the file as red, green and blue.
+    pub fn tables(&self) -> RadarTables {
+        let rgb = |index| self.rgb(index);
+        let land_end = self.colors.len().min(ITEM_BASE);
+        RadarTables {
+            land: (0..land_end).filter_map(rgb).collect(),
+            items: (ITEM_BASE..self.colors.len()).filter_map(rgb).collect(),
+        }
     }
 
     pub fn land(&self, land_id: u16) -> Option<[u8; 3]> {
@@ -73,5 +92,18 @@ mod tests {
         assert_eq!(colors.land(GRASS), Some([u8::MAX, 0, 0]));
         assert_eq!(colors.item(WALL), Some([0, 0, u8::MAX]));
         assert_eq!(colors.item(u16::MAX), None);
+    }
+
+    #[test]
+    fn the_tables_hold_every_color_of_the_land_and_of_the_items() {
+        const ITEMS: usize = 2;
+        let mut data = vec![0u8; (ITEM_BASE + ITEMS) * WORD];
+        data[..WORD].copy_from_slice(&PURE_RED.to_le_bytes());
+        let last = (ITEM_BASE + 1) * WORD;
+        data[last..last + WORD].copy_from_slice(&PURE_BLUE.to_le_bytes());
+        let tables = RadarColors::parse(&data).tables();
+        assert_eq!(tables.land.len(), ITEM_BASE);
+        assert_eq!(tables.land[0], [u8::MAX, 0, 0]);
+        assert_eq!(tables.items, [[0, 0, 0], [0, 0, u8::MAX]]);
     }
 }

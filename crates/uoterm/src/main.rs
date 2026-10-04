@@ -2,6 +2,7 @@ mod art;
 mod mcp;
 mod remote;
 mod view;
+mod web;
 mod window;
 
 use clap::{Parser, Subcommand, ValueEnum};

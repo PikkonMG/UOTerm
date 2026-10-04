@@ -5,15 +5,18 @@
 
 use super::figure::{self, FrameCache, Source};
 use super::text::UoFonts;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use uoterm_nav::{
-    land_is_ignored, Action, AnimData, AnimRules, ArtCycles, ArtData, ArtPixels, CursorSet,
-    GumpArt, HueData, HueRamp, ItemTile, LandTile, LightData, LightShape, MulMap, MultiData,
-    MultiPiece, RadarColors, SeasonArt, TexmapData, TextPicture, TileData, TileFlagSet, TileQuery,
-    TILE_ANIMATED, TILE_PARTIAL_HUE,
+    land_is_ignored, Action, AnimData, AnimRules, ArtCycle, ArtCycles, ArtData, ArtPixels,
+    ClilocData, CursorSet, GumpArt, HueData, HueRamp, ItemTile, LandTile, LightData, LightShape,
+    MulMap, MultiData, MultiPiece, RadarColors, RadarTables, SeasonArt, TexmapData, TextPicture,
+    TileData, TileFlagSet, TileQuery, TILE_ANIMATED, TILE_PARTIAL_HUE,
 };
-use uoterm_view::art::{is_drawn, ArtRequest, Cell, CellStatic, Picture, Stretch, TextLook};
+use uoterm_view::art::{
+    is_drawn, mount_item, ArtRequest, Cell, CellStatic, Picture, Stretch, TextLook,
+};
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::Vector;
 
@@ -108,6 +111,10 @@ pub struct ClientArt {
     /// None when the client files hold no UO fonts.
     fonts: Option<UoFonts>,
     cursors: CursorSet,
+    /// The text database, read the first time it is asked for: it is
+    /// large, and the window does not read it. None inside when the client
+    /// files hold none.
+    cliloc: OnceLock<Option<ClilocData>>,
 }
 
 /// The map files of a facet, opened the first time they are asked for.
@@ -144,6 +151,7 @@ impl ClientArt {
             lights: LightData::open(uopath).ok(),
             light_shapes: HashMap::new(),
             fonts: UoFonts::open(uopath).ok(),
+            cliloc: OnceLock::new(),
         })
     }
 
@@ -286,12 +294,67 @@ impl ClientArt {
 
     /// How many frames the body of this look has for an action.
     pub fn frame_count(&self, look: &WatchLook, action: Action) -> Option<usize> {
-        Some(self.figure_source()?.cycle(look, action))
+        let mounted = mount_item(look).is_some();
+        self.body_frame_count(look.body, look.direction, action, mounted)
+    }
+
+    /// How many frames a body has for an action, facing `direction` and on
+    /// a mount or not. None when the client files hold no animation files.
+    pub fn body_frame_count(
+        &self,
+        body: u16,
+        direction: u8,
+        action: Action,
+        mounted: bool,
+    ) -> Option<usize> {
+        Some(
+            self.figure_source()?
+                .cycle(body, direction, action, mounted),
+        )
     }
 
     /// The tables of the animation files that hold no pictures.
     pub fn anim_rules(&self) -> Option<&AnimRules> {
         self.anim.as_ref().map(AnimData::rules)
+    }
+
+    /// The folder of the client files.
+    pub fn uopath(&self) -> &Path {
+        &self.uopath
+    }
+
+    /// The whole tiledata file. None when the client files hold none.
+    pub fn tiledata_tables(&self) -> Option<&TileData> {
+        self.tiles.as_ref()
+    }
+
+    /// Every color of a map of the world. None when the client files hold
+    /// none.
+    pub fn radar_tables(&self) -> Option<RadarTables> {
+        self.radar.as_ref().map(RadarColors::tables)
+    }
+
+    /// The art each season swaps.
+    pub fn season_tables(&self) -> &SeasonArt {
+        &self.seasons
+    }
+
+    /// The text database of the client files, read the first time it is
+    /// asked for. None when the client files hold none.
+    pub fn cliloc(&self) -> Option<&ClilocData> {
+        self.cliloc
+            .get_or_init(|| ClilocData::open(&self.uopath).ok())
+            .as_ref()
+    }
+
+    /// Every message of the text database by its number.
+    pub fn cliloc_table(&self) -> Option<BTreeMap<u32, &str>> {
+        Some(self.cliloc()?.entries().collect())
+    }
+
+    /// The picture cycle of each item graphic that has one.
+    pub fn art_cycles_table(&self) -> Option<BTreeMap<u16, &ArtCycle>> {
+        Some(self.cycles.as_ref()?.entries().collect())
     }
 
     /// The tiledata record of an item graphic.
@@ -521,47 +584,15 @@ fn draw_border(picture: &mut Picture) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uoterm_nav::{CursorShape, ART_IDX_NAME, ART_MUL_NAME, ITEM_ART_BASE, PIXEL_DRAWN};
+    use uoterm_nav::fixtures::{write_two_items, TWO_ITEMS_RED};
+    use uoterm_nav::CursorShape;
     use uoterm_protocol::types::Direction;
-
-    const IDX_RECORD_BYTES: usize = 12;
-    const IDX_EMPTY: u32 = u32::MAX;
-    const RED: u16 = 0x7C00;
-
-    fn words(values: &[u16]) -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    /// An `art.mul` and an `artidx.mul` that hold two items: item 0, and
-    /// item 1, one red pixel on a row of two.
-    fn two_items(dir: &Path) {
-        let mut item_one = words(&[0, 0, 2, 1]);
-        item_one.extend(words(&[0]));
-        item_one.extend(words(&[1, 1, RED, 0, 0]));
-        let item_zero = words(&[0, 0, 1, 1, 0, 0, 1, RED, 0, 0]);
-        let mut mul = item_zero.clone();
-        mul.extend(&item_one);
-        let entries = ITEM_ART_BASE as usize + 2;
-        let mut idx = Vec::with_capacity(entries * IDX_RECORD_BYTES);
-        for index in 0..entries {
-            let (offset, len) = match index.checked_sub(ITEM_ART_BASE as usize) {
-                Some(0) => (0, item_zero.len()),
-                Some(_) => (item_zero.len(), item_one.len()),
-                None => (IDX_EMPTY as usize, 0),
-            };
-            idx.extend((offset as u32).to_le_bytes());
-            idx.extend((len as u32).to_le_bytes());
-            idx.extend(0u32.to_le_bytes());
-        }
-        std::fs::write(dir.join(ART_MUL_NAME), mul).unwrap();
-        std::fs::write(dir.join(ART_IDX_NAME), idx).unwrap();
-    }
 
     #[test]
     fn an_item_request_gives_its_picture_and_a_missing_one_none() {
         let dir = std::env::temp_dir().join(format!("uoterm-client-art-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        two_items(&dir);
+        write_two_items(&dir);
         let client = ClientArt::open(&dir).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         let item = |graphic| ArtRequest::Item {
@@ -580,7 +611,7 @@ mod tests {
         let red = ArtPixels {
             width: 1,
             height: 1,
-            colors: vec![RED | PIXEL_DRAWN],
+            colors: vec![TWO_ITEMS_RED],
         };
         assert_eq!(&picture.rgba[RGBA_BYTES..], red.rgba(None).as_slice());
         assert!(client.picture(&item(2)).is_none(), "no entry");

@@ -156,6 +156,14 @@ impl ClilocData {
         }
     }
 
+    /// Every message the client files describe, with its number, in no
+    /// order.
+    pub fn entries(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.entries
+            .iter()
+            .map(|(number, text)| (*number, text.as_str()))
+    }
+
     /// How many messages the client files describe.
     pub fn message_count(&self) -> usize {
         self.entries.len()
@@ -355,4 +363,22 @@ fn rebuild(body: &[u8]) -> Result<Vec<u8>, MapError> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_message_comes_out_with_its_number() {
+        const HAIL: u32 = 500_000;
+        const FAREWELL: u32 = 500_001;
+        let words = ClilocData::from_entries(HashMap::from([
+            (HAIL, "Hail".to_string()),
+            (FAREWELL, "Farewell".to_string()),
+        ]));
+        let mut entries: Vec<_> = words.entries().collect();
+        entries.sort();
+        assert_eq!(entries, [(HAIL, "Hail"), (FAREWELL, "Farewell")]);
+    }
 }
