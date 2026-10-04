@@ -87,7 +87,7 @@ export function Grid({ data, send, hover }: { data: GridData; send: Send; hover?
         <HeadButton button={data.loot_all} pressed={() => send({ loot_all: true })} />
         <HeadButton button={data.loot_bag} pressed={() => send({ loot_bag: true })} />
       </div>
-      <div class="grid-cells" style={{ gridTemplateColumns: `repeat(${data.columns}, ${data.side}px)` }}>
+      <div class="grid-cells" style={{ gridTemplateColumns: `repeat(${data.columns}, ${data.side}px)`, gap: `${data.gap}px` }}>
         {data.cells.map((cell) => (
           <Cell cell={cell} data={data} send={send} hover={hover} key={cell.slot} />
         ))}

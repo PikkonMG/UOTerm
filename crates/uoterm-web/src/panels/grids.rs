@@ -32,7 +32,7 @@ use uoterm_view::ui::grids::{
     toggle_lock, CellMark, ClosedBoxes, GridMemory, ShownGrid, DIMMED_ALPHA, HINT_FAVORITE,
     HINT_LOOT_ALL, HINT_LOOT_BAG, HINT_SEARCH, WORDS_FAVORITE, WORDS_LOOT_ALL, WORDS_LOOT_BAG,
 };
-use uoterm_view::ui::gumps::single_or_double;
+use uoterm_view::ui::gumps::{single_or_double, CELL_GAP};
 use uoterm_view::ui::launch::Launch;
 use uoterm_view::ui::lists::{
     corpse_state_words, loot_first_place, open_corpses, LOOT_ID, LOOT_MAX_ROWS,
@@ -75,8 +75,10 @@ pub struct GridData {
     pub loot_all: Option<TitleButton>,
     pub loot_bag: Option<TitleButton>,
     pub columns: usize,
-    /// The side of a cell, and how much a picture in it may grow.
+    /// The side of a cell and the gap between two, and how much a picture
+    /// in it may grow.
     pub side: f32,
+    pub gap: f32,
     pub art_scale: f32,
     pub cells: Vec<GridCell>,
     /// The row that moves the chosen items together.
@@ -368,6 +370,7 @@ impl WebView {
             loot_bag: grid_loot.then(|| title_button(WORDS_LOOT_BAG, TEXT, HINT_LOOT_BAG)),
             columns: arranged.columns,
             side: cell_side(&self.profile),
+            gap: CELL_GAP,
             art_scale: art_most_scale(&self.profile),
             cells,
             strip: self.strip_shows(frame).then(|| StripData {

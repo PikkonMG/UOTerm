@@ -21,6 +21,7 @@ const grid: GridData = {
   loot_bag: null,
   columns: 2,
   side: 46,
+  gap: 4,
   art_scale: 1,
   cells: [
     {

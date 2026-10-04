@@ -935,8 +935,8 @@
 
 .grid-cells {
   display: grid;
-  gap: var(--row-gap);
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
   flex: 1;
   align-content: start;
@@ -944,6 +944,7 @@
 
 .grid-cell {
   position: relative;
+  box-sizing: border-box;
   display: grid;
   place-items: center;
   padding: var(--cell-art-pad);
@@ -1155,6 +1156,17 @@
   padding: var(--row-gap);
   background: var(--track);
   border-radius: var(--bar-radius);
+}
+
+.paperdoll-picture {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
+
+.paperdoll-figure .bar-track {
+  flex: none;
 }
 
 .notice-words {

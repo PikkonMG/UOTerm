@@ -405,6 +405,7 @@ export interface GridData {
   loot_bag: TitleButton | null;
   columns: number;
   side: number;
+  gap: number;
   art_scale: number;
   cells: GridCell[];
   strip: { buttons: string[]; count: string } | null;

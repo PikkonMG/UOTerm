@@ -150,6 +150,7 @@ describe('Panels', () => {
           loot_bag: null,
           columns: 1,
           side: 46,
+          gap: 4,
           art_scale: 1,
           cells: [],
           strip: null,

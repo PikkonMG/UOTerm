@@ -16,7 +16,7 @@ export function Paperdoll({ data, send, hover }: { data: PaperdollData; send: Se
     <div class="paperdoll" {...(data.zone ? { [ZONE_ATTRIBUTE]: JSON.stringify(data.zone) } : {})}>
       <div class="paperdoll-top">
         <div class="paperdoll-figure">
-          {data.out_of_sight ? <span class="dim">{data.out_of_sight}</span> : <Picture picture={data.figure} />}
+          <div class="paperdoll-picture">{data.out_of_sight ? <span class="dim">{data.out_of_sight}</span> : <Picture picture={data.figure} />}</div>
           {data.health !== null && <ShareBar fill={data.health} color="var(--hits)" />}
         </div>
         <div class="paperdoll-rows">
