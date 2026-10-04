@@ -3,7 +3,8 @@
 
 // The window moves its rules to `uoterm-view` task by task, and each move
 // starts to call these. Until all of them are called, some stay unused.
-#![allow(dead_code)]
+// The expectation fails once every function is used: then remove it.
+#![expect(dead_code)]
 
 use eframe::egui;
 use uoterm_view::geom::{Area, Point, Rgba, Vector};

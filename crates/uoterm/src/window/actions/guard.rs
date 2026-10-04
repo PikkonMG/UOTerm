@@ -305,14 +305,19 @@ mod tests {
 
     #[test]
     fn the_picture_tells_the_flags_of_the_cursor_and_the_last_target() {
-        let frame = WatchFrame::from_observe(&serde_json::json!({
-            "target_cursor": { "kind": 0, "id": 5, "flags": TARGET_FLAG_BENEFICIAL },
-            "last_target": ANN,
-        }));
+        /// The time the pictures are read: they carry no step to place.
+        const NOW: f64 = 0.0;
+        let frame = WatchFrame::from_observe(
+            &serde_json::json!({
+                "target_cursor": { "kind": 0, "id": 5, "flags": TARGET_FLAG_BENEFICIAL },
+                "last_target": ANN,
+            }),
+            NOW,
+        );
         assert!(frame.target_cursor);
         assert_eq!(frame.target_flags, TARGET_FLAG_BENEFICIAL);
         assert_eq!(frame.last_target, Some(ANN));
-        let quiet = WatchFrame::from_observe(&serde_json::json!({ "target_cursor": null }));
+        let quiet = WatchFrame::from_observe(&serde_json::json!({ "target_cursor": null }), NOW);
         assert_eq!((quiet.target_flags, quiet.last_target), (0, None));
     }
 

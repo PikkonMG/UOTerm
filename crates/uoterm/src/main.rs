@@ -636,14 +636,15 @@ fn text_watch_loop(api: String, session: String) {
             return;
         }
     };
+    let clock = window::Clock::start();
     loop {
         let frame = rt.block_on(async {
             match remote::session_observe(&api, &session, view::WATCH_RADAR_SIZE).await {
-                Ok(value) => view::WatchFrame::from_observe(&value),
+                Ok(value) => view::WatchFrame::from_observe(&value, clock.seconds()),
                 Err(e) => view::WatchFrame::error_frame(e.to_string()),
             }
         });
-        print!("{TERM_CLEAR_HOME}{}", frame.text());
+        print!("{TERM_CLEAR_HOME}{}", view::text(&frame));
         std::thread::sleep(std::time::Duration::from_millis(view::WATCH_POLL_MS));
     }
 }
@@ -658,14 +659,15 @@ async fn watch_session(
     let base = remote::api_base(api);
     let id = remote::resolve_session(&base, session).await?;
     if text {
+        let clock = window::Clock::start();
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => break,
                 _ = tokio::time::sleep(std::time::Duration::from_millis(view::WATCH_POLL_MS)) => {
                     match remote::session_observe(&base, &id, view::WATCH_RADAR_SIZE).await {
                         Ok(state) => {
-                            let frame = view::WatchFrame::from_observe(&state);
-                            print!("{TERM_CLEAR_HOME}{}", frame.text());
+                            let frame = view::WatchFrame::from_observe(&state, clock.seconds());
+                            print!("{TERM_CLEAR_HOME}{}", view::text(&frame));
                         }
                         Err(e) => eprintln!("{e}"),
                     }

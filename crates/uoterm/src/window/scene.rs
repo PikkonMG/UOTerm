@@ -304,8 +304,9 @@ pub struct Scene {
     /// How long the character waits after the slot of a step he was sent
     /// before he takes it. See [`STRIDE_READ_MARGIN_SECONDS`].
     stride_lag: f64,
-    /// The slot of the newest step whose move has started.
-    stride_taken: Option<std::time::Instant>,
+    /// The slot of the newest step whose move has started, in seconds on
+    /// the clock of the window.
+    stride_taken: Option<f64>,
     /// How each storey of the house being designed shows.
     storey_looks: [StoreyLook; STOREYS],
     /// When the shard last showed the death screen.
@@ -1382,13 +1383,13 @@ impl Scene {
             .filter(|_| same_map && !shown.snapped_back)
         {
             Some(mut glide) => {
-                let stride = frame
-                    .stride
-                    .filter(|stride| steered && goal != glide.goal() && self.is_fresh(stride));
+                let stride = frame.stride.filter(|stride| {
+                    steered && goal != glide.goal() && self.is_fresh(stride, time)
+                });
                 match stride {
                     Some(stride) => {
                         self.stride_taken = Some(stride.slot);
-                        let stride = self.on_window_clock(stride, time);
+                        let stride = self.on_window_clock(stride);
                         glide.aim_stride(goal, time, mounted, running, stride);
                     }
                     None => glide.aim(goal, time, mounted, running),
@@ -1446,17 +1447,18 @@ impl Scene {
     /// True for the newest step when it is the news of this move: a step
     /// whose move has not started, sent no longer ago than it lasts and the
     /// news of it takes. An older one is not what moved the character.
-    fn is_fresh(&self, stride: &WatchStride) -> bool {
-        let fresh_for = stride.lasts.as_secs_f64() + self.stride_lag;
-        self.stride_taken != Some(stride.slot) && stride.slot.elapsed().as_secs_f64() <= fresh_for
+    /// `time` is now on the clock of the window, the clock the slot is on.
+    fn is_fresh(&self, stride: &WatchStride, time: f64) -> bool {
+        let fresh_for = stride.lasts + self.stride_lag;
+        self.stride_taken != Some(stride.slot) && time - stride.slot <= fresh_for
     }
 
-    /// The timing of a sent step on the clock of the window, which `time`
-    /// reads now.
-    fn on_window_clock(&self, stride: WatchStride, time: f64) -> Stride {
+    /// The timing of a sent step on the clock of the window: the slot is on
+    /// that clock already, and the news of it comes the lag later.
+    fn on_window_clock(&self, stride: WatchStride) -> Stride {
         Stride {
-            starts: time - stride.slot.elapsed().as_secs_f64() + self.stride_lag,
-            tile_seconds: stride.lasts.as_secs_f64(),
+            starts: stride.slot + self.stride_lag,
+            tile_seconds: stride.lasts,
         }
     }
 
@@ -4173,10 +4175,14 @@ mod tests {
     /// lasts. A step from long ago is not the news of a move.
     #[test]
     fn the_newest_sent_step_times_the_move_of_the_character_once() {
-        const LASTS: Duration = Duration::from_millis(400);
-        /// How far the slot read off the clock may be from the slot given.
-        const CLOCK_SLACK: f64 = 0.01;
-        let stepping = |slot: std::time::Instant| WatchFrame {
+        const LASTS: f64 = 0.4;
+        /// The time of the window when the step is sent and the frame read.
+        const SENT_AT: f64 = 0.0;
+        /// How many step lengths before now a step from long ago was sent.
+        const LONG_AGO_STEPS: f64 = 10.0;
+        /// How near two times must be to count as the same.
+        const TIME_SLACK: f64 = 1e-9;
+        let stepping = |slot: f64| WatchFrame {
             x: 100,
             y: 100,
             human_control: true,
@@ -4189,32 +4195,48 @@ mod tests {
         scene.follow(
             &WatchFrame {
                 stepping_to: None,
-                ..stepping(std::time::Instant::now())
+                ..stepping(SENT_AT)
             },
-            0.0,
+            SENT_AT,
         );
-        let sent = stepping(std::time::Instant::now());
-        scene.follow(&sent, 0.0);
+        let sent = stepping(SENT_AT);
+        scene.follow(&sent, SENT_AT);
         let glide = scene.camera_glide.unwrap();
         assert!(
-            (glide.started - lag).abs() < CLOCK_SLACK,
+            (glide.started - (SENT_AT + lag)).abs() < TIME_SLACK,
             "{}",
             glide.started
         );
-        assert!((glide.seconds - LASTS.as_secs_f64()).abs() < CLOCK_SLACK);
+        assert!((glide.seconds - LASTS).abs() < TIME_SLACK);
         assert_eq!(scene.stride_taken, sent.stride.map(|stride| stride.slot));
 
-        let long_ago = std::time::Instant::now() - LASTS * 10;
+        let long_ago = SENT_AT - LASTS * LONG_AGO_STEPS;
         let mut heard = Scene::new(None);
         heard.follow(
             &WatchFrame {
                 stepping_to: None,
                 ..stepping(long_ago)
             },
-            0.0,
+            SENT_AT,
         );
-        heard.follow(&stepping(long_ago), 0.0);
-        assert_eq!(heard.camera_glide.unwrap().started, 0.0, "heard, not timed");
+        heard.follow(&stepping(long_ago), SENT_AT);
+        assert_eq!(
+            heard.camera_glide.unwrap().started,
+            SENT_AT,
+            "heard, not timed"
+        );
         assert_eq!(heard.stride_taken, None);
+    }
+
+    #[test]
+    fn a_stride_is_fresh_only_within_its_length_and_lag() {
+        let mut scene = Scene::new(None);
+        scene.set_poll_every(std::time::Duration::from_millis(33));
+        let stride = WatchStride {
+            slot: 5.0,
+            lasts: 0.4,
+        };
+        assert!(scene.is_fresh(&stride, 5.2));
+        assert!(!scene.is_fresh(&stride, 6.0));
     }
 }

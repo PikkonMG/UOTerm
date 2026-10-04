@@ -4,5 +4,6 @@
 //! place. Nothing here opens a file, starts a thread or reads a clock; the
 //! caller gives the time in seconds.
 
+pub mod frame;
 pub mod geom;
 pub mod input;

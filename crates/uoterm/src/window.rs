@@ -226,8 +226,25 @@ fn run(make: MakeApp) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// The clock of the window: seconds since it started. The thread that reads
+/// the session places each step on it, and each drawn frame reads its time
+/// from it, so the two times compare.
+#[derive(Clone, Copy)]
+pub struct Clock(Instant);
+
+impl Clock {
+    pub fn start() -> Self {
+        Self(Instant::now())
+    }
+
+    pub fn seconds(&self) -> f64 {
+        self.0.elapsed().as_secs_f64()
+    }
+}
+
 struct WatchApp {
     rx: Receiver<WatchFrame>,
+    clock: Clock,
     /// None until the session sends the first picture.
     frame: Option<WatchFrame>,
     scene: Scene,
@@ -302,7 +319,8 @@ impl WatchApp {
         let hand = Hand::start(link.clone(), ctx.clone());
         let readings = model::reads::Readings::start(link.clone());
         let layers = model::compare::ItemLayers::load(options.uopath.as_deref());
-        thread::spawn(move || poll_loop(link, radar_size, tx, ctx));
+        let clock = Clock::start();
+        thread::spawn(move || poll_loop(link, radar_size, clock, tx, ctx));
         let profile_home = ProfileHome::new(options.shard);
         let profile = profile_home.first_profile();
         scene.set_zoom(profile.video.default_zoom);
@@ -313,6 +331,7 @@ impl WatchApp {
             game_view: model::game_view::GameViewReport::default(),
             journal_file: model::journal::JournalFile::default(),
             rx,
+            clock,
             frame: None,
             scene,
             hud: Hud::default(),
@@ -424,7 +443,8 @@ impl eframe::App for WatchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.receive();
         self.modern.apply_look(ctx, &self.profile);
-        let (time, dt) = ctx.input(|i| (i.time, i.stable_dt));
+        let time = self.clock.seconds();
+        let dt = ctx.input(|i| i.stable_dt);
         let focused = window_focused(ctx);
         let mut moving = false;
         egui::CentralPanel::default()
@@ -875,7 +895,13 @@ fn window_focused(ctx: &egui::Context) -> bool {
 }
 
 /// Reads the session again and again, and wakes the window for each picture.
-fn poll_loop(link: Link, radar_size: u16, tx: mpsc::Sender<WatchFrame>, ctx: egui::Context) {
+fn poll_loop(
+    link: Link,
+    radar_size: u16,
+    clock: Clock,
+    tx: mpsc::Sender<WatchFrame>,
+    ctx: egui::Context,
+) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -889,7 +915,7 @@ fn poll_loop(link: Link, radar_size: u16, tx: mpsc::Sender<WatchFrame>, ctx: egu
     loop {
         let frame = rt.block_on(async {
             match link.call(TOOL_WATCH, json!({ "size": radar_size })).await {
-                Ok(value) => WatchFrame::from_observe(&value),
+                Ok(value) => WatchFrame::from_observe(&value, clock.seconds()),
                 Err(words) => WatchFrame::error_frame(words),
             }
         });
