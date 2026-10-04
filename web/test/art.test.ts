@@ -39,6 +39,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const NO_ANSWER = 0;
+const CONFLICT = 409;
+
 describe('ArtFeed', () => {
   it('keeps_at_most_the_parallel_limit_in_flight', () => {
     const wanted = Array.from({ length: 20 }, (_, i) => ({ key: String(i), request: { kind: 'Land', land_id: i, hue: 0 } }));
@@ -119,8 +122,15 @@ describe('ArtFeed', () => {
     await vi.advanceTimersByTimeAsync(ALL_RETRY_WAITS_MS - 1);
     expect(view.postMissing).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(view.postMissing).toHaveBeenCalledWith('6');
+    expect(view.postMissing).toHaveBeenCalledWith('6', NO_ANSWER);
     expect(fetchSpy).toHaveBeenCalledTimes(FETCH_TRIES);
+  });
+
+  it('gives_the_status_of_a_post_the_server_refused', async () => {
+    const view = viewWanting([], [], [{ key: '7', path: '/v1/map-markers/user', body: {} }]);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: CONFLICT }));
+    new ArtFeed(view as never).pump();
+    await vi.waitFor(() => expect(view.postMissing).toHaveBeenCalledWith('7', CONFLICT));
   });
 
   it('tries_data_again_when_the_server_was_out_of_reach', async () => {

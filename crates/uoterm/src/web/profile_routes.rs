@@ -20,7 +20,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::Write;
 use uoterm_view::guard::{KeptGrabBags, GRAB_BAGS_FILE};
-use uoterm_view::model::world_map::{MarkerChange, MAP_FILES_KEPT, MARKER_CHANGE_PATH};
+use uoterm_view::model::world_map::{
+    MarkerChange, MAP_FILES_KEPT, MARKER_CHANGE_PATH, MARKER_FULL_STATUS, MARKER_INVALID_STATUS,
+    MARKER_STALE_STATUS,
+};
 use uoterm_view::settings::Profile;
 use uoterm_view::ui::deck::{KeptHotbars, HOTBAR_FILE};
 
@@ -213,8 +216,9 @@ async fn change_markers(
     on_blocking(
         move || match change_user_markers(&map_dir_in(&state.config_dir), &change) {
             Ok(()) => Json(json!({ "changed": true })).into_response(),
-            Err(MarkerFault::Invalid) => StatusCode::BAD_REQUEST.into_response(),
-            Err(MarkerFault::Stale) => StatusCode::CONFLICT.into_response(),
+            Err(MarkerFault::Invalid) => marker_status(MARKER_INVALID_STATUS),
+            Err(MarkerFault::Stale) => marker_status(MARKER_STALE_STATUS),
+            Err(MarkerFault::Full) => marker_status(MARKER_FULL_STATUS),
             Err(MarkerFault::Write(error)) => {
                 tracing::warn!(%error, "the own marker file was not written");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -222,6 +226,14 @@ async fn change_markers(
         },
     )
     .await
+}
+
+/// The answer of a change of the own marker file that was not made, by
+/// the status the page reads its words from.
+fn marker_status(status: u16) -> Response {
+    StatusCode::from_u16(status)
+        .unwrap_or(StatusCode::BAD_REQUEST)
+        .into_response()
 }
 
 /// The file names of the player fonts in the `Fonts` folder.
@@ -500,6 +512,15 @@ mod tests {
             send(MarkerChange::Add(bad)).await.status(),
             StatusCode::BAD_REQUEST
         );
+        let line_break = Marker {
+            name: "Camp\n9,9,0,Fake".into(),
+            ..camp.clone()
+        };
+        assert_eq!(
+            send(MarkerChange::Add(line_break)).await.status().as_u16(),
+            uoterm_view::model::world_map::MARKER_INVALID_STATUS,
+            "a name never starts a line of its own"
+        );
         let mine = Marker {
             name: "Mine".into(),
             ..camp.clone()
@@ -508,7 +529,10 @@ mod tests {
             at: 0,
             expected: mine.clone(),
         };
-        assert_eq!(send(stale).await.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            send(stale).await.status().as_u16(),
+            uoterm_view::model::world_map::MARKER_STALE_STATUS
+        );
         let keep = MarkerChange::Keep {
             at: 0,
             marker: mine.clone(),

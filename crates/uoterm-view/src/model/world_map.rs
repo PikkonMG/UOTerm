@@ -418,22 +418,47 @@ impl MarkerFields {
 }
 
 /// True for a marker the player's own file may keep: a name, a place
-/// inside its facet, a color of `MARKER_COLORS`, and no comma, which would
-/// start a new field of the file.
+/// inside its facet, a color of `MARKER_COLORS`, and no comma and no
+/// control character, which would start a new field or a new line of the
+/// file.
 pub fn is_valid(marker: &Marker) -> bool {
     let (width, height) = facet_size(marker.map);
-    let no_comma = |words: &str| !words.contains(CSV_SPLIT);
+    let one_field = |words: &str| !words.chars().any(|c| c == CSV_SPLIT || c.is_control());
     !marker.name.trim().is_empty()
-        && no_comma(&marker.name)
-        && no_comma(&marker.icon)
+        && one_field(&marker.name)
+        && one_field(&marker.icon)
         && marker.x <= width
         && marker.y <= height
         && MARKER_COLORS.contains(&marker.color.as_str())
 }
 
+/// The most markers the player's own file keeps: an add past it is
+/// refused.
+pub const USER_MARKERS_MOST: usize = 10_000;
+
 /// Why a change of the own marker file was not made.
 pub const WORDS_INVALID_MARKER: &str = "Give a name, and x and y inside the facet.";
 pub const WORDS_STALE_MARKERS: &str = "The marker file changed. Look at the markers again.";
+pub const WORDS_FULL_MARKERS: &str = "Your marker file is full. Remove a marker first.";
+pub const WORDS_MARKER_NOT_CHANGED: &str = "The marker was not changed. Try again.";
+
+/// The status the server answers for a change that is not valid, for one
+/// that expects a marker the file no longer holds, and for an add to a
+/// full file.
+pub const MARKER_INVALID_STATUS: u16 = 400;
+pub const MARKER_STALE_STATUS: u16 = 409;
+pub const MARKER_FULL_STATUS: u16 = 422;
+
+/// The words for a change of the own marker file that was not made, by
+/// the status the server answered; None when no answer came.
+pub fn marker_fault_words(status: Option<u16>) -> &'static str {
+    match status {
+        Some(MARKER_INVALID_STATUS) => WORDS_INVALID_MARKER,
+        Some(MARKER_STALE_STATUS) => WORDS_STALE_MARKERS,
+        Some(MARKER_FULL_STATUS) => WORDS_FULL_MARKERS,
+        _ => WORDS_MARKER_NOT_CHANGED,
+    }
+}
 
 /// Where a web page sends a change of the player's own marker file.
 pub const MARKER_CHANGE_PATH: &str = "/v1/map-markers/user";
@@ -712,6 +737,47 @@ mod tests {
             .collect();
         assert_eq!(hits, vec![0, 2]);
         assert_eq!(found(&markers, "").len(), 3);
+    }
+
+    #[test]
+    fn a_marker_with_a_line_break_or_a_control_character_is_not_valid() {
+        let good = Marker {
+            color: MARKER_COLORS[0].into(),
+            ..named("Camp")
+        };
+        assert!(is_valid(&good));
+        for name in ["Camp\nnext", "Camp\r", "Ca\tmp", "Camp\u{7}"] {
+            let bad = Marker {
+                name: name.into(),
+                ..good.clone()
+            };
+            assert!(!is_valid(&bad), "{name:?}");
+        }
+        let bad_icon = Marker {
+            icon: "tent\n".into(),
+            ..good
+        };
+        assert!(!is_valid(&bad_icon));
+    }
+
+    #[test]
+    fn a_marker_change_that_was_not_made_tells_why_by_the_status() {
+        assert_eq!(
+            marker_fault_words(Some(MARKER_STALE_STATUS)),
+            WORDS_STALE_MARKERS
+        );
+        assert_eq!(
+            marker_fault_words(Some(MARKER_INVALID_STATUS)),
+            WORDS_INVALID_MARKER
+        );
+        assert_eq!(
+            marker_fault_words(Some(MARKER_FULL_STATUS)),
+            WORDS_FULL_MARKERS
+        );
+        const SERVER_FAULT: u16 = 500;
+        for status in [Some(SERVER_FAULT), None] {
+            assert_eq!(marker_fault_words(status), WORDS_MARKER_NOT_CHANGED);
+        }
     }
 
     #[test]

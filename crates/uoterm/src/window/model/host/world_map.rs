@@ -3,13 +3,18 @@
 //! the rules of `uoterm_view::model::world_map`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use uoterm_view::model::world_map::{
     self, csv_line, kept_marker, markers_csv, parse_markers, parse_zones_json, removed_marker,
     MapFile, MapFolder, Marker, MarkerChange, MarkerFile, ZoneFile, USER_MARKERS,
-    USER_MARKERS_EXTENSION,
+    USER_MARKERS_EXTENSION, USER_MARKERS_MOST,
 };
 
 const MAP_DIR: &str = "map";
+
+/// One change of the player's own marker file at a time in this process:
+/// the window and each page change it through `change_user_markers`.
+static USER_MARKERS_LOCK: Mutex<()> = Mutex::new(());
 
 /// The folder of the marker and zone files.
 pub fn map_dir() -> PathBuf {
@@ -119,6 +124,8 @@ pub enum MarkerFault {
     /// The file no longer holds the marker the change expects: the window
     /// or another page changed it.
     Stale,
+    /// The file holds `USER_MARKERS_MOST` markers: no more are added.
+    Full,
     Write(std::io::Error),
 }
 
@@ -127,21 +134,31 @@ impl std::fmt::Display for MarkerFault {
         match self {
             Self::Invalid => f.write_str(world_map::WORDS_INVALID_MARKER),
             Self::Stale => f.write_str(world_map::WORDS_STALE_MARKERS),
+            Self::Full => f.write_str(world_map::WORDS_FULL_MARKERS),
             Self::Write(error) => error.fmt(f),
         }
     }
 }
 
 /// Makes a change of the player's own marker file, when the marker it
-/// writes is valid and the file holds the marker it expects.
+/// writes is valid, the file holds the marker it expects, and an add finds
+/// room. The file is read and written under one lock, so two changes at
+/// once do not write over each other.
 pub fn change_user_markers(dir: &Path, change: &MarkerChange) -> Result<(), MarkerFault> {
     if !change.is_valid() {
         return Err(MarkerFault::Invalid);
     }
+    let _alone = USER_MARKERS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let markers = user_markers(dir);
     if let Some((at, expected)) = change.expected() {
-        if user_markers(dir).get(at) != Some(expected) {
+        if markers.get(at) != Some(expected) {
             return Err(MarkerFault::Stale);
         }
+    }
+    if matches!(change, MarkerChange::Add(_)) && markers.len() >= USER_MARKERS_MOST {
+        return Err(MarkerFault::Full);
     }
     let written = match change {
         MarkerChange::Add(marker) => keep_user_marker(dir, None, marker.clone()),
@@ -236,7 +253,27 @@ mod tests {
         };
         change_user_markers(&dir, &remove).unwrap();
         assert!(user_markers(&dir).is_empty());
+        let full = vec![named_marker("Spot"); USER_MARKERS_MOST];
+        save_user_markers(&dir, &full).unwrap();
+        let one_more = MarkerChange::Add(named_marker("More"));
+        assert!(matches!(
+            change_user_markers(&dir, &one_more),
+            Err(MarkerFault::Full)
+        ));
+        let line_break = MarkerChange::Add(named_marker("Camp\nMine"));
+        assert!(matches!(
+            change_user_markers(&dir, &line_break),
+            Err(MarkerFault::Invalid)
+        ));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A valid marker of the own file named `name`.
+    fn named_marker(name: &str) -> Marker {
+        Marker {
+            color: NEW_MARKER_COLOR.into(),
+            ..named(name)
+        }
     }
 
     #[test]

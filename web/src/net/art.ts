@@ -25,6 +25,8 @@ const ART_PATH = '/v1/art';
 const ANCHOR_HEADER = 'x-uoterm-anchor';
 const ANCHOR_SEPARATOR = ',';
 const NO_ANCHOR = 0;
+/** The status `missing` gives when no answer of the server came. */
+const NO_STATUS = 0;
 /**
  * How the pixels of a picture are kept: with the color times the alpha, as
  * the view's colors are, and as the server made them, with no color
@@ -56,7 +58,8 @@ export interface FeedView {
   dataMissing(path: string): void;
   postsWanted(): PostWant[];
   postArrived(key: string, json: string): void;
-  postMissing(key: string): void;
+  /** The post of `key` had no answer: the server refused it with `status`, or `status` is 0 when no answer came. */
+  postMissing(key: string, status: number): void;
 }
 
 /** One request of the feed: what to fetch, and what to do with the answer. */
@@ -65,8 +68,11 @@ interface FeedRequest {
   init?: RequestInit;
   /** The server answered with an OK status and this body. */
   arrived(body: Blob, headers: Headers): Promise<void>;
-  /** The server has none (any other status), the body does not read, or the server is out of reach. */
-  missing(): void;
+  /**
+   * The server has none (any other status, given as `status`), the body
+   * does not read, or the server is out of reach (`status` is `NO_STATUS`).
+   */
+  missing(status: number): void;
 }
 
 /** A request and the tries it failed to reach the server. */
@@ -166,7 +172,7 @@ export class ArtFeed {
       if (this.closed) return;
       const tried = failedTries + 1;
       if (tried < FETCH_TRIES) this.later(request, tried, backoffWait(failedTries));
-      else request.missing();
+      else request.missing(NO_STATUS);
       return;
     }
     if (this.closed) return;
@@ -177,13 +183,13 @@ export class ArtFeed {
       return;
     }
     if (!response.ok) {
-      request.missing();
+      request.missing(response.status);
       return;
     }
     try {
       await request.arrived(body, response.headers);
     } catch {
-      if (!this.closed) request.missing();
+      if (!this.closed) request.missing(NO_STATUS);
     }
   }
 
@@ -242,7 +248,7 @@ export class ArtFeed {
         const text = await body.text();
         if (!this.closed) this.view.postArrived(want.key, text);
       },
-      missing: () => this.view.postMissing(want.key),
+      missing: (status) => this.view.postMissing(want.key, status),
     };
   }
 }

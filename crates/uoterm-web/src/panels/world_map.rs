@@ -2,9 +2,10 @@
 //! arrow. Near the character the map shows the land round him, turned as
 //! the play field is turned; in the whole-world view it shows the facet
 //! north up from the tiles of the whole-world picture the server makes.
-//! The marker and zone files of the map folder come read-only from the
-//! kept files of the server; a marker is added and changed in the UOTerm
-//! window. A click walks the character there or targets the ground, while
+//! The marker and zone files of the map folder come from the kept files of
+//! the server; the player's own markers change by checked operations the
+//! page posts, which the server makes under a lock. A click walks the
+//! character there or targets the ground, while
 //! the human has control. Where the land and each mark go and what a click
 //! does are `uoterm_view::map_lay` and `ui::map_panel`.
 
@@ -26,7 +27,7 @@ use uoterm_view::map_lay::{
     MapFiles, Marks, MODERN_LOOK, ZOOM_MIN,
 };
 use uoterm_view::model::world_map::{
-    self, MapFolder, MarkerChange, MAP_FILES_KEPT, MARKER_COLORS, WORDS_STALE_MARKERS,
+    self, marker_fault_words, MapFolder, MarkerChange, MAP_FILES_KEPT, MARKER_COLORS,
 };
 use uoterm_view::scene::overlays::quest_arrow;
 use uoterm_view::ui::layout::{first_place, Spot};
@@ -609,14 +610,20 @@ impl WebView {
     /// shuts the box; one not made says why. The files are read again
     /// either way, as the window reads them again.
     pub(crate) fn follow_marker_changes(&mut self, time: f64) {
-        for made in self.art.take_marker_answers() {
+        for answer in self.art.take_marker_answers() {
             let markers = &mut self.panels.world_map.markers;
-            if made {
-                markers.marker_box = None;
-            } else if let Some(marker_box) = markers.marker_box.as_mut() {
-                marker_box.error = Some(WORDS_STALE_MARKERS.to_string());
-            } else {
-                self.panels.world_map.note = Some((WORDS_STALE_MARKERS.to_string(), time));
+            let words = match answer {
+                Ok(()) => {
+                    markers.marker_box = None;
+                    None
+                }
+                Err(status) => Some(marker_fault_words(status).to_string()),
+            };
+            if let Some(words) = words {
+                match markers.marker_box.as_mut() {
+                    Some(marker_box) => marker_box.error = Some(words),
+                    None => self.panels.world_map.note = Some((words, time)),
+                }
             }
             self.read_map_folder();
         }
@@ -895,10 +902,20 @@ mod tests {
         press(&mut view, PANEL_MARKER_BOX, good);
         press(&mut view, PANEL_MARKER_BOX, json!({ "submit": true }));
         let sent = sent_changes(&mut view);
-        view.post_missing(&sent[0].0);
+        view.post_missing(&sent[0].0, world_map::MARKER_STALE_STATUS);
         view.tick_native(0.2, crate::tests::VIEW, None);
         let error = view.panel_data(0.2).marker_box.unwrap().body.error;
-        assert_eq!(error.as_deref(), Some(WORDS_STALE_MARKERS));
+        assert_eq!(error.as_deref(), Some(world_map::WORDS_STALE_MARKERS));
+        press(&mut view, PANEL_MARKER_BOX, json!({ "submit": true }));
+        let sent = sent_changes(&mut view);
+        view.post_missing(&sent[0].0, 0);
+        view.tick_native(0.3, crate::tests::VIEW, None);
+        let error = view.panel_data(0.3).marker_box.unwrap().body.error;
+        assert_eq!(
+            error.as_deref(),
+            Some(world_map::WORDS_MARKER_NOT_CHANGED),
+            "a change no answer came to does not say the file changed"
+        );
     }
 
     #[test]

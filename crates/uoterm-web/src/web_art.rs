@@ -303,9 +303,10 @@ pub struct WebArt {
     posts: Vec<Post>,
     posted: HashMap<u64, PostFor>,
     next_post: u64,
-    /// The answers to the changes of the own marker file that came: true
-    /// for a change made.
-    marker_answers: Vec<bool>,
+    /// The answers to the changes of the own marker file that came: the
+    /// status of the server for a change not made, None when no answer
+    /// came.
+    marker_answers: Vec<Result<(), Option<u16>>>,
     /// The live map last posted.
     live_map: Option<Value>,
     /// The tables when the server has no animation files.
@@ -512,18 +513,19 @@ impl WebArt {
                     serde_json::from_value(answer.clone()).unwrap_or_default();
                 self.drop_blocks(&changed);
             }
-            Some(PostFor::MarkerChange) => self.marker_answers.push(true),
+            Some(PostFor::MarkerChange) => self.marker_answers.push(Ok(())),
             None => {}
         }
     }
 
-    /// A post had no answer.
-    pub fn post_missing(&mut self, key: u64) {
+    /// A post had no answer: the server refused it with `status`, or
+    /// None when no answer came.
+    pub fn post_missing(&mut self, key: u64, status: Option<u16>) {
         match self.posted.remove(&key) {
             Some(PostFor::Measure(measure)) => {
                 self.measures.borrow_mut().insert(measure, Table::Missing);
             }
-            Some(PostFor::MarkerChange) => self.marker_answers.push(false),
+            Some(PostFor::MarkerChange) => self.marker_answers.push(Err(status)),
             Some(PostFor::LiveMap) | None => {}
         }
     }
@@ -535,8 +537,8 @@ impl WebArt {
     }
 
     /// The answers to the changes of the own marker file since the last
-    /// call: true for a change made.
-    pub fn take_marker_answers(&mut self) -> Vec<bool> {
+    /// call: the status of the server for a change not made.
+    pub fn take_marker_answers(&mut self) -> Vec<Result<(), Option<u16>>> {
         std::mem::take(&mut self.marker_answers)
     }
 

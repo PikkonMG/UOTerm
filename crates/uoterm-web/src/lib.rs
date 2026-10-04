@@ -60,6 +60,8 @@ use wasm_bindgen::prelude::*;
 /// The kept files of the config folder the view reads, under this path.
 pub(crate) const KEPT_PREFIX: &str = "/v1/kept/";
 const MS_PER_SECOND: f64 = 1000.0;
+/// The status the page gives for a post no answer came to.
+const NO_STATUS: u16 = 0;
 
 /// The profile as it is kept: with the UI style the Rust window keeps in
 /// it. The browser shows the Modern style only, so the view holds its
@@ -525,16 +527,18 @@ impl WebView {
     #[wasm_bindgen(js_name = postArrived)]
     pub fn post_arrived(&mut self, key: &str, json: &str) {
         let (Ok(key), Ok(answer)) = (key.parse(), serde_json::from_str::<Value>(json)) else {
-            return self.post_missing(key);
+            return self.post_missing(key, NO_STATUS);
         };
         self.art.post_arrived(key, &answer);
     }
 
-    /// The post of `key` had no answer.
+    /// The post of `key` had no answer: the server refused it with
+    /// `status`, or no answer came (`status` 0).
     #[wasm_bindgen(js_name = postMissing)]
-    pub fn post_missing(&mut self, key: &str) {
+    pub fn post_missing(&mut self, key: &str, status: u16) {
         if let Ok(key) = key.parse() {
-            self.art.post_missing(key);
+            self.art
+                .post_missing(key, (status != NO_STATUS).then_some(status));
         }
     }
 
