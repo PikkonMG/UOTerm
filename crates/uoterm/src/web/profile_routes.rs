@@ -6,7 +6,7 @@
 use super::{on_blocking, send_file, WebState};
 use crate::kept;
 use crate::window::fonts::{font_names, fonts_dir};
-use crate::window::screenshot::{new_file, screenshots_dir};
+use crate::window::screenshot::{create_new_file, screenshots_dir};
 use crate::window::{shard_address, CharacterKey, ProfileStore};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Request, State};
@@ -17,6 +17,7 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::io::Write;
 use uoterm_view::guard::{KeptGrabBags, GRAB_BAGS_FILE};
 use uoterm_view::settings::Profile;
 use uoterm_view::ui::deck::{KeptHotbars, HOTBAR_FILE};
@@ -222,16 +223,16 @@ async fn save_screenshot(State(state): State<WebState>, picture: Bytes) -> Respo
     }
     on_blocking(move || {
         let folder = screenshots_dir(&state.config_dir);
-        let path = new_file(&folder);
-        let saved = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&path, &picture));
-        match (saved, path.file_name().and_then(|name| name.to_str())) {
-            (Ok(()), Some(file)) => {
+        let saved = std::fs::create_dir_all(&folder)
+            .and_then(|()| create_new_file(&folder))
+            .and_then(|(path, mut file)| file.write_all(&picture).map(|()| path));
+        match saved {
+            Ok(path) => {
+                let file = path.file_name().map(|name| name.to_string_lossy());
                 (StatusCode::CREATED, Json(json!({ "file": file }))).into_response()
             }
-            (result, _) => {
-                if let Err(error) = result {
-                    tracing::warn!(%error, path = %path.display(), "a screenshot was not saved");
-                }
+            Err(error) => {
+                tracing::warn!(%error, folder = %folder.display(), "a screenshot was not saved");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }

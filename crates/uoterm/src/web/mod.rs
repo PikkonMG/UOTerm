@@ -20,6 +20,7 @@ use axum::extract::Request;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::routing::any;
 use axum::Router;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
@@ -30,7 +31,7 @@ use std::time::SystemTime;
 use tokio::sync::Semaphore;
 use tower_http::services::ServeFile;
 use uoterm_nav::{MusicList, SoundData, SEASONS_NAME};
-use uoterm_runtime::api::{guard_layer, router_for, Guard};
+use uoterm_runtime::api::{guard_layer, not_found, router_for, Guard};
 use uoterm_runtime::{AppConfig, Runtime};
 
 /// The browser keeps a picture or a table for a year and never asks again:
@@ -105,7 +106,12 @@ impl WebState {
     }
 }
 
-/// Every route of this module.
+/// Every path of the API. A path no route has is not found, whatever the
+/// method, so it never gets the page.
+const API_PATHS: &str = "/v1/{*rest}";
+
+/// Every route of this module, and not found for any other path of the
+/// API.
 pub fn router(state: WebState) -> Router {
     Router::new()
         .merge(art_routes::routes())
@@ -114,6 +120,7 @@ pub fn router(state: WebState) -> Router {
         .merge(sound_routes::routes())
         .merge(profile_routes::routes())
         .merge(jev_routes::routes())
+        .route(API_PATHS, any(|| async { not_found() }))
         .with_state(state)
 }
 
@@ -408,6 +415,58 @@ mod tests {
             StatusCode::FORBIDDEN,
             "the origin rule"
         );
+    }
+
+    /// A wrong path of the API never looks like a page that answered.
+    #[tokio::test]
+    async fn an_unknown_api_path_is_not_found_and_other_paths_are_the_page() {
+        const PAGE: &str = "page";
+        let web = temp_folder();
+        std::fs::write(web.path().join(files::INDEX_FILE), PAGE).unwrap();
+        let config = temp_folder();
+        let state = state_in(None, config.path().to_path_buf());
+        let guard = Guard {
+            token: None,
+            local_only: true,
+        };
+        let app = app(
+            state.runtime.clone(),
+            uoterm_runtime::AppConfig::default(),
+            state,
+            web.path().to_path_buf(),
+            guard,
+        );
+        let call = |method: &str, path: &str| {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("host", "127.0.0.1:7733")
+                .body(Body::empty())
+                .unwrap();
+            app.clone().oneshot(request)
+        };
+        let text = |answer: axum::response::Response| async move {
+            let bytes = axum::body::to_bytes(answer.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        };
+        for (method, path) in [
+            ("GET", "/v1/typo"),
+            ("POST", "/v1/typo"),
+            ("GET", "/v1/sessions/s1/nothing"),
+            ("DELETE", "/v1/map/0/0/0/0"),
+        ] {
+            let answer = call(method, path).await.unwrap();
+            assert_eq!(answer.status(), StatusCode::NOT_FOUND, "{method} {path}");
+            let body: serde_json::Value = serde_json::from_str(&text(answer).await).unwrap();
+            assert_eq!(body, serde_json::json!({ "error": "not found" }), "{path}");
+        }
+        let page = call("GET", "/play/x").await.unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(text(page).await, PAGE);
+        let wrong_method = call("GET", "/v1/art").await.unwrap();
+        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

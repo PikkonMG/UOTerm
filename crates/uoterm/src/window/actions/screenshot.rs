@@ -4,12 +4,17 @@
 //! are `uoterm_view::actions::screenshot`.
 
 use eframe::egui::{self, Event, UserData, ViewportCommand};
+use std::fs::File;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use uoterm_runtime::config::config_dir;
 use uoterm_view::actions::screenshot::file_name;
 
 const SCREENSHOTS_DIR: &str = "screenshots";
 const FILE_TIME: &str = "%Y-%m-%d_%H-%M-%S%.3f";
+/// Screenshots of one moment get these numbers after their time, at most.
+const SAME_MOMENT_MAX: u32 = 1000;
+const NUMBER_SEPARATOR: char = '_';
 
 /// Marks the pictures the player asked for, so the window's own
 /// snapshot does not take them.
@@ -26,10 +31,34 @@ pub fn screenshots_dir(config: &Path) -> PathBuf {
     config.join(SCREENSHOTS_DIR)
 }
 
-/// The file of a screenshot taken now.
-pub fn new_file(folder: &Path) -> PathBuf {
-    let time = chrono::Local::now().format(FILE_TIME).to_string();
-    folder.join(file_name(&time))
+/// The time of a screenshot taken now, in words.
+fn stamp_now() -> String {
+    chrono::Local::now().format(FILE_TIME).to_string()
+}
+
+/// A new file for a screenshot taken now, that no other screenshot has:
+/// one of the same moment gets a number after its time.
+pub fn create_new_file(folder: &Path) -> std::io::Result<(PathBuf, File)> {
+    create_numbered(folder, &stamp_now())
+}
+
+/// A new file for the screenshot of `stamp`: the plain name, else the
+/// first free one of `stamp_1`, `stamp_2` and on.
+fn create_numbered(folder: &Path, stamp: &str) -> std::io::Result<(PathBuf, File)> {
+    let mut last_error = None;
+    for number in 0..=SAME_MOMENT_MAX {
+        let stamp = match number {
+            0 => stamp.to_string(),
+            _ => format!("{stamp}{NUMBER_SEPARATOR}{number}"),
+        };
+        let path = folder.join(file_name(&stamp));
+        match File::options().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => last_error = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| ErrorKind::AlreadyExists.into()))
 }
 
 impl Screenshots {
@@ -60,11 +89,11 @@ impl Screenshots {
         })?;
         self.asked = false;
         let folder = screenshots_dir(&config_dir());
-        let path = new_file(&folder);
         let saved = std::fs::create_dir_all(&folder)
+            .and_then(|()| create_new_file(&folder))
             .map_err(|e| e.to_string())
-            .and_then(|()| super::super::save_png(&path, &image));
-        Some(saved.map(|()| path))
+            .and_then(|(path, _)| super::super::save_png(&path, &image).map(|()| path));
+        Some(saved)
     }
 }
 
@@ -74,12 +103,27 @@ mod tests {
     use uoterm_view::actions::screenshot::FILE_EXTENSION;
 
     #[test]
+    fn two_screenshots_of_one_moment_get_two_files() {
+        const STAMP: &str = "2026-10-04_01-02-03.456";
+        let folder = std::env::temp_dir().join(format!("uoterm-shots-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let (first, _) = create_numbered(&folder, STAMP).unwrap();
+        let (second, _) = create_numbered(&folder, STAMP).unwrap();
+        assert_eq!(first, folder.join(file_name(STAMP)));
+        assert_eq!(second, folder.join(file_name(&format!("{STAMP}_1"))));
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
     fn a_screenshot_file_is_a_png_in_the_folder() {
-        let file = new_file(Path::new("shots"));
-        assert_eq!(file.parent(), Some(Path::new("shots")));
+        let folder = std::env::temp_dir().join(format!("uoterm-shots-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let (file, _) = create_new_file(&folder).unwrap();
+        assert_eq!(file.parent(), Some(folder.as_path()));
         assert_eq!(
             file.extension().and_then(|e| e.to_str()),
             Some(FILE_EXTENSION)
         );
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 }

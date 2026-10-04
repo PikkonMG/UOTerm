@@ -13,7 +13,7 @@
 //! one session run one at a time, whatever link sent them, so two pages
 //! cannot mix the steps of their acts.
 
-use super::{session_not_found, ApiState};
+use super::{not_found, ApiState};
 use crate::manager::Runtime;
 use crate::session::SessionHandle;
 use crate::tools::{ToolCall, ToolResult, TOOL_WATCH};
@@ -127,7 +127,7 @@ pub(super) async fn live(
     Path(id): Path<String>,
 ) -> Response {
     let Some(handle) = st.runtime.get(&id) else {
-        return session_not_found();
+        return not_found();
     };
     let line = st.acts.line_for(&st.runtime, &id);
     ws.max_message_size(LIVE_MAX_MESSAGE_BYTES)

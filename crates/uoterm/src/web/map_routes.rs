@@ -175,6 +175,27 @@ mod tests {
         assert!(changed.is_empty(), "the same change is laid once");
     }
 
+    /// A block the map files could not take is not named as changed: here
+    /// its land holds one tile, not sixty four.
+    #[tokio::test]
+    async fn a_live_block_the_map_cannot_take_is_not_named() {
+        const ONE_TILE_OF_LAND: &str = "010000";
+        let (state, _files) = test_state();
+        let short = serde_json::json!({
+            "map": 0,
+            "revision": 1,
+            "blocks": [{ "block": 1, "changed": 1, "land": ONE_TILE_OF_LAND }],
+        });
+        let body = serde_json::to_vec(&short).unwrap();
+        let answer = send(state, post_live(body)).await;
+        assert_eq!(answer.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(answer.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let changed: Vec<MapBlockAt> = serde_json::from_slice(&bytes).unwrap();
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
     #[tokio::test]
     async fn a_live_map_larger_than_the_limit_is_refused() {
         let (state, _files) = test_state();

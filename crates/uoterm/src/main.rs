@@ -35,6 +35,7 @@ const ERA_MODERN: &str = "modern";
 const TERM_CLEAR_HOME: &str = "\x1b[2J\x1b[H";
 /// Where `npm run build` puts the page of the web client.
 const WEB_DIR_DEFAULT: &str = "web/dist";
+const WEB_ENDED: &str = "the web client stopped serving";
 
 /// Stream codec for the login and game sockets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -935,12 +936,13 @@ async fn web_client(
         .await
         .map_err(|e| RuntimeError::Network(e.to_string()))?;
     println!("Open http://{bind}/");
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!(error = %e, "web client ended");
+    tokio::select! {
+        served = axum::serve(listener, app) => {
+            served.map_err(|e| RuntimeError::Network(e.to_string()))?;
+            Err(RuntimeError::Network(WEB_ENDED.into()))
         }
-    });
-    wait_ctrl_c().await
+        stopped = wait_ctrl_c() => stopped,
+    }
 }
 
 /// Serves the API in the background. Its sessions take their client files

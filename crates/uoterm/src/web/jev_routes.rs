@@ -195,7 +195,6 @@ mod tests {
         );
         let body = json!({ "question": "anything", "names": [], "wish": "x" });
         let answer = send(state, post("/v1/sessions/s1/jev/pick", &body)).await;
-        assert!(answer.status().is_client_error());
-        assert_ne!(answer.status(), StatusCode::NOT_FOUND);
+        assert_eq!(answer.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

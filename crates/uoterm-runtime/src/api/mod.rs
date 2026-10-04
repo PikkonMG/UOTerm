@@ -79,8 +79,9 @@ pub async fn serve(bind: &str, runtime: Runtime, config: AppConfig) -> crate::er
         .map_err(|e| crate::error::RuntimeError::Network(e.to_string()))
 }
 
-/// The answer to a call on a session the runtime does not have.
-fn session_not_found() -> Response {
+/// The answer to a call on a session the runtime does not have, or on a
+/// path the API does not have.
+pub fn not_found() -> Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
 }
 
@@ -174,7 +175,7 @@ async fn session_state(
                 (StatusCode::OK, Json(h.snapshot())).into_response()
             }
         }
-        None => session_not_found(),
+        None => not_found(),
     }
 }
 

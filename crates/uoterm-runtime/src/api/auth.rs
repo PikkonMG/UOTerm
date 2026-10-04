@@ -76,7 +76,7 @@ pub fn api_token_from_env() -> Option<String> {
 pub fn checked_api_token(bind: &str, token: Option<String>) -> Result<Option<String>> {
     if !bind_is_loopback(bind) && token.is_none() {
         return Err(RuntimeError::Usage(format!(
-            "non-loopback --api-bind requires {ENV_API_TOKEN}"
+            "a non-loopback bind requires {ENV_API_TOKEN}"
         )));
     }
     if token.as_deref().is_some_and(|token| !fits_cookie(token)) {
@@ -518,7 +518,12 @@ mod tests {
     #[test]
     fn a_token_must_fit_in_a_cookie() {
         assert_eq!(checked_api_token(LOCAL_HOST, None).unwrap(), None);
-        assert!(checked_api_token("0.0.0.0:7733", None).is_err());
+        let refused = checked_api_token("0.0.0.0:7733", None).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            format!("usage: a non-loopback bind requires {ENV_API_TOKEN}"),
+            "words that fit --api-bind and --bind alike"
+        );
         let fits = checked_api_token(LOCAL_HOST, Some(TOKEN.into())).unwrap();
         assert_eq!(fits.as_deref(), Some(TOKEN));
         for bad in ["a b", "a;b", "a,b", "a\"b", "a\\b", "a\tb", "a\u{e9}b"] {

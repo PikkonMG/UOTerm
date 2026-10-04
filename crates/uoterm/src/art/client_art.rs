@@ -198,11 +198,12 @@ impl ClientArt {
                 .statics
                 .as_ref()
                 .map_or(Ok(()), |records| map.set_live_statics(number, records));
-            if let Err(error) = land.and(statics) {
-                tracing::warn!(%error, block = number, "an UltimaLive block was left out");
-            }
             self.live_blocks
                 .insert((live.map, block.block), block.changed);
+            if let Err(error) = land.and(statics) {
+                tracing::warn!(%error, block = number, "an UltimaLive block was left out");
+                continue;
+            }
             let (bx, by) = (block.block / high, block.block % high);
             if let (Ok(bx), Ok(by)) = (u16::try_from(bx), u16::try_from(by)) {
                 laid.push(MapBlockAt {
