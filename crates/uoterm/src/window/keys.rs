@@ -8,7 +8,7 @@ pub use uoterm_view::keys::*;
 
 use super::bridge;
 use eframe::egui::{self, Event, Id};
-use uoterm_view::input::KeyPress;
+use uoterm_view::input::{KeyName, KeyPress, Mods};
 
 /// The mark of a text field that is not an egui text edit, such as a text
 /// box of a classic gump, so the keys know it takes words.
@@ -63,12 +63,12 @@ pub fn presses(ctx: &egui::Context) -> Vec<KeyPress> {
 
 /// Takes the used keys from the input, so no field and no other part of
 /// the window acts on them, and drops the letters they would type.
-pub fn take_used(ctx: &egui::Context, dispatched: &Dispatched) {
-    if dispatched.used.is_empty() {
+pub fn take_used(ctx: &egui::Context, used: &[(Mods, KeyName)]) {
+    if used.is_empty() {
         return;
     }
     ctx.input_mut(|input| {
-        for (mods, name) in &dispatched.used {
+        for (mods, name) in used {
             if let Some(key) = bridge::egui_key(name) {
                 input.consume_key(bridge::modifiers(*mods), key);
             }
@@ -117,11 +117,7 @@ mod tests {
         let mut left = Vec::new();
         let _ = ctx.run(input, |ctx| {
             let pressed = presses(ctx);
-            let used = Dispatched {
-                used: vec![(pressed[0].mods, pressed[0].key.clone())],
-                ..Dispatched::default()
-            };
-            take_used(ctx, &used);
+            take_used(ctx, &[(pressed[0].mods, pressed[0].key.clone())]);
             left = ctx.input(|i| i.events.clone());
         });
         assert!(left.is_empty(), "{left:?}");

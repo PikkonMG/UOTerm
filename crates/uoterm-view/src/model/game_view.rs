@@ -4,6 +4,9 @@
 //! again, and the session tells the shard only a size it has not heard.
 
 use crate::act::Act;
+use crate::frame::WatchFrame;
+use crate::geom::Area;
+use crate::settings::Profile;
 
 /// A size holds this long, in seconds, before the shard hears it.
 pub const GAME_VIEW_SETTLE_SECONDS: f64 = 0.5;
@@ -49,9 +52,48 @@ impl GameViewReport {
     }
 }
 
+/// What the window tells the shard by itself, with no click: the names of
+/// the mobiles and corpses that come into view, as the classic client asks
+/// for them, whether to show what stands in public houses (when a human
+/// plays, and each time the General page changes it), and the size of the
+/// game view.
+#[derive(Default)]
+pub struct ShardReports {
+    game_view: GameViewReport,
+    /// The last choice about public house content the shard was told.
+    house_content_sent: Option<bool>,
+}
+
+impl ShardReports {
+    /// The acts of one frame. `arrivals` came into view this frame, and
+    /// `view` is where the world is drawn.
+    pub fn acts(
+        &mut self,
+        frame: &WatchFrame,
+        profile: &Profile,
+        arrivals: Vec<u32>,
+        view: Area,
+        time: f64,
+    ) -> Vec<Act> {
+        let mut acts = Vec::new();
+        if frame.human_control {
+            acts.extend(arrivals.into_iter().map(Act::Look));
+        }
+        let house_content = profile.general.show_house_content;
+        if frame.human_control && self.house_content_sent != Some(house_content) {
+            acts.push(Act::HouseContent(house_content));
+            self.house_content_sent = Some(house_content);
+        }
+        let size = [view.width().round() as u32, view.height().round() as u32];
+        acts.extend(self.game_view.due(frame.serial, size, time));
+        acts
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geom::{Point, Vector};
 
     const ME: u32 = 0x0000_00AA;
     const SIZE: ViewSize = [800, 600];
@@ -94,5 +136,30 @@ mod tests {
         assert_eq!(told(report.due(ME, SIZE, 1.0)), Some(SIZE));
         assert_eq!(told(report.due(NO_CHARACTER, SIZE, 2.0)), None);
         assert_eq!(told(report.due(ME, SIZE, 3.0)), Some(SIZE));
+    }
+
+    #[test]
+    fn a_human_asks_names_and_tells_the_house_choice_once() {
+        const MOBILE: u32 = 0x0000_00BB;
+        let frame = WatchFrame {
+            serial: ME,
+            human_control: true,
+            ..WatchFrame::default()
+        };
+        let profile = Profile::default();
+        let mut reports = ShardReports::default();
+        let view = Area::from_min_size(Point::new(0.0, 0.0), Vector::new(800.4, 599.6));
+        let acts = reports.acts(&frame, &profile, vec![MOBILE], view, 0.0);
+        let house = profile.general.show_house_content;
+        assert_eq!(acts, vec![Act::Look(MOBILE), Act::HouseContent(house)]);
+        let later = reports.acts(&frame, &profile, Vec::new(), view, 1.0);
+        assert_eq!(told(later.into_iter().next()), Some(SIZE));
+        let agent = WatchFrame {
+            human_control: false,
+            ..frame
+        };
+        assert!(reports
+            .acts(&agent, &profile, vec![MOBILE], view, 2.0)
+            .is_empty());
     }
 }

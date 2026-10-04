@@ -26,6 +26,18 @@ pub struct RadarTables {
     pub items: Vec<[u8; 3]>,
 }
 
+impl RadarTables {
+    /// The color of a land tile, by land id.
+    pub fn land(&self, land_id: u16) -> Option<[u8; 3]> {
+        self.land.get(usize::from(land_id)).copied()
+    }
+
+    /// The color of an item, by graphic.
+    pub fn item(&self, graphic: u16) -> Option<[u8; 3]> {
+        self.items.get(usize::from(graphic)).copied()
+    }
+}
+
 impl RadarColors {
     pub fn open(uopath: impl AsRef<Path>) -> Result<Self, MapError> {
         let path = uopath.as_ref().join(RADARCOL_NAME);
@@ -105,5 +117,9 @@ mod tests {
         assert_eq!(tables.land.len(), ITEM_BASE);
         assert_eq!(tables.land[0], [u8::MAX, 0, 0]);
         assert_eq!(tables.items, [[0, 0, 0], [0, 0, u8::MAX]]);
+        let colors = RadarColors::parse(&data);
+        assert_eq!(tables.land(0), colors.land(0));
+        assert_eq!(tables.item(1), colors.item(1));
+        assert_eq!(tables.item(ITEMS as u16), None);
     }
 }

@@ -52,11 +52,21 @@ const PAWN_TOP_Y: f32 = -56.0;
 const MAX_FRAME_SECONDS: f64 = 0.25;
 /// How long the death screen shows.
 const DEATH_SCREEN_SECONDS: f64 = 1.5;
+/// What the death screen says, in a UO font and hue.
+pub const DEATH_WORDS: &str = "You are dead.";
+pub const DEATH_FONT: u8 = 3;
+pub const DEATH_HUE: u16 = 0;
 
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 3.0;
 const ZOOM_START: f32 = 1.0;
 const ZOOM_PER_SCROLL_POINT: f32 = 0.0015;
+/// How many points of [`SceneInput::scroll`] one notch of a wheel turns,
+/// as egui counts a line of a wheel on a desktop.
+pub const WHEEL_POINTS_PER_NOTCH: f32 = 40.0;
+/// How much one point of the wheel with Ctrl held zooms, as egui counts
+/// it: the zoom grows by `e` to the power of this times the points.
+pub const WHEEL_ZOOM_PER_POINT: f32 = 1.0 / 200.0;
 
 /// The pose of a mobile the window has not seen move.
 pub const STANDING: Pose = Pose {
@@ -74,7 +84,13 @@ fn faded(color: Rgba, alpha: f32) -> Rgba {
 pub struct SceneInput {
     /// Where the mouse is, when it is over the window.
     pub mouse: Option<Point>,
-    /// How far the wheel turned this frame, in points.
+    /// How far the wheel turned this frame, in points, as egui's
+    /// `smooth_scroll_delta.y` gives it: positive when the wheel turns away
+    /// from the player, which zooms the Modern map in. One notch of a wheel
+    /// is [`WHEEL_POINTS_PER_NOTCH`]. A browser's `WheelEvent.deltaY` has
+    /// the other sign and may count lines, so the web client turns it into
+    /// notches first. The wheel with Ctrl held zooms by `zoom_delta` and
+    /// scrolls nothing.
     pub scroll: f32,
     /// How much a pinch, or the wheel with Ctrl held, zooms this frame. One
     /// is no zoom.
@@ -438,6 +454,8 @@ pub(crate) mod test_art {
     pub struct NoFiles {
         anim: AnimRules,
         files: bool,
+        /// The answer to each picture asked for. None is missing.
+        sprites: Option<Art<Sprite>>,
     }
 
     impl NoFiles {
@@ -447,6 +465,14 @@ pub(crate) mod test_art {
             Self {
                 files: true,
                 ..Self::default()
+            }
+        }
+
+        /// Client files that give `answer` to each picture asked for.
+        pub fn answering(answer: Art<Sprite>) -> Self {
+            Self {
+                sprites: Some(answer),
+                ..Self::with_files()
             }
         }
     }
@@ -459,7 +485,7 @@ pub(crate) mod test_art {
             false
         }
         fn sprite(&mut self, _: &ArtRequest) -> Art<Sprite> {
-            Art::Missing
+            self.sprites.unwrap_or(Art::Missing)
         }
         fn white_uv(&self) -> Point {
             WHITE_UV
@@ -597,6 +623,35 @@ mod draw_tests {
             .iter()
             .all(|vertex| vertex.uv == [super::test_art::WHITE_UV.x, super::test_art::WHITE_UV.y]));
         assert!(draw.death.is_none());
+    }
+
+    #[test]
+    fn a_thing_whose_picture_is_on_its_way_shows_when_it_comes() {
+        const ITEM: u32 = 0x4000_0001;
+        const BARREL: u16 = 0x0E77;
+        const SIDE: f32 = 44.0;
+        let mut frame = frame_at(100, 100);
+        frame.items.push(crate::frame::WatchItem {
+            serial: ITEM,
+            name: "a barrel".into(),
+            graphic: BARREL,
+            x: 101,
+            y: 100,
+            ..crate::frame::WatchItem::default()
+        });
+        let profile = Profile::default();
+        let input = SceneInput::default();
+        let mut scene = SceneState::new();
+        let named = |draw: &SceneDraw| draw.plates.iter().any(|plate| plate.name == "a barrel");
+        let mut on_its_way = NoFiles::answering(crate::art::Art::Pending);
+        let draw = scene.build(&mut on_its_way, VIEW, &frame, 0.0, &profile, &input);
+        assert!(scene.picks().iter().all(|pick| pick.serial != ITEM));
+        assert!(!named(&draw));
+        let sprite = crate::art::Sprite::whole(SIDE, SIDE);
+        let mut came = NoFiles::answering(crate::art::Art::Ready(sprite));
+        let draw = scene.build(&mut came, VIEW, &frame, 0.1, &profile, &input);
+        assert!(scene.picks().iter().any(|pick| pick.serial == ITEM));
+        assert!(named(&draw));
     }
 
     #[test]

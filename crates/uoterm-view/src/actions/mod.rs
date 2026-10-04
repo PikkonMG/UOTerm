@@ -14,6 +14,7 @@
 //! window does itself or gives to the UI style that is active.
 
 pub mod arguments;
+pub mod controls;
 pub mod editor;
 pub mod journal;
 pub mod resolve;
@@ -30,6 +31,7 @@ pub use arguments::{chosen, ArgumentKind, Direction, GumpKind, Look, SelectKind,
 use crate::frame::WatchFrame;
 use crate::settings::MacroStep;
 use journal::ClientJournal;
+use serde::Serialize;
 use view_range::ViewRange;
 
 const NOTE_NO_SUCH_WINDOW: &str = "This window style has no such window.";
@@ -245,7 +247,7 @@ pub fn new_step(action: ActionId) -> MacroStep {
 }
 
 /// Which way a window command acts on a window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum GumpOp {
     Open,
     Close,
@@ -255,7 +257,7 @@ pub enum GumpOp {
 }
 
 /// An option of the profile an action switches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Switch {
     AlwaysRun,
     ClickToRun,
@@ -271,7 +273,7 @@ pub enum Switch {
 }
 
 /// A change of the view range.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum RangeChange {
     Set(u8),
     Up,
@@ -282,7 +284,7 @@ pub enum RangeChange {
 }
 
 /// How a selection moves through the things in view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum SelectHow {
     Next,
     Previous,
@@ -290,7 +292,7 @@ pub enum SelectHow {
 }
 
 /// A mouse click a controller button makes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum PointerClick {
     Left,
     Right,
@@ -300,7 +302,7 @@ pub enum PointerClick {
 /// Something the window does, not the character. The window does the
 /// shared ones itself (options, zoom, screenshots, the selection) and gives
 /// the others (`is_for_style`) to the UI style that is active.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum WindowCommand {
     Gump(GumpOp, GumpKind),
     CloseAllGumps,

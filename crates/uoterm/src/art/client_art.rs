@@ -9,14 +9,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use uoterm_nav::{
-    land_is_ignored, Action, AnimData, AnimRules, ArtCycles, ArtData, ArtPixels, ClilocData,
-    CursorSet, GumpArt, HueData, HueRamp, ItemTile, LandTile, LightData, LightShape, MulMap,
-    MultiData, MultiPiece, RadarColors, RadarTables, SeasonArt, TexmapData, TextPicture, TileData,
-    TileFlagSet, TileQuery, GUMP_MAX_SIDE, TILE_ANIMATED, TILE_PARTIAL_HUE,
+    land_is_ignored, shown_graphic, Action, AnimData, AnimRules, ArtCycles, ArtData, ArtPixels,
+    ClilocData, CursorSet, GumpArt, HueData, HueRamp, ItemTile, LandTile, LightData, LightShape,
+    MulMap, MultiData, MultiPiece, RadarColors, RadarTables, SeasonArt, TexmapData, TextPicture,
+    TileData, TileFlagSet, TileQuery, GUMP_MAX_SIDE, TILE_PARTIAL_HUE,
 };
 use uoterm_view::art::{
-    is_drawn, mount_item, ArtRequest, Cell, CellStatic, GumpMask, MapBlockAt, Picture, Stretch,
-    TextLook, TextMeasure,
+    is_drawn, mount_item, radar_item, ArtRequest, Cell, CellStatic, GumpMask, MapBlockAt, Picture,
+    Stretch, TextLook, TextMeasure,
 };
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::Vector;
@@ -498,13 +498,9 @@ impl ClientArt {
         if !map.in_bounds(x, y) {
             return None;
         }
-        let top = map
-            .statics_at(x, y)
-            .into_iter()
-            .filter(|s| is_drawn(s.graphic))
-            .max_by_key(|s| s.z);
-        match top {
-            Some(item) => radar.item(item.graphic),
+        let statics = map.statics_at(x, y);
+        match radar_item(statics.iter().map(|s| (s.graphic, s.z))) {
+            Some(graphic) => radar.item(graphic),
             None => radar.land(map.column(x, y).land_id),
         }
     }
@@ -553,12 +549,12 @@ impl ClientArt {
     /// The picture an item shows now. A fire or a fountain goes through
     /// the pictures of its cycle.
     pub fn shown_graphic(&self, graphic: u16, time_ms: u64) -> u16 {
-        match self.cycles.as_deref() {
-            Some(cycles) if self.item_flags(graphic) & TILE_ANIMATED != 0 => {
-                cycles.graphic_at(graphic, time_ms)
-            }
-            _ => graphic,
-        }
+        shown_graphic(
+            self.cycles.as_deref(),
+            self.item_flags(graphic),
+            graphic,
+            time_ms,
+        )
     }
 
     /// The color of words written in a hue.

@@ -24,6 +24,16 @@ pub fn is_drawn(graphic: u16) -> bool {
     !NO_DRAW_GRAPHICS.contains(&graphic) && !NO_DRAW_RANGE.contains(&graphic)
 }
 
+/// The item a map of the world shows for a tile, from its items as graphic
+/// and height: the highest one the client draws. None shows the land.
+pub fn radar_item(statics: impl IntoIterator<Item = (u16, i8)>) -> Option<u16> {
+    statics
+        .into_iter()
+        .filter(|(graphic, _)| is_drawn(*graphic))
+        .max_by_key(|(_, z)| *z)
+        .map(|(graphic, _)| graphic)
+}
+
 /// One font of the client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UoFont {
@@ -391,7 +401,7 @@ pub struct Stretch {
 }
 
 /// One map tile as the window draws it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     /// None when the land of the tile draws nothing.
     pub land_id: Option<u16>,
@@ -454,6 +464,13 @@ pub trait WorldArt {
     fn has_gump_art(&self) -> bool;
 }
 
+/// The color of words in a hue. With no client files it is the plain
+/// color the art gives.
+pub fn hue_color(art: &dyn WorldArt, hue: u16) -> Rgba {
+    let [red, green, blue] = art.text_rgb(hue);
+    Rgba::from_rgb(red, green, blue)
+}
+
 #[cfg(test)]
 mod request_tests {
     use super::*;
@@ -485,6 +502,15 @@ mod request_tests {
         }
         assert!(!mask.drawn_at(WIDTH, 0), "past the edge");
         assert!(!mask.drawn_at(0, HEIGHT), "past the edge");
+    }
+
+    #[test]
+    fn a_map_of_the_world_shows_the_highest_drawn_item_of_a_tile() {
+        const ROCK: u16 = 0x1363;
+        const TREE: u16 = 0x0CCA;
+        let shown = radar_item([(ROCK, 0), (TREE, 10), (NO_DRAW_GRAPHICS[0], 40)]);
+        assert_eq!(shown, Some(TREE));
+        assert_eq!(radar_item([]), None, "the land shows");
     }
 
     #[test]

@@ -34,7 +34,7 @@ pub const NOTE_GRAB_BAG_SET: &str = "The grab bag is set.";
 const NOTE_NO_GRAB_BAG: &str = "There is no grab bag and no backpack.";
 
 /// What the next click on a thing does, while the window waits for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum LocalAim {
     /// The item clicked goes into the grab bag.
     Grab,
@@ -215,6 +215,12 @@ impl Guard {
             .get(&self.seen.name)
             .copied()
             .or(self.seen.backpack)
+    }
+
+    /// Takes the grab bags a client read after the guard started, as the
+    /// web client reads them from the session.
+    pub fn keep_grab_bags(&mut self, grab_bags: KeptGrabBags) {
+        self.grab_bags = grab_bags;
     }
 
     /// Sets the grab bag of the character, or takes it away so the backpack
@@ -426,5 +432,14 @@ mod tests {
         let mut again = Guard::new(kept);
         again.seen.name = NAME.into();
         assert_eq!(again.grab_bag(), Some(CHEST));
+    }
+
+    #[test]
+    fn grab_bags_that_come_later_take_the_place_of_none() {
+        let mut guard = guard(0, false);
+        let mut kept = KeptGrabBags::default();
+        kept.characters.insert(NAME.into(), CHEST);
+        guard.keep_grab_bags(kept);
+        assert_eq!(guard.grab_bag(), Some(CHEST));
     }
 }

@@ -14,11 +14,9 @@ use super::boxes_ui::{scrolled, Tools, CELL_GAP, CELL_RADIUS};
 use super::control::{Act, Answer, Ask, Asker};
 use super::desk::Zone;
 use super::kept;
-use super::model::abilities::{ability_of, icon_of, slot_hue};
 use super::model::clicks::ClickDelay;
 use super::model::durability::{is_worn_layer, worn_wear, Wear};
 use super::model::places;
-use super::model::spell_data::{book_spell, icon_hue};
 use super::model::status::{StatLocks, STAT_NAMES};
 use super::modern::abilities_ui::{self, ABILITIES_ID, RACIAL_ID};
 use super::modern::frame::{self, FrameEvent, PanelSpec};
@@ -36,9 +34,11 @@ use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::spells::School;
 use uoterm_view::art::Sprite;
+use uoterm_view::input::KeyName;
 use uoterm_view::ui::deck::{
-    hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
-    WearChoice, HOTBAR_FILE, HOTBAR_SLOTS, SLOT_ROW, WORN_COLUMNS,
+    self, hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
+    SlotPicture, WearChoice, HOTBAR_FILE, HOTBAR_KEY_NAMES, HOTBAR_KEY_WORDS, HOTBAR_SLOTS,
+    SLOT_ROW, WORN_COLUMNS,
 };
 
 const SHEET_ID: &str = "modern:sheet";
@@ -61,28 +61,12 @@ const SKILL_LOCK_UP: u8 = 0;
 const SKILL_LOCK_DOWN: u8 = 1;
 
 const HOTBAR_GAP: f32 = 10.0;
-const HOTBAR_KEYS: [Key; HOTBAR_SLOTS] = [
-    Key::Num1,
-    Key::Num2,
-    Key::Num3,
-    Key::Num4,
-    Key::Num5,
-    Key::Num6,
-    Key::Num7,
-    Key::Num8,
-    Key::Num9,
-    Key::Num0,
-];
-const HOTBAR_KEY_WORDS: [&str; HOTBAR_SLOTS] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
 /// The dragged picture on its way to the hotbar.
 const CARRY_SIDE: f32 = 40.0;
 const CARRY_ALPHA: f32 = 0.85;
 /// The picker of an empty slot: its columns and the height of a choice.
 const PICKER_COLUMNS: usize = 2;
 const PICKER_ROW: f32 = 28.0;
-
-/// How many letters of a skill or a command a slot shows.
-const SLOT_WORD_CHARS: usize = 6;
 
 pub(super) const WORDS_USE: &str = "Use";
 const WORDS_PIN: &str = "Pin";
@@ -95,7 +79,6 @@ const WORDS_RACIAL: &str = "Racial";
 const WORDS_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
 const WORDS_PICK_FOR: &str = "Put on slot";
 const WORDS_NO_MACROS: &str = "No macros yet: make them on the Macros page of the Options.";
-const WORDS_MACRO_GONE: &str = "That macro is no longer in the profile.";
 const VIEW_WIDTH: f32 = 72.0;
 const PANEL_BUTTON_WIDTH: f32 = 84.0;
 /// The durability bar under a worn item.
@@ -135,19 +118,9 @@ fn slot_picture(
     frame: &WatchFrame,
     tools: &mut Tools<'_>,
 ) -> Option<(egui::TextureId, Sprite)> {
-    match slot {
-        Slot::Item { graphic, hue, .. } => tools.scene.item_picture(*graphic, *hue),
-        Slot::Spell { id, .. } => {
-            let (_, spell) = book_spell(*id)?;
-            tools
-                .scene
-                .gump_picture(spell.small_icon, icon_hue(frame, *id))
-        }
-        Slot::Ability { slot } => tools
-            .scene
-            .gump_picture(icon_of(ability_of(frame, *slot)), slot_hue(frame, *slot)),
-        Slot::Racial { icon, .. } => tools.scene.gump_picture(*icon, 0),
-        Slot::Skill { .. } | Slot::Command { .. } | Slot::Macro { .. } => None,
+    match deck::slot_picture(slot, frame)? {
+        SlotPicture::Item { graphic, hue } => tools.scene.item_picture(graphic, hue),
+        SlotPicture::Gump { gump, hue } => tools.scene.gump_picture(gump, hue),
     }
 }
 
@@ -1040,7 +1013,9 @@ impl DeckUi {
                     other => tips::label(ui, &other.words(frame), HINT_SLOT),
                 }
             }
-            let key = !typing && ui.input(|i| i.key_pressed(HOTBAR_KEYS[slot]));
+            let key_name = KeyName(HOTBAR_KEY_NAMES[slot].to_string());
+            let key = !typing
+                && bridge::egui_key(&key_name).is_some_and(|key| ui.input(|i| i.key_pressed(key)));
             if response.clicked() || key {
                 self.press(&what, frame, tools, profile);
             } else if response.secondary_clicked() {
@@ -1057,7 +1032,7 @@ impl DeckUi {
         match what.press(frame, profile) {
             Some(Press::Act(act)) => tools.hand.act(act),
             Some(Press::Macro(steps)) => self.macros.push(steps),
-            None if matches!(what, Slot::Macro { .. }) => tools.hand.report(WORDS_MACRO_GONE),
+            Some(Press::Report(words)) => tools.hand.report(words),
             None => {}
         }
     }
@@ -1197,11 +1172,10 @@ fn slot_face(ui: &egui::Ui, cell: Rect, what: &Slot, frame: &WatchFrame, tools: 
                 .image(texture, area, bridge::rect(sprite.uv), Color32::WHITE);
         }
         None => {
-            let short: String = what.words(frame).chars().take(SLOT_WORD_CHARS).collect();
             ui.painter().text(
                 cell.center(),
                 Align2::CENTER_CENTER,
-                short,
+                what.face_words(frame),
                 title_font(theme::SIZE_SMALL),
                 theme::TEXT,
             );

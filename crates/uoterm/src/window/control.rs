@@ -24,6 +24,7 @@ use uoterm_runtime::tools::{
 };
 
 pub use uoterm_view::act::*;
+use uoterm_view::tips::{TIP_RETRY_SECONDS, TIP_TRIES};
 
 const NOT_SURE: &str = "Jev is not sure which one you mean. Pick it from the list.";
 const NO_PLACE_ON_MAP: &str = "The marker file names no place on this map.";
@@ -252,11 +253,6 @@ fn work(
     }
 }
 
-/// How many times the worker asks for one tooltip. The first answer of the
-/// session is empty when it must ask the shard.
-const TIP_TRIES: usize = 4;
-const TIP_RETRY: Duration = Duration::from_millis(250);
-
 fn read_tips(link: &Link, inbox: &Receiver<u32>, outbox: &Sender<Tip>, ctx: &egui::Context) {
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -274,7 +270,7 @@ fn read_tips(link: &Link, inbox: &Receiver<u32>, outbox: &Sender<Tip>, ctx: &egu
                 if !lines.is_empty() {
                     return lines;
                 }
-                tokio::time::sleep(TIP_RETRY).await;
+                tokio::time::sleep(Duration::from_secs_f64(TIP_RETRY_SECONDS)).await;
             }
             Vec::new()
         });

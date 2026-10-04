@@ -415,7 +415,7 @@ pub enum Answer {
 }
 
 /// What came of an act, in words for the human.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Report {
     pub text: String,
     pub failed: bool,

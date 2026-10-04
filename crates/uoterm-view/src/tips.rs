@@ -10,6 +10,11 @@ use std::collections::HashMap;
 pub const REST_SECONDS: f64 = 0.35;
 /// The words of a thing are kept this long.
 pub const KEEP_SECONDS: f64 = 10.0;
+/// How many times a client asks for one tooltip, and how long it waits
+/// between two asks. The first answer of the session is empty when it must
+/// ask the shard.
+pub const TIP_TRIES: usize = 4;
+pub const TIP_RETRY_SECONDS: f64 = 0.25;
 
 struct Known {
     lines: Vec<String>,

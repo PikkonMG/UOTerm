@@ -166,6 +166,26 @@ pub fn act_for_click(
     })
 }
 
+/// What Escape does on the map.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EscapeOnMap {
+    /// The click the window waits for is not wanted any more.
+    CancelAim,
+    Act(Act),
+}
+
+/// What Escape does on the map: it lets the aim of the window go first,
+/// then the target cursor of the shard.
+pub fn escape_on_map(aiming: bool, target_cursor: bool) -> Option<EscapeOnMap> {
+    if aiming {
+        Some(EscapeOnMap::CancelAim)
+    } else if target_cursor {
+        Some(EscapeOnMap::Act(Act::CancelTarget))
+    } else {
+        None
+    }
+}
+
 /// What a drag on the map takes: what the button went down on. With
 /// Sallos easy grab, a drag that began on the ground takes what the mouse
 /// is over now, as in the reference client.
@@ -298,6 +318,16 @@ mod tests {
             target_cursor,
             ..WatchFrame::default()
         }
+    }
+
+    #[test]
+    fn escape_lets_the_aim_of_the_window_go_before_the_cursor_of_the_shard() {
+        assert_eq!(escape_on_map(true, true), Some(EscapeOnMap::CancelAim));
+        assert_eq!(
+            escape_on_map(false, true),
+            Some(EscapeOnMap::Act(Act::CancelTarget))
+        );
+        assert_eq!(escape_on_map(false, false), None);
     }
 
     #[test]

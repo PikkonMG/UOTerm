@@ -28,12 +28,11 @@ use uoterm_nav::CursorShape;
 use uoterm_view::art::{ArtRequest, ItemPaint, Paint, Sprite, TextLook, WorldArt};
 use uoterm_view::geom::Rgba;
 use uoterm_view::scene::plates::{self, Overhead, PlacedPlate};
-use uoterm_view::scene::{overlays, Mesh, Overlay, Plate, SceneInput, SceneState, STANDING};
+use uoterm_view::scene::{
+    overlays, Mesh, Overlay, Plate, SceneInput, SceneState, DEATH_FONT, DEATH_HUE, DEATH_WORDS,
+    STANDING,
+};
 
-/// How the death screen shows, and what it says.
-const DEATH_WORDS: &str = "You are dead.";
-const DEATH_FONT: u8 = 3;
-const DEATH_HUE: u16 = 0;
 /// A fire or a fountain shows its next picture this often, so the window
 /// draws again at least this often.
 const ART_CYCLE_SECONDS: f64 = 0.1;
@@ -119,8 +118,7 @@ fn words_of(art: &mut NativeArt, painter: &Painter, text: &str, look: TextLook) 
 
 /// The color of words in a hue. Without client files, the plain color.
 fn hue_color(art: &NativeArt, hue: u16) -> Color32 {
-    let [red, green, blue] = art.text_rgb(hue);
-    Color32::from_rgb(red, green, blue)
+    bridge::color(uoterm_view::art::hue_color(art, hue))
 }
 
 /// The mesh of the draw list as egui keeps it, with the texture it reads.

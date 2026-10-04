@@ -30,7 +30,7 @@ pub const HEARD: f32 = 1.0;
 pub const UNHEARD: f32 = 0.0;
 
 /// One step a mobile took this frame, for the footstep sound.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, ::serde::Serialize)]
 pub struct Step {
     pub tiles_away: f32,
     pub mounted: bool,

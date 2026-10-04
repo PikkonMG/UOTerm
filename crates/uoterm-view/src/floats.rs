@@ -10,7 +10,7 @@
 
 use crate::art::TextLook;
 use crate::frame::{WatchCueKind, WatchFrame, WatchSpeech};
-use crate::geom::Rgba;
+use crate::geom::{Point, Rgba, Vector};
 use crate::model::casting::overhead_spell;
 use crate::model::journal::SPEECH_SPELL;
 use crate::settings::{FontOptions, GameFontKind, Profile, SpeechOptions, UiStyle};
@@ -215,6 +215,66 @@ impl Floats {
     }
 }
 
+/// Where one float shows this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedFloat {
+    /// Its place in [`Floats::live`].
+    pub index: usize,
+    /// The middle of the bottom of the words.
+    pub bottom: Point,
+    /// How much of it shows. The Classic style draws a number whole.
+    pub alpha: f32,
+}
+
+/// Lays the floats over the heads, the newest first: a number rises from
+/// the head as it ages, and words stand over the name plate, the newest
+/// nearest the head. `head_of` gives where the head of the float at an
+/// index is drawn; a float with none does not show. `height_of` gives the
+/// height of the words of the float at an index.
+pub fn lay_out(
+    live: &[Float],
+    time: f64,
+    fading: bool,
+    head_of: impl Fn(usize) -> Option<Point>,
+    height_of: impl Fn(usize) -> f32,
+) -> Vec<PlacedFloat> {
+    let mut lines_over: Vec<(u32, f32)> = Vec::new();
+    let mut placed = Vec::with_capacity(live.len());
+    for (index, float) in live.iter().enumerate().rev() {
+        let Some(head) = head_of(index) else {
+            continue;
+        };
+        let age = time - float.born;
+        if float.number {
+            let rise = DAMAGE_RISE_PER_SECOND * age as f32;
+            placed.push(PlacedFloat {
+                index,
+                bottom: head - Vector::new(0.0, rise),
+                alpha: alpha(age, float.seconds, true),
+            });
+            continue;
+        }
+        let stacked = lines_over
+            .iter()
+            .find(|(serial, _)| *serial == float.serial)
+            .map_or(0.0, |(_, height)| *height);
+        placed.push(PlacedFloat {
+            index,
+            bottom: Point::new(head.x, head.y - SPEECH_LIFT - stacked),
+            alpha: alpha(age, float.seconds, fading),
+        });
+        let height = height_of(index);
+        match lines_over
+            .iter_mut()
+            .find(|(serial, _)| *serial == float.serial)
+        {
+            Some((_, stack)) => *stack += height,
+            None => lines_over.push((float.serial, height)),
+        }
+    }
+    placed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +363,44 @@ mod tests {
         });
         take_in(&mut floats, &frame, &profile, 0.6);
         assert_eq!(floats.live[1].words, "12");
+    }
+
+    #[test]
+    fn newer_words_stand_nearest_the_head_and_a_number_rises() {
+        const HEAD: Point = Point::new(50.0, 100.0);
+        const LINE: f32 = 10.0;
+        let float = |words: &str, born: f64, number: bool| Float {
+            serial: 7,
+            words: words.into(),
+            look: TextLook::ascii(DAMAGE_FONT, 0),
+            color: Rgba::WHITE,
+            born,
+            seconds: 5.0,
+            number,
+        };
+        let live = [
+            float("old", 0.0, false),
+            float("new", 1.0, false),
+            float("12", 1.0, true),
+            Float {
+                serial: 8,
+                ..float("gone", 1.0, false)
+            },
+        ];
+        let heads = |at: usize| (live[at].serial == 7).then_some(HEAD);
+        let placed = lay_out(&live, 2.0, false, heads, |_| LINE);
+        let bottom_of = |at: usize| placed.iter().find(|p| p.index == at).map(|p| p.bottom);
+        assert_eq!(bottom_of(1), Some(Point::new(50.0, 100.0 - SPEECH_LIFT)));
+        assert_eq!(
+            bottom_of(0),
+            Some(Point::new(50.0, 100.0 - SPEECH_LIFT - LINE))
+        );
+        assert_eq!(
+            bottom_of(2),
+            Some(Point::new(50.0, 100.0 - DAMAGE_RISE_PER_SECOND))
+        );
+        assert_eq!(bottom_of(3), None, "no head drawn, no float");
+        assert_eq!(placed[0].index, 2, "the newest first");
     }
 
     #[test]

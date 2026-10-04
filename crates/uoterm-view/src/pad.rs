@@ -35,7 +35,7 @@ pub const DEFAULT_BUTTONS: [(&str, &str, &str); 5] = [
 macro_rules! pad_buttons {
     ($($button:ident),+ $(,)?) => {
         /// A button of a controller.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ::serde::Deserialize)]
         pub enum PadButton {
             $($button),+
         }

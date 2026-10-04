@@ -12,14 +12,27 @@ use super::theme::PANEL_PAD;
 use crate::act::Act;
 use crate::frame::WatchFrame;
 use crate::geom::Vector;
-use crate::model::abilities::{race_of, racial_command, toggle_command, AbilitySlot};
+use crate::input::KeyName;
+use crate::model::abilities::{
+    ability_of, icon_of, race_of, racial_command, slot_hue, toggle_command, AbilitySlot,
+};
 use crate::model::durability::is_worn_layer;
 use crate::model::key_macros;
+use crate::model::spell_data::{book_spell, icon_hue};
 use crate::settings::{MacroStep, Profile, WORN_LAYERS};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const HOTBAR_SLOTS: usize = 10;
+/// The keys that press the slots while no field takes the keys, by their
+/// egui names, and the words each slot shows for its key.
+pub const HOTBAR_KEY_NAMES: [&str; HOTBAR_SLOTS] = [
+    "Num1", "Num2", "Num3", "Num4", "Num5", "Num6", "Num7", "Num8", "Num9", "Num0",
+];
+pub const HOTBAR_KEY_WORDS: [&str; HOTBAR_SLOTS] =
+    ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+/// A slot with no picture shows this many letters of its words.
+pub const SLOT_WORD_CHARS: usize = 6;
 /// The file of the config folder that keeps the hotbars.
 pub const HOTBAR_FILE: &str = "watch-hotbar.toml";
 /// The height of a row of the worn list.
@@ -63,31 +76,40 @@ pub enum Slot {
     },
 }
 
+/// The words for a slot of a macro the profile no longer has.
+pub const WORDS_MACRO_GONE: &str = "That macro is no longer in the profile.";
+
 /// What a slot does when the player presses it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Press {
     Act(Act),
     /// The steps of a macro of the profile, for the window to run.
     Macro(Vec<MacroStep>),
+    /// Words for the player, as the report of an act.
+    Report(&'static str),
 }
 
 impl Slot {
-    /// What the slot does now. None for a macro no longer in the profile
-    /// and for a racial ability the character cannot use.
+    /// What the slot does now. A macro no longer in the profile tells the
+    /// player so. None for a racial ability the character cannot use.
     pub fn press(&self, frame: &WatchFrame, profile: &Profile) -> Option<Press> {
         Some(match self {
             Self::Item { serial, .. } => Press::Act(Act::Use(*serial)),
             Self::Skill { id, .. } => Press::Act(Act::UseSkill(*id)),
             Self::Spell { id, .. } => Press::Act(Act::Cast(*id)),
             Self::Command { text } => Press::Act(Act::Command(text.clone())),
-            Self::Macro { name } => {
-                Press::Macro(key_macros::steps_of(&profile.macros.key_bindings, name)?)
-            }
+            Self::Macro { name } => key_macros::steps_of(&profile.macros.key_bindings, name)
+                .map_or(Press::Report(WORDS_MACRO_GONE), Press::Macro),
             Self::Ability { slot } => Press::Act(Act::Command(toggle_command(frame, *slot))),
             Self::Racial { icon, .. } => {
                 Press::Act(Act::Command(racial_command(frame, *icon)?.to_string()))
             }
         })
+    }
+
+    /// The first letters of its words, which a slot with no picture shows.
+    pub fn face_words(&self, frame: &WatchFrame) -> String {
+        self.words(frame).chars().take(SLOT_WORD_CHARS).collect()
     }
 
     /// The words the slot shows when it has no picture, and in its tip.
@@ -101,6 +123,45 @@ impl Slot {
             Self::Command { text } => text.clone(),
             Self::Ability { slot } => ability_slot_words(frame, *slot),
         }
+    }
+}
+
+/// The slot a key presses, while no field takes the keys.
+pub fn hotbar_key_slot(key: &KeyName) -> Option<usize> {
+    HOTBAR_KEY_NAMES.iter().position(|name| *name == key.0)
+}
+
+/// The picture a slot shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotPicture {
+    Item { graphic: u16, hue: u16 },
+    Gump { gump: u16, hue: u16 },
+}
+
+/// The picture of a slot: its item, the icon of its spell or ability.
+/// None shows its words.
+pub fn slot_picture(slot: &Slot, frame: &WatchFrame) -> Option<SlotPicture> {
+    match slot {
+        Slot::Item { graphic, hue, .. } => Some(SlotPicture::Item {
+            graphic: *graphic,
+            hue: *hue,
+        }),
+        Slot::Spell { id, .. } => {
+            let (_, spell) = book_spell(*id)?;
+            Some(SlotPicture::Gump {
+                gump: spell.small_icon,
+                hue: icon_hue(frame, *id),
+            })
+        }
+        Slot::Ability { slot } => Some(SlotPicture::Gump {
+            gump: icon_of(ability_of(frame, *slot)),
+            hue: slot_hue(frame, *slot),
+        }),
+        Slot::Racial { icon, .. } => Some(SlotPicture::Gump {
+            gump: *icon,
+            hue: 0,
+        }),
+        Slot::Skill { .. } | Slot::Command { .. } | Slot::Macro { .. } => None,
     }
 }
 
@@ -246,6 +307,46 @@ mod tests {
 
     const MARA: &str = "Mara";
 
+    #[test]
+    fn the_number_keys_press_the_slots_and_a_slot_shows_its_picture() {
+        assert_eq!(hotbar_key_slot(&KeyName("Num1".into())), Some(0));
+        assert_eq!(
+            hotbar_key_slot(&KeyName("Num0".into())),
+            Some(HOTBAR_SLOTS - 1)
+        );
+        assert_eq!(hotbar_key_slot(&KeyName("A".into())), None);
+        let frame = WatchFrame::default();
+        let axe = Slot::Item {
+            serial: 1,
+            graphic: 0x0F43,
+            hue: 2,
+            name: "hatchet".into(),
+        };
+        assert_eq!(
+            slot_picture(&axe, &frame),
+            Some(SlotPicture::Item {
+                graphic: 0x0F43,
+                hue: 2
+            })
+        );
+        let racial = Slot::Racial {
+            icon: FLIGHT_ICON,
+            name: "Flying".into(),
+        };
+        assert_eq!(
+            slot_picture(&racial, &frame),
+            Some(SlotPicture::Gump {
+                gump: FLIGHT_ICON,
+                hue: 0
+            })
+        );
+        let command = Slot::Command {
+            text: "bandageself".into(),
+        };
+        assert_eq!(slot_picture(&command, &frame), None);
+        assert_eq!(command.face_words(&frame), "bandag");
+    }
+
     /// The worn list takes only the rows that fit, and the wheel reaches the
     /// rest: twelve worn items in two columns of four rows scroll two rows.
     #[test]
@@ -354,7 +455,11 @@ mod tests {
         let heal = Slot::Macro {
             name: "Heal".into(),
         };
-        assert_eq!(heal.press(&frame, &profile), None, "no such macro yet");
+        assert_eq!(
+            heal.press(&frame, &profile),
+            Some(Press::Report(WORDS_MACRO_GONE)),
+            "no such macro yet"
+        );
         let steps = vec![MacroStep::new("cast", "Heal")];
         profile.macros.key_bindings.push(KeyBinding {
             name: "Heal".into(),

@@ -80,6 +80,37 @@ impl ArtCycles {
     }
 }
 
+impl FromIterator<(u16, ArtCycle)> for ArtCycles {
+    /// The cycles of the items that have one, by graphic, as
+    /// [`ArtCycles::entries`] gives them.
+    fn from_iter<I: IntoIterator<Item = (u16, ArtCycle)>>(entries: I) -> Self {
+        let mut cycles: Vec<Option<ArtCycle>> = Vec::new();
+        for (graphic, cycle) in entries {
+            let at = usize::from(graphic);
+            if cycles.len() <= at {
+                cycles.resize(at + 1, None);
+            }
+            cycles[at] = (!cycle.offsets.is_empty()).then_some(cycle);
+        }
+        Self { cycles }
+    }
+}
+
+/// The picture an item shows at `time_ms`: the step of its cycle when its
+/// tiledata flags (`item_flags`, the low word) mark it animated, else its
+/// own picture.
+pub fn shown_graphic(
+    cycles: Option<&ArtCycles>,
+    item_flags: u32,
+    graphic: u16,
+    time_ms: u64,
+) -> u16 {
+    match cycles {
+        Some(cycles) if item_flags & TILE_ANIMATED != 0 => cycles.graphic_at(graphic, time_ms),
+        _ => graphic,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +153,29 @@ mod tests {
         assert_eq!(graphic, FIRE);
         assert_eq!(cycle.offsets, [0, 1, -1]);
         assert_eq!(cycle.step_ms, u64::from(STEP_UNITS) * INTERVAL_UNIT_MS);
+    }
+
+    #[test]
+    fn the_cycles_a_browser_got_go_round_as_the_file_does() {
+        let file = ArtCycles::parse(&one_block());
+        let sent: ArtCycles = file
+            .entries()
+            .map(|(graphic, cycle)| (graphic, cycle.clone()))
+            .collect();
+        let step = u64::from(STEP_UNITS) * INTERVAL_UNIT_MS;
+        assert_eq!(sent.graphic_at(FIRE, step), file.graphic_at(FIRE, step));
+        assert_eq!(sent.graphic_at(FIRE + 1, step), FIRE + 1);
+    }
+
+    #[test]
+    fn only_an_item_tiledata_marks_animated_goes_through_its_cycle() {
+        let cycles = ArtCycles::parse(&one_block());
+        let step = u64::from(STEP_UNITS) * INTERVAL_UNIT_MS;
+        assert_eq!(
+            shown_graphic(Some(&cycles), TILE_ANIMATED, FIRE, step),
+            FIRE + 1
+        );
+        assert_eq!(shown_graphic(Some(&cycles), 0, FIRE, step), FIRE);
+        assert_eq!(shown_graphic(None, TILE_ANIMATED, FIRE, step), FIRE);
     }
 }

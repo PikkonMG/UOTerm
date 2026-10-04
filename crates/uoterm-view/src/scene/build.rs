@@ -13,8 +13,8 @@ use super::{
     PAWN_RING_WIDTH, PERCENT_MAX, STANDING,
 };
 use crate::art::{
-    deed_action, is_drawn, is_mounted, stance_action, Art, ArtRequest, Cell, ItemPaint, Paint,
-    Pose, Sprite, WorldArt,
+    deed_action, hue_color, is_drawn, is_mounted, stance_action, Art, ArtRequest, Cell, ItemPaint,
+    Paint, Pose, Sprite, WorldArt,
 };
 use crate::clicks::PickKind;
 use crate::filters::{self, Seat};
@@ -221,12 +221,6 @@ fn radar_symbol(frame: &WatchFrame, column: i32, row: i32) -> Option<char> {
         SYM_BLOCK | SYM_DOOR | SYM_WATER => symbol,
         _ => SYM_WALK,
     })
-}
-
-/// The color of words in a hue.
-fn hue_color(art: &dyn WorldArt, hue: u16) -> Rgba {
-    let [red, green, blue] = art.text_rgb(hue);
-    Rgba::from_rgb(red, green, blue)
 }
 
 impl SceneState {
@@ -996,6 +990,19 @@ impl SceneState {
         paint: ItemPaint,
         animate: bool,
     ) -> Art<Sprite> {
+        let request = self.item_request(art, graphic, paint, animate);
+        art.sprite(&request)
+    }
+
+    /// The picture an item asks for now: the art of the season, and the
+    /// step of its cycle when `animate` lets it go through its pictures.
+    pub fn item_request(
+        &self,
+        art: &dyn WorldArt,
+        graphic: u16,
+        paint: ItemPaint,
+        animate: bool,
+    ) -> ArtRequest {
         let now_ms = (self.now * MS_PER_SECOND) as u64;
         let graphic = art.season_item(self.season, graphic);
         let shown = if animate {
@@ -1003,7 +1010,7 @@ impl SceneState {
         } else {
             graphic
         };
-        art.sprite(&ArtRequest::item(shown, paint))
+        ArtRequest::item(shown, paint)
     }
 
     /// Lays one picture of the world on the canvas as `lay` says.

@@ -169,6 +169,62 @@ pub fn effect_place(
     })
 }
 
+/// One effect as it shows at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShownEffect {
+    /// A bolt of lightning, at the place it struck. Its shape comes from
+    /// when it was born.
+    Bolt { struck: [f32; 3], born: f64 },
+    /// The picture of an effect, by its graphic and hue, at a place.
+    Picture {
+        place: [f32; 3],
+        graphic: u16,
+        hue: u16,
+    },
+}
+
+/// Each effect that shows at `time`, the oldest first. `place_of` gives
+/// where a mobile is drawn now.
+pub fn shown_effects(
+    sky: &Sky,
+    time: f64,
+    place_of: impl Fn(u32) -> Option<[f32; 3]>,
+) -> Vec<ShownEffect> {
+    sky.live()
+        .iter()
+        .map(|live| match effect_place(live, time, &place_of) {
+            EffectPlace::Bolt(struck) => ShownEffect::Bolt {
+                struck,
+                born: live.born,
+            },
+            EffectPlace::Picture(place) => ShownEffect::Picture {
+                place,
+                graphic: live.effect.graphic,
+                hue: live.effect.hue,
+            },
+        })
+        .collect()
+}
+
+/// The places and the graphics of the effect pictures that show. They
+/// light the world as a lamp does; a bolt does not.
+pub fn lit_effects(shown: &[ShownEffect]) -> Vec<([f32; 3], u16)> {
+    shown
+        .iter()
+        .filter_map(|effect| match *effect {
+            ShownEffect::Picture { place, graphic, .. } => Some((place, graphic)),
+            ShownEffect::Bolt { .. } => None,
+        })
+        .collect()
+}
+
+/// Where the picture of an effect lies on the screen, for one whose place
+/// is drawn at `foot`: over the middle of the body, as large as the zoom.
+pub fn effect_area(foot: Point, width: f32, height: f32, zoom: f32) -> Area {
+    let center = foot - Vector::new(0.0, BODY_LIFT * zoom);
+    Area::from_center_size(center, Vector::new(width, height) * zoom)
+}
+
 /// The joints of a bolt from the top of `area` down to the point it
 /// strikes. One bolt keeps its shape while it shows.
 pub fn lightning_bolt(area: Area, struck: Point, born: f64) -> Vec<Point> {
@@ -327,6 +383,37 @@ mod tests {
             effect_place(&bolt, 0.0, |_| None),
             EffectPlace::Bolt([100.0, 100.0, 0.0])
         );
+    }
+
+    #[test]
+    fn only_the_pictures_of_effects_light_the_world() {
+        let mut sky = Sky::default();
+        let mut frame = WatchFrame::default();
+        sky.take_in(&frame, 0.0);
+        let bolt = WatchEffect {
+            kind: EFFECT_LIGHTNING,
+            ..fireball(0)
+        };
+        for (seq, effect) in [(1, fireball(10)), (2, bolt)] {
+            frame.cues.push(WatchCue {
+                seq,
+                serial: 5,
+                kind: WatchCueKind::Effect(effect),
+            });
+        }
+        sky.take_in(&frame, 1.0);
+        let shown = shown_effects(&sky, 1.0, |_| None);
+        assert_eq!(shown.len(), 2);
+        assert!(matches!(shown[1], ShownEffect::Bolt { born: 1.0, .. }));
+        assert_eq!(lit_effects(&shown), vec![([100.0, 100.0, 0.0], 0x36D4)]);
+    }
+
+    #[test]
+    fn an_effect_picture_stands_over_the_middle_of_the_body() {
+        const ZOOM: f32 = 2.0;
+        let area = effect_area(Point::new(100.0, 100.0), 10.0, 20.0, ZOOM);
+        assert_eq!(area.center(), Point::new(100.0, 100.0 - BODY_LIFT * ZOOM));
+        assert_eq!(area.size(), Vector::new(20.0, 40.0));
     }
 
     #[test]

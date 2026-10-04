@@ -101,6 +101,18 @@ const ACTION_STAND: &str = "stand";
 const ACTION_WALK: &str = "walk";
 const ACTION_RUN: &str = "run";
 
+impl std::fmt::Display for Action {
+    /// The word of the action, as [`Action::from_str`] reads it.
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stand => out.write_str(ACTION_STAND),
+            Self::Walk => out.write_str(ACTION_WALK),
+            Self::Run => out.write_str(ACTION_RUN),
+            Self::Shown(group) => write!(out, "{group}"),
+        }
+    }
+}
+
 impl std::str::FromStr for Action {
     type Err = std::num::ParseIntError;
 
@@ -770,6 +782,9 @@ mod tests {
         assert_eq!("12".parse(), Ok(Action::Shown(12)));
         assert!("fly".parse::<Action>().is_err());
         assert!("256".parse::<Action>().is_err(), "no group is that high");
+        for action in [Action::Stand, Action::Walk, Action::Run, Action::Shown(12)] {
+            assert_eq!(action.to_string().parse(), Ok(action), "{action}");
+        }
     }
 
     #[test]

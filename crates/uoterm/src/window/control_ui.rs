@@ -39,8 +39,8 @@ use eframe::egui::text::LayoutJob;
 use eframe::egui::TextFormat;
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_view::clicks::{
-    act_for_click, bar_buttons, bar_status, beside_bar, grabbed, hint_for, ChatMode, GroundClicks,
-    Press, WordsEdge,
+    act_for_click, bar_buttons, bar_status, beside_bar, escape_on_map, grabbed, hint_for, ChatMode,
+    EscapeOnMap, GroundClicks, Press, WordsEdge,
 };
 use uoterm_view::ui::control_bar::{BAR_WIDTH, RULE_GAP, SEGMENT_HEIGHT, STRIP_PAD, STRIP_ROW};
 
@@ -324,10 +324,10 @@ fn act_on_map(
 ) {
     let hand = tools.hand;
     let escape = ui.input(|i| i.key_pressed(Key::Escape));
-    if escape && hand.aiming().is_some() {
-        hand.cancel_aim();
-    } else if escape && frame.target_cursor {
-        hand.act(Act::CancelTarget);
+    match escape_on_map(hand.aiming().is_some(), frame.target_cursor).filter(|_| escape) {
+        Some(EscapeOnMap::CancelAim) => hand.cancel_aim(),
+        Some(EscapeOnMap::Act(act)) => hand.act(act),
+        None => {}
     }
     let mouse = ui.input(|i| i.pointer.hover_pos());
     let on_panel =

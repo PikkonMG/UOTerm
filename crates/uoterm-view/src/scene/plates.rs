@@ -58,7 +58,7 @@ pub struct Plate {
 }
 
 /// One Modern plate, laid out.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, ::serde::Serialize)]
 pub struct PlacedPlate {
     /// The dark plate.
     pub area: Area,
@@ -70,7 +70,7 @@ pub struct PlacedPlate {
 }
 
 /// The bar of hit points on a Modern plate.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, ::serde::Serialize)]
 pub struct PlateBar {
     /// The dark edge behind the bar.
     pub back: Area,
