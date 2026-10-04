@@ -4,10 +4,10 @@
 mod auth;
 mod live;
 
-pub use auth::{api_token_from_env, bind_is_loopback, guard_layer, Guard};
+pub use auth::{api_token_from_env, bind_is_loopback, checked_api_token, guard_layer, Guard};
 pub use live::LIVE_POLL_MS;
 
-use crate::config::{client_version, era_from_str, ConnectOptions, ENV_API_TOKEN};
+use crate::config::{client_version, era_from_str, ConnectOptions};
 use crate::manager::Runtime;
 use crate::tools::{ToolCall, ToolResult, TOOL_OBSERVE};
 use axum::extract::{Path, State};
@@ -22,11 +22,12 @@ use uoterm_protocol::types::Era;
 
 const HEALTH_PATH: &str = "/health";
 
-/// What every route of the API reads: the sessions and who may call.
-#[derive(Clone)]
+/// What every route of the API reads: the sessions, who may call, and the
+/// acts that run on each session.
 pub struct ApiState {
     pub runtime: Runtime,
     pub guard: Guard,
+    pub acts: live::ActLines,
 }
 
 /// Every route of the API on `runtime`, behind the guard. `uoterm web`
@@ -37,6 +38,7 @@ pub fn router_for(runtime: Runtime, token: Option<String>, local_only: bool) -> 
     let state = Arc::new(ApiState {
         runtime,
         guard: guard.clone(),
+        acts: live::ActLines::default(),
     });
     let routes = Router::new()
         .route("/v1/sessions", get(list_sessions).post(create_session))
@@ -51,12 +53,7 @@ pub fn router_for(runtime: Runtime, token: Option<String>, local_only: bool) -> 
 }
 
 pub async fn serve(bind: &str, runtime: Runtime) -> crate::error::Result<()> {
-    let token = api_token_from_env();
-    if !bind_is_loopback(bind) && token.is_none() {
-        return Err(crate::error::RuntimeError::Usage(format!(
-            "non-loopback --api-bind requires {ENV_API_TOKEN}"
-        )));
-    }
+    let token = checked_api_token(bind, api_token_from_env())?;
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|e| crate::error::RuntimeError::Network(e.to_string()))?;
@@ -212,6 +209,7 @@ mod tests {
                 token: None,
                 local_only: true,
             },
+            acts: live::ActLines::default(),
         });
         let unknown =
             call_runtime_tool(State(st.clone()), Path("observe".into()), Json(json!({}))).await;

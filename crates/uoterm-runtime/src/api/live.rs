@@ -9,9 +9,12 @@
 //!
 //! An act of more than one step runs here, not in the page, with
 //! `ACT_STEP_GAP_MS` between the steps. A page that closes in the middle
-//! of a lift and its drop does not leave the item in the hand.
+//! of a lift and its drop does not leave the item in the hand. The acts of
+//! one session run one at a time, whatever link sent them, so two pages
+//! cannot mix the steps of their acts.
 
 use super::{session_not_found, ApiState};
+use crate::manager::Runtime;
 use crate::session::SessionHandle;
 use crate::tools::{ToolCall, ToolResult, TOOL_WATCH};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -19,12 +22,14 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use uoterm_world::tool_names::{ACT_STEP_GAP_MS, ARG_SIZE};
 use uoterm_world::WINDOW_RADAR_SIZE_WITH_ART;
 
@@ -33,10 +38,25 @@ pub const LIVE_POLL_MS: u64 = 33;
 /// Messages that wait for the page. A page that reads slowly holds the next
 /// picture back, so they do not pile up.
 const LIVE_OUTBOX: usize = 32;
+/// A page that takes longer than this to take one message is gone, and the
+/// link closes.
+const LIVE_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+/// The largest message a page may send. A script or a book page it saves
+/// fits.
+const LIVE_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+/// The longest act of the human today is a lift and its drop. This leaves
+/// room, and still keeps one act short.
+const MAX_ACT_STEPS: usize = 4;
+/// Acts of one session that may wait while another runs.
+const MAX_WAITING_ACTS: usize = 4;
+/// The act that runs, and the acts that wait.
+const ACT_PLACES: usize = MAX_WAITING_ACTS + 1;
 const KIND_FRAME: &str = "frame";
 const KIND_ANSWER: &str = "answer";
 const KIND_ENDED: &str = "ended";
 const EMPTY_ACT: &str = "an act needs at least one call";
+const ACT_TOO_LONG: &str = "an act has too many steps";
+const ACTS_WAITING: &str = "too many acts wait; try again when they are done";
 
 /// What the page sends.
 #[derive(Deserialize)]
@@ -69,97 +89,168 @@ impl From<PageCall> for ToolCall {
     }
 }
 
+/// The acts of each session: the one that runs and the ones that wait.
+#[derive(Default)]
+pub struct ActLines {
+    lines: Mutex<HashMap<String, Arc<ActLine>>>,
+}
+
+impl ActLines {
+    /// The line of session `id`. Lines of sessions the runtime no longer
+    /// has are let go.
+    fn line_for(&self, runtime: &Runtime, id: &str) -> Arc<ActLine> {
+        let mut lines = self.lines.lock();
+        lines.retain(|session, _| runtime.get(session).is_some());
+        lines.entry(id.to_string()).or_default().clone()
+    }
+}
+
+struct ActLine {
+    /// One place for the act that runs, and one for each that may wait.
+    places: Arc<Semaphore>,
+    /// Held by the act that runs.
+    turn: tokio::sync::Mutex<()>,
+}
+
+impl Default for ActLine {
+    fn default() -> Self {
+        Self {
+            places: Arc::new(Semaphore::new(ACT_PLACES)),
+            turn: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
 pub(super) async fn live(
     ws: WebSocketUpgrade,
     State(st): State<Arc<ApiState>>,
     Path(id): Path<String>,
 ) -> Response {
-    match st.runtime.get(&id) {
-        Some(handle) => ws.on_upgrade(move |socket| run_live(socket, handle)),
-        None => session_not_found(),
-    }
+    let Some(handle) = st.runtime.get(&id) else {
+        return session_not_found();
+    };
+    let line = st.acts.line_for(&st.runtime, &id);
+    ws.max_message_size(LIVE_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| run_live(socket, handle, line))
 }
 
 /// Sends pictures and reads the page until one side ends. Answers of acts
 /// still running go out while the page is there to read them.
-async fn run_live(socket: WebSocket, handle: SessionHandle) {
+async fn run_live(socket: WebSocket, handle: SessionHandle, line: Arc<ActLine>) {
     let (sink, stream) = socket.split();
     let (outbox, letters) = mpsc::channel(LIVE_OUTBOX);
     tokio::spawn(write_letters(sink, letters));
     let size = AtomicU16::new(WINDOW_RADAR_SIZE_WITH_ART);
+    let link = Link {
+        handle: &handle,
+        line: &line,
+        size: &size,
+        outbox: &outbox,
+    };
     tokio::select! {
-        () = send_frames(&handle, &size, &outbox) => {}
-        () = read_page(stream, &handle, &size, &outbox) => {}
+        () = send_frames(&link) => {}
+        () = read_page(stream, &link) => {}
     }
 }
 
+/// What the two halves of one link share.
+struct Link<'a> {
+    handle: &'a SessionHandle,
+    line: &'a Arc<ActLine>,
+    size: &'a AtomicU16,
+    outbox: &'a mpsc::Sender<String>,
+}
+
 /// The only writer of the socket. It closes the socket when nothing is
-/// left to send.
+/// left to send, and gives up on a page that stopped reading.
 async fn write_letters(
     mut sink: SplitSink<WebSocket, Message>,
     mut letters: mpsc::Receiver<String>,
 ) {
     while let Some(letter) = letters.recv().await {
-        if sink.send(Message::Text(letter.into())).await.is_err() {
+        let sent = tokio::time::timeout(LIVE_SEND_TIMEOUT, sink.send(Message::Text(letter.into())));
+        if !matches!(sent.await, Ok(Ok(()))) {
             return;
         }
     }
     let _ = sink.close().await;
 }
 
-async fn send_frames(handle: &SessionHandle, size: &AtomicU16, outbox: &mpsc::Sender<String>) {
+async fn send_frames(link: &Link<'_>) {
     let mut last_sent: Option<Value> = None;
     loop {
-        let watch = handle
+        let watch = link
+            .handle
             .call(ToolCall {
                 name: TOOL_WATCH.into(),
-                args: json!({ ARG_SIZE: size.load(Ordering::Relaxed) }),
+                args: json!({ ARG_SIZE: link.size.load(Ordering::Relaxed) }),
             })
             .await;
         if watch.ok {
             if last_sent.as_ref() != Some(&watch.result) {
                 let letter = json!({ "kind": KIND_FRAME, "watch": &watch.result });
-                if outbox.send(letter.to_string()).await.is_err() {
+                if link.outbox.send(letter.to_string()).await.is_err() {
                     return;
                 }
                 last_sent = Some(watch.result);
             }
-        } else if handle.closed() {
-            let _ = outbox.send(json!({ "kind": KIND_ENDED }).to_string()).await;
+        } else if link.handle.closed() {
+            let _ = link
+                .outbox
+                .send(json!({ "kind": KIND_ENDED }).to_string())
+                .await;
             return;
         }
         tokio::time::sleep(Duration::from_millis(LIVE_POLL_MS)).await;
     }
 }
 
-async fn read_page(
-    mut stream: SplitStream<WebSocket>,
-    handle: &SessionHandle,
-    size: &AtomicU16,
-    outbox: &mpsc::Sender<String>,
-) {
+async fn read_page(mut stream: SplitStream<WebSocket>, link: &Link<'_>) {
     while let Some(Ok(message)) = stream.next().await {
         let Message::Text(text) = message else {
             continue;
         };
         match serde_json::from_str::<FromPage>(&text) {
             Ok(FromPage::Call { id, call }) => {
-                let answer = handle.call(call.into()).await;
-                if outbox.send(answer_letter(id, answer)).await.is_err() {
+                let answer = link.handle.call(call.into()).await;
+                if link.outbox.send(answer_letter(id, answer)).await.is_err() {
                     return;
                 }
             }
-            Ok(FromPage::Act { id, calls }) => {
-                let (handle, outbox) = (handle.clone(), outbox.clone());
-                tokio::spawn(async move {
-                    let answer = run_act(&handle, calls).await;
-                    let _ = outbox.send(answer_letter(id, answer)).await;
-                });
-            }
-            Ok(FromPage::Size { size: wanted }) => size.store(wanted, Ordering::Relaxed),
+            Ok(FromPage::Act { id, calls }) => start_act(link, id, calls),
+            Ok(FromPage::Size { size }) => link.size.store(size, Ordering::Relaxed),
             Err(error) => tracing::debug!(%error, "the live link read a message it does not know"),
         }
     }
+}
+
+/// Starts an act in a task of its own, which keeps running when the page
+/// closes. It waits for the acts of the session before it, and is refused
+/// when it is too long or too many wait.
+///
+/// The answer goes to the page only when there is room for it: the act has
+/// already run, and a page that stopped reading must not hold it.
+fn start_act(link: &Link<'_>, id: u64, calls: Vec<PageCall>) {
+    let refuse = |words: &str| {
+        let _ = link
+            .outbox
+            .try_send(answer_letter(id, ToolResult::err(words)));
+    };
+    if calls.len() > MAX_ACT_STEPS {
+        return refuse(ACT_TOO_LONG);
+    }
+    let Ok(place) = link.line.places.clone().try_acquire_owned() else {
+        return refuse(ACTS_WAITING);
+    };
+    let (handle, line, outbox) = (link.handle.clone(), link.line.clone(), link.outbox.clone());
+    tokio::spawn(async move {
+        let answer = {
+            let _turn = line.turn.lock().await;
+            run_act(&handle, calls).await
+        };
+        drop(place);
+        let _ = outbox.try_send(answer_letter(id, answer));
+    });
 }
 
 /// Makes the calls of one act in order, `ACT_STEP_GAP_MS` apart, and stops
@@ -207,7 +298,7 @@ pub(super) mod tests {
     use tokio::net::TcpStream;
     use tokio::task::JoinHandle;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::http::header::COOKIE;
+    use tokio_tungstenite::tungstenite::http::HeaderName;
     use tokio_tungstenite::tungstenite::{self, Message as PageMessage};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
     use uoterm_protocol::types::PKT_DROP;
@@ -221,6 +312,10 @@ pub(super) mod tests {
     const NO_SUCH_SESSION: &str = "s999";
     const CALL_ID: u64 = 7;
     const ACT_ID: u64 = 1;
+    /// Two observe calls: one act, one gap.
+    const TWO_STEPS: usize = 2;
+    /// About ten polls of the link.
+    const IDLE_QUIET_MS: u64 = 300;
     /// Steps of the act a closed page leaves behind, and the gaps to wait
     /// for them: one gap between them and two to spare.
     const ACT_WAIT_GAPS: u64 = 3;
@@ -272,19 +367,21 @@ pub(super) mod tests {
         }
     }
 
-    /// The live link, or the HTTP status of a refused one.
+    /// The live link, or the HTTP status of a refused one. `headers` go
+    /// with the request, as a browser adds its cookie and origin.
     pub(in crate::api) async fn try_connect_live(
         addr: SocketAddr,
         id: &str,
-        cookie: Option<&str>,
+        headers: &[(&str, &str)],
     ) -> Result<WsClient, u16> {
         let mut request = format!("ws://{addr}/v1/sessions/{id}/live")
             .into_client_request()
             .unwrap();
-        if let Some(cookie) = cookie {
-            request
-                .headers_mut()
-                .insert(COOKIE, cookie.parse().unwrap());
+        for (name, value) in headers {
+            request.headers_mut().insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
         }
         match tokio_tungstenite::connect_async(request).await {
             Ok((ws, _)) => Ok(ws),
@@ -294,7 +391,7 @@ pub(super) mod tests {
     }
 
     async fn connect_live(addr: SocketAddr, id: &str) -> WsClient {
-        try_connect_live(addr, id, None).await.unwrap()
+        try_connect_live(addr, id, &[]).await.unwrap()
     }
 
     async fn next_json(ws: &mut WsClient) -> Value {
@@ -327,6 +424,17 @@ pub(super) mod tests {
         let first = next_json(&mut ws).await;
         assert_eq!(first["kind"], KIND_FRAME);
         assert!(first["watch"].get("self_state").is_some());
+    }
+
+    /// A session where nothing happens sends its picture once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_idle_session_sends_one_frame() {
+        let server = serve_with_mock_session().await;
+        let mut ws = connect_live(server.addr, &server.id).await;
+        next_of_kind(&mut ws, KIND_FRAME).await;
+        let quiet = Duration::from_millis(IDLE_QUIET_MS);
+        let next = tokio::time::timeout(quiet, next_json(&mut ws)).await;
+        assert!(next.is_err(), "a second frame came: {next:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -452,6 +560,56 @@ pub(super) mod tests {
         assert_eq!(answer["error"], EMPTY_ACT);
     }
 
+    fn observe_act(id: u64, steps: usize) -> Value {
+        let calls: Vec<Value> = (0..steps)
+            .map(|_| json!({"tool": TOOL_OBSERVE, "args": {}}))
+            .collect();
+        json!({"kind": "act", "id": id, "calls": calls})
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_too_long_act_is_refused() {
+        let server = serve_with_mock_session().await;
+        let mut ws = connect_live(server.addr, &server.id).await;
+        let started = Instant::now();
+        send_json(&mut ws, observe_act(ACT_ID, MAX_ACT_STEPS + 1)).await;
+        let answer = next_of_kind(&mut ws, KIND_ANSWER).await;
+        assert!(started.elapsed() < Duration::from_millis(ACT_STEP_GAP_MS));
+        assert_eq!(answer["ok"], false);
+        assert_eq!(answer["error"], ACT_TOO_LONG);
+    }
+
+    /// Two pages on one session: the second act starts its first step
+    /// only after the last step of the first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_acts_of_one_session_run_one_at_a_time() {
+        let server = serve_with_mock_session().await;
+        let mut a = connect_live(server.addr, &server.id).await;
+        let mut b = connect_live(server.addr, &server.id).await;
+        let started = Instant::now();
+        send_json(&mut a, observe_act(ACT_ID, TWO_STEPS)).await;
+        send_json(&mut b, observe_act(ACT_ID, TWO_STEPS)).await;
+        next_of_kind(&mut a, KIND_ANSWER).await;
+        next_of_kind(&mut b, KIND_ANSWER).await;
+        let both_acts = Duration::from_millis(ACT_STEP_GAP_MS * TWO_STEPS as u64);
+        assert!(started.elapsed() >= both_acts, "{:?}", started.elapsed());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_act_past_the_waiting_ones_is_refused() {
+        let server = serve_with_mock_session().await;
+        let mut ws = connect_live(server.addr, &server.id).await;
+        let running_and_waiting = ACT_PLACES as u64;
+        for id in 0..running_and_waiting {
+            send_json(&mut ws, observe_act(id, TWO_STEPS)).await;
+        }
+        send_json(&mut ws, observe_act(running_and_waiting, TWO_STEPS)).await;
+        let answer = next_of_kind(&mut ws, KIND_ANSWER).await;
+        assert_eq!(answer["id"], running_and_waiting);
+        assert_eq!(answer["ok"], false);
+        assert_eq!(answer["error"], ACTS_WAITING);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_closed_link_still_finishes_a_started_act() {
         let server = serve_with_mock_session().await;
@@ -486,7 +644,7 @@ pub(super) mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unknown_session_has_no_live_link() {
         let server = serve_with_mock_session().await;
-        let refused = try_connect_live(server.addr, NO_SUCH_SESSION, None).await;
+        let refused = try_connect_live(server.addr, NO_SUCH_SESSION, &[]).await;
         assert_eq!(refused.err(), Some(StatusCode::NOT_FOUND.as_u16()));
     }
 }

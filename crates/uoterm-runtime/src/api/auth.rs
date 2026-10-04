@@ -1,4 +1,10 @@
-//! Who the API answers: the loopback rule and the token rule.
+//! Who the API answers: the loopback rule, the origin rule and the token
+//! rule.
+//!
+//! A browser opens a WebSocket for any page, with no question first, and
+//! sends the cookies of this API along. So a request that comes from a web
+//! page must come from a page of this API itself: its `Origin` must be
+//! this API. A caller that is no web page sends no `Origin`.
 //!
 //! A caller shows the token in an `Authorization: Bearer` header, or in a
 //! cookie. A web page cannot put headers on a WebSocket, so it trades the
@@ -7,9 +13,10 @@
 
 use super::{ApiState, HEALTH_PATH};
 use crate::config::{BEARER_PREFIX, ENV_API_TOKEN};
+use crate::error::{Result, RuntimeError};
 use axum::extract::{Request, State};
 use axum::http::{
-    header::{AUTHORIZATION, COOKIE, HOST, SET_COOKIE},
+    header::{AUTHORIZATION, COOKIE, HOST, ORIGIN, SET_COOKIE},
     HeaderMap, StatusCode,
 };
 use axum::middleware::{self, Next};
@@ -30,6 +37,12 @@ const TOKEN_COOKIE: &str = "uoterm_token";
 const TOKEN_COOKIE_RULES: &str = "HttpOnly; SameSite=Strict; Path=/";
 const COOKIE_SEPARATOR: char = ';';
 const COOKIE_NAME_END: char = '=';
+/// Marks a cookie value cannot carry, besides spaces and control marks.
+const NOT_IN_COOKIE: &[char] = &['"', ',', ';', '\\'];
+/// The origin of a page this API serves: plain HTTP, then its host.
+const PAGE_SCHEME: &str = "http://";
+const ONLY_THIS_MACHINE: &str = "this API answers callers on this machine only";
+const ONLY_ITS_PAGES: &str = "this API answers only the pages it serves";
 
 /// Who may call: the token a caller must show, if any, and whether only a
 /// caller on this machine is answered.
@@ -55,6 +68,30 @@ pub fn api_token_from_env() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// The token the API on `bind` wants, when it may serve with it: an API
+/// other machines reach needs a token, and a token goes in a cookie, so it
+/// may hold only marks a cookie can carry.
+pub fn checked_api_token(bind: &str, token: Option<String>) -> Result<Option<String>> {
+    if !bind_is_loopback(bind) && token.is_none() {
+        return Err(RuntimeError::Usage(format!(
+            "non-loopback --api-bind requires {ENV_API_TOKEN}"
+        )));
+    }
+    if token.as_deref().is_some_and(|token| !fits_cookie(token)) {
+        return Err(RuntimeError::Usage(format!(
+            "{ENV_API_TOKEN} must hold only visible ASCII marks, without \" , ; or \\"
+        )));
+    }
+    Ok(token)
+}
+
+/// True when a cookie can carry `token` as its value.
+fn fits_cookie(token: &str) -> bool {
+    token
+        .chars()
+        .all(|c| c.is_ascii_graphic() && !NOT_IN_COOKIE.contains(&c))
 }
 
 pub fn bind_is_loopback(bind: &str) -> bool {
@@ -92,15 +129,27 @@ fn same_secret(presented: &str, expected: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// True when a web page at `origin` is a page of the API at `host`. On an
+/// API of this machine only, that page is on this machine too.
+fn same_origin(origin: &str, host: Option<&str>, local_only: bool) -> bool {
+    let Some(page_host) = origin.strip_prefix(PAGE_SCHEME) else {
+        return false;
+    };
+    host.is_some_and(|host| page_host.eq_ignore_ascii_case(host))
+        && (!local_only || host_is_loopback(page_host))
+}
+
 async fn require_bearer(State(guard): State<Guard>, req: Request, next: Next) -> Response {
-    if guard.local_only {
-        let named = req.headers().get(HOST).and_then(|v| v.to_str().ok());
-        if named.is_some_and(|host| !host_is_loopback(host)) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "this API answers callers on this machine only" })),
-            )
-                .into_response();
+    let host = req.headers().get(HOST).and_then(|v| v.to_str().ok());
+    if guard.local_only && host.is_some_and(|host| !host_is_loopback(host)) {
+        return forbidden(ONLY_THIS_MACHINE);
+    }
+    if let Some(origin) = req.headers().get(ORIGIN) {
+        let from_its_page = origin
+            .to_str()
+            .is_ok_and(|origin| same_origin(origin, host, guard.local_only));
+        if !from_its_page {
+            return forbidden(ONLY_ITS_PAGES);
         }
     }
     // The token page checks the token itself, and gives the cookie.
@@ -115,28 +164,27 @@ async fn require_bearer(State(guard): State<Guard>, req: Request, next: Next) ->
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix(BEARER_PREFIX));
-    let presented = [bearer, cookie_token(req.headers())];
-    if presented
+    let shown = bearer
         .into_iter()
-        .flatten()
-        .any(|token| same_secret(token, expected))
-    {
+        .chain(cookie_tokens(req.headers()))
+        .any(|token| same_secret(token, expected));
+    if shown {
         next.run(req).await
     } else {
         unauthorized()
     }
 }
 
-/// The token in the `uoterm_token` cookie, among every cookie the caller
-/// sent.
-fn cookie_token(headers: &HeaderMap) -> Option<&str> {
+/// The tokens in every `uoterm_token` cookie the caller sent. A browser
+/// may send more than one cookie of that name.
+fn cookie_tokens(headers: &HeaderMap) -> impl Iterator<Item = &str> {
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|cookies| cookies.split(COOKIE_SEPARATOR))
         .filter_map(|cookie| cookie.trim().split_once(COOKIE_NAME_END))
-        .find(|(name, _)| *name == TOKEN_COOKIE)
+        .filter(|(name, _)| *name == TOKEN_COOKIE)
         .map(|(_, token)| token)
 }
 
@@ -151,16 +199,20 @@ pub(super) async fn give_token(
     State(st): State<Arc<ApiState>>,
     Json(body): Json<TokenBody>,
 ) -> Response {
-    let right = st
+    let Some(expected) = st
         .guard
         .token
         .as_deref()
-        .is_some_and(|expected| same_secret(&body.token, expected));
-    if !right {
+        .filter(|expected| same_secret(&body.token, expected))
+    else {
         return unauthorized();
-    }
-    let cookie = format!("{TOKEN_COOKIE}={}; {TOKEN_COOKIE_RULES}", body.token);
+    };
+    let cookie = format!("{TOKEN_COOKIE}={expected}; {TOKEN_COOKIE_RULES}");
     (StatusCode::NO_CONTENT, [(SET_COOKIE, cookie)]).into_response()
+}
+
+fn forbidden(words: &str) -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "error": words }))).into_response()
 }
 
 fn unauthorized() -> Response {
@@ -174,7 +226,9 @@ fn unauthorized() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::live::tests::{serve_with_mock_session_token, try_connect_live};
+    use crate::api::live::tests::{
+        serve_with_mock_session, serve_with_mock_session_token, try_connect_live,
+    };
     use crate::api::{router_for, ApiState};
     use crate::manager::Runtime;
     use axum::body::Body;
@@ -187,6 +241,10 @@ mod tests {
     const TEST_SESSIONS: usize = 1;
     const LOCAL_HOST: &str = "127.0.0.1:7733";
     const FOREIGN_HOST: &str = "evil.example:7733";
+    const LOCAL_PAGE: &str = "http://127.0.0.1:7733";
+    const FOREIGN_PAGE: &str = "http://evil.example";
+    /// A port other than the one of the test server.
+    const OTHER_PORT: u16 = 1;
     const SESSIONS_PATH: &str = "/v1/sessions";
     const JSON_TYPE: &str = "application/json";
 
@@ -197,6 +255,7 @@ mod tests {
                 token: Some(token.to_string()),
                 local_only: true,
             },
+            acts: crate::api::live::ActLines::default(),
         })
     }
 
@@ -230,7 +289,7 @@ mod tests {
     async fn a_cookie_token_opens_the_live_link() {
         let server = serve_with_mock_session_token(TOKEN).await;
         let cookie = format!("{TOKEN_COOKIE}={TOKEN}");
-        let ws = try_connect_live(server.addr, &server.id, Some(&cookie)).await;
+        let ws = try_connect_live(server.addr, &server.id, &[(COOKIE.as_str(), &cookie)]).await;
         assert!(ws.is_ok());
     }
 
@@ -238,7 +297,8 @@ mod tests {
     async fn a_wrong_cookie_is_refused() {
         let server = serve_with_mock_session_token(TOKEN).await;
         let cookie = format!("{TOKEN_COOKIE}=wrong");
-        let refused = try_connect_live(server.addr, &server.id, Some(&cookie)).await;
+        let refused =
+            try_connect_live(server.addr, &server.id, &[(COOKIE.as_str(), &cookie)]).await;
         assert_eq!(refused.err(), Some(StatusCode::UNAUTHORIZED.as_u16()));
     }
 
@@ -323,15 +383,112 @@ mod tests {
     }
 
     #[test]
-    fn the_token_cookie_is_found_among_others() {
+    fn every_token_cookie_is_found_among_others() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.append(COOKIE, "theme=dark".parse().unwrap());
+        headers.append(COOKIE, format!("{TOKEN_COOKIE}=old").parse().unwrap());
         headers.append(
             COOKIE,
             format!("a=1; {TOKEN_COOKIE}={TOKEN}").parse().unwrap(),
         );
-        assert_eq!(cookie_token(&headers), Some(TOKEN));
-        assert_eq!(cookie_token(&axum::http::HeaderMap::new()), None);
+        let found: Vec<&str> = cookie_tokens(&headers).collect();
+        assert_eq!(found, ["old", TOKEN]);
+        assert_eq!(cookie_tokens(&axum::http::HeaderMap::new()).count(), 0);
+    }
+
+    /// A page of another site, or of another program on this machine,
+    /// is refused, on the live link too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_a_page_of_this_api_opens_the_live_link() {
+        let server = serve_with_mock_session().await;
+        let own_page = format!("http://{}", server.addr);
+        let other_program = format!("http://127.0.0.1:{OTHER_PORT}");
+        let refused = StatusCode::FORBIDDEN.as_u16();
+        for page in [FOREIGN_PAGE, other_program.as_str()] {
+            let link = try_connect_live(server.addr, &server.id, &[(ORIGIN.as_str(), page)]).await;
+            assert_eq!(link.err(), Some(refused), "{page}");
+        }
+        let link = try_connect_live(server.addr, &server.id, &[(ORIGIN.as_str(), &own_page)]).await;
+        assert!(link.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_page_of_another_site_gets_no_cookie() {
+        let headers = [
+            (CONTENT_TYPE.as_str(), JSON_TYPE),
+            (ORIGIN.as_str(), FOREIGN_PAGE),
+        ];
+        let status = status_of(
+            Method::POST,
+            TOKEN_PATH,
+            LOCAL_HOST,
+            &headers,
+            token_body(TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// A caller that is no web page sends no origin, and passes as before.
+    #[tokio::test]
+    async fn a_call_without_an_origin_passes() {
+        let bearer = format!("{BEARER_PREFIX}{TOKEN}");
+        let cases: [(&[(&str, &str)], StatusCode); 3] = [
+            (&[(AUTHORIZATION.as_str(), &bearer)], StatusCode::OK),
+            (
+                &[
+                    (AUTHORIZATION.as_str(), &bearer),
+                    (ORIGIN.as_str(), LOCAL_PAGE),
+                ],
+                StatusCode::OK,
+            ),
+            (
+                &[
+                    (AUTHORIZATION.as_str(), &bearer),
+                    (ORIGIN.as_str(), FOREIGN_PAGE),
+                ],
+                StatusCode::FORBIDDEN,
+            ),
+        ];
+        for (headers, expected) in cases {
+            let status = status_of(
+                Method::GET,
+                SESSIONS_PATH,
+                LOCAL_HOST,
+                headers,
+                Body::empty(),
+            )
+            .await;
+            assert_eq!(status, expected, "{headers:?}");
+        }
+    }
+
+    #[test]
+    fn a_page_is_of_this_api_only_at_its_own_address() {
+        assert!(same_origin(LOCAL_PAGE, Some(LOCAL_HOST), true));
+        assert!(!same_origin(
+            "https://127.0.0.1:7733",
+            Some(LOCAL_HOST),
+            true
+        ));
+        assert!(!same_origin("null", Some(LOCAL_HOST), true));
+        assert!(!same_origin(LOCAL_PAGE, None, true));
+        let foreign = format!("http://{FOREIGN_HOST}");
+        assert!(!same_origin(&foreign, Some(FOREIGN_HOST), true));
+        assert!(same_origin(&foreign, Some(FOREIGN_HOST), false));
+    }
+
+    #[test]
+    fn a_token_must_fit_in_a_cookie() {
+        assert_eq!(checked_api_token(LOCAL_HOST, None).unwrap(), None);
+        assert!(checked_api_token("0.0.0.0:7733", None).is_err());
+        let fits = checked_api_token(LOCAL_HOST, Some(TOKEN.into())).unwrap();
+        assert_eq!(fits.as_deref(), Some(TOKEN));
+        for bad in ["a b", "a;b", "a,b", "a\"b", "a\\b", "a\tb", "a\u{e9}b"] {
+            assert!(
+                checked_api_token(LOCAL_HOST, Some(bad.into())).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
