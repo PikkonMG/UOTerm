@@ -153,6 +153,8 @@ pub struct WebView {
     covered: Vec<Area>,
     pixels_per_point: f32,
     measure: Option<Measure>,
+    /// Measures words in the font the page draws the panels in.
+    body_measure: Option<Measure>,
     /// The clock of the last tick.
     last_tick: Option<f64>,
     /// The tooltip of the thing under the mouse on the map.
@@ -219,6 +221,7 @@ impl WebView {
             covered: Vec::new(),
             pixels_per_point: 1.0,
             measure: None,
+            body_measure: None,
             last_tick: None,
             tooltip: None,
         };
@@ -260,6 +263,11 @@ impl WebView {
     /// Measures the words of the name plates as the page draws them.
     pub fn set_measure(&mut self, measure: Measure) {
         self.measure = Some(measure);
+    }
+
+    /// Measures the words of the panels as the page draws them.
+    pub fn set_body_measure(&mut self, measure: Measure) {
+        self.body_measure = Some(measure);
     }
 
     /// Takes one event of the page. Gives the calls for the page that are
@@ -369,6 +377,19 @@ impl WebView {
 pub struct TooltipData {
     pub lines: Vec<String>,
     pub footer: String,
+}
+
+/// A measure of words by a function of the page that gives
+/// `[width, height]`.
+fn page_measure(measure: js_sys::Function) -> Measure {
+    Box::new(move |text: &str| {
+        let size = measure
+            .call1(&JsValue::NULL, &JsValue::from_str(text))
+            .ok()
+            .and_then(|size| serde_wasm_bindgen::from_value::<[f32; 2]>(size).ok())
+            .unwrap_or_default();
+        Vector::new(size[0], size[1])
+    })
 }
 
 /// The view for the page. Each method turns the values of the page into
@@ -591,14 +612,15 @@ impl WebView {
     /// `(text: string) => [width, height]`.
     #[wasm_bindgen(js_name = setTextMeasure)]
     pub fn set_text_measure(&mut self, measure: js_sys::Function) {
-        self.set_measure(Box::new(move |text: &str| {
-            let size = measure
-                .call1(&JsValue::NULL, &JsValue::from_str(text))
-                .ok()
-                .and_then(|size| serde_wasm_bindgen::from_value::<[f32; 2]>(size).ok())
-                .unwrap_or_default();
-            Vector::new(size[0], size[1])
-        }));
+        self.set_measure(page_measure(measure));
+    }
+
+    /// The function that measures words of the panels as the page draws
+    /// them: `(text: string) => [width, height]`. A page of a book breaks
+    /// its lines by it.
+    #[wasm_bindgen(js_name = setBodyMeasure)]
+    pub fn set_body_measure_js(&mut self, measure: js_sys::Function) {
+        self.set_body_measure(page_measure(measure));
     }
 
     /// The time between two frames the Video page asks for, in
@@ -617,9 +639,11 @@ pub(crate) mod tests {
     use uoterm_view::actions::WindowCommand;
     use uoterm_view::art::Cell;
     use uoterm_view::input::Mods;
+    use uoterm_view::model::loot::CORPSE_GUMP;
     use uoterm_view::settings::{KeyBinding, KeyChord, MacroStep};
 
     pub const MARA: &str = "Mara";
+    const CORPSE: u32 = 0x4000_0200;
     pub const HATCHET: u32 = 0x4000_0010;
     const BACKPACK: u32 = 0x4000_0001;
     const ME: u32 = 0x0000_0001;
@@ -952,7 +976,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_view_hides_its_chat_line_and_the_page_closes_the_corpses() {
+    fn the_view_hides_its_chat_line_and_closes_the_corpses() {
         let mut profile = Profile::default();
         for (key, action) in [("F7", "toggle_chat"), ("F8", "close_corpses")] {
             profile.macros.key_bindings.push(KeyBinding {
@@ -963,7 +987,11 @@ pub(crate) mod tests {
             });
         }
         let mut view = WebView::new(&serde_json::to_string(&profile).unwrap());
-        view.frame(&fixture_watch_with_backpack(), 0.0);
+        let mut watch: serde_json::Value =
+            serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
+        watch["containers"] = json!([{ "serial": CORPSE, "gump": CORPSE_GUMP, "total": 0 }]);
+        view.frame(&watch.to_string(), 0.0);
+        assert_eq!(view.panel_data(0.0).grids.len(), 1);
         // One macro runs at a time, so each key has a frame of its own.
         for (at, key) in ["F7", "F8"].into_iter().enumerate() {
             let now = at as f64;
@@ -974,7 +1002,8 @@ pub(crate) mod tests {
             view.tick_native(now, VIEW, None);
         }
         assert!(view.panel_data(0.0).chat.hidden);
-        assert!(view.take_out_native().contains(&OutCall::Window {
+        assert!(view.panel_data(0.0).grids.is_empty(), "the corpse closed");
+        assert!(!view.take_out_native().contains(&OutCall::Window {
             command: WindowCommand::CloseCorpses
         }));
     }

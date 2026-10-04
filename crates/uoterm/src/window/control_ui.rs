@@ -561,10 +561,10 @@ impl ControlUi {
                 // Each style asks with its own question before the game
                 // quits.
                 Press::Quit => self.window_commands.push(WindowCommand::QuitGame),
-                Press::Bag(bag) if places.boxes.shows(frame, bag) => places.boxes.close(bag),
                 Press::Bag(bag) => {
-                    places.boxes.used(bag);
-                    hand.act(Act::Use(bag));
+                    if let Some(act) = places.boxes.toggle(frame, bag) {
+                        hand.act(act);
+                    }
                 }
             }
         }

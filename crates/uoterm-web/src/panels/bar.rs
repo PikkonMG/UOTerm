@@ -238,7 +238,7 @@ impl WebView {
             Press::Options => self.style_command(frame, toggle(GumpKind::Options)),
             Press::Profile => self.hand.act(Act::ProfileRead(frame.serial)),
             Press::Quit => self.style_command(frame, WindowCommand::QuitGame),
-            Press::Bag(bag) => self.hand.act(Act::Use(bag)),
+            Press::Bag(bag) => self.toggle_bag(frame, bag),
         }
     }
 

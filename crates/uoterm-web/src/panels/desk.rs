@@ -70,6 +70,16 @@ impl From<DropZone> for Zone {
     }
 }
 
+impl From<Zone> for DropZone {
+    fn from(zone: Zone) -> Self {
+        match zone {
+            Zone::Into(serial) => DropZone::Into(serial),
+            Zone::Wear => DropZone::Wear,
+            Zone::Slot(slot) => DropZone::Slot(slot),
+        }
+    }
+}
+
 /// Where the button came up, in points of the view: over a zone of a
 /// panel, over a panel that is no zone, or over the map.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]

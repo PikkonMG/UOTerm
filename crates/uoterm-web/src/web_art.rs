@@ -667,7 +667,7 @@ impl WebArt {
         asked_for(&mut self.blocks, &self.wants, key, DataPath::Block).art()
     }
 
-    fn tile_data(&self) -> Option<&TileData> {
+    pub(crate) fn tile_data(&self) -> Option<&TileData> {
         table_art(&self.tiles).ready()
     }
 }

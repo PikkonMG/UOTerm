@@ -3,6 +3,7 @@
 //! boxes and buttons. Each one shows at all times, so the operator sees
 //! what the agent sees. The clicks work only while the human has control.
 
+use super::actions::GumpOp;
 use super::control::{Act, Hand};
 use super::desk::Desk;
 use super::model::clicks::ClickDelay;
@@ -137,18 +138,24 @@ pub(super) fn ask_waiting_name(ui: &egui::Ui, clicks: &mut ClickDelay, hand: &Ha
 }
 
 impl BoxesUi {
-    /// True when the window shows this container now.
-    pub fn shows(&self, frame: &WatchFrame, container: u32) -> bool {
-        self.closed.shows(frame, container)
-    }
-
-    pub fn close(&mut self, container: u32) {
-        self.closed.close(container);
-    }
-
     /// Call this when the human uses a thing. A closed container shows again.
     pub fn used(&mut self, thing: u32) {
         self.closed.used(thing);
+    }
+
+    /// The bag button. Gives the act that opens the bag.
+    pub fn toggle(&mut self, frame: &WatchFrame, bag: u32) -> Option<Act> {
+        self.closed.toggle(frame, bag)
+    }
+
+    /// A command for the backpack window. Gives the act that opens it.
+    pub fn backpack(&mut self, frame: &WatchFrame, bag: u32, op: GumpOp) -> Option<Act> {
+        self.closed.backpack(frame, bag, op)
+    }
+
+    /// Closes every open container, or the corpses alone.
+    pub fn close_open(&mut self, frame: &WatchFrame, corpses_only: bool) {
+        self.closed.close_open(frame, corpses_only);
     }
 
     /// Draws the containers as grids and, without the gump art of the

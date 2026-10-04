@@ -53,6 +53,10 @@ pub struct TipKey {
     /// with no serial.
     pub words: String,
     pub footer: String,
+    /// A thing of a grid: its tip compares it with the worn one and tells
+    /// what a bag holds.
+    #[serde(default)]
+    pub in_grid: bool,
 }
 
 impl TipKey {
@@ -62,6 +66,7 @@ impl TipKey {
             serial: Some(serial),
             words: name.to_string(),
             footer: footer.to_string(),
+            in_grid: false,
         }
     }
 
@@ -72,6 +77,7 @@ impl TipKey {
             serial: None,
             words: words.to_string(),
             footer: footer.to_string(),
+            in_grid: false,
         }
     }
 }
@@ -188,11 +194,16 @@ impl WebView {
         let hover = self.panels.ring.hover.clone()?;
         let lines = match hover.serial {
             Some(serial) => {
+                let extra = if hover.in_grid {
+                    self.grid_tip_lines(serial)
+                } else {
+                    Vec::new()
+                };
                 let hand = &mut self.hand;
                 self.tips
                     .rest_on(serial, time, |serial| hand.want_tip(serial));
                 self.tips
-                    .shown(serial, &hover.words, &[])
+                    .shown(serial, &hover.words, &extra)
                     .into_iter()
                     .map(str::to_string)
                     .collect()

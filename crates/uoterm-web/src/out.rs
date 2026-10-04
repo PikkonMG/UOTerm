@@ -222,6 +222,16 @@ impl Hand {
         self.guard.aiming()
     }
 
+    /// The thing a click took for `aim`, once.
+    pub fn take_picked(&mut self, aim: LocalAim) -> Option<u32> {
+        self.guard.take_picked(aim)
+    }
+
+    /// The bag grabbed items go into.
+    pub fn grab_bag(&self) -> Option<u32> {
+        self.guard.grab_bag()
+    }
+
     pub fn cancel_aim(&mut self) {
         self.guard.cancel_aim();
     }

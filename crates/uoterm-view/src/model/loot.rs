@@ -10,6 +10,8 @@ use uoterm_protocol::types::{tile_distance, LAYER_BEARD, LAYER_FACE, LAYER_HAIR}
 
 /// The graphic of every corpse; its amount is the body it was.
 pub const CORPSE_GRAPHIC: u16 = 0x2006;
+/// The container gump a corpse opens with.
+pub const CORPSE_GUMP: u16 = 0x0009;
 /// How far the nearby-loot window looks, in tiles. A shard lets a corpse
 /// be looted from two tiles; the window lists a little farther, so the
 /// player sees what to walk to.

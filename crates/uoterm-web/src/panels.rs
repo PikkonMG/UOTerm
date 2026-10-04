@@ -8,30 +8,45 @@
 //! back; the view keeps it by the rules of `uoterm_view::ui::places`, as
 //! the Rust window does, and saves the profile.
 
+mod asks;
 mod bar;
 mod bars;
+mod deals;
 mod deck;
 mod desk;
+mod doll;
+mod grids;
 mod hud;
 mod journal;
+mod pages;
 mod radar;
 mod ring;
 mod sheet;
 
+pub use asks::{DyeData, EntryData, RaceData, TipData};
 pub use bar::{ChatData, ControlBarData, LauncherData, QuestionData, ReportData, WaitingData};
 pub use bars::{HealthBarData, NearData};
+pub use deals::{ShopData, TradeData};
 pub use deck::{HotbarAction, HotbarData, HotbarSlot, PickerData};
 pub use desk::{CarriedData, DropZone, SplitData};
+pub use doll::PaperdollData;
+pub use grids::{GridData, LootData};
 pub use hud::{ActivityData, PackData, VitalsData};
 pub use journal::JournalData;
+pub use pages::{BoardData, BookData, OldMenuData};
 pub use radar::RadarData;
 pub use ring::{RingData, TipKey};
 pub use sheet::SheetData;
 
+pub(crate) use asks::AsksState;
 pub(crate) use bar::BarState;
 pub(crate) use bars::BarsState;
+pub(crate) use deals::DealsState;
 pub(crate) use deck::DeckState;
+pub(crate) use doll::DollState;
+pub(crate) use grids::GridsState;
 pub(crate) use journal::JournalState;
+pub(crate) use pages::PagesState;
 pub(crate) use radar::RadarState;
 pub(crate) use ring::RingState;
 pub(crate) use sheet::SheetState;
@@ -63,6 +78,20 @@ pub const PANEL_SPLIT: &str = "split";
 pub const PANEL_RING: &str = "ring";
 pub const PANEL_TIPS: &str = "tips";
 pub const PANEL_DESK: &str = "desk";
+pub const PANEL_SHOP: &str = "shop";
+pub const PANEL_LOOT: &str = "loot";
+pub const PANEL_OLD_MENU: &str = "old_menu";
+pub const PANEL_BOOK: &str = "book";
+pub const PANEL_BOARD: &str = "board";
+pub const PANEL_PAPERDOLL: &str = "paperdoll";
+pub const PANEL_ENTRY: &str = "entry";
+pub const PANEL_RACE: &str = "race";
+pub const PANEL_TIP: &str = "tip";
+pub const PANEL_DYE: &str = "dye";
+/// A grid container is the panel `"grid:{serial}"`.
+pub const PANEL_GRID_PREFIX: &str = "grid:";
+/// A trade is the panel `"trade:{serial}"`, by the character's box of it.
+pub const PANEL_TRADE_PREFIX: &str = "trade:";
 /// A health bar of its own is the panel `"health:{serial}"`; the target
 /// bar is `"health:target"`.
 pub const PANEL_HEALTH_PREFIX: &str = "health:";
@@ -96,8 +125,26 @@ pub struct PanelData {
     /// The choices of the empty slot the player clicked.
     pub picker: Option<PickerData>,
     pub sheet: Option<Framed<SheetData>>,
+    /// The open containers, each a grid.
+    pub grids: Vec<Framed<GridData>>,
+    /// The corpses near the character.
+    pub loot: Option<Framed<LootData>>,
     /// The box that asks how many of a pile to move.
     pub split: Option<Framed<SplitData>>,
+    /// The list of a shopkeeper.
+    pub shop: Option<Framed<ShopData>>,
+    pub trades: Vec<Framed<TradeData>>,
+    pub old_menu: Option<Framed<OldMenuData>>,
+    pub book: Option<Framed<BookData>>,
+    pub board: Option<Framed<BoardData>>,
+    pub paperdoll: Option<Framed<PaperdollData>>,
+    /// The dialog for words the shard waits for.
+    pub entry: Option<Framed<EntryData>>,
+    pub race: Option<Framed<RaceData>>,
+    /// The tip of the day or the notice of the shard.
+    pub tip: Option<Framed<TipData>>,
+    /// The dye panel, when the client files have no gump art.
+    pub dye: Option<Framed<DyeData>>,
     pub ring: Option<RingData>,
     /// The words of the last act, while they show.
     pub report: Option<ReportData>,
@@ -269,6 +316,11 @@ pub(crate) struct PanelState {
     pub ring: RingState,
     pub sheet: SheetState,
     pub desk: desk::DeskState,
+    pub deals: DealsState,
+    pub grids: GridsState,
+    pub pages: PagesState,
+    pub doll: DollState,
+    pub asks: AsksState,
     pub hud: hud::HudBars,
 }
 
@@ -310,7 +362,19 @@ impl WebView {
                 hotbar: None,
                 picker: None,
                 sheet: None,
+                grids: Vec::new(),
+                loot: None,
                 split: None,
+                shop: None,
+                trades: Vec::new(),
+                old_menu: None,
+                book: None,
+                board: None,
+                paperdoll: None,
+                entry: None,
+                race: None,
+                tip: None,
+                dye: None,
                 ring: None,
                 report,
                 question,
@@ -337,7 +401,19 @@ impl WebView {
             hotbar: frame.human_control.then(|| self.hotbar_data(&frame)),
             picker: self.picker_data(&frame),
             sheet: self.sheet_data(&frame),
+            grids: self.grids_data(&frame),
+            loot: self.loot_data(&frame),
             split: self.split_data(),
+            shop: self.shop_data(&frame),
+            trades: self.trades_data(&frame),
+            old_menu: self.menu_data(&frame),
+            book: self.book_data(&frame),
+            board: self.board_data(&frame),
+            paperdoll: self.doll_data(&frame),
+            entry: self.entry_data(&frame),
+            race: self.race_data(&frame),
+            tip: self.tip_data(&frame),
+            dye: self.dye_data(&frame),
             ring: self.ring_data(&frame),
             report,
             question,
@@ -385,8 +461,9 @@ impl WebView {
     }
 
     /// The spec of the frame of panel `panel` now, when it shows one.
-    fn frame_spec(&self, panel: &str) -> Option<FrameSpec> {
-        let frame = self.frame.as_ref()?;
+    fn frame_spec(&mut self, panel: &str) -> Option<FrameSpec> {
+        let frame = self.frame.clone()?;
+        let frame = &frame;
         match panel {
             PANEL_LAUNCHER => Some(self.launcher_spec()),
             PANEL_ACTIVITY => Some(self.activity_spec(frame)),
@@ -399,6 +476,18 @@ impl WebView {
             PANEL_SHEET => Some(self.sheet_spec(frame)),
             PANEL_SPLIT => self.split_spec(),
             PANEL_QUESTION => self.question_spec(),
+            PANEL_SHOP => self.shop_spec(frame),
+            PANEL_LOOT => self.loot_spec(frame),
+            PANEL_OLD_MENU => self.menu_spec(frame),
+            PANEL_BOOK => self.book_spec(frame),
+            PANEL_BOARD => self.board_spec(frame),
+            PANEL_PAPERDOLL => self.doll_spec(),
+            PANEL_ENTRY => self.entry_spec(frame),
+            PANEL_RACE => self.race_spec(frame),
+            PANEL_TIP => self.tip_spec(frame),
+            PANEL_DYE => self.dye_spec(frame),
+            grid if grid.starts_with(PANEL_GRID_PREFIX) => self.grid_panel_spec(frame, grid),
+            trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.trade_spec(frame, trade),
             health => self.health_bar_spec(frame, health),
         }
     }
@@ -426,6 +515,18 @@ impl WebView {
             PANEL_RING => self.ring_action(action),
             PANEL_TIPS => self.tips_action(action),
             PANEL_DESK => self.desk_action(action),
+            PANEL_SHOP => self.shop_action(action),
+            PANEL_LOOT => self.loot_action(action),
+            PANEL_OLD_MENU => self.menu_action(action),
+            PANEL_BOOK => self.book_action(action),
+            PANEL_BOARD => self.board_action(action),
+            PANEL_PAPERDOLL => self.doll_action(action),
+            PANEL_ENTRY => self.entry_action(action),
+            PANEL_RACE => self.race_action(action),
+            PANEL_TIP => self.tip_action(action),
+            PANEL_DYE => self.dye_action(action),
+            grid if grid.starts_with(PANEL_GRID_PREFIX) => self.grid_action(grid, action),
+            trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.trade_action(trade, action),
             health => self.health_bar_action(health, action),
         }
     }
@@ -469,6 +570,17 @@ impl WebView {
             PANEL_SHEET => self.panels.sheet.open = false,
             PANEL_SPLIT => self.panels.desk.split = None,
             PANEL_QUESTION => self.answer_asked(false),
+            PANEL_SHOP => self.close_deal(panel),
+            PANEL_LOOT => self.close_loot(),
+            PANEL_OLD_MENU => self.menu_action(serde_json::json!({ "cancel": true })),
+            PANEL_BOOK => self.close_book(),
+            PANEL_BOARD => self.close_board(),
+            PANEL_PAPERDOLL => self.close_doll(),
+            PANEL_ENTRY => self.close_entry(),
+            PANEL_RACE => self.close_race(),
+            PANEL_TIP => self.close_tip(),
+            grid if grid.starts_with(PANEL_GRID_PREFIX) => self.close_grid(grid),
+            trade if trade.starts_with(PANEL_TRADE_PREFIX) => self.close_deal(trade),
             health => self.close_health_bar(health),
         }
     }

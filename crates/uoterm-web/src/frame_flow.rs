@@ -252,6 +252,11 @@ impl WebView {
         };
         self.follow_bars(frame, pointer);
         self.follow_sheet(frame, now);
+        self.follow_deals(frame, now);
+        self.follow_grids(frame, now);
+        self.follow_pages(frame);
+        self.follow_doll(frame, now);
+        self.follow_asks(frame);
         moving || frame.danger() != uoterm_view::frame::Danger::Calm
     }
 
@@ -276,6 +281,7 @@ impl WebView {
                 self.close_health_bars(frame, inactive_only);
             }
             WindowCommand::CloseAllGumps => self.close_all(frame),
+            WindowCommand::CloseCorpses => self.panels.grids.closed.close_open(frame, true),
             WindowCommand::Gump(op, kind) => {
                 if !self.gump(frame, op, kind) {
                     self.hand.push(OutCall::Window {
@@ -300,6 +306,8 @@ impl WebView {
         self.panels.sheet.open = false;
         launch::close_all(&mut self.profile);
         self.close_health_bars(frame, false);
+        self.panels.grids.closed.close_open(frame, false);
+        self.close_doll();
         if frame.human_control {
             if frame.book.is_some() {
                 self.hand.act(Act::BookClose);
@@ -331,6 +339,14 @@ impl WebView {
             return true;
         }
         match kind {
+            GumpKind::Backpack => {
+                let Some(bag) = frame.backpack() else {
+                    return false;
+                };
+                if let Some(act) = self.panels.grids.closed.backpack(frame, bag, op) {
+                    self.hand.act(act);
+                }
+            }
             GumpKind::Journal => shown_panel(op, JOURNAL_ID, &mut self.profile),
             GumpKind::Minimap => shown_panel(op, RADAR_ID, &mut self.profile),
             GumpKind::Counters => {
@@ -633,6 +649,9 @@ impl WebView {
             let tile = self.scene.tile_at(&mut self.art, view, frame, click.at);
             let ground = GroundClicks::of(&self.profile.general, click.mods);
             if let Some(act) = act_for_click(frame, picked, tile, click.double, ground) {
+                if let Act::Use(thing) = act {
+                    self.panels.grids.closed.used(thing);
+                }
                 self.hand.act(act);
             }
         }

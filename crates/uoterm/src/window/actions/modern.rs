@@ -23,7 +23,7 @@ use crate::window::settings::{Profile, ProfileHome};
 use uoterm_assist::spells::School;
 
 /// The gump a shard opens a corpse with.
-pub(crate) const CORPSE_GUMP: u16 = 0x0009;
+pub(crate) use uoterm_view::model::loot::CORPSE_GUMP;
 
 /// The Modern windows, borrowed for one command.
 pub struct ModernWindows<'a> {
@@ -70,9 +70,7 @@ impl ModernWindows<'_> {
         self.profiles.close();
         self.pages.close_doll();
         self.modern.close_all(self.frame, self.profile);
-        for container in &self.frame.containers {
-            self.boxes.close(container.serial);
-        }
+        self.boxes.close_open(self.frame, false);
         if self.frame.book.is_some() {
             self.act(Act::BookClose);
         }
@@ -89,18 +87,7 @@ impl ModernWindows<'_> {
         match command {
             WindowCommand::Gump(op, kind) => return self.gump(*op, *kind),
             WindowCommand::CloseAllGumps => self.close_all(),
-            WindowCommand::CloseCorpses => {
-                let corpses: Vec<u32> = self
-                    .frame
-                    .containers
-                    .iter()
-                    .filter(|container| container.gump == CORPSE_GUMP)
-                    .map(|container| container.serial)
-                    .collect();
-                for corpse in corpses {
-                    self.boxes.close(corpse);
-                }
-            }
+            WindowCommand::CloseCorpses => self.boxes.close_open(self.frame, true),
             WindowCommand::CloseHealthBars { inactive_only } => {
                 self.modern
                     .close_health_bars(self.frame, *inactive_only, self.profile);
@@ -179,16 +166,8 @@ impl ModernWindows<'_> {
                 let Some(bag) = self.frame.backpack() else {
                     return false;
                 };
-                let shows = self.boxes.shows(self.frame, bag);
-                match (wanted(op, shows), op) {
-                    // The act of an open came with the command.
-                    (true, GumpOp::Open) => self.boxes.used(bag),
-                    (true, _) if !shows => {
-                        self.boxes.used(bag);
-                        self.hand.act(Act::Use(bag));
-                    }
-                    (false, _) if shows => self.boxes.close(bag),
-                    _ => {}
+                if let Some(act) = self.boxes.backpack(self.frame, bag, op) {
+                    self.hand.act(act);
                 }
             }
             GumpKind::Journal => shown_panel(op, JOURNAL_ID, self.profile),

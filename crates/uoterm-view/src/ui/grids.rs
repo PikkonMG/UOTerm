@@ -11,11 +11,13 @@ use super::layout::{first_place, Spot};
 use super::places::TITLE_ROW;
 use super::theme::PANEL_PAD;
 use crate::act::{Act, DropTo};
+use crate::actions::windows::wanted;
+use crate::actions::GumpOp;
 use crate::frame::{WatchFrame, WatchPackItem};
 use crate::geom::{Area, Vector};
 use crate::model::grid::{self, Look, Selection};
 use crate::model::highlight;
-use crate::model::loot::{self, LootAmounts};
+use crate::model::loot::{self, LootAmounts, CORPSE_GUMP};
 use crate::settings::Profile;
 use std::collections::{HashMap, HashSet};
 
@@ -98,6 +100,45 @@ impl ClosedBoxes {
     /// Call this when the human uses a thing. A closed container shows again.
     pub fn used(&mut self, thing: u32) {
         self.closed.remove(&thing);
+    }
+
+    /// The bag button: a bag that shows closes, and else it shows again and
+    /// opens. Gives the act that opens it.
+    pub fn toggle(&mut self, frame: &WatchFrame, bag: u32) -> Option<Act> {
+        if self.shows(frame, bag) {
+            self.close(bag);
+            None
+        } else {
+            self.used(bag);
+            Some(Act::Use(bag))
+        }
+    }
+
+    /// A command for the backpack window. An open came with its act; a
+    /// toggle or a maximize of a bag that does not show opens it. Gives
+    /// the act that opens it.
+    pub fn backpack(&mut self, frame: &WatchFrame, bag: u32, op: GumpOp) -> Option<Act> {
+        let shows = self.shows(frame, bag);
+        match (wanted(op, shows), op) {
+            (true, GumpOp::Open) => self.used(bag),
+            (true, _) if !shows => {
+                self.used(bag);
+                return Some(Act::Use(bag));
+            }
+            (false, _) if shows => self.close(bag),
+            _ => {}
+        }
+        None
+    }
+
+    /// Closes every open container, as "close all gumps" does; with
+    /// `corpses_only` the corpses alone.
+    pub fn close_open(&mut self, frame: &WatchFrame, corpses_only: bool) {
+        for container in &frame.containers {
+            if !corpses_only || container.gump == CORPSE_GUMP {
+                self.close(container.serial);
+            }
+        }
     }
 
     /// Forgets the containers that are no longer open.
@@ -400,6 +441,30 @@ mod tests {
         closed.close(BAG);
         closed.keep_open(&WatchFrame::default());
         assert!(!closed.is_closed(BAG), "a container gone is forgotten");
+    }
+
+    #[test]
+    fn the_bag_button_and_the_backpack_command_open_and_close_the_bag() {
+        let frame = corpse_at(2);
+        let mut closed = ClosedBoxes::default();
+        assert_eq!(closed.toggle(&frame, BAG), None);
+        assert!(!closed.shows(&frame, BAG));
+        assert_eq!(closed.toggle(&frame, BAG), Some(Act::Use(BAG)));
+        assert_eq!(closed.backpack(&frame, BAG, GumpOp::Toggle), None);
+        assert!(!closed.shows(&frame, BAG));
+        assert_eq!(
+            closed.backpack(&frame, BAG, GumpOp::Toggle),
+            Some(Act::Use(BAG))
+        );
+        closed.close(BAG);
+        assert_eq!(
+            closed.backpack(&frame, BAG, GumpOp::Open),
+            None,
+            "it came with its act"
+        );
+        assert!(closed.shows(&frame, BAG));
+        closed.close_open(&frame, false);
+        assert!(!closed.shows(&frame, BAG) && !closed.shows(&frame, CORPSE));
     }
 
     #[test]
