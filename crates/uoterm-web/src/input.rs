@@ -43,7 +43,8 @@ pub enum InputEvent {
         mods: Mods,
     },
     /// The wheel turned this many notches: positive away from the player,
-    /// which is the other sign of a browser's `deltaY`.
+    /// which is the other sign of a browser's `deltaY`. With Shift held it
+    /// turns to the side, as in egui, and the map takes none of it.
     Wheel {
         notches: f32,
         #[serde(default)]
@@ -187,6 +188,11 @@ impl Inputs {
             }
             InputEvent::Wheel { notches, mods } => {
                 self.mods = mods;
+                // egui turns a wheel with Shift held to the side: the map
+                // neither scrolls nor zooms by it.
+                if mods.shift {
+                    return;
+                }
                 let points = notches * WHEEL_POINTS_PER_NOTCH;
                 if mods.ctrl || mods.command {
                     self.frame.zoom_delta *= (WHEEL_ZOOM_PER_POINT * points).exp();
@@ -307,5 +313,18 @@ mod tests {
         let frame = inputs.take_frame();
         assert_eq!(frame.scroll, 0.0);
         assert!(frame.zoom_delta > 1.0);
+    }
+
+    /// egui turns a wheel with Shift held to the side, so it neither
+    /// scrolls nor zooms the map.
+    #[test]
+    fn the_wheel_with_shift_scrolls_and_zooms_nothing() {
+        let mut inputs = Inputs::default();
+        for ctrl in [false, true] {
+            inputs.read(event(
+                json!({ "kind": "Wheel", "notches": 1, "mods": { "ctrl": ctrl, "alt": false, "shift": true, "command": ctrl } }),
+            ));
+            assert_eq!(inputs.take_frame(), FrameInput::default(), "ctrl {ctrl}");
+        }
     }
 }

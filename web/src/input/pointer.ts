@@ -24,6 +24,15 @@ const DOUBLE_CLICK_DETAIL = 2;
 /** `WheelEvent.deltaMode`: pixels, lines or pages. */
 const DELTA_PIXEL = 0;
 const DELTA_LINE = 1;
+/**
+ * What one notch of a mouse wheel gives, by `deltaMode`: 100 pixels in
+ * Chrome, 3 lines in Firefox, or a page. One notch of a wheel then turns
+ * the map as one notch turns it in the Rust window.
+ */
+const PIXELS_PER_NOTCH = 100;
+const LINES_PER_NOTCH = 3;
+const PAGES_PER_NOTCH = 1;
+const NO_TURN = 0;
 const FINGERS_OF_A_PINCH = 2;
 const NO_MODS: Mods = { ctrl: false, alt: false, shift: false, command: false };
 /** Listeners that call `preventDefault`, so they may not be passive. */
@@ -35,7 +44,7 @@ export interface Point {
 }
 
 export interface PointerOptions {
-  /** The points of the wheel one notch turns (`wheelPointsPerNotch()` of the view). */
+  /** The points of the wheel one notch turns (`wheelPointsPerNotch()` of the view): a pinch turns one notch for each of these points. */
   pointsPerNotch: number;
 }
 
@@ -73,6 +82,8 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
   const mouseDown = (event: MouseEvent) => {
     const button = MOUSE_BUTTONS[event.button];
     if (!button) return;
+    // The middle button would start the browser's own scrolling.
+    if (button === 'Middle') event.preventDefault();
     mouse = at(event);
     press(button, mods(event), event.detail === DOUBLE_CLICK_DETAIL);
   };
@@ -89,9 +100,11 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
   const menu = (event: Event) => event.preventDefault();
   const wheel = (event: WheelEvent) => {
     event.preventDefault();
-    const pointsPerUnit =
-      event.deltaMode === DELTA_PIXEL ? 1 : event.deltaMode === DELTA_LINE ? options.pointsPerNotch : target.clientHeight;
-    send({ kind: 'Wheel', notches: (-event.deltaY * pointsPerUnit) / options.pointsPerNotch, mods: mods(event) });
+    // The wheel turns over the map where the mouse is, even before it moved.
+    mouse = at(event);
+    if (event.deltaY === NO_TURN) return;
+    const perNotch = event.deltaMode === DELTA_PIXEL ? PIXELS_PER_NOTCH : event.deltaMode === DELTA_LINE ? LINES_PER_NOTCH : PAGES_PER_NOTCH;
+    send({ kind: 'Wheel', notches: -event.deltaY / perNotch, mods: mods(event) });
   };
 
   const fingersApart = (touches: TouchList) => distance(at(touches[0]), at(touches[1]));
@@ -131,16 +144,20 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
       press('Primary', NO_MODS);
     }
   };
-  const touchEnd = (event: TouchEvent) => {
+  /** The fingers lifted: a tap clicks, a held button comes up. */
+  const touchEnd = (event: TouchEvent) => endTouch(event, true);
+  /** The browser took the touch (a system gesture): a held button comes up, nothing clicks. */
+  const touchCancel = (event: TouchEvent) => endTouch(event, false);
+  const endTouch = (event: TouchEvent, clicks: boolean) => {
     event.preventDefault();
     if (event.touches.length > 0) return;
     const lifted = event.changedTouches.length > 0 ? at(event.changedTouches[0]) : mouse;
     const ended = touching;
     touching = { kind: 'none' };
     mouse = null;
+    if (ended.kind === 'tap') clearTimeout(ended.timer);
     if (!lifted) return;
-    if (ended.kind === 'tap') {
-      clearTimeout(ended.timer);
+    if (ended.kind === 'tap' && clicks) {
       const now = performance.now();
       const double = now - lastTap <= DOUBLE_TAP_MS;
       lastTap = double ? -Infinity : now;
@@ -161,7 +178,7 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
     [target, 'touchstart', touchStart as EventListener],
     [target, 'touchmove', touchMove as EventListener],
     [target, 'touchend', touchEnd as EventListener],
-    [target, 'touchcancel', touchEnd as EventListener],
+    [target, 'touchcancel', touchCancel as EventListener],
   ];
   for (const [on, type, listener] of listeners) on.addEventListener(type, listener, ACTIVE);
   return {

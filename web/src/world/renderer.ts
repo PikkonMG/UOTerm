@@ -144,14 +144,40 @@ export class WorldScene {
   }
 }
 
+const CONTEXT_LOST = 'webglcontextlost';
+const CONTEXT_RESTORED = 'webglcontextrestored';
+
+/**
+ * Keeps a WebGL context the browser takes away (to free the GPU, or after
+ * a driver fault) ready to come back, and calls `restored` when it does:
+ * it comes back empty. Gives the function that stops watching.
+ */
+export function watchContext(canvas: HTMLCanvasElement, restored: () => void): () => void {
+  const lost = (event: Event) => event.preventDefault();
+  canvas.addEventListener(CONTEXT_LOST, lost);
+  canvas.addEventListener(CONTEXT_RESTORED, restored);
+  return () => {
+    canvas.removeEventListener(CONTEXT_LOST, lost);
+    canvas.removeEventListener(CONTEXT_RESTORED, restored);
+  };
+}
+
 export class WorldRenderer {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly atlas: AtlasTexture;
   private readonly world: WorldScene;
+  private readonly stopWatching: () => void;
 
-  /** A renderer on `canvas`, with a texture of the pictures `atlasSide` square and its white square of `whiteSide`. */
-  constructor(canvas: HTMLCanvasElement, atlasSide: number, whiteSide: number) {
+  /**
+   * A renderer on `canvas`, with a texture of the pictures `atlasSide`
+   * square and its white square of `whiteSide`. When the browser gives back
+   * a lost context, three.js uploads the meshes again by itself, but the
+   * texture of the pictures comes back empty: `atlasLost` tells the view,
+   * which then clears it and places every picture again.
+   */
+  constructor(canvas: HTMLCanvasElement, atlasSide: number, whiteSide: number, atlasLost: () => void) {
     this.renderer = new THREE.WebGLRenderer({ canvas, alpha: false, antialias: false, premultipliedAlpha: true });
+    this.stopWatching = watchContext(canvas, atlasLost);
     // The layers paint in the order the view gives; sorting would also ask
     // each 2D mesh for a 3D bounding sphere it does not have.
     this.renderer.sortObjects = false;
@@ -180,9 +206,12 @@ export class WorldRenderer {
     this.world.resize(width, height);
   }
 
+  /** Lets every GPU resource go, and the context with them. */
   dispose(): void {
+    this.stopWatching();
     this.world.dispose();
     this.atlas.dispose();
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
   }
 }

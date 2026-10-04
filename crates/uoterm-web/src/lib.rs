@@ -456,6 +456,14 @@ impl WebView {
         to_js(&self.art.take_forgotten())
     }
 
+    /// The page lost the texture of the pictures (its WebGL context came
+    /// back empty): the next frame clears it and places the pictures again,
+    /// from the pixels the page keeps.
+    #[wasm_bindgen(js_name = atlasLost)]
+    pub fn atlas_lost(&mut self) {
+        self.art.atlas_lost();
+    }
+
     /// The bodies to post, each one time: `{key, path, body}[]`.
     #[wasm_bindgen(js_name = postsWanted)]
     pub fn posts_wanted(&mut self) -> JsValue {

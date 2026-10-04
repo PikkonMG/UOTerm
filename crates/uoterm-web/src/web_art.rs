@@ -595,6 +595,12 @@ impl WebArt {
         true
     }
 
+    /// The page lost the texture with its pixels (its WebGL context): every
+    /// picture takes a place again, as when the texture is full.
+    pub fn atlas_lost(&mut self) {
+        self.start_again();
+    }
+
     /// Forgets every place in the texture. The pictures used since the
     /// last start are placed again when the scene next asks for them, with
     /// the pixels the page keeps; the others are forgotten, so the page
@@ -956,6 +962,27 @@ mod tests {
             art.text_lines(&line.to_string(), &look);
         }
         assert!(art.measures.borrow().len() <= MEASURES_KEPT);
+    }
+
+    #[test]
+    fn a_lost_texture_starts_again_and_places_its_pictures_with_no_fetch() {
+        let mut art = WebArt::default();
+        art.take_atlas_reset();
+        let request = ArtRequest::Land { land_id: 3, hue: 0 };
+        let _ = art.sprite(&request);
+        art.take_wanted();
+        art.arrived(request.key(), 44, 44, 22.0, 22.0);
+        assert!(matches!(art.sprite(&request), Art::Ready(_)));
+        art.take_uploads();
+        art.atlas_lost();
+        assert!(art.take_atlas_reset());
+        assert!(matches!(art.sprite(&request), Art::Ready(_)));
+        assert_eq!(art.take_uploads().len(), 1, "placed again");
+        assert!(
+            art.take_wanted().is_empty(),
+            "with the pixels the page keeps"
+        );
+        assert!(art.take_forgotten().is_empty());
     }
 
     #[test]

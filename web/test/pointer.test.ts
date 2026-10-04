@@ -105,14 +105,56 @@ describe('pointer', () => {
     expect(pointer.mouse()).toBeNull();
   });
 
-  it('turns_the_wheel_into_notches_away_from_the_player', () => {
+  it('turns_one_notch_of_a_wheel_into_one_notch_away_from_the_player', () => {
     const { el, events } = attach();
     el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, deltaMode: 0 }));
     el.dispatchEvent(new WheelEvent('wheel', { deltaY: 3, deltaMode: 1 }));
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, deltaMode: 2 }));
     expect(events).toEqual([
-      { kind: 'Wheel', notches: 2.5, mods: NO_MODS },
-      { kind: 'Wheel', notches: -3, mods: NO_MODS },
+      { kind: 'Wheel', notches: 1, mods: NO_MODS },
+      { kind: 'Wheel', notches: -1, mods: NO_MODS },
+      { kind: 'Wheel', notches: 1, mods: NO_MODS },
     ]);
+  });
+
+  it('knows_the_mouse_is_where_the_wheel_turned', () => {
+    const { el, pointer } = attach();
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, clientX: 8, clientY: 9 }));
+    expect(pointer.mouse()).toEqual({ x: 8, y: 9 });
+  });
+
+  it('sends_nothing_for_a_wheel_that_only_turns_to_the_side', () => {
+    const { el, events } = attach();
+    const sideways = new WheelEvent('wheel', { deltaX: 50, deltaY: 0, cancelable: true });
+    el.dispatchEvent(sideways);
+    expect(events).toEqual([]);
+    expect(sideways.defaultPrevented).toBe(true);
+  });
+
+  it('keeps_the_middle_button_from_scrolling_the_page', () => {
+    const { el } = attach();
+    const middle = new MouseEvent('mousedown', { button: 1, cancelable: true });
+    el.dispatchEvent(middle);
+    expect(middle.defaultPrevented).toBe(true);
+  });
+
+  it('clicks_nothing_when_the_browser_cancels_a_touch', () => {
+    vi.useFakeTimers();
+    const { el, events, pointer } = attach();
+    el.dispatchEvent(touch('touchstart', [finger(5, 6)]));
+    el.dispatchEvent(touch('touchcancel', [], [finger(5, 6)]));
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(events).toEqual([]);
+    expect(pointer.mouse()).toBeNull();
+  });
+
+  it('lets_a_held_button_go_when_the_browser_cancels_a_touch', () => {
+    vi.useFakeTimers();
+    const { el, events } = attach();
+    el.dispatchEvent(touch('touchstart', [finger(5, 6)]));
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    el.dispatchEvent(touch('touchcancel', [], [finger(5, 6)]));
+    expect(events.at(-1)).toEqual({ kind: 'PointerUp', x: 5, y: 6, button: 'Secondary', mods: NO_MODS });
   });
 
   it('keeps_the_menu_of_the_browser_away', () => {

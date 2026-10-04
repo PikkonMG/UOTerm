@@ -5,6 +5,7 @@
  * frame. The frames come at the pace of the Video page of the profile.
  */
 
+import { drawFrame, startFrames } from './frame_loop';
 import type { InputEvent } from './input/events';
 import { PadReader } from './input/gamepad';
 import { attachKeys } from './input/keys';
@@ -16,12 +17,6 @@ import init, { atlasSide, wheelPointsPerNotch, WebView, whiteSide } from './wasm
 import { WorldRenderer } from './world/renderer';
 
 const MS_PER_SECOND = 1000;
-/**
- * How early a frame may come. The display's own frames do not fall on the
- * interval to the millisecond; without this slack a rate equal to the
- * display's would skip every other frame.
- */
-const FRAME_SLACK_MS = 2;
 
 /** Where the profile of every character is kept until the page knows the shard and the character. */
 export const DEFAULT_PROFILE_PATH = '/v1/profiles/default';
@@ -33,7 +28,10 @@ export interface GameProfile {
 }
 
 export interface GameHandle {
-  /** Comes when the session ends; the game has stopped then. */
+  /**
+   * Comes when the session ends; fails with the error of a frame that
+   * failed. The game has stopped either way.
+   */
   readonly ended: Promise<void>;
   /** Stops the game: no more frames, no link, no input. */
   stop(): void;
@@ -55,7 +53,11 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   const view = new WebView(JSON.stringify(profile.value));
   let stopped = false;
   let endGame = () => {};
-  const ended = new Promise<void>((resolve) => (endGame = resolve));
+  let failGame: (error: unknown) => void = () => {};
+  const ended = new Promise<void>((resolve, reject) => {
+    endGame = resolve;
+    failGame = reject;
+  });
 
   const answer = (id: number, ok: boolean, resultJson: string) => {
     if (!stopped) view.answer(id, ok, resultJson, clock());
@@ -77,12 +79,11 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   };
 
   const feed = new ArtFeed(view);
-  const renderer = new WorldRenderer(canvas, atlasSide(), whiteSide());
+  const renderer = new WorldRenderer(canvas, atlasSide(), whiteSide(), () => view.atlasLost());
   const detachKeys = attachKeys(window, send);
   const pointer = attachPointer(canvas, send, { pointsPerNotch: wheelPointsPerNotch() });
   const pad = new PadReader();
   let size = { width: 0, height: 0, ratio: 0 };
-  let lastFrame = -Infinity;
 
   /** Follows the size of the canvas and the pixels of the screen. */
   const fit = () => {
@@ -93,39 +94,37 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
     view.setPixelsPerPoint(size.ratio);
   };
 
-  /** One frame: the controller, the wants of the view, the rules, the drawing, then the calls of the frame. */
-  const run = () => {
-    fit();
-    const padNow = pad.read();
-    if (padNow) send(padNow);
-    feed.pump();
-    const mouse = pointer.mouse();
-    const buffers = view.tick(clock(), size.width, size.height, mouse?.x ?? 0, mouse?.y ?? 0, mouse !== null);
-    renderer.draw(buffers);
-    buffers.free();
-    out(view.takeOut());
-  };
-
-  // A frame that fails stops the loop: the next one would fail the same way.
-  const frame = (nowMs: number) => {
-    if (nowMs - lastFrame >= view.frameIntervalMs(document.hasFocus()) - FRAME_SLACK_MS) {
-      lastFrame = nowMs;
-      run();
-    }
-    request = requestAnimationFrame(frame);
-  };
-  let request = requestAnimationFrame(frame);
+  const frames = startFrames({
+    intervalMs: () => view.frameIntervalMs(document.hasFocus()),
+    // One frame: the controller, the wants of the view, the rules, the drawing, then the calls of the frame.
+    frame: () => {
+      fit();
+      const padNow = pad.read();
+      if (padNow) send(padNow);
+      feed.pump();
+      drawFrame(view, renderer, clock(), size, pointer.mouse());
+      out(view.takeOut());
+    },
+    fault: (error) => {
+      failGame(error);
+      stop();
+    },
+  });
 
   function stop() {
     if (stopped) return;
     stopped = true;
-    cancelAnimationFrame(request);
+    frames.stop();
     detachKeys();
     pointer.detach();
     link.close();
     feed.close();
     renderer.dispose();
-    view.free();
+    try {
+      view.free();
+    } catch {
+      // A view whose WebAssembly failed may fail to free too; it is gone either way.
+    }
   }
 
   return { ended, stop };

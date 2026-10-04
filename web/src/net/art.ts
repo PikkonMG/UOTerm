@@ -112,11 +112,13 @@ export class ArtFeed {
   }
 
   /**
-   * Stops the feed for good: no request starts or is tried again, and the
-   * answers still on their way are let go. Call it before the view goes.
+   * Stops the feed for good: no request starts or is tried again, the
+   * answers still on their way are let go, and so are the pixels of every
+   * picture. Call it before the view goes.
    */
   close(): void {
     this.closed = true;
+    for (const key of [...pictures.keys()]) forget(key);
     this.stopHearingToken();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();

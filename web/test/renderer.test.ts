@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
-import { deviceSize, WorldScene, type WorldDraw } from '../src/world/renderer';
+import { deviceSize, watchContext, WorldScene, type WorldDraw } from '../src/world/renderer';
 
 const WIDTH = 1024;
 const HEIGHT = 769;
@@ -93,5 +93,21 @@ describe('deviceSize', () => {
   it('gives_the_canvas_whole_device_pixels_that_the_viewport_fills', () => {
     expect(deviceSize(WIDTH, HEIGHT, 1.4)).toEqual({ width: 1434, height: 1077 });
     expect(deviceSize(WIDTH, HEIGHT, 1)).toEqual({ width: WIDTH, height: HEIGHT });
+  });
+});
+
+describe('watchContext', () => {
+  it('keeps_a_lost_context_for_its_return_and_tells_when_it_came_back', () => {
+    const canvas = document.createElement('canvas');
+    const restored = vi.fn();
+    const stop = watchContext(canvas, restored);
+    const lost = new Event('webglcontextlost', { cancelable: true });
+    canvas.dispatchEvent(lost);
+    expect(lost.defaultPrevented).toBe(true);
+    canvas.dispatchEvent(new Event('webglcontextrestored'));
+    expect(restored).toHaveBeenCalledTimes(1);
+    stop();
+    canvas.dispatchEvent(new Event('webglcontextrestored'));
+    expect(restored).toHaveBeenCalledTimes(1);
   });
 });

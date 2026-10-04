@@ -191,6 +191,19 @@ describe('ArtFeed', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('lets_every_picture_go_when_closed', async () => {
+    const view = viewWanting([{ key: 'kept', request: { kind: 'Item', graphic: 4 } }]);
+    const picture = bitmap(1, 1);
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(picture));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Uint8Array([1]), { status: 200 }));
+    const feed = new ArtFeed(view as never);
+    feed.pump();
+    await vi.waitFor(() => expect(pixelsOf('kept')).toBe(picture));
+    feed.close();
+    expect(pixelsOf('kept')).toBeUndefined();
+    expect(picture.close).toHaveBeenCalled();
+  });
+
   it('starts_a_waiting_request_when_one_ends', async () => {
     const wanted = Array.from({ length: ART_PARALLEL + 1 }, (_, i) => ({ key: `w${i}`, request: { kind: 'Item', graphic: i } }));
     const view = viewWanting(wanted);

@@ -1,7 +1,10 @@
 /**
- * The keyboard, as egui reads it in a browser: a key goes by the key it
- * gives (`KeyboardEvent.key`, the logical key), named as egui's
- * `Key::name()` names it, which is the name saved profiles keep.
+ * The keyboard, as egui reads it in the Rust window (egui-winit): a key
+ * goes by the key it gives (`KeyboardEvent.key`, the logical key), else by
+ * where it sits (`KeyboardEvent.code`, the physical key), so the digit row
+ * of a French keyboard and the letters of a Russian one still give the
+ * names hotkeys use. The names are egui's `Key::name()`, which saved
+ * profiles keep.
  */
 
 import type { InputEvent, Mods } from './events';
@@ -91,15 +94,68 @@ const EGUI_KEY: Record<string, string> = {
   ...Object.fromEntries(Array.from({ length: FUNCTION_KEYS }, (_, at) => `F${at + 1}`).map((name) => [name, name])),
 };
 
-/** The keys the browser would act on itself, which the world takes instead (egui's own list). */
-const KEYS_THE_WORLD_KEEPS = new Set(['Tab', 'Backspace', 'Up', 'Down', 'Left', 'Right', 'Space']);
-/** Keys that, with Ctrl or the command key, the browser would act on (open, print, save). */
-const SHORTCUTS_THE_WORLD_KEEPS = new Set(['O', 'P', 'S']);
+/**
+ * The egui name of each `KeyboardEvent.code`: the physical keys egui-winit
+ * 0.31's `key_from_key_code` names.
+ */
+const EGUI_CODE: Record<string, string> = {
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right',
+  ArrowUp: 'Up',
+  Escape: 'Escape',
+  Tab: 'Tab',
+  Backspace: 'Backspace',
+  Enter: 'Enter',
+  NumpadEnter: 'Enter',
+  Insert: 'Insert',
+  Delete: 'Delete',
+  Home: 'Home',
+  End: 'End',
+  PageUp: 'PageUp',
+  PageDown: 'PageDown',
+  Space: 'Space',
+  Comma: 'Comma',
+  Period: 'Period',
+  Semicolon: 'Semicolon',
+  Backslash: 'Backslash',
+  Slash: 'Slash',
+  NumpadDivide: 'Slash',
+  BracketLeft: 'OpenBracket',
+  BracketRight: 'CloseBracket',
+  Backquote: 'Backtick',
+  Quote: 'Quote',
+  Cut: 'Cut',
+  Copy: 'Copy',
+  Paste: 'Paste',
+  Minus: 'Minus',
+  NumpadSubtract: 'Minus',
+  NumpadAdd: 'Plus',
+  Equal: 'Equals',
+  ...Object.fromEntries([...DIGITS].flatMap((digit) => [`Digit${digit}`, `Numpad${digit}`].map((code) => [code, digit]))),
+  ...Object.fromEntries([...LETTERS].map((letter) => [`Key${letter}`, letter])),
+  ...Object.fromEntries(Array.from({ length: FUNCTION_KEYS }, (_, at) => `F${at + 1}`).map((name) => [name, name])),
+};
+
+/** Keys the browser keeps while the world has the keys: full screen and the developer tools. */
+const BROWSER_KEYS = new Set(['F11', 'F12']);
+/** Keys the browser keeps with Ctrl or the command key: reload, and copy, paste and cut. */
+const BROWSER_SHORTCUTS = new Set(['R', 'C', 'V', 'X']);
+/** Keys the browser keeps with Ctrl or the command key and Shift: the developer tools. */
+const BROWSER_SHIFT_SHORTCUTS = new Set(['I']);
 const MAC_PLATFORM = /Mac|iPhone|iPad|iPod/;
 
-/** The egui name of the key of `event`; null for a key egui does not know. */
+/** The egui name of `word` in `table`; null when it has none. */
+function named(table: Record<string, string>, word: string): string | null {
+  return Object.hasOwn(table, word) ? table[word] : null;
+}
+
+/**
+ * The egui name of the key of `event`: by the key it gives, else by where
+ * it sits, as egui-winit reads it. Null for a key egui does not know.
+ */
 export function keyName(event: KeyboardEvent): string | null {
-  return Object.hasOwn(EGUI_KEY, event.key) ? EGUI_KEY[event.key] : null;
+  return named(EGUI_KEY, event.key) ?? named(EGUI_CODE, event.code);
 }
 
 /** The modifier keys of an event. */
@@ -121,6 +177,12 @@ function isField(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && (target.isContentEditable || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement);
 }
 
+/** True when the browser keeps `key` for itself even while the world has the keys. */
+function browserKeeps(key: string, held: Mods): boolean {
+  const command = held.ctrl || held.command;
+  return BROWSER_KEYS.has(key) || (command && (held.shift ? BROWSER_SHIFT_SHORTCUTS : BROWSER_SHORTCUTS).has(key));
+}
+
 /** The characters a key types: one character, with neither Ctrl nor the command key held. */
 function typed(event: KeyboardEvent): string | null {
   return [...event.key].length === 1 && !event.ctrlKey && !event.metaKey ? event.key : null;
@@ -131,8 +193,10 @@ function typed(event: KeyboardEvent): string | null {
  * down and up, and the characters it types while no field has the keys.
  * A field types its own words; the view hears its keys all the same and
  * reads them by the field that has them, so it is told when a field takes
- * the keys and when it lets them go. Every held key comes up when the page
- * loses the keyboard. Gives the function that stops it.
+ * the keys and when it lets them go. While no field has the keys, the
+ * browser does not act on a key the world reads (F1, F5, Alt+D, ...),
+ * save the few it keeps (`browserKeeps`). Every held key comes up when the
+ * page loses the keyboard. Gives the function that stops it.
  */
 export function attachKeys(target: Window, send: (event: InputEvent) => void): () => void {
   const held = new Set<string>();
@@ -157,8 +221,7 @@ export function attachKeys(target: Window, send: (event: InputEvent) => void): (
     held.add(key);
     const heldMods = mods(event);
     send({ kind: 'Key', key, mods: heldMods, pressed: true, repeat: event.repeat });
-    const shortcut = (heldMods.ctrl || heldMods.command) && SHORTCUTS_THE_WORLD_KEEPS.has(key);
-    if (!typing && (KEYS_THE_WORLD_KEEPS.has(key) || shortcut)) event.preventDefault();
+    if (!typing && !browserKeeps(key, heldMods)) event.preventDefault();
   };
   const up = (event: KeyboardEvent) => {
     const key = keyName(event);

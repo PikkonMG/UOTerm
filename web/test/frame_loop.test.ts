@@ -1,0 +1,83 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { drawFrame, startFrames, type DrawnFrame } from '../src/frame_loop';
+
+/** The animation frames asked for, run by hand. */
+function fakeFrames() {
+  const waiting = new Map<number, FrameRequestCallback>();
+  let next = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    next += 1;
+    waiting.set(next, callback);
+    return next;
+  });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => waiting.delete(id));
+  return {
+    waiting,
+    runAt(ms: number) {
+      const callbacks = [...waiting.values()];
+      waiting.clear();
+      for (const callback of callbacks) callback(ms);
+    },
+  };
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe('startFrames', () => {
+  it('runs_a_frame_when_its_interval_has_passed', () => {
+    const frames = fakeFrames();
+    const frame = vi.fn();
+    startFrames({ intervalMs: () => 100, frame, fault: vi.fn() });
+    frames.runAt(0);
+    frames.runAt(50);
+    frames.runAt(99);
+    expect(frame).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops_and_reports_a_frame_that_fails', () => {
+    const frames = fakeFrames();
+    const boom = new Error('unreachable');
+    const fault = vi.fn();
+    startFrames({
+      intervalMs: () => 0,
+      frame: () => {
+        throw boom;
+      },
+      fault,
+    });
+    frames.runAt(0);
+    expect(fault).toHaveBeenCalledWith(boom);
+    expect(frames.waiting.size).toBe(0);
+  });
+
+  it('runs_no_frame_once_stopped', () => {
+    const frames = fakeFrames();
+    const frame = vi.fn();
+    const loop = startFrames({ intervalMs: () => 0, frame, fault: vi.fn() });
+    loop.stop();
+    frames.runAt(0);
+    expect(frame).not.toHaveBeenCalled();
+  });
+});
+
+describe('drawFrame', () => {
+  it('frees_the_buffers_of_a_frame_that_fails_to_draw', () => {
+    const buffers = { free: vi.fn() } as unknown as DrawnFrame;
+    const view = { tick: vi.fn().mockReturnValue(buffers) };
+    const renderer = {
+      draw: () => {
+        throw new Error('lost');
+      },
+    };
+    expect(() => drawFrame(view, renderer, 1, { width: 10, height: 10 }, null)).toThrow('lost');
+    expect(buffers.free).toHaveBeenCalled();
+  });
+
+  it('gives_the_view_the_size_and_the_mouse', () => {
+    const buffers = { free: vi.fn() } as unknown as DrawnFrame;
+    const view = { tick: vi.fn().mockReturnValue(buffers) };
+    drawFrame(view, { draw: vi.fn() }, 2, { width: 30, height: 20 }, { x: 4, y: 5 });
+    expect(view.tick).toHaveBeenCalledWith(2, 30, 20, 4, 5, true);
+    expect(buffers.free).toHaveBeenCalled();
+  });
+});

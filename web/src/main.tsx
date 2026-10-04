@@ -12,6 +12,8 @@ const APP_ROOT = 'app';
 /** The query that opens a running session, so a reload of the page needs no new login: `?session=<id>`. */
 const SESSION_QUERY = 'session';
 const NO_SUCH_SESSION = 'That session is not running.';
+/** Before the words of a fault that stopped the game; a reload opens the session again. */
+const GAME_FAILED = 'The game stopped (reload the page to go on):';
 
 type Screen =
   | { kind: 'checking' }
@@ -69,20 +71,24 @@ function App() {
 
   return (
     <>
-      <Body screen={screen} onEnded={() => setScreen({ kind: 'fault', words: SESSION_ENDED })} />
+      <Body
+        screen={screen}
+        onEnded={() => setScreen({ kind: 'fault', words: SESSION_ENDED })}
+        onFault={(words) => setScreen({ kind: 'fault', words: `${GAME_FAILED} ${words}` })}
+      />
       {tokenWanted && <Token onAccepted={accepted} />}
     </>
   );
 }
 
-function Body({ screen, onEnded }: { screen: Screen; onEnded: () => void }) {
+function Body({ screen, onEnded, onFault }: { screen: Screen; onEnded: () => void; onFault: (words: string) => void }) {
   switch (screen.kind) {
     case 'checking':
       return null;
     case 'ready':
       return <p class="panel screen">UOTerm answers.</p>;
     case 'game':
-      return <Game session={screen.session} profile={screen.profile} onEnded={onEnded} />;
+      return <Game session={screen.session} profile={screen.profile} onEnded={onEnded} onFault={onFault} />;
     case 'fault':
       return (
         <p class="panel screen fault" role="alert">

@@ -34,9 +34,17 @@ describe('keyName', () => {
     expect(keyName(press('!', 'Digit1', { shiftKey: true }))).toBe('Exclamationmark');
     expect(keyName(press('`', 'Backquote'))).toBe('Backtick');
   });
+  it('falls_back_to_the_key_position_when_the_key_gives_no_egui_name', () => {
+    expect(keyName(press('&', 'Digit1'))).toBe('1');
+    expect(keyName(press('é', 'Digit2'))).toBe('2');
+    expect(keyName(press('ф', 'KeyA'))).toBe('A');
+    expect(keyName(press('Unidentified', 'NumpadEnter'))).toBe('Enter');
+    expect(keyName(press('a', 'KeyQ'))).toBe('A');
+  });
   it('ignores_keys_egui_does_not_know', () => {
-    expect(keyName(press('Dead', 'BracketLeft'))).toBeNull();
-    expect(keyName(press('constructor', 'KeyC'))).toBeNull();
+    expect(keyName(press('Dead', 'IntlBackslash'))).toBeNull();
+    expect(keyName(press('ContextMenu', 'ContextMenu'))).toBeNull();
+    expect(keyName(press('constructor', 'toString'))).toBeNull();
   });
 });
 
@@ -102,6 +110,46 @@ describe('attachKeys', () => {
       { kind: 'Focus', chat_focused: false, other_field_focused: true },
       { kind: 'Focus', chat_focused: false, other_field_focused: false },
     ]);
+  });
+
+  it('lets_go_of_a_key_by_the_same_name_it_went_down_with', () => {
+    const events: InputEvent[] = [];
+    const detach = attachKeys(window, (event) => events.push(event));
+    window.dispatchEvent(press('&', 'Digit1'));
+    window.dispatchEvent(new KeyboardEvent('keyup', { key: '&', code: 'Digit1' }));
+    detach();
+    expect(events.filter((event) => event.kind === 'Key').map((event) => event.kind === 'Key' && event.key)).toEqual(['1', '1']);
+  });
+
+  it('keeps_every_key_of_the_world_from_the_browser', () => {
+    const detach = attachKeys(window, () => {});
+    const kept = [press('F1', 'F1'), press('F3', 'F3'), press('F5', 'F5'), press('d', 'KeyD', { altKey: true }), press('Tab', 'Tab')].map((event) => {
+      const cancelable = new KeyboardEvent('keydown', { key: event.key, code: event.code, altKey: event.altKey, cancelable: true });
+      window.dispatchEvent(cancelable);
+      return cancelable.defaultPrevented;
+    });
+    detach();
+    expect(kept).toEqual([true, true, true, true, true]);
+  });
+
+  it('leaves_the_browser_its_own_keys', () => {
+    const detach = attachKeys(window, () => {});
+    const keys: KeyboardEventInit[] = [
+      { key: 'F11', code: 'F11' },
+      { key: 'F12', code: 'F12' },
+      { key: 'r', code: 'KeyR', ctrlKey: true },
+      { key: 'I', code: 'KeyI', ctrlKey: true, shiftKey: true },
+      { key: 'c', code: 'KeyC', ctrlKey: true },
+      { key: 'v', code: 'KeyV', ctrlKey: true },
+      { key: 'x', code: 'KeyX', ctrlKey: true },
+    ];
+    const prevented = keys.map((init) => {
+      const event = new KeyboardEvent('keydown', { ...init, cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    detach();
+    expect(prevented).toEqual(keys.map(() => false));
   });
 
   it('sends_no_text_for_a_key_held_with_ctrl', () => {
