@@ -301,7 +301,9 @@ impl WebView {
 
     /// Shows the profile a line of the ring asked the session for.
     pub(crate) fn show_profile(&mut self, serial: u32) {
-        let _asked = self.panels.map_items.profile.show(serial);
+        // The line of the ring sends its own ProfileRead, so the read this
+        // gives is not sent again.
+        let _read_by_the_ring = self.panels.map_items.profile.show(serial);
     }
 
     pub(super) fn profile_spec(&self, frame: &WatchFrame) -> Option<FrameSpec> {
@@ -431,6 +433,21 @@ mod tests {
         let mut view = with_map(true, false);
         assert!(out_acts(&press(&mut view, &panel(), pin)).is_empty());
         assert!(!view.panel_data(0.0).map_items[0].body.plotting);
+    }
+
+    #[test]
+    fn a_profile_write_without_control_does_nothing() {
+        let mut view = view_with(
+            "profiles",
+            json!([{ "serial": crate::tests::ME, "name": "Mara", "own_words": "Hi" }]),
+            false,
+        );
+        view.toggle_profile(crate::tests::ME);
+        view.take_out_native();
+        assert!(view.panel_data(0.0).profile.unwrap().body.write.is_none());
+        let out = press(&mut view, PANEL_PROFILE, json!({ "write": true }));
+        assert!(out_acts(&out).is_empty());
+        assert!(view.panel_data(0.0).profile.unwrap().body.writing.is_none());
     }
 
     #[test]

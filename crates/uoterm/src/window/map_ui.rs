@@ -24,6 +24,7 @@ use super::theme::{self, number_font, text_font};
 use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, CornerRadius, Id, Painter, Pos2, Rect, Sense, Vec2};
 use uoterm_view::map_lay::Lay;
+use uoterm_view::ui::map_panel::MapLook;
 use uoterm_view::ui::map_panel::{
     dragged_look, field_click, field_hints, field_of, goto_place, map_first_place, near_lay,
     near_zoom, view_words, whole_turns, world_lay, world_zoom, FieldClick, MapButton, HINT_GOTO,
@@ -36,16 +37,14 @@ const BUTTON_WIDTH: f32 = 52.0;
 const WIDE_BUTTON_WIDTH: f32 = 78.0;
 
 pub struct MapUi {
-    open: bool,
+    /// Open or not, and where the whole-world view looks.
+    look: MapLook,
     pictures: MapPictures,
     files: MapFilesCache,
     zoom: f32,
     /// The turns of the wheel over the whole-world view that are not yet a
     /// whole zoom step.
     wheel: f32,
-    /// The tile in the middle of the whole-world view, when the player
-    /// moved the view or looked for a place.
-    looking_at: Option<(u16, u16)>,
     goto: String,
     note: Option<(String, f64)>,
     markers: MarkersUi,
@@ -81,12 +80,14 @@ fn from_right(row: Rect, right: &mut f32, width: f32) -> Rect {
 impl MapUi {
     pub fn starting(open: bool) -> Self {
         Self {
-            open,
+            look: MapLook {
+                open,
+                looking_at: None,
+            },
             pictures: MapPictures::default(),
             files: MapFilesCache::default(),
             zoom: ZOOM_MIN,
             wheel: 0.0,
-            looking_at: None,
             goto: String::new(),
             note: None,
             markers: MarkersUi::default(),
@@ -94,16 +95,16 @@ impl MapUi {
     }
 
     pub fn toggle(&mut self) {
-        self.open = !self.open;
+        self.look.open = !self.look.open;
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.look.open
     }
 
     /// Closes the map, the markers manager and the marker box.
     pub fn close(&mut self) {
-        self.open = false;
+        self.look.open = false;
         self.markers.close();
     }
 
@@ -118,7 +119,7 @@ impl MapUi {
         profile: &mut Profile,
     ) -> Vec<Rect> {
         let mut covered = Vec::new();
-        if self.open {
+        if self.look.open {
             covered.push(self.map_panel(ui, rect, frame, tools, profile));
         }
         let (marker_panels, asks) = self.markers.draw(ui, rect, tools, profile);
@@ -134,10 +135,7 @@ impl MapUi {
 
     /// Opens the whole-world view on a place.
     fn look_at(&mut self, x: u16, y: u16, tools: &Tools<'_>, profile: &mut Profile) {
-        self.open = true;
-        self.looking_at = Some((x, y));
-        if !profile.world_map.whole_world {
-            profile.world_map.whole_world = true;
+        if self.look.look_at((x, y), &mut profile.world_map) {
             tools.keep_profile(profile);
         }
     }
@@ -167,7 +165,7 @@ impl MapUi {
         self.marker_row(ui, marker_row, frame, tools);
         self.field(ui, field, frame, tools, profile);
         if panel_frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) {
-            self.open = false;
+            self.look.open = false;
         }
         panel
     }
@@ -195,7 +193,7 @@ impl MapUi {
             theme::TEXT,
         ) {
             profile.world_map.whole_world = !whole;
-            self.looking_at = None;
+            self.look.looking_at = None;
             tools.keep_profile(profile);
         }
         ui.painter()
@@ -304,7 +302,7 @@ impl MapUi {
             profile,
             files: self.files.get(profile),
             session: &session,
-            looking_at: self.looking_at,
+            looking_at: self.look.looking_at,
         };
         map_view::overlays(&painter, field, lay, &marks, &mark_look());
         if let Some((words, since)) = &self.note {
@@ -406,10 +404,10 @@ impl MapUi {
             bridge::area(field),
             frame,
             &profile.world_map,
-            self.looking_at,
+            self.look.looking_at,
         );
         if response.dragged() && profile.world_map.free_view {
-            self.looking_at = dragged_look(lay, bridge::vector(response.drag_delta()));
+            self.look.looking_at = dragged_look(lay, bridge::vector(response.drag_delta()));
         }
         self.pictures
             .draw_world(&ui.painter().with_clip_rect(field), lay)

@@ -8,9 +8,8 @@ pub use uoterm_view::art::{TextLook, UoFont};
 
 pub use uoterm_view::ui::html::HTML_FONT;
 
+use crate::lru::LruCache;
 use eframe::egui::{self, ColorImage, TextureHandle, TextureId, TextureOptions, Vec2};
-use std::collections::HashMap;
-use std::hash::Hash;
 use uoterm_nav::{TextAlign, TextPicture, UnicodeStyle, UNICODE_PICTURE_PADDING};
 use uoterm_view::ui::html::{
     char_advance, html_base_look, html_lines, parse_html, HtmlChar, Rgba, HTML_LINE_HEIGHT,
@@ -45,7 +44,9 @@ pub fn render_html(fonts: &UoFonts, html: &str, look: &HtmlLook) -> Option<TextP
     let text = parse_html(html, html_base_look(look.color), &|font| {
         fonts.unicode.has_font(font)
     });
-    let lines = html_lines(&text.chars, look.width, |ch| html_advance(fonts, ch));
+    let lines = html_lines(&text.chars, look.width, |at| {
+        html_advance(fonts, &text.chars[at])
+    });
     if lines.is_empty() {
         return None;
     }
@@ -112,48 +113,6 @@ fn blit(onto: &mut TextPicture, top: &TextPicture, left: usize, upper: usize) {
                 let to = (to_y * onto.width + to_x) * RGBA_BYTES;
                 onto.rgba[to..to + RGBA_BYTES].copy_from_slice(pixel);
             }
-        }
-    }
-}
-
-/// A cache that forgets the entry used least lately when it is full.
-pub struct LruCache<K, V> {
-    entries: HashMap<K, (V, u64)>,
-    capacity: usize,
-    clock: u64,
-}
-
-impl<K: Hash + Eq + Clone, V> LruCache<K, V> {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            entries: HashMap::new(),
-            capacity,
-            clock: 0,
-        }
-    }
-
-    /// The value of `key`. `make` gives it the first time.
-    pub fn get_or_make(&mut self, key: &K, make: impl FnOnce() -> V) -> &V {
-        self.clock += 1;
-        if !self.entries.contains_key(key) {
-            if self.entries.len() >= self.capacity {
-                self.forget_oldest();
-            }
-            self.entries.insert(key.clone(), (make(), self.clock));
-        }
-        let entry = self.entries.get_mut(key).expect("the entry was just made");
-        entry.1 = self.clock;
-        &entry.0
-    }
-
-    fn forget_oldest(&mut self) {
-        let oldest = self
-            .entries
-            .iter()
-            .min_by_key(|(_, (_, used))| *used)
-            .map(|(key, _)| key.clone());
-        if let Some(key) = oldest {
-            self.entries.remove(&key);
         }
     }
 }
@@ -242,26 +201,6 @@ fn upload(ctx: &egui::Context, picture: TextPicture) -> Option<TextTexture> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_cache_forgets_the_entry_used_least_lately() {
-        let mut cache = LruCache::new(2);
-        let mut made = 0;
-        let mut get = |cache: &mut LruCache<u32, u32>, key: u32| {
-            *cache.get_or_make(&key, || {
-                made += 1;
-                key * 10
-            })
-        };
-        assert_eq!(get(&mut cache, 1), 10);
-        assert_eq!(get(&mut cache, 2), 20);
-        assert_eq!(get(&mut cache, 1), 10);
-        assert_eq!(get(&mut cache, 3), 30);
-        // Key 2 was used least lately, so it went, and 1 stayed.
-        assert_eq!(get(&mut cache, 1), 10);
-        assert_eq!(get(&mut cache, 2), 20);
-        assert_eq!(made, 4);
-    }
 
     #[test]
     fn real_fonts_draw_html() {

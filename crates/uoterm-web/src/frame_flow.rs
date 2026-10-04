@@ -260,6 +260,7 @@ impl WebView {
         self.follow_gumps(frame);
         self.follow_build(frame, now);
         self.follow_map_items(frame);
+        self.follow_marker_changes(now);
         moving || frame.danger() != uoterm_view::frame::Danger::Calm
     }
 

@@ -216,9 +216,12 @@ impl WebView {
         for answer in self.hand.new_answers(Asker::Chat) {
             let state = &mut self.panels.build;
             match state.chat.take_answer(frame.chat.as_ref(), answer) {
-                Ok(act) => {
-                    if let Some(act) = act {
+                Ok(answer) => {
+                    if let Some(act) = answer.act {
                         self.hand.act(act);
+                    }
+                    if answer.joined {
+                        state.chat_note = None;
                     }
                 }
                 Err(words) => state.chat_note = Some((words, true, time)),

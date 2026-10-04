@@ -91,11 +91,6 @@ pub const MAP_BUTTONS: [MapButton; 4] = [
     MapButton::Markers,
 ];
 
-/// The buttons of the row of the markers where the marker files may only
-/// be read, as in the browser: no marker is added there.
-pub const READ_ONLY_MAP_BUTTONS: [MapButton; 3] =
-    [MapButton::Redraw, MapButton::Reload, MapButton::Markers];
-
 /// How wide one side of the map field is in a window of this size.
 pub fn field_side(window: Area) -> f32 {
     let room = window.height().min(window.width()) * PANEL_SHARE - TITLE_ROW - PANEL_PAD * 2.0;
@@ -260,6 +255,24 @@ pub fn field_click(
     Some(FieldClick::Act(act))
 }
 
+/// What the map shows: open or not, and the place the whole-world view
+/// looks at, when the player moved it or looked for a place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MapLook {
+    pub open: bool,
+    pub looking_at: Option<(u16, u16)>,
+}
+
+impl MapLook {
+    /// Opens the whole-world view on a place. True when the World Map
+    /// page changed and the profile is to be kept.
+    pub fn look_at(&mut self, place: (u16, u16), options: &mut WorldMapOptions) -> bool {
+        self.open = true;
+        self.looking_at = Some(place);
+        !std::mem::replace(&mut options.whole_world, true)
+    }
+}
+
 /// The place the go-to box names, or the words that say it named none.
 pub fn goto_place(words: &str) -> Result<(u16, u16), &'static str> {
     world_map::parse_goto(words).ok_or(WORDS_NO_PLACE)
@@ -279,6 +292,19 @@ mod tests {
         assert!((wheel - 0.2).abs() < 0.001, "the rest waits for the next");
         wheel = -2.5;
         assert_eq!(whole_turns(&mut wheel), -2);
+    }
+
+    #[test]
+    fn looking_at_a_place_opens_the_whole_world_once() {
+        let mut look = MapLook::default();
+        let mut options = WorldMapOptions {
+            whole_world: false,
+            ..WorldMapOptions::default()
+        };
+        assert!(look.look_at((5, 6), &mut options));
+        assert!(look.open && options.whole_world);
+        assert_eq!(look.looking_at, Some((5, 6)));
+        assert!(!look.look_at((7, 8), &mut options), "already whole");
     }
 
     #[test]

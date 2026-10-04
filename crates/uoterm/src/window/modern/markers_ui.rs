@@ -8,7 +8,7 @@
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
 use super::super::bridge;
 use super::super::model::host;
-use super::super::model::world_map::{self, Marker, MarkerFields, MarkerFile, MARKER_COLORS};
+use super::super::model::world_map::{self, Marker, MarkerChange, MarkerFile, MARKER_COLORS};
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
@@ -16,10 +16,9 @@ use super::layout::{self, Spot};
 use super::rows::Rows;
 use eframe::egui::{self, Align2, CornerRadius, Id, Pos2, Rect, Vec2};
 use uoterm_view::ui::markers::{
-    manager_first_place, row_buttons, row_words, MarkerButton, BOX_ID, BOX_SIZE, HINT_ICON,
-    HINT_SEARCH, MANAGER_ID, WORDS_ADD, WORDS_BAD_FIELDS, WORDS_CANCEL, WORDS_COLOR, WORDS_CREATE,
-    WORDS_EDIT_MARKER, WORDS_ICON, WORDS_MANAGER, WORDS_NAME, WORDS_NONE_FOUND, WORDS_NO_FILES,
-    WORDS_X, WORDS_Y,
+    manager_first_place, row_buttons, row_words, MarkerBox, MarkerButton, BOX_ID, BOX_SIZE,
+    HINT_ICON, HINT_SEARCH, MANAGER_ID, WORDS_CANCEL, WORDS_COLOR, WORDS_ICON, WORDS_MANAGER,
+    WORDS_NAME, WORDS_NONE_FOUND, WORDS_NO_FILES, WORDS_X, WORDS_Y,
 };
 
 const ROW: f32 = 26.0;
@@ -34,14 +33,6 @@ pub enum MarkersAsk {
     GoTo(u16, u16),
     /// The marker files changed: read them again.
     Changed,
-}
-
-/// The box that adds a marker, or changes the one at `editing` in the
-/// player's own file.
-struct MarkerBox {
-    editing: Option<usize>,
-    fields: MarkerFields,
-    error: Option<String>,
 }
 
 #[derive(Default)]
@@ -71,11 +62,7 @@ impl MarkersUi {
 
     /// Opens the box that adds a marker, filled from `marker`.
     pub fn add(&mut self, marker: &Marker) {
-        self.marker_box = Some(MarkerBox {
-            editing: None,
-            fields: MarkerFields::of(marker),
-            error: None,
-        });
+        self.marker_box = Some(MarkerBox::adding(marker));
     }
 
     /// Draws the manager and the marker box when they show. Gives their
@@ -209,17 +196,15 @@ impl MarkersUi {
         };
         match button {
             MarkerButton::Go => asks.push(MarkersAsk::GoTo(marker.x, marker.y)),
-            MarkerButton::Edit => {
-                self.marker_box = Some(MarkerBox {
-                    editing: Some(at),
-                    fields: MarkerFields::of(&marker),
-                    error: None,
-                });
-            }
+            MarkerButton::Edit => self.marker_box = Some(MarkerBox::editing(at, &marker)),
             MarkerButton::Remove => {
-                match host::world_map::remove_user_marker(&host::world_map::map_dir(), at) {
+                let change = MarkerChange::Remove {
+                    at,
+                    expected: marker,
+                };
+                match host::world_map::change_user_markers(&host::world_map::map_dir(), &change) {
                     Ok(()) => asks.push(MarkersAsk::Changed),
-                    Err(error) => self.error = Some(error.to_string()),
+                    Err(fault) => self.error = Some(fault.to_string()),
                 }
             }
         }
@@ -236,11 +221,7 @@ impl MarkersUi {
         let Some(marker_box) = self.marker_box.as_mut() else {
             return Rect::NOTHING;
         };
-        let title = if marker_box.editing.is_some() {
-            WORDS_EDIT_MARKER
-        } else {
-            WORDS_ADD
-        };
+        let title = marker_box.title();
         let spec = PanelSpec {
             id: BOX_ID,
             title,
@@ -256,19 +237,14 @@ impl MarkersUi {
             })
             .inner;
         let mut closed = cancelled;
-        if kept {
-            match marker_box.fields.marker() {
-                None => marker_box.error = Some(WORDS_BAD_FIELDS.to_string()),
-                Some(marker) => {
-                    let dir = host::world_map::map_dir();
-                    match host::world_map::keep_user_marker(&dir, marker_box.editing, marker) {
-                        Ok(()) => {
-                            asks.push(MarkersAsk::Changed);
-                            closed = true;
-                        }
-                        Err(error) => marker_box.error = Some(error.to_string()),
-                    }
+        if let Some(change) = kept.then(|| marker_box.submit()).flatten() {
+            let dir = host::world_map::map_dir();
+            match host::world_map::change_user_markers(&dir, &change) {
+                Ok(()) => {
+                    asks.push(MarkersAsk::Changed);
+                    closed = true;
                 }
+                Err(fault) => marker_box.error = Some(fault.to_string()),
             }
         }
         if frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) {
@@ -323,11 +299,7 @@ fn box_fields(ui: &mut egui::Ui, marker_box: &mut MarkerBox) -> (bool, bool) {
     if let Some(error) = &marker_box.error {
         ui.colored_label(theme::ALARM, error);
     }
-    let words = if marker_box.editing.is_some() {
-        MarkerButton::Edit.words()
-    } else {
-        WORDS_CREATE
-    };
+    let words = marker_box.submit_words();
     ui.horizontal(|ui| {
         let kept = ui.button(words).clicked() || entered;
         let cancelled = ui.button(WORDS_CANCEL).clicked();

@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::Value;
+use std::sync::PoisonError;
 use uoterm_view::frame::watch_live_map;
 use uoterm_view::map_lay::{MAP_PICTURE_PREFIX, NEAR_MAP_PREFIX};
 use uoterm_view::model::map_item::{map_of_path, MAP_ITEM_PREFIX};
@@ -82,12 +83,29 @@ async fn map_picture(
     Path((map, tx, ty)): Path<(u8, u16, u16)>,
 ) -> Response {
     let etag = format!("{}-world-{map}-{tx}-{ty}", state.files_tag);
+    let key = (map, tx, ty);
+    let made = state
+        .map_tiles
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+        .cloned();
+    if let Some(png) = made {
+        return kept(&etag, CONTENT_PNG, png);
+    }
     let tile = (usize::from(tx), usize::from(ty));
+    let tiles = state.map_tiles.clone();
     on_art_mut(
         &state,
         move |art| art.map_tile_picture(map, tile),
         move |picture| match picture.as_ref().and_then(encode) {
-            Some(png) => kept(&etag, CONTENT_PNG, png),
+            Some(png) => {
+                tiles
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(key, png.clone());
+                kept(&etag, CONTENT_PNG, png)
+            }
             None => StatusCode::NOT_FOUND.into_response(),
         },
     )
@@ -235,6 +253,12 @@ mod tests {
         assert_eq!(picture.dimensions(), (side, side));
         assert_eq!(picture.get_pixel(0, 0).0, [0, 255, 0, 255]);
         let (across, _) = map_picture_tiles(0);
+        assert!(
+            state.map_tiles.lock().unwrap().get(&(0, 0, 0)).is_some(),
+            "the tile is kept"
+        );
+        let (status, again) = picture_at(state.clone(), &map_picture_path(0, 0, 0)).await;
+        assert_eq!((status, again), (StatusCode::OK, bytes));
         let (status, _) = picture_at(state, &map_picture_path(0, across, 0)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }

@@ -724,7 +724,22 @@ export interface MarkersData {
   search_hint: string;
   rows: { at: number; words: string; buttons: string[] }[];
   nothing: string | null;
-  read_only: string;
+}
+
+/** The box that adds or changes a marker of the own file. */
+export interface MarkerBoxData {
+  x: string;
+  y: string;
+  name: string;
+  icon: string;
+  color: number;
+  colors: string[];
+  /** The words of the fields: x, y, name, icon and color. */
+  labels: [string, string, string, string, string];
+  icon_hint: string;
+  error: string | null;
+  submit: string;
+  cancel: string;
 }
 
 /** A map item, in the points of its land. */
@@ -800,6 +815,7 @@ export interface PanelData {
   channels: Framed<ChatPanelData> | null;
   world_map: Framed<WorldMapData> | null;
   markers: Framed<MarkersData> | null;
+  marker_box: Framed<MarkerBoxData> | null;
   map_items: Framed<MapItemData>[];
   profile: Framed<ProfileData> | null;
   quest_arrow: QuestArrowData | null;

@@ -19,6 +19,7 @@ import { Journal } from './Journal';
 import { Launcher } from './Launcher';
 import { Loot } from './Loot';
 import { MapItem } from './MapItem';
+import { MarkerBox } from './MarkerBox';
 import { Markers } from './Markers';
 import { Near } from './Near';
 import { OldMenu } from './OldMenu';
@@ -284,6 +285,11 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
         {data.markers && (
           <Frame {...frameOf(data.markers)}>
             <Markers data={data.markers.body} send={to('markers')} />
+          </Frame>
+        )}
+        {data.marker_box && (
+          <Frame {...frameOf(data.marker_box)}>
+            <MarkerBox data={data.marker_box.body} send={to('marker_box')} />
           </Frame>
         )}
         {data.map_items.map((map) => (

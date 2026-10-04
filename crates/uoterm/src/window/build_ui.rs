@@ -675,13 +675,12 @@ impl ChatUi {
 
     fn take_answers(&mut self, frame: &WatchFrame, tools: &Tools<'_>, time: f64) {
         for answer in tools.hand.new_answers(Asker::Chat) {
-            let picked = matches!(answer, Answer::Picked(Ok(_)));
             match self.panel.take_answer(frame.chat.as_ref(), answer) {
-                Ok(act) => {
-                    if let Some(act) = act {
+                Ok(answer) => {
+                    if let Some(act) = answer.act {
                         tools.hand.act(act);
                     }
-                    if picked && self.panel.picked.is_some() {
+                    if answer.joined {
                         self.wish.clear();
                         self.note = None;
                     }

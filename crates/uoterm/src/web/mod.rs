@@ -16,6 +16,7 @@ mod sound_routes;
 pub use files::serve_page;
 
 use crate::art::client_art::ClientArt;
+use crate::lru::LruCache;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG};
@@ -28,7 +29,7 @@ use serde_json::json;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::SystemTime;
 use tokio::sync::Semaphore;
 use tower_http::services::ServeFile;
@@ -78,7 +79,17 @@ pub struct WebState {
     pub logins: LoginStore,
     /// The config a saved login takes its server from when it names none.
     pub login_config: AppConfig,
+    /// The tiles of the whole-world picture made last, as PNG, so a page
+    /// that draws the map again does not make them again. One state serves
+    /// one version of the client files, so the map and the tile name one.
+    pub map_tiles: Arc<Mutex<LruCache<MapTileKey, Vec<u8>>>>,
 }
+
+/// A tile of the whole-world picture: its map and its place.
+pub type MapTileKey = (u8, u16, u16);
+/// How many encoded tiles of the world map are kept: a few screens of the
+/// whole world.
+const MAP_TILES_KEPT: usize = 64;
 
 impl WebState {
     /// The client files of `uopath`, and the season table of the config
@@ -114,6 +125,7 @@ impl WebState {
             runtime,
             jev_key,
             login_config: AppConfig::default(),
+            map_tiles: Arc::new(Mutex::new(LruCache::new(MAP_TILES_KEPT))),
         }
     }
 

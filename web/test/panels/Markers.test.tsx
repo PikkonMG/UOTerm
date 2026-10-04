@@ -12,7 +12,6 @@ const data: MarkersData = {
   search_hint: 'search the markers',
   rows: [{ at: 3, words: 'Bank  1434, 1699  ', buttons: ['Go'] }],
   nothing: null,
-  read_only: 'Markers are added and changed in the UOTerm window.',
 };
 
 describe('Markers', () => {
@@ -25,6 +24,5 @@ describe('Markers', () => {
     expect(send).toHaveBeenLastCalledWith({ search: 'ba' });
     fireEvent.click(getByText('Go'));
     expect(send).toHaveBeenLastCalledWith({ row: { at: 3, button: 0 } });
-    expect(getByText(data.read_only)).toBeTruthy();
   });
 });

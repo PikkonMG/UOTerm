@@ -10,7 +10,10 @@
 
 use super::radar::{land_data, LandData, MarkData};
 use super::sheet::Choice;
-use super::{panel_notches, FrameSpec, Framed, NoteData, Place, PANEL_MARKERS, PANEL_WORLD_MAP};
+use super::{
+    panel_notches, FrameSpec, Framed, NoteData, Place, PANEL_MARKERS, PANEL_MARKER_BOX,
+    PANEL_WORLD_MAP,
+};
 use crate::{WebView, KEPT_PREFIX};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,17 +25,21 @@ use uoterm_view::map_lay::{
     map_tiles_on, mark_layout, near_still_serves, place_words, session_markers, whole_tile, Lay,
     MapFiles, Marks, MODERN_LOOK, ZOOM_MIN,
 };
-use uoterm_view::model::world_map::{self, MapFolder, MAP_FILES_KEPT};
+use uoterm_view::model::world_map::{
+    self, MapFolder, MarkerChange, MAP_FILES_KEPT, MARKER_COLORS, WORDS_STALE_MARKERS,
+};
 use uoterm_view::scene::overlays::quest_arrow;
+use uoterm_view::ui::layout::{first_place, Spot};
 use uoterm_view::ui::map_panel::{
     dragged_look, field_click, field_hints, field_of, goto_place, map_first_place, near_lay,
-    near_zoom, view_words, whole_turns, world_lay, world_zoom, FieldClick, MapButton, HINT_GOTO,
-    MAP_ID, NOTE_SECONDS, READ_ONLY_MAP_BUTTONS, WORDS_GO, WORDS_NO_FILES, WORDS_RELOADED,
+    near_zoom, view_words, whole_turns, world_lay, world_zoom, FieldClick, MapButton, MapLook,
+    HINT_GOTO, MAP_BUTTONS, MAP_ID, NOTE_SECONDS, WORDS_GO, WORDS_NO_FILES, WORDS_RELOADED,
     WORDS_TITLE, WORDS_WALK,
 };
 use uoterm_view::ui::markers::{
-    manager_first_place, row_buttons, row_words, MarkerButton, HINT_SEARCH, MANAGER_ID,
-    WORDS_MANAGER, WORDS_NONE_FOUND, WORDS_NO_FILES as WORDS_NO_MARKER_FILES, WORDS_READ_ONLY,
+    manager_first_place, row_buttons, row_words, MarkerBox, MarkerButton, BOX_ID, BOX_SIZE,
+    HINT_ICON, HINT_SEARCH, MANAGER_ID, WORDS_CANCEL, WORDS_COLOR, WORDS_ICON, WORDS_MANAGER,
+    WORDS_NAME, WORDS_NONE_FOUND, WORDS_NO_FILES as WORDS_NO_MARKER_FILES, WORDS_X, WORDS_Y,
 };
 use uoterm_view::ui::places::TITLE_ROW;
 use uoterm_view::ui::quest_arrow::{arrow_act, arrow_click_area, HINT_ARROW};
@@ -43,14 +50,12 @@ const REDRAW_QUERY: &str = "?drawn=";
 
 /// The world map and the markers manager as they stand.
 pub(crate) struct WorldMapState {
-    pub open: bool,
+    /// Open or not, and where the whole-world view looks.
+    look: MapLook,
     zoom: f32,
     /// The turns of the wheel over the whole-world view that are not yet a
     /// whole zoom step.
     wheel: f32,
-    /// The tile in the middle of the whole-world view, when the player
-    /// moved the view or looked for a place.
-    looking_at: Option<(u16, u16)>,
     /// The map and the middle tile of the picture of the land near the
     /// character.
     near: Option<(u8, (u16, u16))>,
@@ -67,10 +72,9 @@ pub(crate) struct WorldMapState {
 impl Default for WorldMapState {
     fn default() -> Self {
         Self {
-            open: false,
+            look: MapLook::default(),
             zoom: ZOOM_MIN,
             wheel: 0.0,
-            looking_at: None,
             near: None,
             folder: MapFolder::default(),
             redraw: 0,
@@ -84,6 +88,8 @@ impl Default for WorldMapState {
 #[derive(Default)]
 struct MarkersState {
     open: bool,
+    /// The box that adds or changes a marker of the own file.
+    marker_box: Option<MarkerBox>,
     /// The file whose markers show.
     file: usize,
     search: String,
@@ -140,7 +146,6 @@ pub struct MarkersData {
     pub search_hint: &'static str,
     pub rows: Vec<MarkerRow>,
     pub nothing: Option<&'static str>,
-    pub read_only: &'static str,
 }
 
 /// One marker: its place in its file, its words and its buttons.
@@ -149,6 +154,43 @@ pub struct MarkerRow {
     pub at: usize,
     pub words: String,
     pub buttons: Vec<&'static str>,
+}
+
+/// The box that adds or changes a marker of the own file: its fields as
+/// typed, the colors, and why its fields make no marker.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MarkerBoxData {
+    pub x: String,
+    pub y: String,
+    pub name: String,
+    pub icon: String,
+    /// The place of the color in `colors`.
+    pub color: usize,
+    pub colors: Vec<&'static str>,
+    /// The words of the fields: x, y, name, icon and color.
+    pub labels: [&'static str; 5],
+    pub icon_hint: &'static str,
+    pub error: Option<String>,
+    pub submit: &'static str,
+    pub cancel: &'static str,
+}
+
+/// The fields of the marker box as the player typed them.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct TypedFields {
+    x: String,
+    y: String,
+    name: String,
+    icon: String,
+    color: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MarkerBoxAction {
+    Fields(TypedFields),
+    Submit(bool),
+    Cancel(bool),
 }
 
 /// The box round the quest arrow that takes clicks, in the points of the
@@ -229,33 +271,31 @@ impl WebView {
     /// Opens or closes the world map, as its window command does.
     pub(crate) fn toggle_world_map(&mut self) {
         let map = &mut self.panels.world_map;
-        map.open = !map.open;
+        map.look.open = !map.look.open;
     }
 
     pub(crate) fn world_map_open(&self) -> bool {
-        self.panels.world_map.open
+        self.panels.world_map.look.open
     }
 
     /// Closes the map and its markers manager.
     pub(crate) fn close_world_map(&mut self) {
         let map = &mut self.panels.world_map;
-        map.open = false;
+        map.look.open = false;
         map.markers.open = false;
+        map.markers.marker_box = None;
     }
 
     /// Shows a place in the whole-world view.
-    fn look_at(&mut self, (x, y): (u16, u16)) {
-        let map = &mut self.panels.world_map;
-        map.open = true;
-        map.looking_at = Some((x, y));
-        if !self.profile.world_map.whole_world {
-            self.profile.world_map.whole_world = true;
+    fn look_at(&mut self, place: (u16, u16)) {
+        let look = &mut self.panels.world_map.look;
+        if look.look_at(place, &mut self.profile.world_map) {
             self.keep_profile();
         }
     }
 
     pub(super) fn world_map_spec(&self) -> Option<FrameSpec> {
-        if !self.panels.world_map.open {
+        if !self.panels.world_map.look.open {
             return None;
         }
         let (default, least) = map_first_place(self.panel_room());
@@ -281,7 +321,7 @@ impl WebView {
         let field = Area::from_min_size(Point::new(0.0, 0.0), field.size());
         let map = &self.panels.world_map;
         let lay = if self.profile.world_map.whole_world {
-            world_lay(field, frame, &self.profile.world_map, map.looking_at)
+            world_lay(field, frame, &self.profile.world_map, map.look.looking_at)
         } else {
             near_lay(field, frame, map.zoom)
         };
@@ -329,7 +369,7 @@ impl WebView {
             profile: &self.profile,
             files: &files,
             session: &session,
-            looking_at: state.looking_at,
+            looking_at: state.look.looking_at,
         };
         let marks = mark_layout(field, lay, &marks, &MODERN_LOOK)
             .into_iter()
@@ -346,7 +386,7 @@ impl WebView {
             place: options
                 .show_coordinates
                 .then(|| place_words(&self.profile, frame.map, frame.x, frame.y)),
-            buttons: READ_ONLY_MAP_BUTTONS
+            buttons: MAP_BUTTONS
                 .iter()
                 .map(|button| ButtonData {
                     words: button.words(),
@@ -392,7 +432,7 @@ impl WebView {
             MapAction::View(_) => {
                 let options = &mut self.profile.world_map;
                 options.whole_world = !options.whole_world;
-                self.panels.world_map.looking_at = None;
+                self.panels.world_map.look.looking_at = None;
                 self.keep_profile();
             }
             MapAction::Goto(asked) => match goto_place(&asked.words) {
@@ -407,7 +447,7 @@ impl WebView {
                 }
                 Err(words) => self.panels.world_map.note = Some((words.to_string(), time)),
             },
-            MapAction::Button(at) => match READ_ONLY_MAP_BUTTONS.get(at) {
+            MapAction::Button(at) => match MAP_BUTTONS.get(at) {
                 Some(MapButton::Redraw) => {
                     let map = &mut self.panels.world_map;
                     map.redraw += 1;
@@ -421,7 +461,10 @@ impl WebView {
                     let markers = &mut self.panels.world_map.markers;
                     markers.open = !markers.open;
                 }
-                Some(MapButton::MarkMe) | None => {}
+                Some(MapButton::MarkMe) => {
+                    self.open_marker_box(MarkerBox::adding(&world_map::marker_on_player(&frame)))
+                }
+                None => {}
             },
             MapAction::Wheel(notches) => {
                 let notches = panel_notches(notches);
@@ -439,7 +482,7 @@ impl WebView {
             }
             MapAction::Drag(by) => {
                 if self.profile.world_map.whole_world && self.profile.world_map.free_view {
-                    self.panels.world_map.looking_at = dragged_look(lay, by);
+                    self.panels.world_map.look.looking_at = dragged_look(lay, by);
                 }
             }
             MapAction::Hover(at) => self.panels.world_map.hover = at,
@@ -451,8 +494,8 @@ impl WebView {
                 });
                 match click {
                     Some(FieldClick::Act(act)) => self.hand.act(act),
-                    Some(FieldClick::Mark(_)) => {
-                        self.panels.world_map.note = Some((WORDS_READ_ONLY.to_string(), time));
+                    Some(FieldClick::Mark(marker)) => {
+                        self.open_marker_box(MarkerBox::adding(&marker));
                     }
                     None => {}
                 }
@@ -481,7 +524,7 @@ impl WebView {
             world_map::found(&file.markers, &state.markers.search)
         });
         let buttons: Vec<&'static str> = shown.map_or_else(Vec::new, |file| {
-            row_buttons(&file.name, false)
+            row_buttons(&file.name, true)
                 .iter()
                 .map(|button| button.words())
                 .collect()
@@ -511,7 +554,6 @@ impl WebView {
                 })
                 .collect(),
             nothing,
-            read_only: WORDS_READ_ONLY,
         };
         Some(self.framed(PANEL_MARKERS, &spec, body))
     }
@@ -530,11 +572,20 @@ impl WebView {
                 let Some(file) = state.folder.markers.get(state.markers.file) else {
                     return;
                 };
-                let button = row_buttons(&file.name, false).get(press.button);
-                let marker = file.markers.get(press.at);
-                if let (Some(MarkerButton::Go), Some(marker)) = (button, marker) {
-                    let place = (marker.x, marker.y);
-                    self.look_at(place);
+                let button = row_buttons(&file.name, true).get(press.button);
+                let Some(marker) = file.markers.get(press.at).cloned() else {
+                    return;
+                };
+                match button {
+                    Some(MarkerButton::Go) => self.look_at((marker.x, marker.y)),
+                    Some(MarkerButton::Edit) => {
+                        self.open_marker_box(MarkerBox::editing(press.at, &marker));
+                    }
+                    Some(MarkerButton::Remove) => self.change_markers(&MarkerChange::Remove {
+                        at: press.at,
+                        expected: marker,
+                    }),
+                    None => {}
                 }
             }
             MarkersAction::File(_) => {}
@@ -543,6 +594,87 @@ impl WebView {
 
     pub(super) fn close_markers(&mut self) {
         self.panels.world_map.markers.open = false;
+    }
+
+    fn open_marker_box(&mut self, marker_box: MarkerBox) {
+        self.panels.world_map.markers.marker_box = Some(marker_box);
+    }
+
+    /// Sends a change of the own marker file to the server.
+    fn change_markers(&mut self, change: &MarkerChange) {
+        self.art.post_marker_change(change);
+    }
+
+    /// The answers to the changes of the own marker file: a change made
+    /// shuts the box; one not made says why. The files are read again
+    /// either way, as the window reads them again.
+    pub(crate) fn follow_marker_changes(&mut self, time: f64) {
+        for made in self.art.take_marker_answers() {
+            let markers = &mut self.panels.world_map.markers;
+            if made {
+                markers.marker_box = None;
+            } else if let Some(marker_box) = markers.marker_box.as_mut() {
+                marker_box.error = Some(WORDS_STALE_MARKERS.to_string());
+            } else {
+                self.panels.world_map.note = Some((WORDS_STALE_MARKERS.to_string(), time));
+            }
+            self.read_map_folder();
+        }
+    }
+
+    pub(super) fn marker_box_spec(&self) -> Option<FrameSpec> {
+        let marker_box = self.panels.world_map.markers.marker_box.as_ref()?;
+        let default = first_place(self.panel_room(), Spot::Middle(0), BOX_SIZE);
+        Some(FrameSpec::fixed(BOX_ID, marker_box.title(), default).closable())
+    }
+
+    pub(super) fn marker_box_data(&self) -> Option<Framed<MarkerBoxData>> {
+        let spec = self.marker_box_spec()?;
+        let marker_box = self.panels.world_map.markers.marker_box.as_ref()?;
+        let fields = &marker_box.fields;
+        let body = MarkerBoxData {
+            x: fields.x.clone(),
+            y: fields.y.clone(),
+            name: fields.name.clone(),
+            icon: fields.icon.clone(),
+            color: fields.color,
+            colors: MARKER_COLORS.to_vec(),
+            labels: [WORDS_X, WORDS_Y, WORDS_NAME, WORDS_ICON, WORDS_COLOR],
+            icon_hint: HINT_ICON,
+            error: marker_box.error.clone(),
+            submit: marker_box.submit_words(),
+            cancel: WORDS_CANCEL,
+        };
+        Some(self.framed(PANEL_MARKER_BOX, &spec, body))
+    }
+
+    pub(super) fn marker_box_action(&mut self, action: Value) {
+        let Ok(action) = serde_json::from_value::<MarkerBoxAction>(action) else {
+            return;
+        };
+        let Some(marker_box) = self.panels.world_map.markers.marker_box.as_mut() else {
+            return;
+        };
+        match action {
+            MarkerBoxAction::Fields(typed) => {
+                let fields = &mut marker_box.fields;
+                fields.x = typed.x;
+                fields.y = typed.y;
+                fields.name = typed.name;
+                fields.icon = typed.icon;
+                fields.color = typed.color.min(MARKER_COLORS.len() - 1);
+            }
+            MarkerBoxAction::Submit(_) => {
+                if let Some(change) = marker_box.submit() {
+                    self.change_markers(&change);
+                }
+            }
+            MarkerBoxAction::Cancel(_) => self.close_marker_box(),
+        }
+    }
+
+    pub(super) fn close_marker_box(&mut self) {
+        self.panels.world_map.markers.marker_box = None;
     }
 
     /// The box round the quest arrow that takes clicks, while the shard
@@ -583,6 +715,7 @@ mod tests {
     use crate::tests::settled;
     use serde_json::json;
     use uoterm_view::map_lay::MAP_PICTURE_PREFIX;
+    use uoterm_view::model::world_map::{Marker, MARKER_CHANGE_PATH};
     use uoterm_view::settings::WorldMapOptions;
 
     fn open_map(control: bool) -> WebView {
@@ -618,9 +751,12 @@ mod tests {
             PANEL_WORLD_MAP,
             json!({ "click": { "x": middle.x, "y": middle.y, "ctrl": true } }),
         );
-        assert!(out_acts(&out).is_empty(), "markers are read-only here");
-        let note = view.panel_data(0.0).world_map.unwrap().body.note.unwrap();
-        assert_eq!(note.words, WORDS_READ_ONLY);
+        assert!(out_acts(&out).is_empty(), "Ctrl marks the place");
+        let marking = view.panel_data(0.0).marker_box.unwrap().body;
+        assert_eq!(
+            (marking.x, marking.y),
+            (frame.x.to_string(), frame.y.to_string())
+        );
     }
 
     #[test]
@@ -688,7 +824,7 @@ mod tests {
             .any(|mark| matches!(mark, MarkData::Words { words, .. } if words == "Bank"));
         assert!(named, "the radar shows the marker");
         view.toggle_world_map();
-        press(&mut view, PANEL_WORLD_MAP, json!({ "button": 2 }));
+        press(&mut view, PANEL_WORLD_MAP, json!({ "button": 3 }));
         let markers = view.panel_data(0.0).markers.unwrap().body;
         assert_eq!(markers.rows[0].words, "Bank  1001, 1001  ");
         assert_eq!(markers.rows[0].buttons, vec![MarkerButton::Go.words()]);
@@ -697,12 +833,110 @@ mod tests {
             PANEL_MARKERS,
             json!({ "row": { "at": 0, "button": 0 } }),
         );
-        assert_eq!(view.panels.world_map.looking_at, Some((1001, 1001)));
+        assert_eq!(view.panels.world_map.look.looking_at, Some((1001, 1001)));
         press(&mut view, PANEL_WORLD_MAP, json!({ "button": 1 }));
         assert!(
             view.data_wanted_native().contains(&path),
             "Reload reads again"
         );
+    }
+
+    /// The changes of the own marker file the view sent to the server.
+    fn sent_changes(view: &mut WebView) -> Vec<(String, MarkerChange)> {
+        view.art
+            .take_posts()
+            .into_iter()
+            .filter(|post| post.path == MARKER_CHANGE_PATH)
+            .map(|post| (post.key, serde_json::from_value(post.body).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn mark_me_adds_a_marker_through_the_box_and_reads_the_files_again() {
+        let mut view = open_map(true);
+        view.data_wanted_native();
+        let mark_me = MAP_BUTTONS
+            .iter()
+            .position(|button| *button == MapButton::MarkMe)
+            .unwrap();
+        press(&mut view, PANEL_WORLD_MAP, json!({ "button": mark_me }));
+        let frame = view.frame_ref().unwrap().clone();
+        let mut same = MarkerBox::adding(&world_map::marker_on_player(&frame));
+        let fields = json!({ "fields": { "x": "1000", "y": "1000", "name": "Home",
+            "icon": "", "color": 1 } });
+        press(&mut view, PANEL_MARKER_BOX, fields);
+        same.fields.name = "Home".into();
+        same.fields.color = 1;
+        press(&mut view, PANEL_MARKER_BOX, json!({ "submit": true }));
+        let sent = sent_changes(&mut view);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1, same.submit().unwrap());
+        view.post_arrived(&sent[0].0, &json!({ "changed": true }).to_string());
+        view.tick_native(0.2, crate::tests::VIEW, None);
+        assert!(
+            view.panel_data(0.2).marker_box.is_none(),
+            "kept: the box shuts"
+        );
+        let path = format!("{KEPT_PREFIX}{MAP_FILES_KEPT}");
+        assert!(view.data_wanted_native().contains(&path));
+    }
+
+    #[test]
+    fn bad_fields_and_a_stale_file_say_why_and_change_nothing() {
+        let mut view = open_map(true);
+        press(&mut view, PANEL_WORLD_MAP, json!({ "button": 2 }));
+        let bad = json!({ "fields": { "x": "x", "y": "1", "name": "A", "icon": "", "color": 0 } });
+        press(&mut view, PANEL_MARKER_BOX, bad);
+        press(&mut view, PANEL_MARKER_BOX, json!({ "submit": true }));
+        assert!(sent_changes(&mut view).is_empty());
+        let error = view.panel_data(0.0).marker_box.unwrap().body.error;
+        assert_eq!(error.as_deref(), Some(world_map::WORDS_INVALID_MARKER));
+        let good = json!({ "fields": { "x": "1", "y": "1", "name": "A", "icon": "", "color": 0 } });
+        press(&mut view, PANEL_MARKER_BOX, good);
+        press(&mut view, PANEL_MARKER_BOX, json!({ "submit": true }));
+        let sent = sent_changes(&mut view);
+        view.post_missing(&sent[0].0);
+        view.tick_native(0.2, crate::tests::VIEW, None);
+        let error = view.panel_data(0.2).marker_box.unwrap().body.error;
+        assert_eq!(error.as_deref(), Some(WORDS_STALE_MARKERS));
+    }
+
+    #[test]
+    fn the_own_file_edits_and_removes_its_markers_by_their_place() {
+        let mut view = settled();
+        let path = format!("{KEPT_PREFIX}{MAP_FILES_KEPT}");
+        let camp = json!({ "name": "Camp", "map": 0, "x": 5, "y": 6, "icon": "", "color": "red" });
+        let folder = json!({ "markers": [{ "name": world_map::USER_MARKERS, "markers": [camp] }],
+            "zones": [] });
+        view.data_arrived_native(&path, &folder);
+        view.toggle_world_map();
+        press(&mut view, PANEL_WORLD_MAP, json!({ "button": 3 }));
+        let rows = view.panel_data(0.0).markers.unwrap().body.rows;
+        let words: Vec<&str> = row_buttons(world_map::USER_MARKERS, true)
+            .iter()
+            .map(|button| button.words())
+            .collect();
+        assert_eq!(rows[0].buttons, words);
+        let marker: Marker = serde_json::from_value(camp).unwrap();
+        press(
+            &mut view,
+            PANEL_MARKERS,
+            json!({ "row": { "at": 0, "button": 0 } }),
+        );
+        assert_eq!(
+            view.panel_data(0.0).marker_box.unwrap().frame.title,
+            MarkerBox::editing(0, &marker).title()
+        );
+        press(
+            &mut view,
+            PANEL_MARKERS,
+            json!({ "row": { "at": 0, "button": 1 } }),
+        );
+        let removed = MarkerChange::Remove {
+            at: 0,
+            expected: marker,
+        };
+        assert_eq!(sent_changes(&mut view)[0].1, removed);
     }
 
     #[test]

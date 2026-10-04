@@ -44,7 +44,7 @@ pub use radar::RadarData;
 pub use ring::{RingData, TipKey};
 pub use shard_gumps::ShardGumpData;
 pub use sheet::SheetData;
-pub use world_map::{MarkersData, QuestArrowData, WorldMapData};
+pub use world_map::{MarkerBoxData, MarkersData, QuestArrowData, WorldMapData};
 
 pub(crate) use asks::AsksState;
 pub(crate) use bar::BarState;
@@ -109,6 +109,8 @@ pub const PANEL_BUILD: &str = "build";
 pub const PANEL_CHANNELS: &str = "channels";
 pub const PANEL_WORLD_MAP: &str = "world_map";
 pub const PANEL_MARKERS: &str = "markers";
+/// The box that adds or changes a marker of the own file.
+pub const PANEL_MARKER_BOX: &str = "marker_box";
 pub const PANEL_PROFILE: &str = "profile";
 pub const PANEL_QUEST_ARROW: &str = "quest_arrow";
 /// A map item is the panel `"map_item:{serial}"`.
@@ -180,6 +182,7 @@ pub struct PanelData {
     pub channels: Option<Framed<ChatPanelData>>,
     pub world_map: Option<Framed<WorldMapData>>,
     pub markers: Option<Framed<MarkersData>>,
+    pub marker_box: Option<Framed<MarkerBoxData>>,
     /// The map items the character opened.
     pub map_items: Vec<Framed<MapItemData>>,
     pub profile: Option<Framed<ProfileData>>,
@@ -437,6 +440,7 @@ impl WebView {
                 channels: None,
                 world_map: None,
                 markers: None,
+                marker_box: None,
                 map_items: Vec::new(),
                 profile: None,
                 quest_arrow: None,
@@ -484,6 +488,7 @@ impl WebView {
             channels: self.channels_data(&frame, time),
             world_map: self.world_map_data(&frame, time),
             markers: self.markers_data(),
+            marker_box: self.marker_box_data(),
             map_items: self.map_items_data(&frame),
             profile: self.profile_data(&frame),
             quest_arrow: self.quest_arrow_data(&frame),
@@ -562,6 +567,7 @@ impl WebView {
             PANEL_CHANNELS => self.channels_spec(frame),
             PANEL_WORLD_MAP => self.world_map_spec(),
             PANEL_MARKERS => self.markers_spec(),
+            PANEL_MARKER_BOX => self.marker_box_spec(),
             PANEL_PROFILE => self.profile_spec(frame),
             map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.map_item_spec(frame, map),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.grid_panel_spec(frame, grid),
@@ -608,6 +614,7 @@ impl WebView {
             PANEL_CHANNELS => self.channels_action(action),
             PANEL_WORLD_MAP => self.world_map_action(action),
             PANEL_MARKERS => self.markers_action(action),
+            PANEL_MARKER_BOX => self.marker_box_action(action),
             PANEL_PROFILE => self.profile_action(action),
             PANEL_QUEST_ARROW => self.quest_arrow_action(action),
             map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.map_item_action(map, action),
@@ -670,6 +677,7 @@ impl WebView {
             PANEL_CHANNELS => self.panels.build.chat.open = false,
             PANEL_WORLD_MAP => self.close_world_map(),
             PANEL_MARKERS => self.close_markers(),
+            PANEL_MARKER_BOX => self.close_marker_box(),
             PANEL_PROFILE => self.close_profile(),
             map if map.starts_with(PANEL_MAP_ITEM_PREFIX) => self.close_map_item(map),
             grid if grid.starts_with(PANEL_GRID_PREFIX) => self.close_grid(grid),

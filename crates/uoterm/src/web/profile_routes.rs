@@ -6,7 +6,7 @@
 use super::{on_blocking, send_file, WebState};
 use crate::kept;
 use crate::window::fonts::{font_names, fonts_dir};
-use crate::window::map_files::{map_dir_in, map_folder};
+use crate::window::map_files::{change_user_markers, map_dir_in, map_folder, MarkerFault};
 use crate::window::screenshot::{create_new_file, screenshots_dir};
 use crate::window::{shard_address, CharacterKey, ProfileStore};
 use axum::body::Bytes;
@@ -20,10 +20,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::Write;
 use uoterm_view::guard::{KeptGrabBags, GRAB_BAGS_FILE};
-use uoterm_view::model::world_map::MAP_FILES_KEPT;
+use uoterm_view::model::world_map::{MarkerChange, MAP_FILES_KEPT, MARKER_CHANGE_PATH};
 use uoterm_view::settings::Profile;
 use uoterm_view::ui::deck::{KeptHotbars, HOTBAR_FILE};
 
+/// A change of the own marker file holds two markers: far less than this.
+pub(super) const MARKER_CHANGE_MAX_BYTES: usize = 64 * 1024;
 /// A screenshot is never larger than this.
 pub(super) const SCREENSHOT_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// Every PNG file starts with these bytes.
@@ -39,6 +41,10 @@ pub(super) fn routes() -> Router<WebState> {
             get(read_character).put(write_character),
         )
         .route("/v1/kept/{name}", get(read_kept).put(write_kept))
+        .route(
+            MARKER_CHANGE_PATH,
+            post(change_markers).layer(DefaultBodyLimit::max(MARKER_CHANGE_MAX_BYTES)),
+        )
         .route("/v1/fonts", get(list_fonts))
         .route("/v1/fonts/{name}", get(font))
         .route(
@@ -197,6 +203,27 @@ async fn write_kept(
     on_blocking(move || file.write(&state.config_dir, value)).await
 }
 
+/// Changes the player's own marker file, the one file of the map folder a
+/// page may write. A bad request for a marker that is not valid, a
+/// conflict when the file no longer holds the marker the change expects.
+async fn change_markers(
+    State(state): State<WebState>,
+    Json(change): Json<MarkerChange>,
+) -> Response {
+    on_blocking(
+        move || match change_user_markers(&map_dir_in(&state.config_dir), &change) {
+            Ok(()) => Json(json!({ "changed": true })).into_response(),
+            Err(MarkerFault::Invalid) => StatusCode::BAD_REQUEST.into_response(),
+            Err(MarkerFault::Stale) => StatusCode::CONFLICT.into_response(),
+            Err(MarkerFault::Write(error)) => {
+                tracing::warn!(%error, "the own marker file was not written");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        },
+    )
+    .await
+}
+
 /// The file names of the player fonts in the `Fonts` folder.
 async fn list_fonts(State(state): State<WebState>) -> Response {
     on_blocking(move || Json(font_names(&fonts_dir(&state.config_dir))).into_response()).await
@@ -257,7 +284,7 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
     use uoterm_runtime::config::file_safe;
-    use uoterm_view::model::world_map::MapFolder;
+    use uoterm_view::model::world_map::{MapFolder, Marker, MarkerChange, MARKER_CHANGE_PATH};
     use uoterm_view::settings::Profile;
 
     const PNG_START: &[u8] = b"\x89PNG\r\n\x1a\nrest";
@@ -435,6 +462,73 @@ mod tests {
             .unwrap();
         assert_eq!(put.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert!(map.join("towns.csv").exists(), "the files stay");
+    }
+
+    fn post_change(change: &MarkerChange) -> Request<Body> {
+        Request::post(MARKER_CHANGE_PATH)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(change).unwrap()))
+            .unwrap()
+    }
+
+    /// The own marker file changes by operations only, each checked: a
+    /// marker that is not valid is a bad request, and a change of a marker
+    /// the file no longer holds is a conflict.
+    #[tokio::test]
+    async fn the_own_marker_file_changes_by_checked_operations() {
+        let home = test_config_dir();
+        let app = profile_router(home.path());
+        let camp = Marker {
+            name: "Camp".into(),
+            map: 0,
+            x: 10,
+            y: 20,
+            icon: String::new(),
+            color: "red".into(),
+        };
+        let send = |change: MarkerChange| {
+            let app = app.clone();
+            async move { app.oneshot(post_change(&change)).await.unwrap() }
+        };
+        let added = send(MarkerChange::Add(camp.clone())).await;
+        assert_eq!(added.status(), StatusCode::OK);
+        let bad = Marker {
+            x: u16::MAX,
+            ..camp.clone()
+        };
+        assert_eq!(
+            send(MarkerChange::Add(bad)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mine = Marker {
+            name: "Mine".into(),
+            ..camp.clone()
+        };
+        let stale = MarkerChange::Remove {
+            at: 0,
+            expected: mine.clone(),
+        };
+        assert_eq!(send(stale).await.status(), StatusCode::CONFLICT);
+        let keep = MarkerChange::Keep {
+            at: 0,
+            marker: mine.clone(),
+            expected: camp,
+        };
+        assert_eq!(send(keep).await.status(), StatusCode::OK);
+        let read = app.clone().oneshot(get("/v1/kept/markers")).await.unwrap();
+        let folder: MapFolder = serde_json::from_slice(&body(read).await).unwrap();
+        assert_eq!(folder.markers[0].markers, vec![mine.clone()]);
+        let remove = MarkerChange::Remove {
+            at: 0,
+            expected: mine,
+        };
+        assert_eq!(send(remove).await.status(), StatusCode::OK);
+        let too_big = Request::post(MARKER_CHANGE_PATH)
+            .header("content-type", "application/json")
+            .body(Body::from(vec![b' '; super::MARKER_CHANGE_MAX_BYTES + 1]))
+            .unwrap();
+        let answer = app.oneshot(too_big).await.unwrap();
+        assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

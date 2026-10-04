@@ -46,6 +46,7 @@ function data(): PanelData {
     channels: null,
     world_map: null,
     markers: null,
+    marker_box: null,
     map_items: [],
     profile: null,
     quest_arrow: null,

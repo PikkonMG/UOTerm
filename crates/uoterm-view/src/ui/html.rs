@@ -534,12 +534,9 @@ impl HtmlLine {
 /// client does: at the last space that fits, or where a word wider than the
 /// whole line overflows. The space a line breaks at, and each new line
 /// char, belong to no line. A line in a `<p>` that sits on the left starts
-/// a little to the right.
-pub fn html_lines(
-    chars: &[HtmlChar],
-    width: u32,
-    advance: impl Fn(&HtmlChar) -> u32,
-) -> Vec<HtmlLine> {
+/// a little to the right. `advance` gives how far the char at a place of
+/// `chars` steps across.
+pub fn html_lines(chars: &[HtmlChar], width: u32, advance: impl Fn(usize) -> u32) -> Vec<HtmlLine> {
     let mut lines = Vec::new();
     let mut at = 0;
     while at < chars.len() {
@@ -560,7 +557,7 @@ pub fn html_lines(
                 next = Some(at + 1);
                 break;
             }
-            let step = advance(ch);
+            let step = advance(at);
             if at > start && used + step > room {
                 next = Some(match (ch.ch == SPACE, last_space) {
                     (true, _) => at + 1,
@@ -579,7 +576,7 @@ pub fn html_lines(
             at += 1;
         }
         let end = at;
-        let width = chars[start..end].iter().map(&advance).sum();
+        let width = (start..end).map(&advance).sum();
         lines.push(HtmlLine {
             start,
             end,
@@ -608,8 +605,31 @@ pub fn html_lines(
 
 /// The pixels one char steps across, from the width its font draws it:
 /// a bold char is one pixel wider, as the classic client steps it.
+/// `run_advances` gives these for every char of HTML words, from a measure
+/// of words in the look of their run.
 pub fn char_advance(ch: &HtmlChar, width: u32) -> u32 {
     width + u32::from(ch.look.bold && ch.ch != SPACE)
+}
+
+/// How far each char of HTML words steps across, with each run of one
+/// look measured as a whole by `measure` (a new line starts a run), so a run takes no more room on
+/// its line than it takes drawn: the step of a char is how much wider the
+/// run grows with it.
+pub fn run_advances(chars: &[HtmlChar], measure: impl Fn(&str, &CharLook) -> f32) -> Vec<u32> {
+    let mut steps = Vec::with_capacity(chars.len());
+    let same_run =
+        |a: &HtmlChar, b: &HtmlChar| a.look == b.look && a.ch != NEW_LINE && b.ch != NEW_LINE;
+    for run in chars.chunk_by(same_run) {
+        let mut words = String::new();
+        let mut before = 0;
+        for ch in run {
+            words.push(ch.ch);
+            let after = measure(&words, &ch.look).round().max(0.0) as u32;
+            steps.push(char_advance(ch, after.saturating_sub(before)));
+            before = after;
+        }
+    }
+    steps
 }
 
 /// The size of the text font a page draws the words of a Unicode font of
@@ -759,6 +779,19 @@ mod tests {
         assert_eq!(steps, [6, 5, 6]);
         assert_eq!(html_font_size(FONT_NORMAL), SIZE_BODY);
         assert!(html_font_size(FONT_BIG) > html_font_size(FONT_SMALL));
+    }
+
+    #[test]
+    fn a_run_steps_as_wide_as_it_measures_as_a_whole() {
+        let text = parse_html("ab<b>c</b>", base(), &every_font);
+        // Each pair of chars draws one narrower than its two chars apart.
+        let measure = |words: &str, _: &CharLook| {
+            let count = words.chars().count() as f32;
+            count * 5.0 - (count - 1.0).max(0.0)
+        };
+        let steps = run_advances(&text.chars, measure);
+        assert_eq!(steps, [5, 4, 6]);
+        assert_eq!(steps[..2].iter().sum::<u32>(), 9, "the run as it measures");
     }
 
     #[test]

@@ -22,6 +22,7 @@ use uoterm_view::art::{
 use uoterm_view::atlas::{ShelfPacker, ATLAS_SIDE};
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::{Point, Vector};
+use uoterm_view::model::world_map::{MarkerChange, MARKER_CHANGE_PATH};
 
 /// A block the scene has not read for this many frames is dropped. The
 /// scene reads each block it draws in each frame, whatever the size of the
@@ -137,6 +138,8 @@ impl Wants {
 enum PostFor {
     Measure(u64),
     LiveMap,
+    /// A change of the player's own marker file.
+    MarkerChange,
 }
 
 /// The tables of the client files, by what they answer.
@@ -300,6 +303,9 @@ pub struct WebArt {
     posts: Vec<Post>,
     posted: HashMap<u64, PostFor>,
     next_post: u64,
+    /// The answers to the changes of the own marker file that came: true
+    /// for a change made.
+    marker_answers: Vec<bool>,
     /// The live map last posted.
     live_map: Option<Value>,
     /// The tables when the server has no animation files.
@@ -335,6 +341,7 @@ impl Default for WebArt {
             posts: Vec::new(),
             posted: HashMap::new(),
             next_post: 0,
+            marker_answers: Vec::new(),
             live_map: None,
             no_anim: AnimRules::default(),
         };
@@ -505,15 +512,32 @@ impl WebArt {
                     serde_json::from_value(answer.clone()).unwrap_or_default();
                 self.drop_blocks(&changed);
             }
+            Some(PostFor::MarkerChange) => self.marker_answers.push(true),
             None => {}
         }
     }
 
     /// A post had no answer.
     pub fn post_missing(&mut self, key: u64) {
-        if let Some(PostFor::Measure(measure)) = self.posted.remove(&key) {
-            self.measures.borrow_mut().insert(measure, Table::Missing);
+        match self.posted.remove(&key) {
+            Some(PostFor::Measure(measure)) => {
+                self.measures.borrow_mut().insert(measure, Table::Missing);
+            }
+            Some(PostFor::MarkerChange) => self.marker_answers.push(false),
+            Some(PostFor::LiveMap) | None => {}
         }
+    }
+
+    /// Sends a change of the player's own marker file.
+    pub fn post_marker_change(&mut self, change: &MarkerChange) {
+        let body = serde_json::to_value(change).unwrap_or_default();
+        self.post(MARKER_CHANGE_PATH, body, PostFor::MarkerChange);
+    }
+
+    /// The answers to the changes of the own marker file since the last
+    /// call: true for a change made.
+    pub fn take_marker_answers(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.marker_answers)
     }
 
     /// The answer of a path came. False for a path this art never asks

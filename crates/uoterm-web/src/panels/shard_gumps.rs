@@ -19,8 +19,8 @@ use uoterm_view::geom::{Area, Point, Rgba, Vector};
 use uoterm_view::ui::gump_frame::{frame_part_ids, frame_parts, rest_place, FRAME_PARTS};
 use uoterm_view::ui::gumps::{picture_hue, shown_hue};
 use uoterm_view::ui::html::{
-    char_advance, html_base_look, html_font_size, html_lines, parse_html, HtmlBox, HtmlChar,
-    HTML_BACKGROUND, HTML_BAR_ROOM, HTML_FONT, HTML_LINE_HEIGHT,
+    html_base_look, html_font_size, html_lines, parse_html, run_advances, HtmlBox, HTML_BACKGROUND,
+    HTML_BAR_ROOM, HTML_FONT, HTML_LINE_HEIGHT,
 };
 use uoterm_view::ui::shard_gump::{
     gump_first_place, tile_art_place, veiled, PieceArt, ShardGumpState, UNDER_VEIL, VEIL_ALPHA,
@@ -37,8 +37,21 @@ const NO_HUE: u16 = 0;
 struct KeptLines {
     text: String,
     width: u32,
+    color: Rgba,
     lines: Vec<HtmlLineData>,
     background: Option<String>,
+}
+
+/// One box of HTML words of a gump: its place in the layout and on the
+/// gump, its words and how they sit, how opaque it shows and its tip.
+struct HtmlPiece<'a> {
+    index: usize,
+    at: Point,
+    size: Vector,
+    text: &'a str,
+    look: HtmlBox,
+    alpha: f32,
+    tip: Option<TipKey>,
 }
 
 /// One gump of the shard the view keeps: where the player moved it, the
@@ -289,13 +302,12 @@ impl WebView {
     fn html_lines_data(&self, text: &str, width: u32, color: Rgba) -> KeptLines {
         let read = parse_html(text, html_base_look(color.to_array()), &|_| true);
         let measure = self.body_measure.as_ref();
-        let advance = |ch: &HtmlChar| {
-            let width = measure.map_or(0.0, |measure| {
-                measure(ch.ch.encode_utf8(&mut [0; 4])).x * html_font_size(ch.look.font) / SIZE_BODY
-            });
-            char_advance(ch, width.round() as u32)
-        };
-        let lines = html_lines(&read.chars, width, advance)
+        let steps = run_advances(&read.chars, |words, look| {
+            measure.map_or(0.0, |measure| {
+                measure(words).x * html_font_size(look.font) / SIZE_BODY
+            })
+        });
+        let lines = html_lines(&read.chars, width, |at| steps[at])
             .iter()
             .map(|line| HtmlLineData {
                 left: line.left(width) as f32,
@@ -319,6 +331,7 @@ impl WebView {
         KeptLines {
             text: text.to_string(),
             width,
+            color,
             lines,
             background: read
                 .background
@@ -435,12 +448,20 @@ impl WebView {
                 scroll,
                 ..
             } => {
-                let look = HtmlBox {
-                    background: *background,
-                    scroll: *scroll,
-                    color: *color,
+                let html = HtmlPiece {
+                    index,
+                    at,
+                    size: size_of(*w, *h),
+                    text,
+                    look: HtmlBox {
+                        background: *background,
+                        scroll: *scroll,
+                        color: *color,
+                    },
+                    alpha,
+                    tip,
                 };
-                self.html_data(index, at, size_of(*w, *h), text, &look, gump, alpha, tip)
+                self.html_data(html, gump)
             }
             GumpPieceKind::Words { w, hue, text, .. } => {
                 let look = TextLook::unicode(HTML_FONT, shown_hue(*hue)).bordered();
@@ -541,20 +562,18 @@ impl WebView {
         }
     }
 
-    /// A box of HTML words: its paper, and its lines, kept while its words
-    /// and its width stay.
-    #[allow(clippy::too_many_arguments)]
-    fn html_data(
-        &mut self,
-        index: usize,
-        at: Point,
-        size: Vector,
-        text: &str,
-        look: &HtmlBox,
-        gump: &mut OpenGump,
-        alpha: f32,
-        tip: Option<TipKey>,
-    ) -> GumpPieceData {
+    /// A box of HTML words: its paper, and its lines, kept while its words,
+    /// its width and its color stay.
+    fn html_data(&mut self, html: HtmlPiece<'_>, gump: &mut OpenGump) -> GumpPieceData {
+        let HtmlPiece {
+            index,
+            at,
+            size,
+            text,
+            look,
+            alpha,
+            tip,
+        } = html;
         let (color, room) = look.color_and_room();
         let bar_room = if look.has_bar() { HTML_BAR_ROOM } else { 0 };
         let paper = if look.background {
@@ -569,7 +588,7 @@ impl WebView {
         let fresh = gump
             .lines
             .get(&index)
-            .is_some_and(|kept| kept.text == text && kept.width == width);
+            .is_some_and(|kept| kept.text == text && kept.width == width && kept.color == color);
         if !fresh {
             let kept = self.html_lines_data(text, width, color);
             gump.lines.insert(index, kept);
@@ -640,7 +659,8 @@ impl WebView {
                 None
             }
             GumpAction::Field(typed) => {
-                let entry = layout.pieces.iter().find_map(|piece| match &piece.what {
+                // Only a field of the page that shows takes words.
+                let entry = shown.iter().find_map(|at| match &layout.pieces[*at].what {
                     GumpPieceKind::Entry {
                         id, text, limit, ..
                     } if *id == typed.id => Some((text, *limit)),
@@ -705,6 +725,7 @@ mod tests {
     const SWITCH: u32 = 3;
     const FIELD: u16 = 9;
     const NEXT_PAGE: u32 = 2;
+    const HIDDEN_FIELD: u16 = 10;
 
     fn piece(page: u32, what: GumpPieceKind) -> GumpPiece {
         GumpPiece {
@@ -771,6 +792,17 @@ mod tests {
                     },
                 ),
                 piece(NEXT_PAGE, button(Some(ANSWER + 1), None)),
+                piece(
+                    NEXT_PAGE,
+                    GumpPieceKind::Entry {
+                        w: 100,
+                        h: 20,
+                        hue: 0,
+                        id: HIDDEN_FIELD,
+                        text: "page two".into(),
+                        limit: None,
+                    },
+                ),
             ],
             ..GumpLayout::default()
         }
@@ -839,6 +871,20 @@ mod tests {
                 if *picture == ArtRequest::Gump { gump: 211, hue: 0, partial: false }.key().to_string())
         });
         assert!(ticked, "the box shows ticked");
+    }
+
+    #[test]
+    fn a_field_of_a_page_that_does_not_show_takes_no_words() {
+        let mut view = view(true);
+        let typed = json!({ "field": { "id": HIDDEN_FIELD, "words": "typed" } });
+        press(&mut view, &panel(), typed);
+        press(&mut view, &panel(), json!({ "button": 3 }));
+        let gump = view.panel_data(0.0).gumps.remove(0);
+        let words = gump.pieces.iter().find_map(|piece| match piece {
+            GumpPieceData::Entry { id, words, .. } if *id == HIDDEN_FIELD => Some(words.clone()),
+            _ => None,
+        });
+        assert_eq!(words.as_deref(), Some("page two"));
     }
 
     #[test]

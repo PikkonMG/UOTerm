@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 use uoterm_view::model::world_map::{
     self, csv_line, kept_marker, markers_csv, parse_markers, parse_zones_json, removed_marker,
-    MapFile, MapFolder, Marker, MarkerFile, ZoneFile, USER_MARKERS, USER_MARKERS_EXTENSION,
+    MapFile, MapFolder, Marker, MarkerChange, MarkerFile, ZoneFile, USER_MARKERS,
+    USER_MARKERS_EXTENSION,
 };
 
 const MAP_DIR: &str = "map";
@@ -110,6 +111,46 @@ pub fn remove_user_marker(dir: &Path, at: usize) -> std::io::Result<()> {
     save_user_markers(dir, &removed_marker(user_markers(dir), at))
 }
 
+/// Why a change of the player's own marker file was not made.
+#[derive(Debug)]
+pub enum MarkerFault {
+    /// The marker it writes is not valid.
+    Invalid,
+    /// The file no longer holds the marker the change expects: the window
+    /// or another page changed it.
+    Stale,
+    Write(std::io::Error),
+}
+
+impl std::fmt::Display for MarkerFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid => f.write_str(world_map::WORDS_INVALID_MARKER),
+            Self::Stale => f.write_str(world_map::WORDS_STALE_MARKERS),
+            Self::Write(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Makes a change of the player's own marker file, when the marker it
+/// writes is valid and the file holds the marker it expects.
+pub fn change_user_markers(dir: &Path, change: &MarkerChange) -> Result<(), MarkerFault> {
+    if !change.is_valid() {
+        return Err(MarkerFault::Invalid);
+    }
+    if let Some((at, expected)) = change.expected() {
+        if user_markers(dir).get(at) != Some(expected) {
+            return Err(MarkerFault::Stale);
+        }
+    }
+    let written = match change {
+        MarkerChange::Add(marker) => keep_user_marker(dir, None, marker.clone()),
+        MarkerChange::Keep { at, marker, .. } => keep_user_marker(dir, Some(*at), marker.clone()),
+        MarkerChange::Remove { at, .. } => remove_user_marker(dir, *at),
+    };
+    written.map_err(MarkerFault::Write)
+}
+
 /// Every zone file of the folder.
 pub fn load_zones(dir: &Path) -> Vec<ZoneFile> {
     names_in(dir)
@@ -152,6 +193,49 @@ mod tests {
         assert_eq!(names, vec!["Camp".to_string(), "Cave".to_string()]);
         remove_user_marker(&dir, 0).unwrap();
         assert_eq!(user_markers(&dir).len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_change_is_made_only_when_valid_and_when_the_file_holds_what_it_expects() {
+        let dir =
+            std::env::temp_dir().join(format!("uoterm-change-markers-{}", uuid::Uuid::new_v4()));
+        let camp = Marker {
+            color: NEW_MARKER_COLOR.into(),
+            ..named("Camp")
+        };
+        change_user_markers(&dir, &MarkerChange::Add(camp.clone())).unwrap();
+        let bad = MarkerChange::Add(named(""));
+        assert!(matches!(
+            change_user_markers(&dir, &bad),
+            Err(MarkerFault::Invalid)
+        ));
+        let mine = Marker {
+            name: "Mine".into(),
+            ..camp.clone()
+        };
+        let stale = MarkerChange::Keep {
+            at: 0,
+            marker: mine.clone(),
+            expected: mine.clone(),
+        };
+        assert!(matches!(
+            change_user_markers(&dir, &stale),
+            Err(MarkerFault::Stale)
+        ));
+        let keep = MarkerChange::Keep {
+            at: 0,
+            marker: mine.clone(),
+            expected: camp,
+        };
+        change_user_markers(&dir, &keep).unwrap();
+        assert_eq!(user_markers(&dir), vec![mine.clone()]);
+        let remove = MarkerChange::Remove {
+            at: 0,
+            expected: mine,
+        };
+        change_user_markers(&dir, &remove).unwrap();
+        assert!(user_markers(&dir).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

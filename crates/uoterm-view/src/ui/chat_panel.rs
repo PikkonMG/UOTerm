@@ -107,6 +107,14 @@ pub fn channel_ask(chat: &WatchChat, wish: &str) -> Option<Ask> {
     })
 }
 
+/// What an answer of Jev did: whether it joined a channel, and the act
+/// that joins it at once.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChatAnswer {
+    pub joined: bool,
+    pub act: Option<Act>,
+}
+
 /// What the chat panel keeps between frames.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatPanel {
@@ -177,21 +185,27 @@ impl ChatPanel {
         okay.then(|| asking.act(&words)).flatten()
     }
 
-    /// Takes the answer of Jev about a channel: the channel he picked is
-    /// joined. The words of a failure as an error.
+    /// Takes the answer of Jev about a channel, while the chat is on: the
+    /// channel he picked is joined. The words of a failure as an error.
     pub fn take_answer(
         &mut self,
         chat: Option<&WatchChat>,
         answer: Answer,
-    ) -> Result<Option<Act>, String> {
-        match (answer, chat) {
-            (Answer::Picked(Ok(place)), Some(chat)) => match chat.channels.get(place) {
-                Some((name, _)) => Ok(self.join(chat, name.clone())),
-                None => Ok(None),
+    ) -> Result<ChatAnswer, String> {
+        let Some(chat) = chat else {
+            return Ok(ChatAnswer::default());
+        };
+        match answer {
+            Answer::Picked(Ok(place)) => match chat.channels.get(place) {
+                Some((name, _)) => Ok(ChatAnswer {
+                    joined: true,
+                    act: self.join(chat, name.clone()),
+                }),
+                None => Ok(ChatAnswer::default()),
             },
-            (Answer::Picked(Err(words)), _) => Err(words),
-            // The chat asks only for a pick, and the chat is gone.
-            _ => Ok(None),
+            Answer::Picked(Err(words)) => Err(words),
+            // The chat asks only for a pick.
+            _ => Ok(ChatAnswer::default()),
         }
     }
 }
@@ -266,7 +280,15 @@ mod tests {
         ));
         assert_eq!(
             panel.take_answer(Some(&chat), Answer::Picked(Ok(0))),
-            Ok(Some(Act::ChatJoin("General".into())))
+            Ok(ChatAnswer {
+                joined: true,
+                act: Some(Act::ChatJoin("General".into())),
+            })
+        );
+        assert_eq!(
+            panel.take_answer(None, Answer::Picked(Err("no".into()))),
+            Ok(ChatAnswer::default()),
+            "no chat takes no answer"
         );
         assert_eq!(
             panel.take_answer(Some(&chat), Answer::Picked(Err("no".into()))),

@@ -405,18 +405,74 @@ impl MarkerFields {
     /// facet and a name. A comma would start a new field of the marker
     /// file, so it is left out.
     pub fn marker(&self) -> Option<Marker> {
-        let (width, height) = facet_size(self.map);
-        let x: u16 = self.x.trim().parse().ok().filter(|x| *x <= width)?;
-        let y: u16 = self.y.trim().parse().ok().filter(|y| *y <= height)?;
-        let name = self.name.replace(CSV_SPLIT, "");
-        (!name.trim().is_empty()).then(|| Marker {
-            name,
+        let marker = Marker {
+            name: self.name.replace(CSV_SPLIT, ""),
             map: self.map,
-            x,
-            y,
-            icon: self.icon.clone(),
+            x: self.x.trim().parse().ok()?,
+            y: self.y.trim().parse().ok()?,
+            icon: self.icon.replace(CSV_SPLIT, ""),
             color: MARKER_COLORS[self.color.min(MARKER_COLORS.len() - 1)].to_string(),
-        })
+        };
+        is_valid(&marker).then_some(marker)
+    }
+}
+
+/// True for a marker the player's own file may keep: a name, a place
+/// inside its facet, a color of `MARKER_COLORS`, and no comma, which would
+/// start a new field of the file.
+pub fn is_valid(marker: &Marker) -> bool {
+    let (width, height) = facet_size(marker.map);
+    let no_comma = |words: &str| !words.contains(CSV_SPLIT);
+    !marker.name.trim().is_empty()
+        && no_comma(&marker.name)
+        && no_comma(&marker.icon)
+        && marker.x <= width
+        && marker.y <= height
+        && MARKER_COLORS.contains(&marker.color.as_str())
+}
+
+/// Why a change of the own marker file was not made.
+pub const WORDS_INVALID_MARKER: &str = "Give a name, and x and y inside the facet.";
+pub const WORDS_STALE_MARKERS: &str = "The marker file changed. Look at the markers again.";
+
+/// Where a web page sends a change of the player's own marker file.
+pub const MARKER_CHANGE_PATH: &str = "/v1/map-markers/user";
+
+/// A change of the player's own marker file. A change of the marker at a
+/// place names the marker it expects there, so a file the window changed
+/// in the meantime is not changed by mistake.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerChange {
+    Add(Marker),
+    Keep {
+        at: usize,
+        marker: Marker,
+        expected: Marker,
+    },
+    Remove {
+        at: usize,
+        expected: Marker,
+    },
+}
+
+impl MarkerChange {
+    /// True when the markers it writes are valid.
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::Add(marker) | Self::Keep { marker, .. } => is_valid(marker),
+            Self::Remove { .. } => true,
+        }
+    }
+
+    /// The marker the change expects at its place, when it names one.
+    pub fn expected(&self) -> Option<(usize, &Marker)> {
+        match self {
+            Self::Add(_) => None,
+            Self::Keep { at, expected, .. } | Self::Remove { at, expected } => {
+                Some((*at, expected))
+            }
+        }
     }
 }
 

@@ -2,9 +2,8 @@ import type { MarkersData, Send } from './types';
 
 /**
  * The markers manager: a tab for each marker file, a search, and the
- * markers of the open file that hold its words, each with its buttons.
- * The files are read-only here: a marker is added and changed in the
- * UOTerm window.
+ * markers of the open file that hold its words, each with its buttons:
+ * the player's own file edits and removes its markers.
  */
 export function Markers({ data, send }: { data: MarkersData; send: Send }) {
   return (
@@ -30,7 +29,6 @@ export function Markers({ data, send }: { data: MarkersData; send: Send }) {
           </div>
         ))}
       </div>
-      <p class="small faint">{data.read_only}</p>
     </div>
   );
 }
