@@ -32,6 +32,7 @@ use std::borrow::Cow;
 use uoterm_view::actions::controls::Controls;
 use uoterm_view::actions::PointerClick;
 use uoterm_view::art::{ArtRequest, WorldArt};
+use uoterm_view::atlas::{ATLAS_SIDE, WHITE_SIDE};
 use uoterm_view::clicks::ChatMode;
 use uoterm_view::floats::Floats;
 use uoterm_view::frame::WatchFrame;
@@ -41,7 +42,7 @@ use uoterm_view::guard::GRAB_BAGS_FILE;
 use uoterm_view::keys::chat::ChatLine;
 use uoterm_view::model::game_view::ShardReports;
 use uoterm_view::pad::PadState;
-use uoterm_view::scene::SceneState;
+use uoterm_view::scene::{SceneState, WHEEL_POINTS_PER_NOTCH};
 use uoterm_view::settings::{Profile, UiStyle};
 use uoterm_view::sky::Sky;
 use uoterm_view::steer::Steer;
@@ -74,6 +75,27 @@ pub(crate) fn to_js<T: Serialize>(value: &T) -> JsValue {
     value
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .unwrap_or(JsValue::NULL)
+}
+
+/// The side of the texture the page keeps the pictures in, in pixels: the
+/// places of `DrawBuffers.uploads()` and the u, v of the meshes count in it.
+#[wasm_bindgen(js_name = atlasSide)]
+pub fn atlas_side() -> usize {
+    ATLAS_SIDE
+}
+
+/// The side of the white square the page lays in the top left corner of
+/// the texture, in pixels.
+#[wasm_bindgen(js_name = whiteSide)]
+pub fn white_side() -> usize {
+    WHITE_SIDE
+}
+
+/// The points of the wheel one notch turns, as egui counts a line of a
+/// wheel: the page turns a browser's pixels and pages into notches by it.
+#[wasm_bindgen(js_name = wheelPointsPerNotch)]
+pub fn wheel_points_per_notch() -> f32 {
+    WHEEL_POINTS_PER_NOTCH
 }
 
 /// Measures words in the font the page draws the name plates in.

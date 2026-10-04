@@ -34,6 +34,16 @@ body {
   min-height: 100%;
 }
 
+/* The world fills the page; the fingers move the character, not the page. */
+.world {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
 .panel {
   background: var(--glass);
   border: var(--edge-width) solid var(--glass-edge);
@@ -43,6 +53,8 @@ body {
 }
 
 .screen {
+  /* Over the world, when the token screen comes up during a game. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--row-gap);
