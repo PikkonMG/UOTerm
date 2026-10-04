@@ -788,9 +788,11 @@ mod tests {
                 zones: Vec::new(),
             }],
         };
-        let mut options = WorldMapOptions::default();
-        options.hidden_marker_files = vec!["camps".into()];
-        options.hidden_zone_files = vec!["towns".into()];
+        let options = WorldMapOptions {
+            hidden_marker_files: vec!["camps".into()],
+            hidden_zone_files: vec!["towns".into()],
+            ..WorldMapOptions::default()
+        };
         let files = MapFiles::shown(&folder, &options);
         assert_eq!(files.markers.len(), 1);
         assert_eq!(files.markers[0].name, "towns");
