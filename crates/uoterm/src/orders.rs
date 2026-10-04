@@ -15,9 +15,7 @@ use uoterm_view::orders::{
     picked_group, request, ASK_HOTKEY, NO_SUCH_HOTKEY,
 };
 
-pub use uoterm_view::orders::{
-    ASK_CHANNEL, ASK_HOUSE_PART, ASK_LANDMARK, ASK_PROFILE, ASK_SHARD, ASK_WEAR,
-};
+pub use uoterm_view::orders::{ASK_PROFILE, ASK_SHARD};
 
 const KEY_ENV: &str = "TYPESAFE_API_KEY";
 /// The words for the human when there is no key.

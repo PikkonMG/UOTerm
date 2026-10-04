@@ -13,22 +13,16 @@ use super::orders::{self, ORDER_OFF};
 use super::settings::CombatOptions;
 use crate::view::WatchFrame;
 use eframe::egui;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
-use uoterm_runtime::tools::{
-    TOOL_FIND_LANDMARKS, TOOL_HOTKEYS, TOOL_LIST_SCRIPTS, TOOL_PROPERTIES, TOOL_SCRIPT_READ,
-    TOOL_SCRIPT_STATUS,
-};
+use uoterm_runtime::tools::{TOOL_HOTKEYS, TOOL_PROPERTIES};
 
 pub use uoterm_view::act::*;
+use uoterm_view::asks::{AskCall, AskRun, AskStep, CallResult};
 use uoterm_view::tips::{TIP_RETRY_SECONDS, TIP_TRIES};
-
-const NOT_SURE: &str = "Jev is not sure which one you mean. Pick it from the list.";
-const NO_PLACE_ON_MAP: &str = "The marker file names no place on this map.";
-const NO_SUCH_PLACE: &str = "Jev is not sure which place you mean. Click the map instead.";
 
 /// The answers that came, kept for their askers. A panel that takes its
 /// answers leaves the answers of the other panels in the box.
@@ -301,92 +295,41 @@ fn answer_asks(
     }
 }
 
+/// Makes the calls of one ask, one after the other, and gives its answer.
+/// What each call is and what its result comes to is
+/// `uoterm_view::asks`.
 async fn answer_one(link: &Link, key: Option<&str>, ask: Ask) -> Answer {
-    match ask {
-        Ask::Scripts => {
-            let listed = link.call(TOOL_LIST_SCRIPTS, json!({})).await.ok();
-            Answer::Scripts(string_list(listed.as_ref(), "scripts"))
+    let (mut run, mut call) = AskRun::start(ask);
+    loop {
+        let result = match call {
+            AskCall::Read { tool, args } => CallResult::Read(link.call(tool, args).await),
+            AskCall::Pick {
+                question,
+                wish,
+                names,
+            } => CallResult::Picked(match key {
+                None => Err(ORDER_OFF.into()),
+                Some(key) => {
+                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                    orders::pick(key, question.instructions(), &wish, &names).await
+                }
+            }),
+            AskCall::Lines { wish } => CallResult::Lines(match key {
+                None => Err(ORDER_OFF.into()),
+                Some(key) => {
+                    let hotkeys = |name: Option<String>| async move {
+                        let args = name.map_or_else(|| json!({}), |name| json!({ "name": name }));
+                        link.call(TOOL_HOTKEYS, args).await
+                    };
+                    orders::lines_for(key, &wish, hotkeys).await
+                }
+            }),
+        };
+        match run.next(result) {
+            AskStep::Call(next) => call = next,
+            AskStep::Done(answer) => return answer,
         }
-        Ask::ScriptText(name) => {
-            let read = link.call(TOOL_SCRIPT_READ, json!({ "name": name })).await;
-            let text = read
-                .ok()
-                .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_default();
-            Answer::ScriptText { name, text }
-        }
-        Ask::ScriptStatus => {
-            let status = link.call(TOOL_SCRIPT_STATUS, json!({})).await.ok();
-            Answer::ScriptStatus(status_words(status.as_ref()))
-        }
-        Ask::HousePart { wish, options } => {
-            Answer::Picked(pick_one(key, orders::ASK_HOUSE_PART, &wish, &options).await)
-        }
-        Ask::WearItem { wish, options } => {
-            Answer::Picked(pick_one(key, orders::ASK_WEAR, &wish, &options).await)
-        }
-        Ask::Channel { wish, options } => {
-            Answer::Picked(pick_one(key, orders::ASK_CHANNEL, &wish, &options).await)
-        }
-        Ask::PlaceOnMap {
-            wish,
-            map,
-            from,
-            to,
-        } => Answer::Place(match key {
-            None => Err(ORDER_OFF.into()),
-            Some(key) => place_on_map(link, key, &wish, map, from, to).await,
-        }),
-        Ask::LinesFor(wish) => Answer::Lines(match key {
-            None => Err(ORDER_OFF.into()),
-            Some(key) => {
-                let hotkeys = |name: Option<String>| async move {
-                    let args = name.map_or_else(|| json!({}), |name| json!({ "name": name }));
-                    link.call(TOOL_HOTKEYS, args).await
-                };
-                orders::lines_for(key, &wish, hotkeys).await
-            }
-        }),
     }
-}
-
-/// Asks Jev which of `options` the wish names, and gives its place.
-async fn pick_one(
-    key: Option<&str>,
-    ask: &str,
-    wish: &str,
-    options: &[String],
-) -> Result<usize, String> {
-    let key = key.ok_or(ORDER_OFF)?;
-    let names: Vec<&str> = options.iter().map(String::as_str).collect();
-    orders::pick(key, ask, wish, &names)
-        .await?
-        .ok_or_else(|| NOT_SURE.to_string())
-}
-
-/// The tile of the place the words name. Jev picks it from the places that
-/// lie on the map.
-async fn place_on_map(
-    link: &Link,
-    key: &str,
-    wish: &str,
-    map: u8,
-    from: (u16, u16),
-    to: (u16, u16),
-) -> Result<(u16, u16), String> {
-    let landmarks = link
-        .call(TOOL_FIND_LANDMARKS, json!({ "map": map }))
-        .await?;
-    let places = places_in(&landmarks, map, from, to);
-    if places.is_empty() {
-        return Err(NO_PLACE_ON_MAP.into());
-    }
-    let names: Vec<&str> = places.iter().map(|(name, ..)| name.as_str()).collect();
-    let place = orders::pick(key, orders::ASK_LANDMARK, wish, &names)
-        .await?
-        .ok_or(NO_SUCH_PLACE)?;
-    let (_, x, y) = &places[place];
-    Ok((*x, *y))
 }
 
 async fn perform(link: &Link, key: Option<&str>, act: Act) -> Report {

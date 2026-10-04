@@ -5,8 +5,11 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use uoterm_view::act::{tip_lines, Act, PageAct, Report, Tip};
+use uoterm_view::act::{
+    split_answers, string_list, tip_lines, Act, Answer, Ask, Asker, PageAct, Report, Tip,
+};
 use uoterm_view::actions::WindowCommand;
+use uoterm_view::asks::{AskCall, AskRun, AskStep, CallResult};
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::guard::{Guard, HandStep, KeptGrabBags, LocalAim, GRAB_BAGS_FILE};
 use uoterm_view::model::reads::{ReadCache, ReadKey};
@@ -16,6 +19,16 @@ use uoterm_world::tool_names::TOOL_PROPERTIES;
 
 /// The Jev route of an order in plain words.
 pub const JEV_ORDER: &str = "order";
+/// The Jev route that picks one of a list of names.
+pub const JEV_PICK: &str = "pick";
+/// The Jev route that turns a wish into script lines.
+pub const JEV_LINES: &str = "lines";
+/// The key of the place Jev picked in the answer of a pick.
+const INDEX_KEY: &str = "index";
+/// The key of the script lines in the answer of a wish.
+const LINES_KEY: &str = "lines";
+/// The script lines of a wish are one text, a line each.
+const LINE_BREAK: &str = "\n";
 /// The key of the error words in a failed answer of the server.
 const ERROR_KEY: &str = "error";
 /// The key of the act in the answer of an order.
@@ -45,10 +58,35 @@ pub enum OutCall {
 
 /// What a call the page makes for the view answers.
 enum Asked {
-    Act { words: String },
+    Act {
+        words: String,
+    },
     Read(ReadKey),
-    Tip { serial: u32, tries: usize },
+    Tip {
+        serial: u32,
+        tries: usize,
+    },
     Order,
+    /// One call of the ask of a panel.
+    Ask {
+        asker: Asker,
+        run: AskRun,
+        call: CallKind,
+    },
+}
+
+/// The kind of call an ask made, which tells how to read its answer.
+#[derive(Clone, Copy)]
+enum CallKind {
+    Read,
+    Pick,
+    Lines,
+}
+
+/// A call an ask makes, before it has its id.
+enum Made {
+    Read(&'static str, Value),
+    Jev(&'static str, Value),
 }
 
 /// The words of a failed answer: the error words of the server, words
@@ -76,6 +114,8 @@ pub struct Hand {
     /// Words of the client for the journal, until the controls take them.
     notes: Vec<String>,
     tips: Vec<Tip>,
+    /// The answers to the asks of the panels, until their askers take them.
+    answers: Vec<(Asker, Answer)>,
     /// The tooltips to ask again, when, and how many times they were
     /// asked.
     tip_retries: Vec<(f64, u32, usize)>,
@@ -95,6 +135,7 @@ impl Default for Hand {
             report: None,
             notes: Vec::new(),
             tips: Vec::new(),
+            answers: Vec::new(),
             tip_retries: Vec::new(),
             time: 0.0,
         }
@@ -102,7 +143,7 @@ impl Default for Hand {
 }
 
 impl Hand {
-    fn ask(&mut self, asked: Asked) -> u64 {
+    fn wait_for(&mut self, asked: Asked) -> u64 {
         self.next_id += 1;
         self.asked.insert(self.next_id, asked);
         self.next_id
@@ -141,7 +182,7 @@ impl Hand {
     fn send(&mut self, act: Act) {
         if let Act::Order(words, _) = &act {
             let body = json!({ "words": words, "frame": self.watch });
-            let id = self.ask(Asked::Order);
+            let id = self.wait_for(Asked::Order);
             self.out.push(OutCall::Jev {
                 id,
                 route: JEV_ORDER.to_string(),
@@ -150,7 +191,7 @@ impl Hand {
             return;
         }
         let act = act.for_page();
-        let id = self.ask(Asked::Act {
+        let id = self.wait_for(Asked::Act {
             words: act.words.clone(),
         });
         self.out.push(OutCall::Act { id, act });
@@ -223,13 +264,66 @@ impl Hand {
         std::mem::take(&mut self.notes)
     }
 
+    /// Asks for something that comes back as an answer to `asker`: the
+    /// calls of the ask go out one after the other.
+    pub fn ask(&mut self, asker: Asker, ask: Ask) {
+        let (run, call) = AskRun::start(ask);
+        self.ask_call(asker, run, call);
+    }
+
+    fn ask_call(&mut self, asker: Asker, run: AskRun, call: AskCall) {
+        let (kind, made) = match call {
+            AskCall::Read { tool, args } => (CallKind::Read, Made::Read(tool, args)),
+            AskCall::Pick {
+                question,
+                wish,
+                names,
+            } => (
+                CallKind::Pick,
+                Made::Jev(
+                    JEV_PICK,
+                    json!({ "question": question, "names": names, "wish": wish }),
+                ),
+            ),
+            AskCall::Lines { wish } => (
+                CallKind::Lines,
+                Made::Jev(JEV_LINES, json!({ "wish": wish })),
+            ),
+        };
+        let id = self.wait_for(Asked::Ask {
+            asker,
+            run,
+            call: kind,
+        });
+        self.out.push(match made {
+            Made::Read(tool, args) => OutCall::Read {
+                id,
+                tool: tool.to_string(),
+                args,
+            },
+            Made::Jev(route, body) => OutCall::Jev {
+                id,
+                route: route.to_string(),
+                body,
+            },
+        });
+    }
+
+    /// The answers that came to the asks of `asker`, in the order they
+    /// came.
+    pub fn new_answers(&mut self, asker: Asker) -> Vec<Answer> {
+        let (own, others) = split_answers(std::mem::take(&mut self.answers), asker);
+        self.answers = others;
+        own
+    }
+
     /// Asks for the tooltip of a thing. It reads, so it needs no control.
     pub fn want_tip(&mut self, serial: u32) {
         self.ask_tip(serial, 1);
     }
 
     fn ask_tip(&mut self, serial: u32, tries: usize) {
-        let id = self.ask(Asked::Tip { serial, tries });
+        let id = self.wait_for(Asked::Tip { serial, tries });
         self.out.push(OutCall::Read {
             id,
             tool: TOOL_PROPERTIES.to_string(),
@@ -266,7 +360,7 @@ impl Hand {
         for key in self.reads.due(self.time) {
             let tool = key.tool.to_string();
             let args = key.arguments();
-            let id = self.ask(Asked::Read(key));
+            let id = self.wait_for(Asked::Read(key));
             self.out.push(OutCall::Read { id, tool, args });
         }
     }
@@ -311,6 +405,35 @@ impl Hand {
                     self.tips.push(Tip { serial, lines });
                 }
             }
+            Asked::Ask {
+                asker,
+                mut run,
+                call,
+            } => {
+                let words = || failure_words(&result);
+                let result = match call {
+                    CallKind::Read => {
+                        CallResult::Read(if ok { Ok(result.clone()) } else { Err(words()) })
+                    }
+                    CallKind::Pick => CallResult::Picked(if ok {
+                        Ok(result
+                            .get(INDEX_KEY)
+                            .and_then(Value::as_u64)
+                            .and_then(|index| usize::try_from(index).ok()))
+                    } else {
+                        Err(words())
+                    }),
+                    CallKind::Lines => CallResult::Lines(if ok {
+                        Ok(string_list(Some(&result), LINES_KEY).join(LINE_BREAK))
+                    } else {
+                        Err(words())
+                    }),
+                };
+                match run.next(result) {
+                    AskStep::Call(next) => self.ask_call(asker, run, next),
+                    AskStep::Done(answer) => self.answers.push((asker, answer)),
+                }
+            }
             Asked::Order => {
                 let act = ok
                     .then(|| result.get(ACT_KEY).cloned())
@@ -318,7 +441,7 @@ impl Hand {
                     .and_then(|act| serde_json::from_value::<PageAct>(act).ok());
                 match act {
                     Some(act) => {
-                        let id = self.ask(Asked::Act {
+                        let id = self.wait_for(Asked::Act {
                             words: act.words.clone(),
                         });
                         self.out.push(OutCall::Act { id, act });
@@ -342,6 +465,7 @@ impl Hand {
 mod tests {
     use super::*;
     use uoterm_view::act::ToolCallOut;
+    use uoterm_world::tool_names::TOOL_FIND_LANDMARKS;
 
     const ITEM: u32 = 0x4000_0001;
 
@@ -435,5 +559,79 @@ mod tests {
         assert_eq!(args["serial"], ITEM);
         hand.answered(*id, true, json!({ "lines": ["a"] }), 0.5);
         assert_eq!(hand.reads().value(&key), Some(&json!({ "lines": ["a"] })));
+    }
+
+    #[test]
+    fn a_wear_ask_goes_to_jev_and_its_answer_comes_back_to_its_asker() {
+        let mut hand = Hand::default();
+        hand.ask(
+            Asker::Deck,
+            Ask::WearItem {
+                wish: "my sword".into(),
+                options: vec!["sword".into(), "shield".into()],
+            },
+        );
+        let out = hand.take_out();
+        let [OutCall::Jev { id, route, body }] = out.as_slice() else {
+            panic!("{out:?}");
+        };
+        assert_eq!(route, JEV_PICK);
+        assert_eq!(body["question"], "wear");
+        assert_eq!(body["names"], json!(["sword", "shield"]));
+        assert_eq!(body["wish"], "my sword");
+        hand.answered(*id, true, json!({ "index": 1 }), 1.0);
+        assert!(hand.new_answers(Asker::Chat).is_empty(), "the deck asked");
+        assert_eq!(hand.new_answers(Asker::Deck), vec![Answer::Picked(Ok(1))]);
+        assert!(hand.new_answers(Asker::Deck).is_empty(), "taken once");
+    }
+
+    #[test]
+    fn an_ask_of_two_calls_reads_then_asks_jev() {
+        let mut hand = Hand::default();
+        hand.ask(
+            Asker::MapItem,
+            Ask::PlaceOnMap {
+                wish: "bank".into(),
+                map: 0,
+                from: (0, 0),
+                to: (100, 100),
+            },
+        );
+        let out = hand.take_out();
+        let [OutCall::Read { id, tool, .. }] = out.as_slice() else {
+            panic!("{out:?}");
+        };
+        assert_eq!(tool, TOOL_FIND_LANDMARKS);
+        let landmarks = json!([{"name": "Bank", "map": 0, "location": {"x": 5, "y": 6}}]);
+        hand.answered(*id, true, landmarks, 1.0);
+        let out = hand.take_out();
+        let [OutCall::Jev { id, route, .. }] = out.as_slice() else {
+            panic!("{out:?}");
+        };
+        assert_eq!(route, JEV_PICK);
+        hand.answered(*id, false, json!({ "error": "off" }), 2.0);
+        assert_eq!(
+            hand.new_answers(Asker::MapItem),
+            vec![Answer::Place(Err("off".into()))]
+        );
+    }
+
+    #[test]
+    fn script_lines_come_from_jev_as_one_text() {
+        let mut hand = Hand::default();
+        hand.ask(Asker::Macros, Ask::LinesFor("heal me".into()));
+        let out = hand.take_out();
+        let [OutCall::Jev { id, route, body }] = out.as_slice() else {
+            panic!("{out:?}");
+        };
+        assert_eq!(
+            (route.as_str(), &body["wish"]),
+            (JEV_LINES, &json!("heal me"))
+        );
+        hand.answered(*id, true, json!({ "lines": ["a", "b"] }), 1.0);
+        assert_eq!(
+            hand.new_answers(Asker::Macros),
+            vec![Answer::Lines(Ok("a\nb".into()))]
+        );
     }
 }
