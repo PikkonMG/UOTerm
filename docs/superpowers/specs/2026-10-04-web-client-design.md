@@ -164,7 +164,7 @@ browser gets the same questions over a WebSocket:
 
 | Route | What it does |
 |---|---|
-| `GET /v1/login/live` | WebSocket. The page sends the login (saved login name, host, port, account, password). UOTerm starts the session with a `LoginPicker` whose questions it sends to the page as JSON (`Shard`, `Characters`, `Character`). The page answers each with the pick or a `CharacterRequest` (`Play`, `Delete`, `Make`, `Leave`). At the end UOTerm sends the session id. |
+| `GET /v1/login/live` | WebSocket. The page sends the login (saved login name, host, port, account, password). UOTerm starts the session with a `LoginPicker` whose questions it sends to the page as JSON (`Shard`, `Characters`; `Play(slot)` plays that slot, so no separate character pick follows). The page answers each with the pick or a `CharacterRequest` (`Play`, `Delete`, `Make`, `Leave`). At the end UOTerm sends the session id. |
 
 `LoginQuestion` keeps its `oneshot` reply senders. The serde form for the
 wire is a separate data type with the same fields and no senders, in
