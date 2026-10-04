@@ -26,6 +26,15 @@ pub struct TextLine {
     pub height: u32,
 }
 
+/// The lines of a block of words and the size of its picture before the
+/// margin, as the renderer of the font measures them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextBlock {
+    pub lines: Vec<TextLine>,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Words drawn in RGBA bytes, row order. A clear pixel is all zero.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextPicture {

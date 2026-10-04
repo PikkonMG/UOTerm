@@ -16,7 +16,7 @@ use std::path::Path;
 use crate::hues::HueData;
 use crate::mul::{read_file, slice_at, MapError};
 use crate::text::{
-    crop, widest_line, wrap, CharMetric, TextAlign, TextLine, TextPicture, ELLIPSIS,
+    crop, widest_line, wrap, CharMetric, TextAlign, TextBlock, TextLine, TextPicture, ELLIPSIS,
 };
 
 pub const UNIFONT_NAME: &str = "unifont.mul";
@@ -251,9 +251,31 @@ impl UnicodeFonts {
         })
     }
 
-    /// The words in one RGBA color. The picture is as wide as `max_width`,
-    /// or as the widest line when none is given, plus a margin on the right
-    /// and the bottom. None when there is nothing to draw.
+    /// The lines of `text` and the size of their picture before the margin:
+    /// as wide as `max_width`, or as the widest line when none is given, and
+    /// as tall as the lines together.
+    pub fn measure(
+        &self,
+        font: u8,
+        text: &str,
+        max_width: Option<u32>,
+        style: UnicodeStyle,
+    ) -> TextBlock {
+        let width = max_width.unwrap_or_else(|| self.width(font, text));
+        if width == 0 {
+            return TextBlock::default();
+        }
+        let lines = self.layout(font, text, Some(width), style);
+        TextBlock {
+            width,
+            height: lines.iter().map(|l| l.height).sum(),
+            lines,
+        }
+    }
+
+    /// The words in one RGBA color, as large as [`Self::measure`] says plus
+    /// a margin on the right and the bottom. None when there is nothing to
+    /// draw.
     pub fn render(
         &self,
         font: u8,
@@ -263,13 +285,12 @@ impl UnicodeFonts {
         style: UnicodeStyle,
         color: [u8; RGBA_BYTES],
     ) -> Option<TextPicture> {
-        let inner = max_width.unwrap_or_else(|| self.width(font, text));
-        if inner == 0 {
-            return None;
-        }
-        let lines = self.layout(font, text, Some(inner), style);
-        let lines_height: u32 = lines.iter().map(|l| l.height).sum();
-        if lines_height == 0 {
+        let TextBlock {
+            lines,
+            width: inner,
+            height: lines_height,
+        } = self.measure(font, text, max_width, style);
+        if inner == 0 || lines_height == 0 {
             return None;
         }
         let mut canvas = Canvas::new(

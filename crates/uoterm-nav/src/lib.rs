@@ -83,7 +83,7 @@ pub use step::{
     STEP_HEIGHT,
 };
 pub use texmaps::{TexmapData, TEXTURE_LARGE_SIDE, TEXTURE_SMALL_SIDE};
-pub use text::{TextAlign, TextLine, TextPicture};
+pub use text::{TextAlign, TextBlock, TextLine, TextPicture};
 pub use tiledata::{ItemTile, LandTile, TileData};
 pub use tiles::{
     z_reachable, MockMap, Overlay, StaticView, TileFlagSet, TileInfo, TileQuery, TILE_BRIDGE,

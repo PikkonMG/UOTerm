@@ -23,6 +23,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::SystemTime;
+use tokio::sync::Semaphore;
 use uoterm_nav::SEASONS_NAME;
 
 /// The browser keeps a picture or a table for a year and never asks again:
@@ -30,6 +31,9 @@ use uoterm_nav::SEASONS_NAME;
 /// another ETag.
 const KEEP_FOREVER: &str = "public, max-age=31536000, immutable";
 const CONTENT_JSON: &str = "application/json";
+/// How many pictures are made and turned into PNG at one time. Each can
+/// take tens of megabytes while it is made.
+const PICTURES_AT_ONCE: usize = 4;
 
 /// What the routes read: the client files, and the tag of their version.
 #[derive(Clone)]
@@ -40,6 +44,8 @@ pub struct WebState {
     pub art: Option<Arc<RwLock<ClientArt>>>,
     /// Names the version of the client files and of UOTerm in every ETag.
     pub files_tag: String,
+    /// One permit for each picture made at one time.
+    pub pictures: Arc<Semaphore>,
 }
 
 impl WebState {
@@ -59,6 +65,7 @@ impl WebState {
             files_tag: uopath
                 .map(|path| files_tag(path, &config_dir, &program))
                 .unwrap_or_default(),
+            pictures: Arc::new(Semaphore::new(PICTURES_AT_ONCE)),
         }
     }
 }

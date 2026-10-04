@@ -11,7 +11,7 @@ use crate::art::{ArtPixels, PIXEL_DRAWN};
 use crate::hues::{HueData, HueRamp};
 use crate::mul::{read_file, slice_at, MapError};
 use crate::text::{
-    crop, widest_line, wrap, CharMetric, TextAlign, TextLine, TextPicture, ELLIPSIS,
+    crop, widest_line, wrap, CharMetric, TextAlign, TextBlock, TextLine, TextPicture, ELLIPSIS,
 };
 
 pub const FONTS_NAME: &str = "fonts.mul";
@@ -69,7 +69,7 @@ pub struct AsciiFonts {
 
 /// The place of a char in a font. A char the fonts do not hold draws as the
 /// first glyph, as a control char does.
-fn glyph_index(ch: char) -> usize {
+pub(crate) fn glyph_index(ch: char) -> usize {
     let code = u32::from(ch);
     if (ASCII_FIRST_CHAR..=LAST_CHAR).contains(&code) {
         (code - ASCII_FIRST_CHAR) as usize
@@ -204,9 +204,20 @@ impl AsciiFonts {
         crop(text, max_width, dots, |ch| self.metric(font, ch))
     }
 
-    /// The words in the colors of the font. The picture is as wide as
-    /// `max_width`, or as the widest line when none is given, plus a margin.
-    /// None when there is nothing to draw.
+    /// The lines of `text` and the size of their picture before the margin:
+    /// as wide as `max_width`, or as the widest line when none is given, and
+    /// as tall as the lines together.
+    pub fn measure(&self, font: u8, text: &str, max_width: Option<u32>) -> TextBlock {
+        let lines = self.layout(font, text, max_width);
+        TextBlock {
+            width: max_width.unwrap_or_else(|| lines.iter().map(|l| l.width).max().unwrap_or(0)),
+            height: lines.iter().map(|l| l.height).sum(),
+            lines,
+        }
+    }
+
+    /// The words in the colors of the font, as large as [`Self::measure`]
+    /// says plus a margin. None when there is nothing to draw.
     pub fn render(
         &self,
         font: u8,
@@ -214,9 +225,11 @@ impl AsciiFonts {
         max_width: Option<u32>,
         align: TextAlign,
     ) -> Option<ArtPixels> {
-        let lines = self.layout(font, text, max_width);
-        let inner = max_width.unwrap_or_else(|| lines.iter().map(|l| l.width).max().unwrap_or(0));
-        let height: u32 = lines.iter().map(|l| l.height).sum();
+        let TextBlock {
+            lines,
+            width: inner,
+            height,
+        } = self.measure(font, text, max_width);
         if inner == 0 || height == 0 {
             return None;
         }
@@ -310,32 +323,26 @@ fn line_start(width: i32, line_width: i32, align: TextAlign) -> i32 {
 mod tests {
     use super::*;
 
-    const INK: u16 = 0x7FFF;
+    use crate::fixtures::{ascii_font_bytes as font_bytes, ASCII_FIXTURE_INK as INK};
+
     const RGBA_BYTES: usize = 4;
     const ALPHA: usize = 3;
-
-    /// One font where every glyph is `width` wide and two high with a top
-    /// row of ink, and the glyph of `!` is empty.
-    fn font_bytes(width: u8) -> Vec<u8> {
-        const HEIGHT: u8 = 2;
-        let mut data = vec![0u8];
-        for index in 0..ASCII_GLYPH_COUNT {
-            let empty = index == glyph_index('!');
-            data.extend([width, HEIGHT, 0]);
-            for row in 0..HEIGHT {
-                for _ in 0..width {
-                    let color = if row == 0 && !empty { INK } else { 0 };
-                    data.extend(color.to_le_bytes());
-                }
-            }
-        }
-        data
-    }
 
     fn two_fonts() -> AsciiFonts {
         let mut data = font_bytes(3);
         data.extend(font_bytes(4));
         AsciiFonts::parse(&data)
+    }
+
+    #[test]
+    fn a_block_is_measured_as_large_as_its_picture() {
+        let fonts = two_fonts();
+        let block = fonts.measure(0, "ab\ncd", None);
+        assert_eq!((block.width, block.height), (6, 4));
+        assert_eq!(block.lines.len(), 2);
+        let picture = fonts.render(0, "ab\ncd", None, TextAlign::Left).unwrap();
+        assert_eq!(picture.width as u32, block.width + TEXT_PICTURE_PADDING);
+        assert_eq!(picture.height as u32, block.height);
     }
 
     #[test]

@@ -5,6 +5,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::art::{ART_IDX_NAME, ART_MUL_NAME, ITEM_ART_BASE, PIXEL_DRAWN};
+use crate::fonts::{glyph_index, ASCII_GLYPH_COUNT, FONTS_NAME};
+use crate::hues::HUES_NAME;
 use crate::mul::{
     block_index, BLOCK_BYTES, BLOCK_HEADER, CELL_BYTES, GROUP_HEADER, IDX_EMPTY, IDX_RECORD,
     LAND_COUNT, LAND_GROUP, LAND_NAME_AFTER_FLAGS, LAND_RECORD_OLD, STAIDX_RECORD,
@@ -12,6 +14,7 @@ use crate::mul::{
     TILEDATA_NAME, TILE_NAME_LEN,
 };
 use crate::tiles::{TILE_IMPASSABLE, TILE_SURFACE};
+use crate::unifont::UNIFONT_NAME;
 
 /// The mini map is this many blocks wide and this many high.
 pub const MINI_MAP_BLOCKS: u16 = 2;
@@ -33,6 +36,12 @@ pub const FIXTURE_WALL_CY: u16 = 0;
 pub const FIXTURE_FLOOR_GRAPHIC: u16 = 1;
 pub const FIXTURE_FLOOR_NAME: &str = "wooden floor";
 pub const FIXTURE_FLOOR_HEIGHT: u8 = 5;
+/// The height of every glyph of [`ascii_font_bytes`], and the color of
+/// its top row.
+pub const ASCII_FIXTURE_HEIGHT: u8 = 2;
+pub const ASCII_FIXTURE_INK: u16 = 0x7FFF;
+/// The width of every glyph of the font of [`write_small_fonts`].
+pub const SMALL_FONT_WIDTH: u8 = 3;
 /// The one drawn pixel of item 1 of [`write_two_items`], as an
 /// [`crate::ArtPixels`] holds it.
 pub const TWO_ITEMS_RED: u16 = RED | PIXEL_DRAWN;
@@ -183,4 +192,35 @@ pub fn write_cliloc(path: &Path, messages: &[(u32, &str)]) -> Vec<u8> {
     }
     fs::write(path, &data).unwrap();
     data
+}
+
+/// One ASCII font where every glyph is `width` wide and
+/// [`ASCII_FIXTURE_HEIGHT`] high with a top row of ink, and the glyph of
+/// `!` is empty.
+pub fn ascii_font_bytes(width: u8) -> Vec<u8> {
+    let mut data = vec![0u8];
+    for index in 0..ASCII_GLYPH_COUNT {
+        let empty = index == glyph_index('!');
+        data.extend([width, ASCII_FIXTURE_HEIGHT, 0]);
+        for row in 0..ASCII_FIXTURE_HEIGHT {
+            for _ in 0..width {
+                let color = if row == 0 && !empty {
+                    ASCII_FIXTURE_INK
+                } else {
+                    0
+                };
+                data.extend(color.to_le_bytes());
+            }
+        }
+    }
+    data
+}
+
+/// Writes the font files a client must have: one ASCII font of
+/// [`ascii_font_bytes`] with glyphs [`SMALL_FONT_WIDTH`] wide, and an
+/// empty Unicode font and hue file.
+pub fn write_small_fonts(dir: &Path) {
+    fs::write(dir.join(FONTS_NAME), ascii_font_bytes(SMALL_FONT_WIDTH)).unwrap();
+    fs::write(dir.join(UNIFONT_NAME), []).unwrap();
+    fs::write(dir.join(HUES_NAME), []).unwrap();
 }

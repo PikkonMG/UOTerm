@@ -41,6 +41,10 @@ pub const TEXT_MAX_CHARS: usize = 4096;
 /// largest picture the client files hold.
 pub const PICTURE_MAX_SIDE: usize = GUMP_MAX_SIDE;
 
+/// The most worn items a figure may list: one for each layer number a
+/// packet can name. A mobile wears one item on each layer at most.
+pub const FIGURE_MAX_EQUIPMENT: usize = u8::MAX as usize + 1;
+
 /// A request for a picture larger than any the client shows. A web page
 /// can send any request, and a picture of gigabytes would stop UOTerm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,13 +255,17 @@ impl ClientArt {
         self.checked_picture(request).ok().flatten()
     }
 
-    /// The picture a request asks for, or why it is refused. Only words
-    /// have a size the request sets: every other picture is as large as
-    /// the client files make it, and they hold none too large. Ok(None)
-    /// when the files do not hold the picture.
+    /// The picture a request asks for, or why it is refused. Words have a
+    /// size the request sets, and a figure a list of worn items: every
+    /// other picture is as large as the client files make it, and they hold
+    /// none too large. Ok(None) when the files do not hold the picture.
     pub fn checked_picture(&self, request: &ArtRequest) -> Result<Option<Picture>, ArtTooLarge> {
-        if let ArtRequest::Text { text, look } = request {
-            self.check_words(text, look)?;
+        match request {
+            ArtRequest::Text { text, look } => self.check_words(text, look)?,
+            ArtRequest::Figure { look, .. } if look.equipment.len() > FIGURE_MAX_EQUIPMENT => {
+                return Err(ArtTooLarge)
+            }
+            _ => {}
         }
         Ok(self.make_picture(request))
     }
@@ -583,19 +591,11 @@ fn read_cell(map: &MulMap, tiles: Option<&TileData>, x: u16, y: u16) -> Cell {
 }
 
 /// True when the words of a look make a picture no wider and no taller
-/// than [`PICTURE_MAX_SIDE`]. Each line is measured before any is drawn.
+/// than [`PICTURE_MAX_SIDE`]. The lines are measured as the font draws
+/// them, before any is drawn.
 fn fits_a_picture(fonts: &UoFonts, text: &str, look: &TextLook) -> bool {
-    let lines = fonts.lines(text, look);
-    let widest = || {
-        lines
-            .iter()
-            .map(|line| fonts.width(look.font, line))
-            .max()
-            .unwrap_or(0)
-    };
-    let width = look.width.unwrap_or_else(widest) as usize;
-    let height = lines.len().saturating_mul(fonts.line_height(look) as usize);
-    width <= PICTURE_MAX_SIDE && height <= PICTURE_MAX_SIDE
+    let block = fonts.measure(text, look);
+    block.width as usize <= PICTURE_MAX_SIDE && block.height as usize <= PICTURE_MAX_SIDE
 }
 
 /// The look words take: words that wrap take no more width than they
@@ -708,6 +708,59 @@ mod tests {
     }
 
     #[test]
+    fn words_are_measured_with_the_font_before_they_are_drawn() {
+        let dir =
+            std::env::temp_dir().join(format!("uoterm-client-art-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_two_items(&dir);
+        uoterm_nav::fixtures::write_small_fonts(&dir);
+        let client = ClientArt::open(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let ascii = TextLook::ascii(0, 0);
+        let hail = client
+            .checked_picture(&words("Hail".into(), ascii))
+            .unwrap();
+        assert!(hail.is_some(), "short words are drawn");
+        let one_long_line = words("a".repeat(TEXT_MAX_CHARS), ascii);
+        assert_eq!(client.checked_picture(&one_long_line), Err(ArtTooLarge));
+        let many_lines = words("\n".repeat(TEXT_MAX_CHARS), ascii);
+        assert_eq!(client.checked_picture(&many_lines), Err(ArtTooLarge));
+    }
+
+    #[test]
+    fn a_figure_with_more_worn_items_than_layers_is_refused() {
+        let dir =
+            std::env::temp_dir().join(format!("uoterm-client-art-figure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_two_items(&dir);
+        let client = ClientArt::open(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let figure = |count: usize| ArtRequest::Figure {
+            look: WatchLook {
+                equipment: vec![uoterm_view::frame::WatchEquip::default(); count],
+                ..WatchLook::default()
+            },
+            pose: uoterm_view::art::Pose {
+                action: Action::Stand,
+                tick: 0,
+            },
+            paint: uoterm_view::art::Paint {
+                outline: [0; RGBA_BYTES],
+                whole_hue: None,
+            },
+        };
+        assert_eq!(
+            client.checked_picture(&figure(FIGURE_MAX_EQUIPMENT + 1)),
+            Err(ArtTooLarge)
+        );
+        assert_eq!(
+            client.checked_picture(&figure(FIGURE_MAX_EQUIPMENT)),
+            Ok(None),
+            "no animation files"
+        );
+    }
+
+    #[test]
     fn a_block_past_the_last_block_a_map_can_have_is_empty() {
         const FIRST_TOO_FAR: u16 = u16::MAX / BLOCK_SIDE + 1;
         let dir =
@@ -775,8 +828,9 @@ mod tests {
         let words = client.picture(&text(look)).unwrap();
         assert!(words.width > 0 && words.height > 0);
         let wrapped = client.picture(&text(look.wrap(200))).unwrap();
+        const LINE: &str = "a\n";
         let many_lines = ArtRequest::Text {
-            text: "\n".repeat(TEXT_MAX_CHARS),
+            text: LINE.repeat(TEXT_MAX_CHARS / LINE.len()),
             look,
         };
         assert_eq!(

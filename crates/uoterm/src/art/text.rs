@@ -2,7 +2,7 @@
 //! Unicode fonts of `unifont*.mul`, in a hue or a color, drawn as RGBA.
 
 use std::path::Path;
-use uoterm_nav::{AsciiFonts, ClilocData, HueData, TextPicture, UnicodeFonts};
+use uoterm_nav::{AsciiFonts, ClilocData, HueData, TextBlock, TextPicture, UnicodeFonts};
 use uoterm_view::art::{TextLook, UoFont};
 
 /// Words as tall as the tallest line of a font.
@@ -68,6 +68,16 @@ impl UoFonts {
             UoFont::Unicode(font) => self.unicode.layout(font, &shown, look.width, look.style),
         };
         laid.into_iter().map(|line| line.text).collect()
+    }
+
+    /// The lines of a block of words and the size of their picture before
+    /// the margin, as [`UoFonts::render`] makes it.
+    pub fn measure(&self, text: &str, look: &TextLook) -> TextBlock {
+        let shown = self.shown(text, look);
+        match look.font {
+            UoFont::Ascii(font) => self.ascii.measure(font, &shown, look.width),
+            UoFont::Unicode(font) => self.unicode.measure(font, &shown, look.width, look.style),
+        }
     }
 
     /// Draws a block of words.

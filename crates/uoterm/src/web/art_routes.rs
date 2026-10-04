@@ -9,6 +9,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use std::sync::Arc;
 use uoterm_view::art::ArtRequest;
 
 pub(super) const ART_PATH: &str = "/v1/art";
@@ -23,13 +24,18 @@ pub(super) fn routes() -> Router<WebState> {
 
 /// The picture a request asks for. Its ETag holds the key of the request,
 /// which names the picture only on this server. A bad request for a
-/// picture too large.
+/// picture too large. It waits while other pictures are made, and keeps
+/// its permit until its PNG is made, even when the page goes away.
 async fn art(State(state): State<WebState>, Json(request): Json<ArtRequest>) -> Response {
     let etag = format!("{}-{:x}", state.files_tag, request.key());
+    let Ok(permit) = Arc::clone(&state.pictures).acquire_owned().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     on_art(
         &state,
         move |art| art.checked_picture(&request),
         move |picture| {
+            let _making = permit;
             let picture = match picture {
                 Ok(Some(picture)) => picture,
                 Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -50,9 +56,11 @@ async fn art(State(state): State<WebState>, Json(request): Json<ArtRequest>) -> 
 #[cfg(test)]
 mod tests {
     use super::super::tests::{send, test_state};
+    use super::super::PICTURES_AT_ONCE;
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use std::sync::Arc;
     use uoterm_view::art::ArtRequest;
 
     fn post_art(request: &ArtRequest) -> Request<Body> {
@@ -108,6 +116,45 @@ mod tests {
         };
         let answer = send(state, post_art(&request)).await;
         assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_figure_with_too_many_worn_items_is_a_bad_request() {
+        let (state, _files) = test_state();
+        let request = ArtRequest::Figure {
+            look: uoterm_view::frame::WatchLook {
+                equipment: vec![
+                    uoterm_view::frame::WatchEquip::default();
+                    crate::art::client_art::FIGURE_MAX_EQUIPMENT + 1
+                ],
+                ..Default::default()
+            },
+            pose: uoterm_view::art::Pose {
+                action: uoterm_nav::Action::Stand,
+                tick: 0,
+            },
+            paint: uoterm_view::art::Paint {
+                outline: [0; 4],
+                whole_hue: None,
+            },
+        };
+        let answer = send(state, post_art(&request)).await;
+        assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_picture_waits_while_others_are_made() {
+        const WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+        let (state, _files) = test_state();
+        let busy = Arc::clone(&state.pictures)
+            .acquire_many_owned(PICTURES_AT_ONCE as u32)
+            .await
+            .unwrap();
+        let waiting = tokio::time::timeout(WAIT, send(state.clone(), post_art(&item(1)))).await;
+        assert!(waiting.is_err(), "no picture is made while all are busy");
+        drop(busy);
+        let answer = send(state, post_art(&item(1))).await;
+        assert_eq!(answer.status(), StatusCode::OK);
     }
 
     #[tokio::test]
