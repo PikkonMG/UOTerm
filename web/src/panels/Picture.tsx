@@ -1,5 +1,5 @@
-import { useLayoutEffect, useRef } from 'preact/hooks';
-import { pixelsOf } from '../net/art';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { pixelsOf, whenPixels } from '../net/art';
 
 let mostScale = 1;
 
@@ -15,10 +15,23 @@ export function setArtMostScale(scale: number): void {
  */
 export function Picture({ picture, words }: { picture: string | null; words?: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const [, cameAgain] = useState(0);
+  // Pixels that come later draw the picture, with no new panel data.
+  useEffect(() => (picture ? whenPixels(picture, () => cameAgain((times) => times + 1)) : undefined), [picture]);
   useLayoutEffect(() => {
     const target = canvas.current;
     const bitmap = picture ? pixelsOf(picture) : undefined;
-    if (!target || !bitmap || target.dataset.drawn === picture) return;
+    if (!target) return;
+    if (!bitmap) {
+      // No picture, or one that has not come: the last one goes.
+      if (target.dataset.drawn) {
+        target.width = 0;
+        target.height = 0;
+        delete target.dataset.drawn;
+      }
+      return;
+    }
+    if (target.dataset.drawn === picture) return;
     target.width = bitmap.width;
     target.height = bitmap.height;
     target.style.maxWidth = `${bitmap.width * mostScale}px`;

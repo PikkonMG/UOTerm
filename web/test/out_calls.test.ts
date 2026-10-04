@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LiveOut } from '../src/net/live';
+import type { InputEvent } from '../src/input/events';
+import { CHAT_ATTRIBUTE } from '../src/input/keys';
 import { sendOut } from '../src/out_calls';
 
 const SESSION = 's1';
@@ -8,7 +10,8 @@ const PROFILE_PATH = '/v1/profiles/127.0.0.1:2593/Mara';
 function places() {
   const send = vi.fn<(message: LiveOut) => void>();
   const answer = vi.fn<(id: number, ok: boolean, resultJson: string) => void>();
-  return { session: SESSION, profilePath: PROFILE_PATH, link: { send }, send, answer };
+  const input = vi.fn<(event: InputEvent) => void>();
+  return { session: SESSION, profilePath: PROFILE_PATH, link: { send }, send, answer, input };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -40,6 +43,30 @@ describe('sendOut', () => {
     expect(link.download).toBe('Mara-20261004-090507.txt');
     expect(link.href).toBe('blob:journal');
     vi.unstubAllGlobals();
+  });
+
+  it('gives_the_chat_line_the_keys_and_takes_them_back_as_the_view_asks', () => {
+    const field = document.createElement('input');
+    field.setAttribute(CHAT_ATTRIBUTE, '');
+    document.body.append(field);
+    sendOut([{ kind: 'ChatFocus', take: true }], places());
+    expect(document.activeElement).toBe(field);
+    sendOut([{ kind: 'ChatFocus', take: false }], places());
+    expect(document.activeElement).not.toBe(field);
+    field.remove();
+  });
+
+  it('pastes_the_clipboard_into_the_chat_line', async () => {
+    const field = document.createElement('input');
+    field.setAttribute(CHAT_ATTRIBUTE, '');
+    field.value = 'hail ';
+    document.body.append(field);
+    vi.stubGlobal('navigator', { clipboard: { readText: () => Promise.resolve('friend') } });
+    const out = places();
+    sendOut([{ kind: 'ChatPaste' }], out);
+    await vi.waitFor(() => expect(out.input).toHaveBeenCalledWith({ kind: 'ChatWords', text: 'hail friend' }));
+    vi.unstubAllGlobals();
+    field.remove();
   });
 
   it('asks_jev_and_gives_the_answer_back', async () => {

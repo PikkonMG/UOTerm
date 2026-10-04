@@ -299,6 +299,13 @@ pub fn new_tab(name: &str) -> Option<JournalTab> {
     })
 }
 
+/// The new name of a tab from the words typed. None for no words: the tab
+/// keeps its name.
+pub fn tab_name(typed: &str) -> Option<String> {
+    let typed = typed.trim();
+    (!typed.is_empty()).then(|| typed.to_string())
+}
+
 /// Shows a kind of line on a tab when it is hidden, and hides it when it
 /// shows.
 pub fn flip_kind(tab: &mut JournalTab, kind: JournalKind) {
@@ -533,5 +540,11 @@ mod tests {
         assert_eq!(taken.len(), 1);
         assert_eq!(taken[0].text, "You are not in a party.");
         assert!(new_lines.take(&printed).is_empty(), "new only once");
+    }
+
+    #[test]
+    fn a_tab_takes_a_name_of_words_only() {
+        assert_eq!(tab_name(" Mine "), Some("Mine".to_string()));
+        assert_eq!(tab_name("  "), None);
     }
 }

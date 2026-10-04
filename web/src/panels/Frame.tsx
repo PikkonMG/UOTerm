@@ -1,5 +1,5 @@
 import type { ComponentChildren } from 'preact';
-import { useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { PANEL_ATTRIBUTE } from './drag';
 import type { Colored, FrameHints, Place, Send } from './types';
 
@@ -79,6 +79,9 @@ function Cross() {
 export function Frame(props: FrameProps) {
   const { title, area, send, locked = false, folded = false, scale = 1, hints } = props;
   const [drag, setDrag] = useState<Drag | null>(null);
+  /** Stops following a drag on its way, when the frame goes before the button comes up. */
+  const stopDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopDrag.current?.(), []);
   const shown = drag ? dragged(area, drag, scale) : area;
 
   const begin = (event: PointerEvent, sizing: boolean) => {
@@ -91,15 +94,20 @@ export function Frame(props: FrameProps) {
       last = { sizing, from, by: { x: moved.clientX - from.x, y: moved.clientY - from.y } };
       setDrag(last);
     };
-    const up = (released: PointerEvent) => {
+    const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      stopDrag.current = null;
+    };
+    const up = (released: PointerEvent) => {
+      stop();
       last = { sizing, from, by: { x: released.clientX - from.x, y: released.clientY - from.y } };
       setDrag(null);
       if (last.by.x !== 0 || last.by.y !== 0) send({ place: dragged(area, last, scale) });
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    stopDrag.current = stop;
   };
 
   const style = {

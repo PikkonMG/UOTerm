@@ -113,7 +113,7 @@ describe('Sheet', () => {
     };
     const { getAllByText, getByText } = render(<Sheet data={spells} send={send} />);
     fireEvent.click(getAllByText('Cleanse by Fire')[0]);
-    expect(send).toHaveBeenCalledWith({ spell: 201 });
+    expect(send).toHaveBeenCalledWith({ spell: { id: 201, ctrl: false, alt: false } });
     fireEvent.click(getByText('Cast'));
     expect(send).toHaveBeenCalledWith({ cast: 201 });
     fireEvent.click(getByText('Pin'));

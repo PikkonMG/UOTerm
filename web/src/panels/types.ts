@@ -106,8 +106,6 @@ export interface ChatData {
   mode_words: string;
   hint: string;
   pin_words: string | null;
-  focus: 'take' | 'leave' | null;
-  paste: boolean;
   strip: Place | null;
 }
 

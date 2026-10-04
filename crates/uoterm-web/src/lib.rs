@@ -513,9 +513,12 @@ impl WebView {
         }
     }
 
-    /// The data of the panels at `now`: `PanelData`.
-    pub fn panels(&mut self, now: f64) -> JsValue {
-        to_js(&self.panel_data(now))
+    /// The data of the panels at `now`, as JSON `PanelData`: the page
+    /// compares it with the last one and draws the panels only when it
+    /// changed.
+    #[wasm_bindgen(js_name = panelsJson)]
+    pub fn panels_json(&mut self, now: f64) -> String {
+        serde_json::to_string(&self.panel_data(now)).unwrap_or_default()
     }
 
     /// The clock of the computer now, as the page reads it, for the times
@@ -1111,5 +1114,28 @@ pub(crate) mod tests {
             view.take_out_native().as_slice(),
             [OutCall::Window { .. }]
         ));
+    }
+
+    #[test]
+    fn the_chat_line_asks_its_field_for_the_keys_and_lets_them_go_on_escape() {
+        let mut view = settled();
+        view.tick_native(0.1, VIEW, None);
+        view.panel_data(0.1);
+        view.panel_data(0.1);
+        assert!(view
+            .take_out_native()
+            .contains(&OutCall::ChatFocus { take: true }));
+        view.input_native(
+            &event(json!({"kind": "Focus", "chat_focused": true, "other_field_focused": false})),
+            0.2,
+        );
+        view.input_native(
+            &event(json!({"kind": "Key", "key": "Escape", "pressed": true})),
+            0.2,
+        );
+        view.tick_native(0.2, VIEW, None);
+        assert!(view
+            .take_out_native()
+            .contains(&OutCall::ChatFocus { take: false }));
     }
 }

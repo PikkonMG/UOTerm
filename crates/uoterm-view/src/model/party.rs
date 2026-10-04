@@ -3,7 +3,10 @@
 //! sent, and the script lines that add a member and answer an invite. The
 //! Classic party gumps and the Modern party tab both read it.
 
+use crate::act::{Act, Channel};
 use crate::frame::WatchFrame;
+use crate::keys::chat::channel_hue;
+use crate::settings::SpeechOptions;
 
 /// A party holds this many members.
 pub const PARTY_PLACES: usize = 10;
@@ -48,6 +51,34 @@ pub fn inviter_name(frame: &WatchFrame, leader: u32) -> String {
 pub fn invite_words(name: &str) -> String {
     let name = if name.is_empty() { NO_NAME } else { name };
     format!("{name} has invited you to join a party.")
+}
+
+/// The act of a click on a member: a target while the shard waits for
+/// one, else a look.
+pub fn member_click_act(frame: &WatchFrame, serial: u32) -> Act {
+    if frame.target_cursor {
+        Act::Target(serial)
+    } else {
+        Act::Look(serial)
+    }
+}
+
+/// Words to the party, or to one member when `tell_to` names one, in the
+/// hue of the Speech page. None for no words.
+pub fn party_say(words: &str, tell_to: Option<u32>, speech: &SpeechOptions) -> Option<Act> {
+    let words = words.trim();
+    if words.is_empty() {
+        return None;
+    }
+    let channel = match tell_to {
+        Some(member) => Channel::PartyMember(member),
+        None => Channel::Party,
+    };
+    Some(Act::Speak {
+        channel,
+        text: words.to_string(),
+        hue: channel_hue(speech, Some(channel)),
+    })
 }
 
 #[cfg(test)]
@@ -95,5 +126,23 @@ mod tests {
         assert_eq!(inviter_name(&frame, BOB), "Bob");
         assert_eq!(invite_words("Bob"), "Bob has invited you to join a party.");
         assert_eq!(invite_words(""), "No Name has invited you to join a party.");
+    }
+
+    #[test]
+    fn a_member_click_targets_or_looks_and_words_go_to_one_or_all() {
+        const BOB: u32 = 2;
+        let mut frame = WatchFrame::default();
+        assert_eq!(member_click_act(&frame, BOB), Act::Look(BOB));
+        frame.target_cursor = true;
+        assert_eq!(member_click_act(&frame, BOB), Act::Target(BOB));
+        let speech = SpeechOptions::default();
+        assert_eq!(party_say("  ", None, &speech), None);
+        let Some(Act::Speak { channel, text, .. }) = party_say(" heal ", Some(BOB), &speech) else {
+            panic!("words to Bob");
+        };
+        assert_eq!(
+            (channel, text.as_str()),
+            (Channel::PartyMember(BOB), "heal")
+        );
     }
 }

@@ -265,8 +265,9 @@ impl JournalUi {
                     );
                     let entered =
                         typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let named = self.renaming.trim().to_string();
-                    if (ui.button(WORDS_RENAME).clicked() || entered) && !named.is_empty() {
+                    let clicked = ui.button(WORDS_RENAME).clicked();
+                    let named = journal::tab_name(&self.renaming);
+                    if let Some(named) = named.filter(|_| clicked || entered) {
                         tab.name = named;
                         self.renaming.clear();
                         changed = true;

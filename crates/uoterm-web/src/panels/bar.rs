@@ -38,11 +38,6 @@ pub(crate) struct BarState {
     pub launcher_open: bool,
     /// The question of the Modern style that waits for Yes or No.
     pub question: Option<Question>,
-    /// The chat line asks the page to take the keys to its field (true)
-    /// or to let them go (false), once.
-    pub chat_focus: Option<bool>,
-    /// A key asked to paste into the chat line.
-    pub chat_paste: bool,
 }
 
 /// The control bar at the middle of the top.
@@ -96,21 +91,9 @@ pub struct ChatData {
     /// The words of the button that pins a command on the hotbar, when it
     /// shows.
     pub pin_words: Option<&'static str>,
-    /// The page takes the keys to the field or lets them go, once.
-    pub focus: Option<FocusAsk>,
-    /// The page pastes the clipboard into the field, once.
-    pub paste: bool,
     /// Where the line stands while the journal is shut; None while it
     /// stands in the last row of the journal.
     pub strip: Option<Place>,
-}
-
-/// What the chat line asks of its field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FocusAsk {
-    Take,
-    Leave,
 }
 
 /// The question that waits for Yes or No: the question of the guard in
@@ -147,12 +130,13 @@ pub struct WaitingData {
     pub lines: Vec<String>,
 }
 
-/// A button of the bar: `{"press": index}`; `{"fold": true}` folds or
+/// A button of the bar by its words, so a press means the same button
+/// after control changed: `{"press": words}`; `{"fold": true}` folds or
 /// unfolds the bar; `{"launcher": true}` opens or shuts the launcher.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BarAction {
-    Press(usize),
+    Press(String),
     Fold(bool),
     Launcher(bool),
 }
@@ -228,11 +212,14 @@ impl WebView {
             BarAction::Launcher(_) => {
                 self.panels.bar.launcher_open = !self.panels.bar.launcher_open;
             }
-            BarAction::Press(at) => {
+            BarAction::Press(words) => {
                 let Some(frame) = self.frame.clone() else {
                     return;
                 };
-                if let Some((_, press)) = bar_buttons(&frame).into_iter().nth(at) {
+                let pressed = bar_buttons(&frame)
+                    .into_iter()
+                    .find(|(button, _)| *button == words);
+                if let Some((_, press)) = pressed {
                     self.bar_press(&frame, press);
                 }
             }
@@ -270,7 +257,7 @@ impl WebView {
         })
     }
 
-    pub(super) fn chat_data(&mut self) -> ChatData {
+    pub(super) fn chat_data(&self) -> ChatData {
         let speech = &self.profile.speech;
         let live = self.frame.as_ref().is_some_and(|frame| frame.human_control);
         let asked = self.frame.as_ref().and_then(asked_commands);
@@ -290,14 +277,6 @@ impl WebView {
             mode_words: self.chat_mode.words(answering),
             hint,
             pin_words: can_pin.then_some(WORDS_PIN),
-            focus: self.panels.bar.chat_focus.take().map(|take| {
-                if take {
-                    FocusAsk::Take
-                } else {
-                    FocusAsk::Leave
-                }
-            }),
-            paste: std::mem::take(&mut self.panels.bar.chat_paste),
             strip: self.chat_strip(),
         }
     }
@@ -460,11 +439,12 @@ mod tests {
     use uoterm_view::ui::launch::{Launch, LAUNCHES};
     use uoterm_view::ui::question::QUIT_WORDS;
 
-    /// The place of the button whose press is `wanted`.
-    fn button(view: &WebView, wanted: impl Fn(&Press) -> bool) -> usize {
+    /// The words of the button whose press is `wanted`.
+    fn button(view: &WebView, wanted: impl Fn(&Press) -> bool) -> &'static str {
         bar_buttons(view.frame_ref().unwrap())
-            .iter()
-            .position(|(_, press)| wanted(press))
+            .into_iter()
+            .find(|(_, press)| wanted(press))
+            .map(|(words, _)| words)
             .unwrap()
     }
 
@@ -483,10 +463,7 @@ mod tests {
         let take = button(&view, |press| matches!(press, Press::Act(Act::Take)));
         let out = press(&mut view, PANEL_BAR, json!({ "press": take }));
         assert_eq!(out_acts(&out), vec![Act::Take.for_page()]);
-        assert_eq!(
-            view.panel_data(0.0).bar.unwrap().buttons[take],
-            "Take control"
-        );
+        assert_eq!(take, "Take control");
     }
 
     #[test]
@@ -574,5 +551,15 @@ mod tests {
         let mut view = WebView::new("{}");
         let data = view.panel_data(0.0);
         assert!(data.waiting.is_some() && data.bar.is_none());
+    }
+
+    #[test]
+    fn a_press_of_a_button_that_is_gone_does_nothing() {
+        let war = "War";
+        let mut view = agent_has_her();
+        assert!(press(&mut view, PANEL_BAR, json!({ "press": war })).is_empty());
+        let mut control = settled();
+        let out = press(&mut control, PANEL_BAR, json!({ "press": war }));
+        assert_eq!(out_acts(&out), vec![Act::War(true).for_page()]);
     }
 }

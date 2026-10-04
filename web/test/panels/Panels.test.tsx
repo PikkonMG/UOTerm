@@ -41,8 +41,6 @@ function data(): PanelData {
       mode_words: 'Say',
       hint: 'Press Enter to chat.',
       pin_words: null,
-      focus: null,
-      paste: false,
       strip: { x: 900, y: 700, w: 400, h: 58 },
     },
     tooltip: null,
@@ -53,18 +51,18 @@ function data(): PanelData {
 describe('Panels', () => {
   it('lays_each_panel_at_its_place_and_sends_its_actions_by_its_name', () => {
     const send = vi.fn();
-    const { getByText } = render(<Panels data={data()} plates={[]} floats={[]} send={send} input={vi.fn()} covered={vi.fn()} />);
+    const { getByText } = render(<Panels data={data()} send={send} input={vi.fn()} covered={vi.fn()} />);
     const frame = getByText('Hotbar').closest('[data-panel]') as HTMLElement;
     expect(frame.style.left).toBe('400px');
     expect(frame.style.top).toBe('600px');
     fireEvent.click(getByText('Heal'));
-    expect(send).toHaveBeenCalledWith('hotbar', { press: 0 });
+    expect(send).toHaveBeenCalledWith('hotbar', { click: 0 });
   });
 
   it('grows_the_panels_by_the_ui_scale_and_tells_where_they_lie', () => {
     const covered = vi.fn();
     const scaled = { ...data(), look: { ui_scale: 2, opacity: 0.5 } };
-    const { container } = render(<Panels data={scaled} plates={[]} floats={[]} send={vi.fn()} input={vi.fn()} covered={covered} />);
+    const { container } = render(<Panels data={scaled} send={vi.fn()} input={vi.fn()} covered={covered} />);
     const layer = container.querySelector('.panels') as HTMLElement;
     expect(layer.style.getPropertyValue('--ui-scale')).toBe('2');
     expect(layer.style.getPropertyValue('--panel-opacity')).toBe('0.5');
@@ -74,7 +72,7 @@ describe('Panels', () => {
   it('drops_the_carried_item_on_the_zone_under_the_button', () => {
     const send = vi.fn();
     const carried = { ...data(), carried: { picture: null, words: 'logs', alpha: 0.85 } };
-    const { getByText } = render(<Panels data={carried} plates={[]} floats={[]} send={send} input={vi.fn()} covered={vi.fn()} />);
+    const { getByText } = render(<Panels data={carried} send={send} input={vi.fn()} covered={vi.fn()} />);
     const cell = getByText('Heal');
     const at = { clientX: 5, clientY: 6 };
     document.elementFromPoint = () => cell;
@@ -84,7 +82,7 @@ describe('Panels', () => {
 
   it('asks_for_the_tooltip_of_a_thing_the_mouse_rests_on', () => {
     const send = vi.fn();
-    const { getByText } = render(<Panels data={data()} plates={[]} floats={[]} send={send} input={vi.fn()} covered={vi.fn()} />);
+    const { getByText } = render(<Panels data={data()} send={send} input={vi.fn()} covered={vi.fn()} />);
     const slot = getByText('Heal').closest('button') as HTMLElement;
     fireEvent.pointerEnter(slot);
     expect(send).toHaveBeenLastCalledWith('tips', { over: label('Heal') });

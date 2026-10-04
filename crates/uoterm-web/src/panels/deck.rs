@@ -11,7 +11,7 @@ use serde_json::Value;
 use uoterm_view::art::{ArtRequest, ItemPaint};
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::ui::deck::{
-    hotbar_size, slot_choices, slot_picture, KeptHotbars, Press, Slot, SlotPicture,
+    hotbar_size, picking_after, slot_choices, slot_picture, KeptHotbars, Press, Slot, SlotPicture,
     HINT_EMPTY_SLOT, HINT_SLOT, HOTBAR_FILE, HOTBAR_ID, HOTBAR_KEYS, HOTBAR_SLOTS, WORDS_HOTBAR,
     WORDS_NO_MACROS, WORDS_PICK_FOR,
 };
@@ -58,16 +58,15 @@ pub struct PickerData {
     pub no_macros: Option<&'static str>,
 }
 
-/// What a button of the hotbar asks: `{"press": slot}`, `{"clear": slot}`
-/// (a right click), `{"pick": slot}` (a click on an empty slot opens or
-/// shuts its picker), `{"choose": choice}` of the picker, or
-/// `{"close_picker": true}`.
+/// What a button of the hotbar asks: `{"click": slot}` (a slot that holds
+/// something does it; a click on an empty one opens or shuts its picker),
+/// `{"clear": slot}` (a right click), `{"choose": choice}` of the picker,
+/// or `{"close_picker": true}`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotbarAction {
-    Press(usize),
+    Click(usize),
     Clear(usize),
-    Pick(usize),
     Choose(usize),
     ClosePicker(bool),
 }
@@ -164,11 +163,12 @@ impl WebView {
             return;
         };
         match action {
-            HotbarAction::Press(slot) => self.press_slot(&frame, slot),
-            HotbarAction::Clear(slot) => self.set_slot(&frame.name, slot, None),
-            HotbarAction::Pick(slot) if slot < HOTBAR_SLOTS => {
+            HotbarAction::Click(slot) if self.hotbars.slot(&frame.name, slot).is_some() => {
+                self.press_slot(&frame, slot);
+            }
+            HotbarAction::Click(slot) if slot < HOTBAR_SLOTS => {
                 let deck = &mut self.panels.deck;
-                deck.picking = (deck.picking != Some(slot)).then_some(slot);
+                deck.picking = picking_after(deck.picking, slot);
             }
             HotbarAction::Choose(choice) => {
                 let Some(slot) = self.panels.deck.picking.take() else {
@@ -178,8 +178,9 @@ impl WebView {
                     self.set_slot(&frame.name, slot, Some(what));
                 }
             }
+            HotbarAction::Clear(slot) => self.set_slot(&frame.name, slot, None),
             HotbarAction::ClosePicker(_) => self.panels.deck.picking = None,
-            HotbarAction::Pick(_) => {}
+            HotbarAction::Click(_) => {}
         }
     }
 
@@ -264,7 +265,7 @@ mod tests {
     #[test]
     fn a_hotbar_press_makes_the_same_act_as_the_window() {
         let (mut view, slot) = view_with_hatchet();
-        let out = press(&mut view, PANEL_HOTBAR, json!({"press": 0}));
+        let out = press(&mut view, PANEL_HOTBAR, json!({"click": 0}));
         let frame = view.frame_ref().unwrap().clone();
         let Some(Press::Act(act)) = slot.press(&frame, &Profile::default()) else {
             panic!("the hatchet slot uses the hatchet");
@@ -315,7 +316,7 @@ mod tests {
             steps: vec![MacroStep::new("say", "bow")],
         });
         view.set_profile(&serde_json::to_string(&profile).unwrap());
-        press(&mut view, PANEL_HOTBAR, json!({"pick": 3}));
+        press(&mut view, PANEL_HOTBAR, json!({"click": 3}));
         let picker = view.panel_data(0.0).picker.unwrap();
         assert_eq!(picker.title, "Put on slot 4");
         assert_eq!(picker.choices[0], "bow");

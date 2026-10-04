@@ -80,9 +80,23 @@ type Timer = ReturnType<typeof setTimeout>;
 /** The pixels of each picture the view has, by its key. */
 const pictures = new Map<string, ImageBitmap>();
 
+/** Who waits for the pixels of each picture, by its key. */
+const waiters = new Map<string, Set<() => void>>();
+
 /** The pixels of the picture of `key`, once they came. */
 export function pixelsOf(key: string): ImageBitmap | undefined {
   return pictures.get(key);
+}
+
+/** Calls `came` each time the pixels of `key` come. Gives the call that stops it. */
+export function whenPixels(key: string, came: () => void): () => void {
+  const waiting = waiters.get(key) ?? new Set();
+  waiting.add(came);
+  waiters.set(key, waiting);
+  return () => {
+    waiting.delete(came);
+    if (waiting.size === 0) waiters.delete(key);
+  };
 }
 
 export class ArtFeed {
@@ -201,6 +215,7 @@ export class ArtFeed {
         }
         forget(want.key);
         pictures.set(want.key, picture);
+        for (const came of waiters.get(want.key) ?? []) came();
         const [anchorX, anchorY] = anchorOf(headers.get(ANCHOR_HEADER));
         this.view.artArrived(want.key, picture.width, picture.height, anchorX, anchorY);
       },

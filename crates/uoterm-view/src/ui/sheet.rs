@@ -8,6 +8,7 @@ use super::places::TITLE_ROW;
 use super::theme::PANEL_PAD;
 use crate::actions::windows::{CharacterView, Tab};
 use crate::geom::{Area, Vector};
+use crate::input::Mods;
 
 /// The id that keeps the place of the sheet in the profile.
 pub const SHEET_ID: &str = "modern:sheet";
@@ -93,6 +94,12 @@ pub fn assigned_words(name: &str) -> String {
     format!("The macro {name} is made. Give it a key on the Macros page of the Options.")
 }
 
+/// True when a click on a spell makes a macro of it: "Fast spell assign"
+/// is on and Ctrl and Alt are held.
+pub fn assigns_spell(fast_spell_assign: bool, mods: Mods) -> bool {
+    fast_spell_assign && mods.ctrl && mods.alt
+}
+
 /// The words in the field of words to the party: to one member, or to all.
 pub fn tell_hint(member: Option<&str>) -> String {
     member.map_or_else(
@@ -135,5 +142,17 @@ mod tests {
         assert_eq!(tell_hint(None), HINT_TELL_PARTY);
         assert_eq!(tell_hint(Some("Bob")), "Tell Bob");
         assert!(assigned_words("Heal").contains("Heal"));
+    }
+
+    #[test]
+    fn a_spell_click_assigns_only_with_ctrl_and_alt_and_the_option() {
+        let both = Mods {
+            ctrl: true,
+            alt: true,
+            ..Mods::default()
+        };
+        assert!(assigns_spell(true, both));
+        assert!(!assigns_spell(false, both));
+        assert!(!assigns_spell(true, Mods::default()));
     }
 }

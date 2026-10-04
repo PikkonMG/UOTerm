@@ -22,9 +22,9 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, 
 use uoterm_assist::spells::School;
 use uoterm_view::ui::lists::{self, spell_book_words, spell_chosen};
 use uoterm_view::ui::sheet::{
-    assigned_words, HINT_ASSIGN, HINT_SPELL, WORDS_ASSIGN, WORDS_CAST, WORDS_EMPTY_BOOK,
-    WORDS_NO_BOOK, WORDS_PICK_SPELL as WORDS_PICK, WORDS_PIN, WORDS_REAGENTS, WORDS_TITHING_COST,
-    WORDS_TITHING_HAVE,
+    assigned_words, assigns_spell, HINT_ASSIGN, HINT_SPELL, WORDS_ASSIGN, WORDS_CAST,
+    WORDS_EMPTY_BOOK, WORDS_NO_BOOK, WORDS_PICK_SPELL as WORDS_PICK, WORDS_PIN, WORDS_REAGENTS,
+    WORDS_TITHING_COST, WORDS_TITHING_HAVE,
 };
 
 const LIST_WIDTH: f32 = 180.0;
@@ -212,8 +212,8 @@ impl SpellsTab {
         let last_first = held.len().saturating_sub(rows);
         self.first_row = scrolled(ui, list, self.first_row.min(last_first), last_first);
         let live = frame.human_control;
-        let assigning =
-            profile.combat.fast_spell_assign && ui.input(|i| i.modifiers.ctrl && i.modifiers.alt);
+        let mods = bridge::mods(ui.input(|i| i.modifiers));
+        let assigning = assigns_spell(profile.combat.fast_spell_assign, mods);
         let mut offer = None;
         for (at, place) in held.iter().skip(self.first_row).take(rows).enumerate() {
             let spell = &book.spells[*place];

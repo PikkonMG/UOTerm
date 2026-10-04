@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { startGame, type GameHandle, type GameProfile, type Shown } from '../game';
+import type { WorldWords } from '../frame_loop';
+import { startGame, type GameHandle, type GameProfile } from '../game';
 import { Panels } from '../panels/Panels';
+import { Plates } from '../panels/Plates';
+import type { PanelData } from '../panels/types';
 
 interface GameProps {
   session: string;
@@ -10,15 +13,22 @@ interface GameProps {
   onFault: (words: string) => void;
 }
 
-/** The world of a running session, over the whole page, with the Modern panels over it. */
+const NO_WORDS: WorldWords = { plates: [], floats: [] };
+
+/**
+ * The world of a running session, over the whole page, with the words over
+ * it and the Modern panels over them. Each draws again only when the view
+ * gave it something new.
+ */
 export function Game({ session, profile, onEnded, onFault }: GameProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const game = useRef<GameHandle | null>(null);
-  const [shown, setShown] = useState<Shown | null>(null);
+  const [panels, setPanels] = useState<PanelData | null>(null);
+  const [words, setWords] = useState<WorldWords>(NO_WORDS);
 
   useEffect(() => {
     if (!canvas.current) return;
-    const started = startGame(session, canvas.current, profile, setShown);
+    const started = startGame(session, canvas.current, profile, { panels: setPanels, words: setWords });
     game.current = started;
     started.ended.then(onEnded, (error: unknown) => onFault(error instanceof Error ? error.message : String(error)));
     return () => {
@@ -31,9 +41,8 @@ export function Game({ session, profile, onEnded, onFault }: GameProps) {
   return (
     <>
       <canvas ref={canvas} class="world" />
-      {shown && handle && (
-        <Panels data={shown.panels} plates={shown.plates} floats={shown.floats} send={handle.panel} input={handle.input} covered={handle.covered} />
-      )}
+      <Plates plates={words.plates} floats={words.floats} />
+      {panels && handle && <Panels data={panels} send={handle.panel} input={handle.input} covered={handle.covered} />}
     </>
   );
 }

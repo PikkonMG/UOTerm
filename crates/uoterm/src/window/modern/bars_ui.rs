@@ -40,10 +40,10 @@ use uoterm_view::ui::bars::{
     NEAR_ROW as ROW, SELECTION_EDGE, SELECTION_FILL_ALPHA, WORDS_CLOSE_BAR as WORDS_CLOSE,
     WORDS_CURE, WORDS_HEAL, WORDS_NEAR, WORDS_NOBODY, WORDS_RENAME, WORDS_TARGET,
 };
+use uoterm_view::ui::theme::PIP_WIDTH;
 
 const DOT_RADIUS: f32 = 4.0;
 const GAP: f32 = 6.0;
-const PIP_WIDTH: f32 = 40.0;
 const DIST_WIDTH: f32 = 30.0;
 const NAME_ROOM: f32 = 60.0;
 /// Each notch of the wheel moves the near list this many rows.

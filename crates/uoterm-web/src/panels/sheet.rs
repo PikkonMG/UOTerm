@@ -9,17 +9,18 @@ use crate::WebView;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uoterm_assist::spells::School;
-use uoterm_view::act::{Act, Answer, Ask, Asker, Channel};
+use uoterm_view::act::{Act, Answer, Ask, Asker};
 use uoterm_view::actions::windows::{CharacterView, Tab};
 use uoterm_view::art::ArtRequest;
 use uoterm_view::frame::{WatchFrame, WatchPackItem};
 use uoterm_view::geom::Point;
-use uoterm_view::keys::chat::channel_hue;
+use uoterm_view::input::Mods;
 use uoterm_view::model::clicks::ClickDelay;
 use uoterm_view::model::durability::{is_worn_layer, worn_wear};
 use uoterm_view::model::key_macros;
 use uoterm_view::model::party::{
-    invite_words, inviter_name, leads, leave_words, ACCEPT_COMMAND, DECLINE_COMMAND, INVITE_COMMAND,
+    invite_words, inviter_name, leads, leave_words, member_click_act, party_say, ACCEPT_COMMAND,
+    DECLINE_COMMAND, INVITE_COMMAND,
 };
 use uoterm_view::model::skills::{
     group_name, move_skill, next_lock_command, points, remove_group, shown_groups, sorted, total,
@@ -40,10 +41,10 @@ use uoterm_view::ui::lists::{
 use uoterm_view::ui::question::{WORDS_NO, WORDS_YES};
 use uoterm_view::ui::ring::Subject as RingSubject;
 use uoterm_view::ui::sheet::{
-    assigned_words, sheet_first_place, sheet_least, tell_hint, CHARACTER_VIEWS, HINT_ASSIGN,
-    HINT_GROUP, HINT_MEMBER, HINT_SKILL, HINT_SPELL, HINT_STAT_LOCK, HINT_WEAR, HINT_WORN,
-    NOTE_SECONDS, SHEET_ID, SHEET_TABS, WORDS_ACCEPT, WORDS_ADD, WORDS_ASSIGN, WORDS_CAST,
-    WORDS_DECLINE, WORDS_DELETE_GROUP, WORDS_EMPTY, WORDS_EMPTY_BOOK, WORDS_GOLD,
+    assigned_words, assigns_spell, sheet_first_place, sheet_least, tell_hint, CHARACTER_VIEWS,
+    HINT_ASSIGN, HINT_GROUP, HINT_MEMBER, HINT_SKILL, HINT_SPELL, HINT_STAT_LOCK, HINT_WEAR,
+    HINT_WORN, NOTE_SECONDS, SHEET_ID, SHEET_TABS, WORDS_ACCEPT, WORDS_ADD, WORDS_ASSIGN,
+    WORDS_CAST, WORDS_DECLINE, WORDS_DELETE_GROUP, WORDS_EMPTY, WORDS_EMPTY_BOOK, WORDS_GOLD,
     WORDS_GROUP_FOLDED, WORDS_GROUP_OPEN, WORDS_INVITE, WORDS_KICK, WORDS_LOOKING, WORDS_LOOT_OFF,
     WORDS_LOOT_ON, WORDS_NEAR, WORDS_NEW_GROUP, WORDS_NOTHING_WORN, WORDS_NO_BOOK,
     WORDS_PICK_SPELL, WORDS_PIN, WORDS_REAGENTS, WORDS_RESET, WORDS_RESET_ASK, WORDS_SAY,
@@ -346,6 +347,16 @@ pub struct GroupName {
     pub name: String,
 }
 
+/// A click on a spell, with the keys held: `{id, ctrl, alt}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub struct SpellClick {
+    pub id: u16,
+    #[serde(default)]
+    pub ctrl: bool,
+    #[serde(default)]
+    pub alt: bool,
+}
+
 /// A skill and the group it goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub struct SkillTo {
@@ -379,12 +390,11 @@ enum SheetAction {
     RenameGroup(GroupName),
     MoveSkill(SkillTo),
     Book(usize),
-    Spell(u16),
+    Spell(SpellClick),
     Cast(u16),
     PinSpell(u16),
     DragSpell(u16),
     OpenBook(String),
-    Assign(u16),
     Loot(bool),
     Leave(bool),
     Add(bool),
@@ -889,7 +899,19 @@ impl WebView {
                     self.panels.sheet.book = Some(book.serial);
                 }
             }
-            SheetAction::Spell(id) => self.panels.sheet.spell = Some(id),
+            SheetAction::Spell(click) => {
+                let mods = Mods {
+                    ctrl: click.ctrl,
+                    alt: click.alt,
+                    ..Mods::default()
+                };
+                if frame.human_control && assigns_spell(self.profile.combat.fast_spell_assign, mods)
+                {
+                    self.assign_spell(click.id);
+                } else {
+                    self.panels.sheet.spell = Some(click.id);
+                }
+            }
             other if frame.human_control => self.sheet_act(&frame, other),
             _ => {}
         }
@@ -1025,23 +1047,12 @@ impl WebView {
                     self.hand.act(Act::OpenSpellbook(book.name));
                 }
             }
-            SheetAction::Assign(id) if self.profile.combat.fast_spell_assign => {
-                let (name, steps) = spell_macro(id);
-                if key_macros::ensure(&mut self.profile.macros.key_bindings, &name, steps) {
-                    self.keep_profile();
-                }
-                self.hand.report(&assigned_words(&name));
-            }
             SheetAction::Loot(_) => self.hand.act(Act::PartyLoot(!frame.party_can_loot)),
             SheetAction::Leave(_) => self.hand.act(Act::PartyLeave),
             SheetAction::Add(_) if leads(frame) => {
                 self.hand.act(Act::Command(INVITE_COMMAND.into()));
             }
-            SheetAction::Member(serial) => self.hand.act(if frame.target_cursor {
-                Act::Target(serial)
-            } else {
-                Act::Look(serial)
-            }),
+            SheetAction::Member(serial) => self.hand.act(member_click_act(frame, serial)),
             SheetAction::TellTo(serial) => {
                 let state = &mut self.panels.sheet;
                 state.tell_to = (state.tell_to != Some(serial)).then_some(serial);
@@ -1050,23 +1061,23 @@ impl WebView {
             SheetAction::Invite(serial) => self.hand.act(Act::PartyInvite(serial)),
             SheetAction::Accept(_) => self.hand.act(Act::Command(ACCEPT_COMMAND.into())),
             SheetAction::Decline(_) => self.hand.act(Act::Command(DECLINE_COMMAND.into())),
-            SheetAction::Say(words) => {
-                let words = words.trim();
-                if words.is_empty() || frame.party_members.is_empty() {
-                    return;
+            SheetAction::Say(words) if !frame.party_members.is_empty() => {
+                let tell_to = self.panels.sheet.tell_to;
+                if let Some(said) = party_say(&words, tell_to, &self.profile.speech) {
+                    self.hand.act(said);
                 }
-                let channel = match self.panels.sheet.tell_to {
-                    Some(member) => Channel::PartyMember(member),
-                    None => Channel::Party,
-                };
-                self.hand.act(Act::Speak {
-                    channel,
-                    text: words.to_string(),
-                    hue: channel_hue(&self.profile.speech, Some(channel)),
-                });
             }
             _ => {}
         }
+    }
+
+    /// Makes a macro of a spell, as "Fast spell assign" does.
+    fn assign_spell(&mut self, id: u16) {
+        let (name, steps) = spell_macro(id);
+        if key_macros::ensure(&mut self.profile.macros.key_bindings, &name, steps) {
+            self.keep_profile();
+        }
+        self.hand.report(&assigned_words(&name));
     }
 
     /// Puts a slot of the sheet on the first free slot of the hotbar.
@@ -1128,7 +1139,7 @@ fn spell_slot(id: u16) -> Slot {
 mod tests {
     use super::super::tests::{out_acts, press, saved_profiles};
     use super::*;
-    use crate::tests::{fixture_watch_with_backpack, settled, MARA};
+    use crate::tests::{fixture_watch_with_backpack, MARA};
     use serde_json::json;
 
     const ME: u32 = 1;
@@ -1224,7 +1235,11 @@ mod tests {
         press(&mut view, PANEL_SHEET, json!({ "tab": 2 }));
         let spells = view.panel_data(0.0).sheet.unwrap().body.spells.unwrap();
         assert_eq!(spells.list.len(), 2);
-        press(&mut view, PANEL_SHEET, json!({ "spell": 201 }));
+        press(
+            &mut view,
+            PANEL_SHEET,
+            json!({ "spell": { "id": 201, "ctrl": true, "alt": true } }),
+        );
         let detail = view
             .panel_data(0.0)
             .sheet
@@ -1266,7 +1281,55 @@ mod tests {
         let mut watch: Value = serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
         watch["human_control"] = json!(false);
         view.frame(&watch.to_string(), 0.1);
-        assert!(press(&mut view, PANEL_SHEET, json!({ "take_off": 1 })).is_empty());
-        let _ = settled();
+        let acts = [
+            json!({ "take_off": 1 }),
+            json!({ "worn_double": SWORD }),
+            json!({ "stat_lock": 0 }),
+            json!({ "use_skill": HIDING }),
+            json!({ "cast": 201 }),
+            json!({ "member": BOB }),
+            json!({ "kick": BOB }),
+            json!({ "say": "hail" }),
+            json!({ "leave": true }),
+        ];
+        for act in acts {
+            assert!(
+                press(&mut view, PANEL_SHEET, act.clone()).is_empty(),
+                "{act}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spell_click_with_ctrl_and_alt_makes_its_macro_when_the_option_is_on() {
+        let mut view = view_with_sheet();
+        view.profile.combat.fast_spell_assign = true;
+        let before = view.profile.macros.key_bindings.len();
+        press(
+            &mut view,
+            PANEL_SHEET,
+            json!({ "spell": { "id": 201, "ctrl": true, "alt": true } }),
+        );
+        assert_eq!(view.profile.macros.key_bindings.len(), before + 1);
+        assert_eq!(
+            view.panels.sheet.spell, None,
+            "the click made a macro, it read nothing"
+        );
+        press(&mut view, PANEL_SHEET, json!({ "spell": { "id": 201 } }));
+        assert_eq!(view.panels.sheet.spell, Some(201));
+    }
+
+    #[test]
+    fn a_member_click_and_words_to_the_party_are_the_windows() {
+        let mut view = view_with_sheet();
+        let frame = view.frame_ref().unwrap().clone();
+        let out = press(&mut view, PANEL_SHEET, json!({ "member": BOB }));
+        assert_eq!(
+            out_acts(&out),
+            vec![member_click_act(&frame, BOB).for_page()]
+        );
+        let out = press(&mut view, PANEL_SHEET, json!({ "say": " heal me " }));
+        let said = party_say("heal me", None, &view.profile.speech).unwrap();
+        assert_eq!(out_acts(&out), vec![said.for_page()]);
     }
 }

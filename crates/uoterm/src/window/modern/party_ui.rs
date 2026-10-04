@@ -7,11 +7,11 @@
 //! the tab is closed.
 
 use super::super::boxes_ui::{scrolled, Tools, CELL_RADIUS};
-use super::super::control::{Act, Channel};
+use super::super::control::Act;
 use super::super::deck_ui::{ROW, TAB_GAP};
-use super::super::keys::chat::channel_hue;
 use super::super::model::party::{
-    invite_words, inviter_name, leads, leave_words, ACCEPT_COMMAND, DECLINE_COMMAND, INVITE_COMMAND,
+    invite_words, inviter_name, leads, leave_words, member_click_act, party_say, ACCEPT_COMMAND,
+    DECLINE_COMMAND, INVITE_COMMAND,
 };
 use super::super::settings::{Profile, SpeechOptions};
 use super::super::theme::{self, number_font, text_font};
@@ -356,11 +356,7 @@ impl PartyTab {
             super::super::tips::label(ui, &member.name, HINT_MEMBER);
         }
         if response.clicked() {
-            tools.hand.act(if frame.target_cursor {
-                Act::Target(member.serial)
-            } else {
-                Act::Look(member.serial)
-            });
+            tools.hand.act(member_click_act(frame, member.serial));
         }
         if member.serial != frame.serial
             && theme::segment_keyed(
@@ -427,17 +423,11 @@ impl PartyTab {
         );
         let pressed = theme::segment_keyed(ui, say, Id::new("party-say"), WORDS_SAY, theme::GOAL);
         let entered = typed.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-        if (pressed || entered) && !self.words.trim().is_empty() {
-            let channel = match self.tell_to {
-                Some(member) => Channel::PartyMember(member),
-                None => Channel::Party,
-            };
-            tools.hand.act(Act::Speak {
-                channel,
-                text: self.words.trim().to_string(),
-                hue: channel_hue(speech, Some(channel)),
-            });
-            self.words.clear();
+        if pressed || entered {
+            if let Some(said) = party_say(&self.words, self.tell_to, speech) {
+                tools.hand.act(said);
+                self.words.clear();
+            }
         }
     }
 }

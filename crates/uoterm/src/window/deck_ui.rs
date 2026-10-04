@@ -940,11 +940,7 @@ impl DeckUi {
                     tips::label(ui, key, HINT_EMPTY_SLOT);
                 }
                 if response.clicked() {
-                    self.picking = if self.picking == Some(slot) {
-                        None
-                    } else {
-                        Some(slot)
-                    };
+                    self.picking = deck::picking_after(self.picking, slot);
                 }
                 continue;
             };

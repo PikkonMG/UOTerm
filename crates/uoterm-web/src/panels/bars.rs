@@ -679,4 +679,89 @@ mod tests {
         assert_eq!(out_acts(&out), vec![Act::Menu(ORC).for_page()]);
         assert_eq!(view.panel_data(0.0).ring.unwrap().name, "an orc");
     }
+
+    /// A view whose orc, a pet of Mara, has a bar of its own, with the
+    /// watch it came from.
+    fn view_with_orc_bar(watch: impl Fn(&mut Value)) -> WebView {
+        let mut view = view_with_orc(false);
+        press(
+            &mut view,
+            PANEL_NEAR,
+            json!({ "pull": { "serial": ORC, "x": 400, "y": 300 } }),
+        );
+        let mut changed: Value = serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
+        changed["mobiles"] = json!([{
+            "serial": ORC, "name": "an orc", "notoriety": 6, "hits": 5, "hits_max": 10,
+            "follower": true, "location": { "x": 1001, "y": 1000, "z": 0 }, "body": 17
+        }]);
+        watch(&mut changed);
+        view.frame(&changed.to_string(), 0.1);
+        view.take_out_native();
+        view
+    }
+
+    const BAR: &str = "health:2817";
+
+    #[test]
+    fn each_action_of_a_bar_makes_the_act_of_the_window() {
+        let mut view = view_with_orc_bar(|_| {});
+        let frame = view.frame_ref().unwrap().clone();
+        let cases = [
+            (
+                json!({ "double": true }),
+                health_bars::double_click_act(&frame, ORC),
+            ),
+            (
+                json!({ "heal": true }),
+                Some(health_bars::cast_on(SPELL_GREATER_HEAL, ORC)),
+            ),
+            (
+                json!({ "cure": true }),
+                Some(health_bars::cast_on(SPELL_CURE, ORC)),
+            ),
+            (
+                json!({ "rename": "Grub" }),
+                health_bars::rename(ORC, "Grub"),
+            ),
+            (
+                json!({ "click": true }),
+                health_bars::click_act(&frame, ORC),
+            ),
+            (json!({ "target": true }), None),
+        ];
+        for (action, act) in cases {
+            let out = press(&mut view, BAR, action.clone());
+            let expected: Vec<_> = act.into_iter().map(|act| act.for_page()).collect();
+            assert_eq!(out_acts(&out), expected, "{action}");
+        }
+        let mut aiming = view_with_orc_bar(|watch| watch["pending_target"] = json!(true));
+        let frame = aiming.frame_ref().unwrap().clone();
+        for action in [json!({ "click": true }), json!({ "target": true })] {
+            let out = press(&mut aiming, BAR, action);
+            let expected = health_bars::click_act(&frame, ORC).unwrap();
+            assert_eq!(out_acts(&out), vec![expected.for_page()]);
+            assert_eq!(expected, Act::Target(ORC));
+        }
+    }
+
+    #[test]
+    fn no_action_of_a_bar_acts_without_control() {
+        let mut view = view_with_orc_bar(|watch| {
+            watch["human_control"] = json!(false);
+            watch["pending_target"] = json!(true);
+        });
+        for action in [
+            json!({ "click": true }),
+            json!({ "double": true }),
+            json!({ "heal": true }),
+            json!({ "cure": true }),
+            json!({ "target": true }),
+            json!({ "rename": "Grub" }),
+        ] {
+            assert!(
+                out_acts(&press(&mut view, BAR, action.clone())).is_empty(),
+                "{action}"
+            );
+        }
+    }
 }

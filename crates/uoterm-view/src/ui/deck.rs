@@ -195,6 +195,12 @@ impl KeptHotbars {
     }
 }
 
+/// The slot whose picker is open after a click on the empty `slot`: a
+/// click opens its picker, and a second click shuts it.
+pub fn picking_after(picking: Option<usize>, slot: usize) -> Option<usize> {
+    (picking != Some(slot)).then_some(slot)
+}
+
 /// What an empty slot may take beside the rows of the sheet: each macro of
 /// the profile, the two weapon abilities, and the racial abilities the
 /// character uses.
@@ -514,5 +520,12 @@ mod tests {
         assert!(side <= CELL);
         assert!(width + PANEL_PAD * 2.0 <= PACK_WIDTH);
         assert!(hotbar_size(PACK_WIDTH).x >= width);
+    }
+
+    #[test]
+    fn a_click_on_an_empty_slot_opens_its_picker_and_a_second_shuts_it() {
+        assert_eq!(picking_after(None, 3), Some(3));
+        assert_eq!(picking_after(Some(1), 3), Some(3));
+        assert_eq!(picking_after(Some(3), 3), None);
     }
 }

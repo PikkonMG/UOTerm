@@ -48,9 +48,10 @@ export interface GameHandle {
   covered(areas: CoveredArea[]): void;
 }
 
-/** What the page shows over the world after a frame: the panels and the words over the world. */
-export interface Shown extends WorldWords {
-  panels: PanelData;
+/** What the page draws over the world: the panels, and the words over the world; each comes again only when it changed. */
+export interface Shows {
+  panels(panels: PanelData): void;
+  words(words: WorldWords): void;
 }
 
 /** Gives the view the clock of the computer, for the times of the journal. */
@@ -72,10 +73,10 @@ const clock = () => performance.now() / MS_PER_SECOND;
 
 /**
  * Plays `session` on `canvas`, which the page sizes; its size in CSS pixels
- * is the size of the view in points. After each frame `show` gets what the
- * page draws over the world.
+ * is the size of the view in points. After a frame `show` gets the panels
+ * and the words over the world that changed since the last.
  */
-export function startGame(session: string, canvas: HTMLCanvasElement, profile: GameProfile, show: (shown: Shown) => void): GameHandle {
+export function startGame(session: string, canvas: HTMLCanvasElement, profile: GameProfile, show: Shows): GameHandle {
   const view = new WebView(JSON.stringify(profile.value));
   view.setTextMeasure(plateMeasure());
   setDragDistance(clickDistance());
@@ -101,7 +102,7 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
     // A lost link comes back by itself; the view keeps its last picture meanwhile.
     state: () => {},
   });
-  const places: OutPlaces = { session, profilePath: profile.path, link, answer };
+  const places: OutPlaces = { session, profilePath: profile.path, link, answer, input: (event) => send(event) };
   const out = (calls: OutCall[]) => sendOut(calls, places);
   const send = (event: InputEvent) => {
     if (!stopped) out(view.input(JSON.stringify(event), clock()));
@@ -118,6 +119,9 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
     view.setPixelsPerPoint(size.ratio);
   });
 
+  /** The panels and the words over the world last shown, as JSON. */
+  let lastPanels = '';
+  let lastWords = '';
   const frames = startFrames({
     intervalMs: () => view.frameIntervalMs(document.hasFocus()),
     // One frame: the controller, the wants of the view, the rules, the drawing, then the calls of the frame.
@@ -129,7 +133,16 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
       tellLocalTime(view);
       const words = drawFrame(view, renderer, clock(), size, pointer.mouse());
       out(view.takeOut());
-      show({ panels: view.panels(clock()) as PanelData, ...words });
+      const panels = view.panelsJson(clock());
+      if (panels !== lastPanels) {
+        lastPanels = panels;
+        show.panels(JSON.parse(panels) as PanelData);
+      }
+      const wordsJson = JSON.stringify(words);
+      if (wordsJson !== lastWords) {
+        lastWords = wordsJson;
+        show.words(words);
+      }
     },
     fault: (error) => {
       failGame(error);

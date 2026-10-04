@@ -336,7 +336,7 @@ function Spells({ data, send, hover }: PartProps & { data: SpellsData }) {
               key={spell.id}
               class={`spell-row${spell.chosen ? ' chosen' : ''}`}
               {...hoverOn(spell.hover, hover)}
-              onClick={(event) => send(data.assign && event.ctrlKey && event.altKey ? { assign: spell.id } : { spell: spell.id })}
+              onClick={(event) => send({ spell: { id: spell.id, ctrl: event.ctrlKey, alt: event.altKey } })}
               onDblClick={() => send({ cast: spell.id })}
               onPointerDown={(event) => {
                 if (event.button === 0) followDrag(event, { carries: true, started: () => send({ drag_spell: spell.id }) });

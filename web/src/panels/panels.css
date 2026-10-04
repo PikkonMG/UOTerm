@@ -39,7 +39,7 @@
 .panels .heading,
 .frame-words {
   font-family: 'Barlow Condensed', sans-serif;
-  font-weight: 600;
+  font-weight: var(--title-weight);
 }
 
 .panels-root .small {
@@ -50,7 +50,8 @@
   font-family: monospace;
 }
 
-.panels-root .shadowed {
+.panels-root .shadowed,
+.world-words .shadowed {
   text-shadow: 0 0 var(--edge-width) var(--text-shadow), var(--edge-width) var(--edge-width) var(--edge-width) var(--text-shadow);
 }
 
@@ -233,7 +234,7 @@
 
 .vital {
   display: grid;
-  grid-template-columns: 4em 1fr auto;
+  grid-template-columns: var(--vital-label-width) 1fr auto;
   align-items: center;
   gap: var(--row-gap);
   margin-bottom: var(--row-gap);
@@ -371,7 +372,7 @@
 }
 
 .near-row .bar-track {
-  flex: 0 0 3em;
+  flex: 0 0 var(--pip-width);
   height: var(--pip-height);
 }
 
@@ -786,7 +787,15 @@
   background: var(--button-hover);
 }
 
-/* The words over the world. */
+/* The words over the world, under the panels. */
+.world-words {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--text);
+}
+
 .world-words .plate,
 .world-words .float {
   position: absolute;
@@ -806,7 +815,7 @@
   transform: translateX(-50%);
   white-space: nowrap;
   font-family: 'Barlow Condensed', sans-serif;
-  font-weight: 600;
+  font-weight: var(--title-weight);
   font-size: var(--size-plate);
   line-height: 1;
 }
@@ -824,7 +833,7 @@
   white-space: pre;
   text-align: center;
   font-family: 'Barlow Condensed', sans-serif;
-  font-weight: 600;
+  font-weight: var(--title-weight);
   font-size: var(--size-plate);
 }
 
@@ -865,7 +874,7 @@
 
 .tip-name {
   font-family: 'Barlow Condensed', sans-serif;
-  font-weight: 600;
+  font-weight: var(--title-weight);
   font-size: var(--size-plate);
 }
 

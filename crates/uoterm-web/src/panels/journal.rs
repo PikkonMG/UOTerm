@@ -314,8 +314,8 @@ impl WebView {
                 }
             }
             JournalAction::Rename(TabName { tab, name }) => {
-                let named = name.trim().to_string();
-                if let Some(tab) = tabs.get_mut(tab).filter(|_| !named.is_empty()) {
+                let named = journal::tab_name(&name);
+                if let (Some(tab), Some(named)) = (tabs.get_mut(tab), named) {
                     tab.name = named;
                     self.keep_profile();
                 }

@@ -52,6 +52,10 @@ pub enum OutCall {
     SaveKept { name: String, data: Value },
     /// Take a picture of the window, and give where it went back.
     Screenshot,
+    /// The field of the chat line takes the keys, or lets them go.
+    ChatFocus { take: bool },
+    /// Paste the clipboard into the chat line.
+    ChatPaste,
     /// Give the player a text file to keep, as the journal saves one.
     Download { name: String, text: String },
     /// A command for the windows of the style.

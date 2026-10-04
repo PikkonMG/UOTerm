@@ -14,13 +14,13 @@ const data: ControlBarData = {
 };
 
 describe('ControlBar', () => {
-  it('sends_the_place_of_the_button_pressed', () => {
+  it('sends_the_words_of_the_button_pressed', () => {
     const send = vi.fn();
     const { getByText } = render(<ControlBar data={data} send={send} />);
     fireEvent.click(getByText('Take control'));
-    expect(send).toHaveBeenCalledWith({ press: 0 });
+    expect(send).toHaveBeenCalledWith({ press: 'Take control' });
     fireEvent.click(getByText('Quit'));
-    expect(send).toHaveBeenLastCalledWith({ press: 2 });
+    expect(send).toHaveBeenLastCalledWith({ press: 'Quit' });
   });
 
   it('shows_where_the_character_is_and_opens_the_launcher', () => {

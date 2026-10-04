@@ -54,7 +54,7 @@ export function Hotbar({ data, picker, send, hover }: HotbarProps) {
             class={`slot${data.picking === at ? ' picking' : ''}`}
             {...{ [ZONE_ATTRIBUTE]: JSON.stringify({ slot: at }) }}
             {...hoverOn(slot.hover, hover)}
-            onClick={() => send(slot.words ? { press: at } : { pick: at })}
+            onClick={() => send({ click: at })}
             onContextMenu={(event) => {
               event.preventDefault();
               if (slot.words) send({ clear: at });

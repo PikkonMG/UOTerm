@@ -102,6 +102,10 @@ sizes! {
     pub BAR_HEIGHT_MAIN = 18.0;
     pub BAR_RADIUS = 3.0;
     pub PIP_HEIGHT = 4.0;
+    /// The labels of the bars of the vitals stand in a column this wide.
+    pub VITAL_LABEL_WIDTH = 58.0;
+    /// The hits of a row of the near list are a pip this wide.
+    pub PIP_WIDTH = 40.0;
     /// A picture stands this far inside its cell.
     pub CELL_ART_PAD = 4.0;
 
@@ -114,6 +118,9 @@ sizes! {
     /// The numbers of damage over heads.
     pub SIZE_DAMAGE = 20.0;
 }
+
+/// The weight of the title face, Barlow Condensed SemiBold, as CSS names it.
+pub const TITLE_WEIGHT: u16 = 600;
 
 /// Small pictures grow to this, so a coin is not a dot. More would blur.
 pub const ART_MAX_SCALE: f32 = 2.0;
@@ -200,7 +207,8 @@ pub fn css_tokens() -> String {
     let sizes = SIZES
         .iter()
         .map(|(name, size)| format!("{}: {size}px;\n", css_name(name)));
-    colors.chain(sizes).collect()
+    let weight = format!("{}: {TITLE_WEIGHT};\n", css_name(stringify!(TITLE_WEIGHT)));
+    colors.chain(sizes).chain(std::iter::once(weight)).collect()
 }
 
 #[cfg(test)]
@@ -238,6 +246,7 @@ mod tests {
     fn sizes_are_points_and_a_grey_notoriety_is_the_default() {
         assert!(css_tokens().contains("--panel-pad: 14px;"));
         assert!(css_tokens().contains("--panel-shadow-drop: 6px;"));
+        assert!(css_tokens().contains("--title-weight: 600;"));
         assert_eq!(notoriety_color(0), notoriety_color(3));
         assert_ne!(notoriety_color(NOTORIETY_MURDERER), ALARM);
     }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { giveToken, whenTokenNeeded } from '../src/net/api';
-import { ArtFeed, ART_PARALLEL, FETCH_TRIES, pixelsOf, type FeedView } from '../src/net/art';
+import { ArtFeed, ART_PARALLEL, FETCH_TRIES, pixelsOf, type FeedView, whenPixels } from '../src/net/art';
 import { backoffWait, LONGEST_BACKOFF_MS } from '../src/net/backoff';
 
 type FakeView = { [K in keyof FeedView]: ReturnType<typeof vi.fn> };
@@ -202,6 +202,19 @@ describe('ArtFeed', () => {
     feed.close();
     expect(pixelsOf('kept')).toBeUndefined();
     expect(picture.close).toHaveBeenCalled();
+  });
+
+  it('tells_who_waits_for_a_picture_when_it_comes', async () => {
+    const view = viewWanting([{ key: 'awaited', request: { kind: 'Item', graphic: 5 } }]);
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue(bitmap(1, 1)));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Uint8Array([1]), { status: 200 }));
+    const came = vi.fn();
+    const stop = whenPixels('awaited', came);
+    const feed = new ArtFeed(view as never);
+    feed.pump();
+    await vi.waitFor(() => expect(came).toHaveBeenCalledTimes(1));
+    stop();
+    feed.close();
   });
 
   it('starts_a_waiting_request_when_one_ends', async () => {

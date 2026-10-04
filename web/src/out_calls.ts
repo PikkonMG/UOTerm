@@ -6,6 +6,8 @@
  */
 
 import { api, jsonInit, METHOD_POST, METHOD_PUT } from './net/api';
+import type { InputEvent } from './input/events';
+import { CHAT_ATTRIBUTE } from './input/keys';
 import type { LiveOut, PageCall } from './net/live';
 
 const KEPT_PATH = '/v1/kept/';
@@ -20,6 +22,8 @@ export type OutCall =
   | { kind: 'SaveKept'; name: string; data: unknown }
   | { kind: 'Screenshot' }
   | { kind: 'Download'; name: string; text: string }
+  | { kind: 'ChatFocus'; take: boolean }
+  | { kind: 'ChatPaste' }
   | { kind: 'Window'; command: unknown };
 
 /** Where the calls of one session go. */
@@ -30,6 +34,8 @@ export interface OutPlaces {
   link: { send(message: LiveOut): void };
   /** Gives the view the answer of the call `id`, its result as JSON (`{error: words}` on failure). */
   answer(id: number, ok: boolean, resultJson: string): void;
+  /** Gives the view an input event, as the words of the chat line. */
+  input(event: InputEvent): void;
 }
 
 /** The words of a fault. */
@@ -50,6 +56,17 @@ function download(name: string, text: string): void {
   link.download = name;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+/** The field of the chat line, when it shows. */
+const chatField = () => document.querySelector<HTMLInputElement>(`[${CHAT_ATTRIBUTE}]`);
+
+/** Pastes the clipboard into the chat line: its words go to the view. */
+function paste(input: OutPlaces['input']): void {
+  navigator.clipboard?.readText().then(
+    (pasted) => input({ kind: 'ChatWords', text: `${chatField()?.value ?? ''}${pasted}` }),
+    () => {},
+  );
 }
 
 /**
@@ -81,6 +98,13 @@ export function sendOut(calls: OutCall[], places: OutPlaces): void {
         break;
       case 'Download':
         download(call.name, call.text);
+        break;
+      case 'ChatFocus':
+        if (call.take) chatField()?.focus();
+        else chatField()?.blur();
+        break;
+      case 'ChatPaste':
+        paste(places.input);
         break;
       case 'Screenshot':
       case 'Window':

@@ -59,7 +59,7 @@ export function Journal({ data, send }: { data: JournalData; send: Send }) {
             hint={data.tab_name_hint}
             done={(name) => {
               setAdding(false);
-              if (name) send({ new_tab: name });
+              if (name !== null) send({ new_tab: name });
             }}
           />
         ) : (
@@ -75,7 +75,7 @@ export function Journal({ data, send }: { data: JournalData; send: Send }) {
               hint={data.tab_name_hint}
               done={(name) => {
                 setRenaming(false);
-                if (name) send({ rename: { tab: menu, name } });
+                if (name !== null) send({ rename: { tab: menu, name } });
               }}
             />
           ) : (

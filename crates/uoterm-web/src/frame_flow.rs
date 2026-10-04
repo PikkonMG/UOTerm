@@ -698,12 +698,12 @@ impl WebView {
         // The field of the page takes the keys while the line is open, and
         // lets them go when the line closes.
         if out.closed {
-            self.panels.bar.chat_focus = Some(false);
+            self.hand.push(OutCall::ChatFocus { take: false });
         } else if focus == Focus::Free && self.chat.is_open(speech) {
-            self.panels.bar.chat_focus = Some(true);
+            self.hand.push(OutCall::ChatFocus { take: true });
         }
         if focus == Focus::Free && self.chat.take_paste() {
-            self.panels.bar.chat_paste = true;
+            self.hand.push(OutCall::ChatPaste);
         }
         for words in out.sent {
             match self

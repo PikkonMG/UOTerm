@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/preact';
+import { act, fireEvent, render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { Frame } from '../../src/panels/Frame';
 
@@ -78,5 +78,22 @@ describe('Frame', () => {
     );
     expect(queryByText('lines')).toBeNull();
     expect(queryByText('chat')).not.toBeNull();
+  });
+
+  it('stops_following_a_drag_when_it_goes', () => {
+    const send = vi.fn();
+    const { getByText, unmount } = render(
+      <Frame title="Journal" area={AREA} send={send}>
+        <p>x</p>
+      </Frame>,
+    );
+    const removed = vi.spyOn(window, 'removeEventListener');
+    fireEvent.pointerDown(getByText('Journal'), { clientX: 0, clientY: 0 });
+    act(() => {
+      unmount();
+    });
+    expect(removed).toHaveBeenCalledWith('pointerup', expect.any(Function));
+    fireEvent.pointerUp(window, { clientX: 40, clientY: 20 });
+    expect(send).not.toHaveBeenCalled();
   });
 });

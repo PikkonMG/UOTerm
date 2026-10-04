@@ -12,8 +12,6 @@ const data: ChatData = {
   mode_words: 'Do',
   hint: 'A command. Press Enter.',
   pin_words: 'Pin',
-  focus: null,
-  paste: false,
   strip: null,
 };
 
@@ -34,14 +32,6 @@ describe('ChatLine', () => {
     expect(send).toHaveBeenCalledWith({ mode: true });
     fireEvent.click(getByText('Pin'));
     expect(send).toHaveBeenLastCalledWith({ pin: true });
-  });
-
-  it('takes_and_lets_go_of_the_keys_as_the_view_asks', () => {
-    const { getByPlaceholderText, rerender } = render(<ChatLine data={{ ...data, focus: 'take' }} send={vi.fn()} input={vi.fn()} />);
-    const field = getByPlaceholderText(data.hint);
-    expect(document.activeElement).toBe(field);
-    rerender(<ChatLine data={{ ...data, focus: 'leave' }} send={vi.fn()} input={vi.fn()} />);
-    expect(document.activeElement).not.toBe(field);
   });
 
   it('says_to_take_control_while_the_agent_has_the_character', () => {

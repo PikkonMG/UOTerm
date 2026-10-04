@@ -37,7 +37,7 @@ export function ControlBar({ data, send }: { data: ControlBarData; send: Send })
           {data.status && <p class="bar-status waiting">{data.status}</p>}
           <div class="bar-buttons">
             {data.buttons.map((words, at) => (
-              <button type="button" class="button segment" key={at} onClick={() => send({ press: at })}>
+              <button type="button" class="button segment" key={at} onClick={() => send({ press: words })}>
                 {words}
               </button>
             ))}
