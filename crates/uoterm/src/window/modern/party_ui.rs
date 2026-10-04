@@ -20,6 +20,11 @@ use super::layout::{self, Spot};
 use crate::view::{WatchFrame, WatchPartyMember};
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_view::ui::lists::{party_entries, PartyEntry};
+use uoterm_view::ui::sheet::{
+    tell_hint, HINT_MEMBER, WORDS_ACCEPT, WORDS_ADD, WORDS_DECLINE, WORDS_EMPTY, WORDS_INVITE,
+    WORDS_INVITE_TITLE, WORDS_KICK, WORDS_LOOT_OFF, WORDS_LOOT_ON, WORDS_NEAR, WORDS_SAY,
+    WORDS_TELL,
+};
 
 pub const INVITE_ID: &str = "modern:party_invite";
 const INVITE_WIDTH: f32 = 320.0;
@@ -35,20 +40,6 @@ const PERCENT: f32 = 100.0;
 /// apart.
 const POOL_GAP: f32 = 4.0;
 const POOLS: f32 = 3.0;
-const WORDS_INVITE_TITLE: &str = "Party invite";
-const WORDS_ACCEPT: &str = "Accept";
-const WORDS_DECLINE: &str = "Decline";
-const WORDS_LOOT_ON: &str = "Party loots: yes";
-const WORDS_LOOT_OFF: &str = "Party loots: no";
-const WORDS_ADD: &str = "Add member";
-const WORDS_TELL: &str = "Tell";
-const WORDS_KICK: &str = "Kick";
-const WORDS_INVITE: &str = "Invite";
-const WORDS_EMPTY: &str = "Empty";
-const WORDS_NEAR: &str = "Invite someone near:";
-const WORDS_SAY: &str = "Say";
-const HINT_TELL_PARTY: &str = "Tell the party";
-const HINT_MEMBER: &str = "Click: look, or target while the shard asks for one.";
 
 /// The Accept and Decline of an invite, at the right of `row`, with its
 /// words at the left.
@@ -415,13 +406,11 @@ impl PartyTab {
         );
         ui.painter()
             .rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        let hint = match self
-            .tell_to
-            .and_then(|to| frame.party_members.iter().find(|m| m.serial == to))
-        {
-            Some(member) => format!("{WORDS_TELL} {}", member.name),
-            None => HINT_TELL_PARTY.to_string(),
-        };
+        let hint = tell_hint(
+            self.tell_to
+                .and_then(|to| frame.party_members.iter().find(|m| m.serial == to))
+                .map(|member| member.name.as_str()),
+        );
         let typed = ui.put(
             field,
             egui::TextEdit::singleline(&mut self.words)

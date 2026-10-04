@@ -68,6 +68,7 @@ use std::time::{Duration, Instant};
 use uoterm_protocol::ClientVersion;
 use uoterm_runtime::tools::{ARG_SIZE, TOOL_WATCH};
 use uoterm_view::look;
+use uoterm_view::ui::hud as hud_words;
 
 /// A snapshot waits this long after the first picture, so the bars and the
 /// camera are at rest in it.
@@ -452,15 +453,15 @@ impl eframe::App for WatchApp {
                     None => hud::message(
                         &painter,
                         rect,
-                        "Waiting for the session",
-                        &["The first picture comes in a moment."],
+                        hud_words::WORDS_WAITING,
+                        &[hud_words::WORDS_WAITING_LINE],
                         theme::TEXT,
                     ),
                     Some(frame) if !frame.error.is_empty() => hud::message(
                         &painter,
                         rect,
-                        "No picture from the session",
-                        &[&frame.error, "The window tries again by itself."],
+                        hud_words::WORDS_NO_PICTURE,
+                        &[&frame.error, hud_words::WORDS_TRIES_AGAIN],
                         theme::ALARM,
                     ),
                     Some(frame) => {

@@ -8,7 +8,6 @@ use super::boxes_ui::Tools;
 use super::bridge;
 use super::control::{Act, Hand};
 use super::modern::frame::{self, PanelSpec};
-use super::modern::layout::{self, Spot};
 use super::scene::Scene;
 use super::settings::Profile;
 use super::theme::{self, number_font};
@@ -19,11 +18,6 @@ use uoterm_view::geom::Point;
 
 const CARRY_SIDE: f32 = 52.0;
 const CARRY_ALPHA: f32 = 0.85;
-const SPLIT_ID: &str = "modern:split";
-const SPLIT_WIDTH: f32 = 260.0;
-const SPLIT_ROW: f32 = 28.0;
-const WORDS_SPLIT: &str = "How many?";
-const WORDS_MOVE: &str = "Move";
 
 /// The map of the window under the mouse.
 struct SceneUnder<'a> {
@@ -118,18 +112,11 @@ pub fn split_box(
     profile: &mut Profile,
 ) -> Option<Rect> {
     let mut split = tools.desk.take_split()?;
-    let title = format!("{WORDS_SPLIT}  {}", split.item.name);
+    let title = split_title(&split.item.name);
     let spec = PanelSpec {
         id: SPLIT_ID,
         title: &title,
-        default: layout::first_place(
-            rect,
-            Spot::Middle(0),
-            Vec2::new(
-                SPLIT_WIDTH,
-                frame::TITLE_ROW + SPLIT_ROW * 2.0 + theme::PANEL_PAD * 2.0,
-            ),
-        ),
+        default: bridge::rect(split_first_place(bridge::area(rect))),
         min_size: None,
         closable: true,
     };

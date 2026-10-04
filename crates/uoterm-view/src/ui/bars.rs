@@ -13,6 +13,15 @@ use crate::model::places;
 use crate::settings::Profile;
 
 pub const NEAR_ID: &str = "modern:near";
+pub const WORDS_NEAR: &str = "Near";
+pub const WORDS_NOBODY: &str = "Nobody is near.";
+pub const WORDS_HEAL: &str = "Heal";
+pub const WORDS_CURE: &str = "Cure";
+pub const WORDS_RENAME: &str = "Rename";
+pub const WORDS_CLOSE_BAR: &str = "Close bar";
+pub const WORDS_TARGET: &str = "Target";
+pub const HINT_ROW: &str = "Double-click: attack in war, use in peace. Drag out: a bar of its own.";
+pub const HINT_TARGETING: &str = "Click: target it.";
 const BAR_ID_PREFIX: &str = "modern:bar:";
 /// The target bar keeps its place under its own id; it opens again with
 /// the next target, not with the next game.

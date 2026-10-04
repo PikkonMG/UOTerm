@@ -9,6 +9,37 @@ use super::theme::{
 };
 use crate::frame::{Danger, WatchFrame};
 use crate::geom::Rgba;
+use std::f32::consts::TAU;
+
+/// The ids that keep the places of the panels in the profile.
+pub const ACTIVITY_ID: &str = "modern:activity";
+pub const VITALS_ID: &str = "modern:vitals";
+pub const PACK_ID: &str = "modern:pack";
+
+pub const WORDS_PACK: &str = "Pack";
+pub const WORDS_NO_JOB: &str = "No job. No walk goal.";
+pub const WORDS_HITS: &str = "Hits";
+pub const WORDS_MANA: &str = "Mana";
+pub const WORDS_STAMINA: &str = "Stamina";
+pub const WORDS_FIGHTS: &str = "Fights";
+pub const WORDS_GOLD: &str = "gold";
+pub const WORDS_WEIGHT: &str = "Weight";
+pub const WORDS_TIME: &str = "Time";
+/// The words of the message while no picture of the session came yet, and
+/// while the session sends none.
+pub const WORDS_WAITING: &str = "Waiting for the session";
+pub const WORDS_WAITING_LINE: &str = "The first picture comes in a moment.";
+pub const WORDS_NO_PICTURE: &str = "No picture from the session";
+pub const WORDS_TRIES_AGAIN: &str = "The window tries again by itself.";
+
+/// The alarm over the edge of the map pulses this many times a second,
+/// down to this share.
+const PULSE_PER_SECOND: f32 = 1.2;
+const PULSE_LOW: f32 = 0.25;
+const FIGHT_ALPHA: f32 = 0.20;
+const CRITICAL_ALPHA: f32 = 0.50;
+const DEAD_ALPHA: f32 = 0.38;
+const HALF: f32 = 0.5;
 
 pub const SIDE_PANEL_WIDTH: f32 = 300.0;
 pub const PACK_WIDTH: f32 = 340.0;
@@ -191,6 +222,30 @@ pub fn pack_lists(frame: &WatchFrame) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// The weight in stones, as the pack shows it.
+pub fn weight_words(frame: &WatchFrame) -> String {
+    format!("{} stones", frame.carried())
+}
+
+/// The clock of the shard, as the pack shows it.
+pub fn clock_words(frame: &WatchFrame) -> String {
+    format!("{:02}:{:02}", frame.time.0, frame.time.1)
+}
+
+/// How strong the alarm color is over the edge of the map at `time`, from
+/// 0 to 1: it pulses in a fight and more at critical hits; a dead
+/// character holds it still.
+pub fn alarm_share(danger: Danger, time: f64) -> f32 {
+    let wave = (time as f32 * PULSE_PER_SECOND * TAU).sin() * HALF + HALF;
+    let pulse = PULSE_LOW + (1.0 - PULSE_LOW) * wave;
+    match danger {
+        Danger::Calm => 0.0,
+        Danger::Fight => FIGHT_ALPHA * pulse,
+        Danger::Critical => CRITICAL_ALPHA * pulse,
+        Danger::Dead => DEAD_ALPHA,
+    }
+}
+
 /// The color of the weight: the waiting color when the pack is nearly
 /// full.
 pub fn weight_color(frame: &WatchFrame) -> Rgba {
@@ -253,6 +308,20 @@ mod tests {
         assert_eq!(states(&frame), vec![("Poisoned", HITS_POISONED)]);
         assert_eq!(hits_look(&frame).0, HITS_POISONED);
         assert!(pack_lists(&frame).is_empty());
+    }
+
+    #[test]
+    fn the_alarm_pulses_in_a_fight_and_holds_still_for_the_dead() {
+        assert_eq!(alarm_share(Danger::Calm, 0.3), 0.0);
+        assert_ne!(
+            alarm_share(Danger::Fight, 0.0),
+            alarm_share(Danger::Fight, 0.2)
+        );
+        assert_eq!(
+            alarm_share(Danger::Dead, 0.0),
+            alarm_share(Danger::Dead, 0.2)
+        );
+        assert!(alarm_share(Danger::Critical, 0.2) > alarm_share(Danger::Fight, 0.2));
     }
 
     #[test]

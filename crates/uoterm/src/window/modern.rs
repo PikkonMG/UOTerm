@@ -48,13 +48,14 @@ pub use tip_ui::TipUi;
 pub use uoterm_view::ui::launch::{JOURNAL_ID, RADAR_ID, WORDS_LAUNCHER};
 
 use super::boxes_ui::Tools;
-use super::model::info_bar::title_words;
+use super::bridge;
+use super::model::info_bar::window_title;
 use super::model::{host, journal, places};
 use super::settings::{
     Profile, UiStyle, DEFAULT_GUMP_OPACITY, DEFAULT_TRUETYPE_SIZE, DEFAULT_UI_SCALE,
 };
 use super::theme;
-use crate::view::{WatchFrame, WINDOW_TITLE};
+use crate::view::WatchFrame;
 use agents_ui::AgentsUi;
 use ask_ui::{Asked, Question};
 use bars_ui::BarsUi;
@@ -68,13 +69,10 @@ use loot_ui::LootUi;
 use radar_ui::RadarUi;
 use stats_ui::StatsUi;
 use std::path::PathBuf;
-use uoterm_view::ui::launch::{self, Launch, DPS_ID, DURABILITY_ID, LAUNCHES};
-
-const LAUNCHER_ID: &str = "modern:launcher";
-const LAUNCHER_WIDTH: f32 = 220.0;
-const LAUNCHER_COLUMNS: usize = 2;
-const LAUNCHER_ROW: f32 = 28.0;
-const LAUNCHER_GAP: f32 = 6.0;
+use uoterm_view::ui::launch::{
+    self, launcher_size, Launch, DPS_ID, DURABILITY_ID, LAUNCHER_COLUMNS, LAUNCHER_GAP,
+    LAUNCHER_ID, LAUNCHER_ROW, LAUNCHES,
+};
 
 /// The look the window has now, so it changes only when the profile does.
 /// The Classic style scales and letters its own gumps, so it keeps the
@@ -304,12 +302,10 @@ impl ModernUi {
         if !self.launcher_open {
             return None;
         }
-        let rows = LAUNCHES.len().div_ceil(LAUNCHER_COLUMNS) as f32;
-        let height = frame::TITLE_ROW + rows * LAUNCHER_ROW + theme::PANEL_PAD * 2.0;
         let spec = PanelSpec {
             id: LAUNCHER_ID,
             title: WORDS_LAUNCHER,
-            default: layout::first_place(rect, Spot::Launcher, Vec2::new(LAUNCHER_WIDTH, height)),
+            default: layout::first_place(rect, Spot::Launcher, bridge::vec2(launcher_size())),
             min_size: None,
             closable: true,
         };
@@ -346,12 +342,7 @@ impl ModernUi {
     /// Puts the vitals in the title of the window when the Interface page
     /// asks for it, and takes them out when it does not.
     fn title_bar(&mut self, ctx: &egui::Context, frame: &WatchFrame, profile: &Profile) {
-        let interface = &profile.interface;
-        let title = if interface.title_bar_stats && !frame.name.is_empty() {
-            title_words(WINDOW_TITLE, frame, interface.title_bar_mode)
-        } else {
-            WINDOW_TITLE.to_string()
-        };
+        let title = window_title(frame, &profile.interface);
         if title != self.title {
             ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
             self.title = title;

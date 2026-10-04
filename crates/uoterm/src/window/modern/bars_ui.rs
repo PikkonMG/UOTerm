@@ -36,7 +36,9 @@ use eframe::egui::{
 use uoterm_view::geom::{Area, Point};
 use uoterm_view::ui::bars::{
     self as rules, bar_id, bar_size, line_count, near_list_size, party_buttons, restore_bars,
-    subject_bar_id, BUTTON_ROW, LINE_GAP, NEAR_ID, NEAR_LEAST, NEAR_ROW as ROW,
+    subject_bar_id, BUTTON_ROW, HINT_ROW, HINT_TARGETING, LINE_GAP, NEAR_ID, NEAR_LEAST,
+    NEAR_ROW as ROW, WORDS_CLOSE_BAR as WORDS_CLOSE, WORDS_CURE, WORDS_HEAL, WORDS_NEAR,
+    WORDS_NOBODY, WORDS_RENAME, WORDS_TARGET,
 };
 
 const DOT_RADIUS: f32 = 4.0;
@@ -48,15 +50,6 @@ const SELECTION_FILL_ALPHA: f32 = 0.12;
 const SELECTION_EDGE: f32 = 1.0;
 /// Each notch of the wheel moves the near list this many rows.
 const ROWS_PER_NOTCH: usize = 1;
-const WORDS_NEAR: &str = "Near";
-const WORDS_NOBODY: &str = "Nobody is near.";
-const WORDS_HEAL: &str = "Heal";
-const WORDS_CURE: &str = "Cure";
-const WORDS_RENAME: &str = "Rename";
-const WORDS_CLOSE: &str = "Close bar";
-const WORDS_TARGET: &str = "Target";
-const HINT_ROW: &str = "Double-click: attack in war, use in peace. Drag out: a bar of its own.";
-const HINT_TARGETING: &str = "Click: target it.";
 
 /// Sends an act of the character, when the human has control.
 fn act(frame: &WatchFrame, tools: &Tools<'_>, act: Act) {

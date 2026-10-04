@@ -37,19 +37,17 @@ use uoterm_view::art::Sprite;
 use uoterm_view::input::KeyName;
 use uoterm_view::ui::deck::{
     self, hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
-    SlotPicture, WearChoice, HOTBAR_FILE, HOTBAR_KEYS, HOTBAR_SLOTS, SLOT_ROW, WORN_COLUMNS,
+    SlotPicture, WearChoice, HINT_EMPTY_SLOT, HINT_SLOT, HOTBAR_FILE, HOTBAR_ID, HOTBAR_KEYS,
+    HOTBAR_SLOTS, SLOT_ROW, WORDS_BAR_FULL, WORDS_HOTBAR, WORDS_NO_MACROS, WORDS_PICK_FOR,
+    WORN_COLUMNS,
+};
+use uoterm_view::ui::sheet::{
+    sheet_first_place, sheet_least, CHARACTER_VIEWS, HINT_WEAR, HINT_WEAR_OFF, HINT_WORN,
+    NOTE_SECONDS, SHEET_ID, SHEET_TABS, TAB_HEIGHT, WORDS_GOLD, WORDS_LOOKING, WORDS_NOTHING_WORN,
+    WORDS_SHEET, WORDS_TAKE_OFF, WORDS_WEAR, WORDS_WEIGHT, WORDS_WORN,
 };
 
-const SHEET_ID: &str = "modern:sheet";
-/// The hotbar is a panel of its own the player moves and locks.
-const HOTBAR_ID: &str = "modern:hotbar";
-const SHEET_WIDTH: f32 = 430.0;
-/// The rows of the sheet as it first opens, and the fewest it takes.
-const SHEET_ROWS: usize = 14;
-const SHEET_MIN_ROWS: usize = 10;
-pub(super) const ROW: f32 = 24.0;
-const TAB_HEIGHT: f32 = 28.0;
-pub(super) const TAB_GAP: f32 = 6.0;
+pub(super) use uoterm_view::ui::sheet::{ROW, TAB_GAP, WORDS_PIN, WORDS_USE};
 pub(super) const LOCK_SIDE: f32 = 16.0;
 const LOCK_MARK: f32 = 5.0;
 pub(super) const USE_WIDTH: f32 = 40.0;
@@ -67,32 +65,12 @@ const CARRY_ALPHA: f32 = 0.85;
 const PICKER_COLUMNS: usize = 2;
 const PICKER_ROW: f32 = 28.0;
 
-pub(super) const WORDS_USE: &str = "Use";
-const WORDS_PIN: &str = "Pin";
-const WORDS_SHEET: &str = "Character";
-const WORDS_HOTBAR: &str = "Hotbar";
-const WORDS_WORN_VIEW: &str = "Worn";
-const WORDS_STATUS_VIEW: &str = "Status";
 const WORDS_ABILITIES: &str = "Abilities";
 const WORDS_RACIAL: &str = "Racial";
-const WORDS_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
-const WORDS_PICK_FOR: &str = "Put on slot";
-const WORDS_NO_MACROS: &str = "No macros yet: make them on the Macros page of the Options.";
 const VIEW_WIDTH: f32 = 72.0;
 const PANEL_BUTTON_WIDTH: f32 = 84.0;
 /// The durability bar under a worn item.
 const DURABILITY_BAR: f32 = 3.0;
-const HINT_WORN: &str =
-    "Click: name.  Double-click: use.  Drag or x: take off.  Right-click: more.";
-const HINT_SLOT: &str = "Click or press the key: use.  Right-click: clear.";
-const HINT_EMPTY_SLOT: &str = "Click: choose a macro or an ability for it.";
-
-const TABS: [(Tab, &str); 4] = [
-    (Tab::Character, "Character"),
-    (Tab::Skills, "Skills"),
-    (Tab::Spells, "Spells"),
-    (Tab::Party, "Party"),
-];
 
 /// The ability panels a window command opens and closes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -259,20 +237,6 @@ pub(super) fn lock_mark(painter: &egui::Painter, area: Rect, lock: u8, color: Co
         color,
         egui::Stroke::NONE,
     ));
-}
-
-/// The height of the sheet with room for `rows` rows.
-fn sheet_height(rows: usize) -> f32 {
-    frame::TITLE_ROW + theme::PANEL_PAD * 2.0 + TAB_HEIGHT + TAB_GAP + rows as f32 * ROW
-}
-
-/// Where the sheet first opens: the middle of the window.
-fn sheet_first_place(window: Rect) -> Rect {
-    layout::first_place(
-        window,
-        Spot::Middle(0),
-        Vec2::new(SHEET_WIDTH, sheet_height(SHEET_ROWS)),
-    )
 }
 
 impl DeckUi {
@@ -447,8 +411,8 @@ impl DeckUi {
         let spec = PanelSpec {
             id: SHEET_ID,
             title: WORDS_SHEET,
-            default: sheet_first_place(rect),
-            min_size: Some(Vec2::new(SHEET_WIDTH, sheet_height(SHEET_MIN_ROWS))),
+            default: bridge::rect(sheet_first_place(bridge::area(rect))),
+            min_size: Some(bridge::vec2(sheet_least())),
             closable: true,
         };
         let panel = frame::place(rect, &spec, profile);
@@ -458,8 +422,9 @@ impl DeckUi {
             frame.name.as_str()
         };
         let inner = frame::draw(ui.painter(), panel, title);
-        let tab_width = (inner.width() - TAB_GAP * (TABS.len() - 1) as f32) / TABS.len() as f32;
-        for (i, (tab, words)) in TABS.into_iter().enumerate() {
+        let tab_width =
+            (inner.width() - TAB_GAP * (SHEET_TABS.len() - 1) as f32) / SHEET_TABS.len() as f32;
+        for (i, (tab, words)) in SHEET_TABS.into_iter().enumerate() {
             let area = Rect::from_min_size(
                 inner.left_top() + Vec2::new(i as f32 * (tab_width + TAB_GAP), 0.0),
                 Vec2::new(tab_width, TAB_HEIGHT),
@@ -506,13 +471,7 @@ impl DeckUi {
         profile: &mut Profile,
     ) {
         let top = Rect::from_min_size(body.min, Vec2::new(body.width(), ROW - TAB_GAP));
-        for (at, (view, words)) in [
-            (CharacterView::Worn, WORDS_WORN_VIEW),
-            (CharacterView::Status, WORDS_STATUS_VIEW),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (at, (view, words)) in CHARACTER_VIEWS.into_iter().enumerate() {
             let area = Rect::from_min_size(
                 top.left_top() + Vec2::new(at as f32 * (VIEW_WIDTH + TAB_GAP), 0.0),
                 Vec2::new(VIEW_WIDTH, top.height()),
@@ -567,15 +526,6 @@ const DOLL_HEIGHT: f32 = 130.0;
 const TAKE_OFF_WIDTH: f32 = 26.0;
 const WORDS_MORE_WORN: &str = "Wheel: more";
 const WEAR_WIDTH: f32 = 54.0;
-const WORDS_WORN: &str = "Worn";
-const WORDS_TAKE_OFF: &str = "x";
-const WORDS_WEAR: &str = "Wear";
-const WORDS_WEIGHT: &str = "Weight";
-const WORDS_GOLD: &str = "Gold";
-const HINT_WEAR: &str = "Say what to wear or take off, for example: my viking sword";
-const HINT_WEAR_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
-const WORDS_LOOKING: &str = "Jev looks in your bag...";
-const WORDS_NOTHING_WORN: &str = "Nothing worn. Drag an item onto the figure.";
 
 impl DeckUi {
     /// The worn view: the figure, the stats with their locks, the weight
@@ -923,9 +873,6 @@ impl DeckUi {
     }
 }
 
-/// How long the words about what Jev did stay on the sheet.
-const NOTE_SECONDS: f64 = 6.0;
-
 impl DeckUi {
     /// The hotbar panel: its ten slots in a row, as wide as the pack
     /// panel. It first stands where the plan puts it, over the pack; the
@@ -1243,7 +1190,6 @@ mod tests {
         assert!(!deck.shows_view(CharacterView::Worn));
         deck.switch_panel(AbilityPanel::Combat, GumpOp::Toggle);
         assert_eq!(deck.panel_ops, vec![(AbilityPanel::Combat, GumpOp::Toggle)]);
-        assert!(sheet_height(SHEET_MIN_ROWS) < sheet_height(SHEET_ROWS));
     }
 
     /// A frame of a gargoyle with a book, two skills, a party and an invite.
@@ -1325,7 +1271,7 @@ mod tests {
         places::set_open(&mut profile, ABILITIES_ID, true);
         places::set_open(&mut profile, RACIAL_ID, true);
         let pack = Rect::from_min_size(Pos2::new(400.0, 700.0), Vec2::new(480.0, 80.0));
-        for (tab, _) in TABS {
+        for (tab, _) in SHEET_TABS {
             for view in [CharacterView::Worn, CharacterView::Status] {
                 deck.show(tab);
                 deck.view = view;
@@ -1349,7 +1295,8 @@ mod tests {
         let mut profile = Profile::default();
         let pack = Rect::from_min_size(Pos2::new(400.0, 700.0), Vec2::new(480.0, 80.0));
         let window = Rect::from_min_size(Pos2::ZERO, SCREEN);
-        let inner = sheet_first_place(window).min + Vec2::splat(theme::PANEL_PAD);
+        let inner = bridge::rect(sheet_first_place(bridge::area(window))).min
+            + Vec2::splat(theme::PANEL_PAD);
         let body_top = inner.y + frame::TITLE_ROW + TAB_HEIGHT + TAB_GAP;
         let status = Pos2::new(
             inner.x + VIEW_WIDTH + TAB_GAP + VIEW_WIDTH / 2.0,

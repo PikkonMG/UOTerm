@@ -1,6 +1,11 @@
 //! The sizes of the control bar at the middle of the top, which the plan
 //! of the panels keeps room for.
 
+/// The words of the chat line while the agent has the character.
+pub const WORDS_TAKE_TO_TALK: &str = "Take control to talk.";
+/// The button that puts the words of the chat line on the hotbar.
+pub const WORDS_PIN: &str = "Pin";
+
 /// The top panel has one width in each state, so nothing in it moves when
 /// the buttons change.
 pub const BAR_WIDTH: f32 = 880.0;

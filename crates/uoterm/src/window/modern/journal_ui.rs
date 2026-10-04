@@ -24,6 +24,11 @@ use eframe::egui::{
 };
 use uoterm_view::ui::launch::JOURNAL_ID;
 use uoterm_view::ui::lists::{
+    back_words, saved_words, HINT_NEW_TAB, HINT_SEARCH, HINT_TAB, HINT_TAB_NAME,
+    JOURNAL_NOTE_SECONDS as NOTE_SECONDS, WORDS_DELETE_TAB, WORDS_JOURNAL as WORDS_TITLE,
+    WORDS_NEW_TAB, WORDS_NO_LINES, WORDS_RENAME, WORDS_SAVE,
+};
+use uoterm_view::ui::lists::{
     journal_waiting_words, journal_wheel_turns, journal_words_color, WordsColor, JOURNAL_FILTERS,
     JOURNAL_HEIGHT, JOURNAL_LEAST, JOURNAL_WIDTH,
 };
@@ -37,23 +42,9 @@ const FILTER_ROW: f32 = 20.0;
 const SAVE_WIDTH: f32 = 54.0;
 const LINE_GAP: f32 = 4.0;
 const CHAT_ROW_HEIGHT: f32 = 30.0;
-const NOTE_SECONDS: f64 = 6.0;
 const PERCENT: f32 = 100.0;
 /// The wheel gives its step in points. This many points are one notch.
 const WHEEL_NOTCH: f32 = 50.0;
-
-const WORDS_TITLE: &str = "Journal";
-const WORDS_SAVE: &str = "Save";
-const WORDS_NO_LINES: &str = "No lines yet.";
-const WORDS_SAVED: &str = "Saved to";
-const WORDS_BACK: &str = "lines back";
-const WORDS_NEW_TAB: &str = "+";
-const WORDS_RENAME: &str = "Rename";
-const WORDS_DELETE_TAB: &str = "Delete tab";
-const HINT_SEARCH: &str = "search the journal";
-const HINT_NEW_TAB: &str = "Add a tab.";
-const HINT_TAB: &str = "Right-click: rename, kinds of lines, delete.";
-const HINT_TAB_NAME: &str = "tab name";
 
 /// What the journal tells the Modern panels after it is drawn.
 pub struct JournalDrawn {
@@ -215,11 +206,7 @@ impl JournalUi {
                     &shown,
                     with_stamp,
                 ) {
-                    Ok(file) => (
-                        format!("{WORDS_SAVED} {}", file.display()),
-                        false,
-                        tools.time,
-                    ),
+                    Ok(file) => (saved_words(&file.display().to_string()), false, tools.time),
                     Err(error) => (error.to_string(), true, tools.time),
                 },
             );
@@ -504,7 +491,7 @@ fn lines(
             ui.painter(),
             area.right_top(),
             Align2::RIGHT_TOP,
-            &format!("{back} {WORDS_BACK}"),
+            &back_words(back),
             text_font(theme::SIZE_SMALL),
             theme::WAITING,
         );

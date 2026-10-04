@@ -4,56 +4,18 @@
 //! close mark answer No.
 
 use super::super::boxes_ui::Tools;
-use super::super::classic::message_box::QUIT_WORDS;
-use super::super::model::journal;
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::layout::{self, Spot};
 use eframe::egui::{self, Id, Key, Pos2, Rect, Vec2};
+use uoterm_view::ui::question::{
+    question_height, QUESTION_BUTTON_ROW as BUTTON_ROW, QUESTION_BUTTON_WIDTH as BUTTON_WIDTH,
+    QUESTION_GAP as GAP, QUESTION_ID, QUESTION_WIDTH as WIDTH, WORDS_NO,
+    WORDS_QUESTION as WORDS_TITLE, WORDS_YES,
+};
 
-const QUESTION_ID: &str = "modern:question";
-const WIDTH: f32 = 320.0;
-const BUTTON_ROW: f32 = 30.0;
-const BUTTON_WIDTH: f32 = 90.0;
-const GAP: f32 = 10.0;
-const WORDS_TITLE: &str = "Question";
-const WORDS_YES: &str = "Yes";
-const WORDS_NO: &str = "No";
-
-/// What a Yes does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Asked {
-    Quit,
-    /// Deletes the journal tab of this name.
-    DeleteJournalTab(String),
-}
-
-/// One question and what its Yes does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Question {
-    pub words: String,
-    pub asked: Asked,
-}
-
-impl Question {
-    /// The question before the game quits, in the words of the classic
-    /// client.
-    pub fn quit() -> Self {
-        Self {
-            words: QUIT_WORDS.to_string(),
-            asked: Asked::Quit,
-        }
-    }
-
-    /// The question before a journal tab is deleted.
-    pub fn delete_journal_tab(name: &str) -> Self {
-        Self {
-            words: journal::delete_question(name),
-            asked: Asked::DeleteJournalTab(name.to_string()),
-        }
-    }
-}
+pub use uoterm_view::ui::question::{Asked, Question};
 
 /// Draws the question. Gives its place, and the answer when the player
 /// gave one.
@@ -70,10 +32,7 @@ pub fn draw(
         theme::TEXT,
         WIDTH - theme::PANEL_PAD * 2.0,
     );
-    let size = Vec2::new(
-        WIDTH,
-        frame::TITLE_ROW + galley.size().y + GAP + BUTTON_ROW + theme::PANEL_PAD * 2.0,
-    );
+    let size = Vec2::new(WIDTH, question_height(galley.size().y));
     let spec = PanelSpec {
         id: QUESTION_ID,
         title: WORDS_TITLE,
@@ -108,18 +67,4 @@ pub fn draw(
         None
     };
     (panel, answer)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_questions_carry_their_words_and_what_yes_does() {
-        assert_eq!(Question::quit().words, QUIT_WORDS);
-        assert_eq!(Question::quit().asked, Asked::Quit);
-        let delete = Question::delete_journal_tab("Chat");
-        assert_eq!(delete.words, "Delete [Chat] tab?");
-        assert_eq!(delete.asked, Asked::DeleteJournalTab("Chat".into()));
-    }
 }

@@ -22,6 +22,11 @@ use super::super::theme::{self, number_font, text_font, title_font};
 use crate::view::{WatchFrame, WatchSkill};
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Sense, Vec2};
 use uoterm_view::ui::lists::{next_sort, skill_entries, SkillEntry};
+use uoterm_view::ui::question::{WORDS_NO, WORDS_YES};
+use uoterm_view::ui::sheet::{
+    HINT_GROUP, HINT_SKILL, WORDS_DELETE_GROUP as WORDS_DELETE, WORDS_GROUP_FOLDED as WORDS_FOLDED,
+    WORDS_GROUP_OPEN as WORDS_OPEN, WORDS_NEW_GROUP, WORDS_RESET, WORDS_RESET_ASK,
+};
 
 /// The width of each value column.
 const VALUE_WIDTH: f32 = 48.0;
@@ -31,16 +36,6 @@ const BAR_BUTTON_WIDTH: f32 = 92.0;
 /// The lock arrows of the sort mark: up for the least first.
 const SORT_UP: u8 = 0;
 const SORT_DOWN: u8 = 1;
-const WORDS_NEW_GROUP: &str = "New group";
-const WORDS_RESET: &str = "Reset groups";
-const WORDS_RESET_ASK: &str = "Back to the first groups?";
-const WORDS_YES: &str = "Yes";
-const WORDS_NO: &str = "No";
-const WORDS_DELETE: &str = "x";
-const WORDS_OPEN: &str = "-";
-const WORDS_FOLDED: &str = "+";
-const HINT_GROUP: &str = "Click: select, again: rename.  Delete: take it away.";
-const HINT_SKILL: &str = "Drag: to another group, or a skill to use onto the hotbar.";
 
 /// The right edge of a value column of a row, from the first value column.
 fn value_right(row: Rect, column: usize) -> f32 {

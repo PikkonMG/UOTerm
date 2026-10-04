@@ -19,10 +19,13 @@ use eframe::egui::{
     Align2, Color32, Painter, Pos2, Rect, Shape, Vec2,
 };
 use uoterm_view::ui::hud::{
-    self as rules, activity_details, activity_height, goal_words, hits_look, message_height,
-    pack_height, pack_lists, share, vitals_height, weight_color, Bar, BAR_COUNT, BAR_ROW_GAP,
-    PACK_WIDTH, ROW_HEIGHT, SIDE_PANEL_WIDTH, TITLE_HEIGHT,
+    self as rules, activity_details, activity_height, alarm_share, clock_words, goal_words,
+    hits_look, message_height, pack_height, pack_lists, share, vitals_height, weight_color,
+    weight_words, Bar, ACTIVITY_ID, BAR_COUNT, BAR_ROW_GAP, PACK_ID, PACK_WIDTH, ROW_HEIGHT,
+    SIDE_PANEL_WIDTH, TITLE_HEIGHT, VITALS_ID, WORDS_FIGHTS, WORDS_GOLD, WORDS_HITS, WORDS_MANA,
+    WORDS_NO_JOB, WORDS_PACK, WORDS_STAMINA, WORDS_TIME, WORDS_WEIGHT,
 };
+use uoterm_view::ui::theme::{ALARM_DEPTH, VIGNETTE_DEPTH};
 
 const MESSAGE_WIDTH: f32 = 440.0;
 const BAR_LABEL_WIDTH: f32 = 58.0;
@@ -30,19 +33,6 @@ const CHIP_PAD: Vec2 = Vec2::new(7.0, 3.0);
 const CHIP_GAP: f32 = 6.0;
 const CHIP_RADIUS: u8 = 4;
 const CHIP_FILL_ALPHA: f32 = 0.18;
-const ACTIVITY_ID: &str = "modern:activity";
-const VITALS_ID: &str = "modern:vitals";
-const PACK_ID: &str = "modern:pack";
-const WORDS_PACK: &str = "Pack";
-
-const VIGNETTE_DEPTH: f32 = 170.0;
-const ALARM_DEPTH: f32 = 120.0;
-const VIGNETTE_ALPHA: f32 = 0.55;
-const PULSE_PER_SECOND: f32 = 1.2;
-const PULSE_LOW: f32 = 0.25;
-const FIGHT_ALPHA: f32 = 0.20;
-const CRITICAL_ALPHA: f32 = 0.50;
-const DEAD_ALPHA: f32 = 0.38;
 
 #[derive(Default)]
 pub struct Hud {
@@ -311,23 +301,23 @@ impl Hud {
             number_size: theme::SIZE_BODY,
             number_color: bridge::color(number_color),
         };
-        rows.bar("Hits", self.bars[0], frame.hits, frame.hits_max, hits);
+        rows.bar(WORDS_HITS, self.bars[0], frame.hits, frame.hits_max, hits);
         rows.bar(
-            "Mana",
+            WORDS_MANA,
             self.bars[1],
             frame.mana,
             frame.mana_max,
             BarLook::small(theme::MANA),
         );
         rows.bar(
-            "Stamina",
+            WORDS_STAMINA,
             self.bars[2],
             frame.stam,
             frame.stam_max,
             BarLook::small(theme::STAM),
         );
         if fights {
-            rows.pair("Fights", &frame.combatant, theme::ALARM);
+            rows.pair(WORDS_FIGHTS, &frame.combatant, theme::ALARM);
         }
         moving
     }
@@ -359,7 +349,7 @@ fn activity(
     let mut rows = rows(painter, panel);
     rows.title(&goal_words(frame), theme::TEXT);
     if idle {
-        rows.line("No job. No walk goal.", theme::TEXT_FAINT);
+        rows.line(WORDS_NO_JOB, theme::TEXT_FAINT);
     }
     for (label, value, color) in detail {
         rows.pair(label, &value, bridge::color(color));
@@ -390,7 +380,7 @@ fn pack(
         .text(
             Pos2::new(rows.right, rows.y),
             Align2::RIGHT_TOP,
-            "gold",
+            WORDS_GOLD,
             text_font(theme::SIZE_BODY),
             theme::TEXT_DIM,
         )
@@ -402,13 +392,8 @@ fn pack(
         number_font(theme::SIZE_BODY),
         theme::NOTO_SELF,
     );
-    rows.pair(
-        "Weight",
-        &format!("{} stones", frame.carried()),
-        weight_color,
-    );
-    let clock = format!("{:02}:{:02}", frame.time.0, frame.time.1);
-    rows.pair("Time", &clock, theme::TEXT_DIM);
+    rows.pair(WORDS_WEIGHT, &weight_words(frame), weight_color);
+    rows.pair(WORDS_TIME, &clock_words(frame), theme::TEXT_DIM);
     for (label, list) in lists {
         rows.pair(label, &list, theme::TEXT);
     }
@@ -418,22 +403,8 @@ fn pack(
 /// A dark edge that keeps the panels readable, and the alarm color over it
 /// when there is danger. The alarm pulses; a dead character holds it still.
 fn vignette(painter: &Painter, rect: Rect, danger: Danger, time: f64) {
-    let pulse = {
-        let wave = (time as f32 * PULSE_PER_SECOND * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-        PULSE_LOW + (1.0 - PULSE_LOW) * wave
-    };
-    let alarm = match danger {
-        Danger::Calm => 0.0,
-        Danger::Fight => FIGHT_ALPHA * pulse,
-        Danger::Critical => CRITICAL_ALPHA * pulse,
-        Danger::Dead => DEAD_ALPHA,
-    };
-    edge_glow(
-        painter,
-        rect,
-        VIGNETTE_DEPTH,
-        Color32::BLACK.gamma_multiply(VIGNETTE_ALPHA),
-    );
+    let alarm = alarm_share(danger, time);
+    edge_glow(painter, rect, VIGNETTE_DEPTH, theme::VIGNETTE);
     if alarm > 0.0 {
         edge_glow(
             painter,

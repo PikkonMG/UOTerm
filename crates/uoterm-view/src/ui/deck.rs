@@ -31,6 +31,14 @@ pub const HOTBAR_KEYS: [&str; HOTBAR_SLOTS] = ["1", "2", "3", "4", "5", "6", "7"
 pub const SLOT_WORD_CHARS: usize = 6;
 /// The file of the config folder that keeps the hotbars.
 pub const HOTBAR_FILE: &str = "watch-hotbar.toml";
+/// The id that keeps the place of the hotbar in the profile.
+pub const HOTBAR_ID: &str = "modern:hotbar";
+pub const WORDS_HOTBAR: &str = "Hotbar";
+pub const WORDS_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
+pub const WORDS_PICK_FOR: &str = "Put on slot";
+pub const WORDS_NO_MACROS: &str = "No macros yet: make them on the Macros page of the Options.";
+pub const HINT_SLOT: &str = "Click or press the key: use.  Right-click: clear.";
+pub const HINT_EMPTY_SLOT: &str = "Click: choose a macro or an ability for it.";
 /// The height of a row of the worn list.
 pub const SLOT_ROW: f32 = 22.0;
 /// The worn list stands in two columns, so a full suit fits.

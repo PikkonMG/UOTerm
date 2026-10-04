@@ -48,6 +48,7 @@ egui_colors!(
     NOTO_SELF,
     SELF_FIGURE,
     PLATE_BACK,
+    VIGNETTE,
 );
 
 pub const PANEL_RADIUS: u8 = shared::PANEL_RADIUS as u8;

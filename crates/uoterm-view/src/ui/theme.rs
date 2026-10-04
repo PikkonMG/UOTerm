@@ -36,6 +36,8 @@ colors! {
     pub DARK_GLASS = Rgba::from_rgba_premultiplied(2, 2, 4, 240);
     /// The shadow under a panel.
     pub PANEL_SHADOW = Rgba::from_rgba_premultiplied(0, 0, 0, 150);
+    /// The dark edge round the map that keeps the panels readable.
+    pub VIGNETTE = Rgba::from_rgba_premultiplied(0, 0, 0, 140);
 
     pub TEXT = Rgba::from_rgb(236, 240, 247);
     pub TEXT_DIM = Rgba::from_rgb(158, 170, 190);
@@ -86,6 +88,10 @@ sizes! {
     /// Its color is `PANEL_SHADOW`.
     pub PANEL_SHADOW_DROP = 6.0;
     pub PANEL_SHADOW_BLUR = 22.0;
+    /// How deep the dark edge round the map reaches, and the alarm color
+    /// over it.
+    pub VIGNETTE_DEPTH = 170.0;
+    pub ALARM_DEPTH = 120.0;
     pub PANEL_PAD = 14.0;
     pub SCREEN_MARGIN = 16.0;
     pub ROW_GAP = 6.0;
@@ -171,6 +177,18 @@ fn css_rgba(color: Rgba) -> String {
     format!("rgba({}, {}, {}, {alpha})", plain(r), plain(g), plain(b))
 }
 
+/// A color as the page writes it: the CSS token of the theme color it is,
+/// `var(--hits)`, or else its plain CSS value, as for a hue of the shard.
+pub fn css_color(color: Rgba) -> String {
+    COLORS
+        .iter()
+        .find(|(_, theme)| *theme == color)
+        .map_or_else(
+            || css_rgba(color),
+            |(name, _)| format!("var({})", css_name(name)),
+        )
+}
+
 /// Every color and size of the theme as CSS custom properties, one to a
 /// line: `--hits: rgba(222, 58, 64, 1);` and `--panel-pad: 14px;`.
 pub fn css_tokens() -> String {
@@ -205,6 +223,13 @@ mod tests {
     fn a_see_through_color_takes_its_plain_channels_and_a_share() {
         assert_eq!(css_rgba(GLASS), "rgba(10, 15, 23, 0.878)");
         assert_eq!(css_rgba(Rgba::default()), "rgba(0, 0, 0, 0)");
+    }
+
+    #[test]
+    fn a_theme_color_goes_to_the_page_as_its_token() {
+        assert_eq!(css_color(HITS), "var(--hits)");
+        assert_eq!(css_color(GLASS_EDGE), "var(--glass-edge)");
+        assert_eq!(css_color(Rgba::from_rgb(1, 2, 3)), "rgba(1, 2, 3, 1)");
     }
 
     #[test]

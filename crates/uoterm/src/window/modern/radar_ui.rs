@@ -20,16 +20,12 @@ use crate::window::bridge;
 use eframe::egui::{self, Align2, Id, Rect, Sense};
 use uoterm_view::geom::Vector;
 use uoterm_view::ui::launch::RADAR_ID;
-use uoterm_view::ui::lists::radar_panel_size;
+use uoterm_view::ui::lists::{
+    radar_panel_size, HINT_RADAR, RADAR_FIRST_ZOOM as FIRST_ZOOM, RADAR_ZOOM_MAX as ZOOM_MAX,
+    WORDS_RADAR as WORDS_TITLE, WORDS_RADAR_NO_FILES as WORDS_NO_FILES,
+};
 
-/// The radar starts close, and the wheel takes it closer or back to the
-/// whole picture round the character.
-const FIRST_ZOOM: f32 = 4.0;
-const ZOOM_MAX: f32 = 16.0;
 const HALF: f32 = 2.0;
-const WORDS_TITLE: &str = "Radar";
-const WORDS_NO_FILES: &str = "The radar needs the client files.";
-const HINT_RADAR: &str = "Wheel: zoom. Double-click: larger or smaller.";
 
 pub struct RadarUi {
     pictures: MapPictures,

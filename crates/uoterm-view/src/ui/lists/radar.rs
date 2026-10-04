@@ -4,6 +4,13 @@ use super::super::places::TITLE_ROW;
 use super::super::theme::PANEL_PAD;
 use crate::geom::Vector;
 
+/// The radar starts close, and the wheel takes it closer or back to the
+/// whole picture round the character.
+pub const RADAR_FIRST_ZOOM: f32 = 4.0;
+pub const RADAR_ZOOM_MAX: f32 = 16.0;
+pub const WORDS_RADAR: &str = "Radar";
+pub const WORDS_RADAR_NO_FILES: &str = "The radar needs the client files.";
+pub const HINT_RADAR: &str = "Wheel: zoom. Double-click: larger or smaller.";
 const SMALL_SIDE: f32 = 190.0;
 const LARGE_SIDE: f32 = 320.0;
 

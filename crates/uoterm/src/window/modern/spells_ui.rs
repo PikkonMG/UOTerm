@@ -21,28 +21,17 @@ use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::spells::School;
 use uoterm_view::ui::lists::{self, spell_book_words, spell_chosen};
+use uoterm_view::ui::sheet::{
+    assigned_words, HINT_ASSIGN, HINT_SPELL, WORDS_ASSIGN, WORDS_CAST, WORDS_EMPTY_BOOK,
+    WORDS_NO_BOOK, WORDS_PICK_SPELL as WORDS_PICK, WORDS_PIN, WORDS_REAGENTS, WORDS_TITHING_COST,
+    WORDS_TITHING_HAVE,
+};
 
 const LIST_WIDTH: f32 = 180.0;
 const ICON_SIDE: f32 = 44.0;
 const BOOK_BUTTON_WIDTH: f32 = 96.0;
 const DETAIL_BUTTON_WIDTH: f32 = 72.0;
 const LINE: f32 = 16.0;
-const WORDS_NO_BOOK: &str = "No spellbook is known yet. Open one:";
-const WORDS_EMPTY_BOOK: &str = "This book holds no spells.";
-const WORDS_PICK: &str = "Click a spell to read it.";
-const WORDS_REAGENTS: &str = "Reagents:";
-const WORDS_CAST: &str = "Cast";
-const WORDS_PIN: &str = "Pin";
-const WORDS_TITHING_COST: &str = "Tithing cost";
-const WORDS_TITHING_HAVE: &str = "Tithing points";
-const WORDS_ASSIGN: &str = "+";
-const HINT_SPELL: &str = "Double-click: cast.  Drag: onto the hotbar.";
-const HINT_ASSIGN: &str = "Ctrl+Alt+click: make a macro of it.";
-
-/// The words that tell of a macro "Fast spell assign" made.
-fn assigned_words(name: &str) -> String {
-    format!("The macro {name} is made. Give it a key on the Macros page of the Options.")
-}
 
 #[derive(Default)]
 pub struct SpellsTab {
@@ -467,7 +456,6 @@ mod tests {
         };
         assert!(tab.choose_school(&later, School::Bushido));
         assert_eq!(tab.wanted, None);
-        assert!(assigned_words("Heal").contains("Heal"));
     }
 
     #[test]

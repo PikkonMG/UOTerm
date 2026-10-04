@@ -4,7 +4,10 @@
 
 use crate::frame::WatchFrame;
 use crate::look::notoriety_hue;
-use crate::settings::{CombatOptions, InfoBarData, TitleStats};
+use crate::settings::{CombatOptions, InfoBarData, InterfaceOptions, TitleStats};
+
+/// The title of the play window, in both clients.
+pub const WINDOW_TITLE: &str = "UOTerm watch";
 
 /// The hue of a value that is fine.
 pub const HUE_FINE: u16 = 0x0481;
@@ -132,6 +135,16 @@ pub fn title_words(base: &str, frame: &WatchFrame, mode: TitleStats) -> String {
     )
 }
 
+/// The title of the window now: with the vitals of the character when the
+/// Interface page asks for them, else the plain title.
+pub fn window_title(frame: &WatchFrame, interface: &InterfaceOptions) -> String {
+    if interface.title_bar_stats && !frame.name.is_empty() {
+        title_words(WINDOW_TITLE, frame, interface.title_bar_mode)
+    } else {
+        WINDOW_TITLE.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +201,18 @@ mod tests {
         assert_eq!(
             title_words("UOTerm", &frame, TitleStats::Percent),
             "UOTerm - Mara [H 20% M 60% S 100%]"
+        );
+    }
+
+    #[test]
+    fn the_window_title_carries_the_vitals_when_the_page_asks() {
+        let mut interface = InterfaceOptions::default();
+        assert_eq!(window_title(&frame(), &interface), WINDOW_TITLE);
+        interface.title_bar_stats = true;
+        assert!(window_title(&frame(), &interface).contains("Mara [H 20/100"));
+        assert_eq!(
+            window_title(&WatchFrame::default(), &interface),
+            WINDOW_TITLE
         );
     }
 }

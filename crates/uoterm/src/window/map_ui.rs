@@ -16,7 +16,7 @@ use super::boxes_ui::{Tools, CELL_RADIUS};
 use super::bridge;
 use super::control::Act;
 use super::map_view::{
-    self, Lay, MapFilesCache, MapPictures, MarkLook, MarkStyle, Marks, ZOOM_MIN,
+    self, Lay, MapFilesCache, MapPictures, MarkStyle, Marks, MODERN_LOOK, ZOOM_MIN,
 };
 use super::model::world_map::{self, Marker, NEW_MARKER_COLOR};
 use super::modern::frame::{self as panel_frame, FrameEvent, PanelSpec, TITLE_ROW};
@@ -116,20 +116,8 @@ fn modern_bar(painter: &Painter, track: Rect, share: f32) {
 
 /// The marks of a map in the colors of the Modern style.
 pub fn mark_look() -> MarkStyle {
-    use uoterm_view::ui::theme as shared;
     MarkStyle {
-        look: MarkLook {
-            marker: shared::WAITING,
-            waypoint: shared::WAITING,
-            multi: shared::FLAT_DOOR,
-            party: shared::GOAL,
-            guild: shared::MANA,
-            goal: shared::GOAL,
-            looking: shared::WAITING,
-            me: shared::SELF_FIGURE,
-            grid: shared::GLASS_EDGE,
-            mobile: shared::notoriety_color,
-        },
+        look: MODERN_LOOK,
         font: text_font(theme::SIZE_SMALL),
         shadowed: false,
         square_dots: false,

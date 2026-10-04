@@ -6,9 +6,12 @@
 
 use crate::frame::WatchFrame;
 use crate::geom::{Area, Point, Rgba, Vector};
+use crate::model::reads::{ReadCache, ReadKey};
 use crate::model::world_map::{self, Marker, MarkerFile, ZoneFile};
 use crate::settings::{Profile, WorldMapOptions};
-use serde_json::Value;
+use crate::ui::theme;
+use serde_json::{json, Value};
+use uoterm_world::tool_names::TOOL_FIND_LANDMARKS;
 
 /// How many tiles one side of the picture near a place covers.
 pub const SPAN: usize = 256;
@@ -19,6 +22,11 @@ pub const NEAR_MAP_PREFIX: &str = "/v1/map/near";
 pub const UNKNOWN_LAND: Rgba = Rgba::from_rgb(10, 12, 18);
 /// The least zoom of a Modern map: the whole picture fits the field.
 pub const ZOOM_MIN: f32 = 1.0;
+/// The picture near a place is made again when its middle is this many
+/// tiles away.
+pub const REDRAW_TILES: u16 = 48;
+/// The named places of the session are read again this seldom, in seconds.
+pub const LANDMARKS_MAX_AGE: f64 = 60.0;
 /// How much one notch of the wheel changes the zoom of a Modern map.
 const ZOOM_PER_NOTCH: f32 = 1.15;
 const LANDMARK_KEY_NAME: &str = "name";
@@ -63,6 +71,27 @@ pub fn near_pixels(
         }
     }
     any.then_some(pixels)
+}
+
+/// True when a picture of the land round `drawn` of `drawn_map` still
+/// serves for `middle` of `map`.
+pub fn near_still_serves(drawn_map: u8, drawn: (u16, u16), map: u8, middle: (u16, u16)) -> bool {
+    drawn_map == map
+        && drawn.0.abs_diff(middle.0) < REDRAW_TILES
+        && drawn.1.abs_diff(middle.1) < REDRAW_TILES
+}
+
+/// The named places of the session on a map, while the World Map page
+/// shows markers. The session is read again now and then.
+pub fn session_markers(reads: &mut ReadCache, profile: &Profile, map: u8) -> Vec<Marker> {
+    if !profile.world_map.show_markers {
+        return Vec::new();
+    }
+    let key = ReadKey::new(TOOL_FIND_LANDMARKS, &json!({ "map": map }));
+    reads
+        .want(key, LANDMARKS_MAX_AGE)
+        .map(|answer| landmarks(answer, map))
+        .unwrap_or_default()
 }
 
 /// The path of the picture of the land near tile `x`, `y` of `map`.
@@ -229,6 +258,20 @@ pub struct MarkLook {
     pub grid: Rgba,
     pub mobile: fn(u8) -> Rgba,
 }
+
+/// The colors of the marks of the Modern style.
+pub const MODERN_LOOK: MarkLook = MarkLook {
+    marker: theme::WAITING,
+    waypoint: theme::WAITING,
+    multi: theme::FLAT_DOOR,
+    party: theme::GOAL,
+    guild: theme::MANA,
+    goal: theme::GOAL,
+    looking: theme::WAITING,
+    me: theme::SELF_FIGURE,
+    grid: theme::GLASS_EDGE,
+    mobile: theme::notoriety_color,
+};
 
 /// What the marks of one frame come from.
 pub struct Marks<'a> {

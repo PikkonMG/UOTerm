@@ -8,6 +8,30 @@ use crate::act::{Act, DropTo};
 use crate::frame::WatchPackItem;
 use crate::geom::{Area, Point, Vector};
 use crate::model::clicks::asks_amount;
+use crate::ui::layout::{first_place, Spot};
+use crate::ui::places::TITLE_ROW;
+use crate::ui::theme::PANEL_PAD;
+
+/// The id that keeps the place of the box that asks how many.
+pub const SPLIT_ID: &str = "modern:split";
+pub const SPLIT_WIDTH: f32 = 260.0;
+pub const SPLIT_ROW: f32 = 28.0;
+pub const WORDS_SPLIT: &str = "How many?";
+pub const WORDS_MOVE: &str = "Move";
+
+/// The title of the box that asks how many of a pile to move.
+pub fn split_title(name: &str) -> String {
+    format!("{WORDS_SPLIT}  {name}")
+}
+
+/// Where the box that asks how many first stands in `window`.
+pub fn split_first_place(window: Area) -> Area {
+    first_place(
+        window,
+        Spot::Middle(0),
+        Vector::new(SPLIT_WIDTH, TITLE_ROW + SPLIT_ROW * 2.0 + PANEL_PAD * 2.0),
+    )
+}
 
 /// What a dropped item lands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

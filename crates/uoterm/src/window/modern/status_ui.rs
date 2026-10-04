@@ -13,8 +13,7 @@ use eframe::egui::{self, Align2, Id, Pos2, Rect, Sense, Vec2};
 use uoterm_view::ui::lists::{
     column_room, status_lines, StatusLine, STATUS_COLUMNS as COLUMNS, STATUS_LINE as LINE,
 };
-
-const HINT_LOCK: &str = "Click: up, down or locked.";
+use uoterm_view::ui::sheet::HINT_STAT_LOCK as HINT_LOCK;
 
 /// A fact: its words at the left of the row, its value at the right.
 fn fact(painter: &egui::Painter, row: Rect, words: &str, value: &str) {

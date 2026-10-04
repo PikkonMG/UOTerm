@@ -15,6 +15,8 @@ use super::text::TextLook;
 use crate::window::actions::guard::QUESTION_CRIMINAL;
 use eframe::egui::{self, Key, Pos2, Rect, Vec2};
 
+pub use uoterm_view::ui::question::QUIT_WORDS;
+
 /// What the answer does: true for Okay, false for Cancel or a right click.
 /// It gets the window too, so an answer can close it.
 pub type OnAnswer = Box<dyn FnMut(bool, &mut GumpContext<'_>, &egui::Context)>;
@@ -70,9 +72,6 @@ pub const QUESTION: GumpKind = GumpKind {
         ))
     },
 };
-
-/// The reference client's words for the question before the game quits.
-pub const QUIT_WORDS: &str = "Quit\nUltima Online?";
 
 // The question.
 const QUESTION_BACK: u16 = 0x0816;

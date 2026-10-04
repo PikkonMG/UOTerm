@@ -2,9 +2,21 @@
 //! closes, whether each shows, and the close of every panel of its own.
 //! The ids keep each panel open and its place in the profile.
 
+use super::places::TITLE_ROW;
+use super::theme::PANEL_PAD;
+use crate::geom::Vector;
 use crate::model::agents::AgentPanel;
 use crate::model::places;
 use crate::settings::Profile;
+
+/// The id that keeps the place of the launcher in the profile.
+pub const LAUNCHER_ID: &str = "modern:launcher";
+pub const LAUNCHER_WIDTH: f32 = 220.0;
+/// The buttons stand in this many columns, each row this high, this far
+/// apart.
+pub const LAUNCHER_COLUMNS: usize = 2;
+pub const LAUNCHER_ROW: f32 = 28.0;
+pub const LAUNCHER_GAP: f32 = 6.0;
 
 pub const RADAR_ID: &str = "modern:radar";
 pub const JOURNAL_ID: &str = "modern:journal";
@@ -106,6 +118,15 @@ impl Launch {
             Self::Debug => places::set_open(profile, DEBUG_ID, shows),
         }
     }
+}
+
+/// The size of the launcher with every button.
+pub fn launcher_size() -> Vector {
+    let rows = LAUNCHES.len().div_ceil(LAUNCHER_COLUMNS) as f32;
+    Vector::new(
+        LAUNCHER_WIDTH,
+        TITLE_ROW + rows * LAUNCHER_ROW + PANEL_PAD * 2.0,
+    )
 }
 
 /// Closes every panel of its own the profile keeps open: the loot,

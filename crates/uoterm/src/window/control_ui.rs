@@ -42,7 +42,11 @@ use uoterm_view::clicks::{
     act_for_click, bar_buttons, bar_status, beside_bar, escape_on_map, grabbed, hint_for,
     report_shows, ChatMode, EscapeOnMap, GroundClicks, Press, WordsEdge,
 };
-use uoterm_view::ui::control_bar::{BAR_WIDTH, RULE_GAP, SEGMENT_HEIGHT, STRIP_PAD, STRIP_ROW};
+use uoterm_view::ui::control_bar::{
+    BAR_WIDTH, RULE_GAP, SEGMENT_HEIGHT, STRIP_PAD, STRIP_ROW, WORDS_PIN, WORDS_TAKE_TO_TALK,
+};
+use uoterm_view::ui::deck::WORDS_BAR_FULL as REPORT_BAR_FULL;
+use uoterm_view::ui::question::{WORDS_NO, WORDS_YES};
 
 /// The button that opens the panel launcher of the Modern style, at the
 /// left of the place row.
@@ -58,11 +62,7 @@ const FIELD_RADIUS: u8 = 6;
 const REPORT_GAP: f32 = 8.0;
 const MODE_WIDTH: f32 = 58.0;
 
-const WORDS_PIN: &str = "Pin";
 const PIN_WIDTH: f32 = 48.0;
-const REPORT_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
-const WORDS_YES: &str = "Yes";
-const WORDS_NO: &str = "No";
 const QUESTION_SIZE: Vec2 = Vec2::new(300.0, 110.0);
 /// The id of the chat line. The keys know it by this id.
 const CHAT_BOX: &str = "chat-box";
@@ -599,7 +599,7 @@ impl ControlUi {
             ui.painter().text(
                 row.left_center(),
                 Align2::LEFT_CENTER,
-                "Take control to talk.",
+                WORDS_TAKE_TO_TALK,
                 text_font(theme::SIZE_BODY),
                 theme::TEXT_FAINT,
             );

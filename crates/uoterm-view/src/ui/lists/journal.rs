@@ -11,6 +11,21 @@ pub const JOURNAL_WIDTH: f32 = 400.0;
 pub const JOURNAL_HEIGHT: f32 = 330.0;
 pub const JOURNAL_LEAST: Vector = Vector::new(260.0, 200.0);
 
+pub const WORDS_JOURNAL: &str = "Journal";
+pub const WORDS_SAVE: &str = "Save";
+pub const WORDS_NO_LINES: &str = "No lines yet.";
+pub const WORDS_SAVED: &str = "Saved to";
+pub const WORDS_BACK: &str = "lines back";
+pub const WORDS_NEW_TAB: &str = "+";
+pub const WORDS_RENAME: &str = "Rename";
+pub const WORDS_DELETE_TAB: &str = "Delete tab";
+pub const HINT_SEARCH: &str = "search the journal";
+pub const HINT_NEW_TAB: &str = "Add a tab.";
+pub const HINT_TAB: &str = "Right-click: rename, kinds of lines, delete.";
+pub const HINT_TAB_NAME: &str = "tab name";
+/// How long the words about a save stay over the search, in seconds.
+pub const JOURNAL_NOTE_SECONDS: f64 = 6.0;
+
 /// The option of the Journal page one filter flips.
 pub type FilterOption = fn(&mut JournalOptions) -> &mut bool;
 
@@ -39,6 +54,16 @@ pub fn journal_waiting_words(persons: usize) -> String {
     } else {
         format!("{persons} persons wait for an answer")
     }
+}
+
+/// The words after a save of the journal to `place`.
+pub fn saved_words(place: &str) -> String {
+    format!("{WORDS_SAVED} {place}")
+}
+
+/// The words over the lines while the player reads back.
+pub fn back_words(back: usize) -> String {
+    format!("{back} {WORDS_BACK}")
 }
 
 /// The whole turns of the wheel: up reads back.
