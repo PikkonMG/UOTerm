@@ -308,6 +308,11 @@ impl SessionHandle {
         }
     }
 
+    /// True when the session has ended and takes no more calls.
+    pub fn closed(&self) -> bool {
+        self.inner.tx.is_closed()
+    }
+
     pub async fn shutdown(&self) {
         let _ = self.inner.tx.send(SessionCmd::Shutdown).await;
     }
@@ -11454,7 +11459,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
     match call.name.as_str() {
         TOOL_OBSERVE => {
             let size = args
-                .get("size")
+                .get(ARG_SIZE)
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u16)
                 .unwrap_or(RADAR_DEFAULT);
@@ -12254,7 +12259,7 @@ fn handle_tool(inner: &mut Inner, call: ToolCall) -> ToolResult {
         TOOL_JOB_STOP => job_stop(inner),
         TOOL_WATCH => {
             let size = args
-                .get("size")
+                .get(ARG_SIZE)
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u16)
                 .unwrap_or(RADAR_DEFAULT);

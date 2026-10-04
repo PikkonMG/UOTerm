@@ -7,7 +7,7 @@ use uoterm_runtime::config::{
     data_dir, load_app_config, BEARER_PREFIX, ENV_API_TOKEN, JOURNAL_HARVEST_NAME,
 };
 use uoterm_runtime::error::{Result, RuntimeError};
-use uoterm_runtime::tools::TOOL_OBSERVE;
+use uoterm_runtime::tools::{ARG_SIZE, TOOL_OBSERVE};
 
 const HTTP_TIMEOUT_SECS: u64 = 15;
 const ENV_API: &str = "UOTERM_API";
@@ -135,7 +135,7 @@ pub async fn session_state(base: &str, id: &str) -> Result<Value> {
 }
 
 pub async fn session_observe(base: &str, id: &str, size: u16) -> Result<Value> {
-    let v = call_tool(base, id, TOOL_OBSERVE, json!({ "size": size })).await?;
+    let v = call_tool(base, id, TOOL_OBSERVE, json!({ ARG_SIZE: size })).await?;
     Ok(v.get("result").cloned().unwrap_or(v))
 }
 

@@ -1,93 +1,53 @@
-use crate::config::{client_version, era_from_str, ConnectOptions, BEARER_PREFIX, ENV_API_TOKEN};
+//! The HTTP API of the runtime: sessions, their tools, and the live link
+//! a web page keeps to one session.
+
+mod auth;
+mod live;
+
+pub use auth::{api_token_from_env, bind_is_loopback, guard_layer, Guard};
+pub use live::LIVE_POLL_MS;
+
+use crate::config::{client_version, era_from_str, ConnectOptions, ENV_API_TOKEN};
 use crate::manager::Runtime;
 use crate::tools::{ToolCall, ToolResult, TOOL_OBSERVE};
-use axum::extract::{Path, Request, State};
-use axum::http::{
-    header::{AUTHORIZATION, HOST},
-    StatusCode,
-};
-use axum::middleware::{self, Next};
-use axum::response::IntoResponse;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::net::SocketAddr;
 use std::sync::Arc;
 use uoterm_protocol::types::Era;
 
 const HEALTH_PATH: &str = "/health";
-const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "::1", "[::1]"];
 
+/// What every route of the API reads: the sessions and who may call.
 #[derive(Clone)]
 pub struct ApiState {
     pub runtime: Runtime,
-    pub token: Option<String>,
-    /// The API listens on this machine only, so it answers only a caller
-    /// that names this machine. A web page that points a name it owns at
-    /// this machine names itself, and is refused.
-    pub local_only: bool,
+    pub guard: Guard,
 }
 
-pub fn api_token_from_env() -> Option<String> {
-    std::env::var(ENV_API_TOKEN)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-pub fn bind_is_loopback(bind: &str) -> bool {
-    if let Ok(addr) = bind.parse::<SocketAddr>() {
-        return addr.ip().is_loopback();
-    }
-    host_is_loopback(bind)
-}
-
-/// True when a host, with or without its port, names this machine.
-fn host_is_loopback(host_and_port: &str) -> bool {
-    if let Ok(addr) = host_and_port.parse::<SocketAddr>() {
-        return addr.ip().is_loopback();
-    }
-    if let Ok(ip) = host_and_port
-        .trim_matches(|c| c == '[' || c == ']')
-        .parse::<std::net::IpAddr>()
-    {
-        return ip.is_loopback();
-    }
-    let host = match host_and_port.rsplit_once(':') {
-        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
-        _ => host_and_port,
-    };
-    LOOPBACK_HOSTS.contains(&host.trim_matches(|c| c == '[' || c == ']'))
-}
-
-/// Compares a token presented with the one expected in a time that does not
-/// depend on where they first differ, so the answer times give nothing away.
-fn same_secret(presented: &str, expected: &str) -> bool {
-    let (a, b) = (presented.as_bytes(), expected.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-fn router_with_token(runtime: Runtime, token: Option<String>, local_only: bool) -> Router {
+/// Every route of the API on `runtime`, behind the guard. `uoterm web`
+/// merges its own routes with these and puts the same guard on them with
+/// [`guard_layer`].
+pub fn router_for(runtime: Runtime, token: Option<String>, local_only: bool) -> Router {
+    let guard = Guard { token, local_only };
     let state = Arc::new(ApiState {
         runtime,
-        token,
-        local_only,
+        guard: guard.clone(),
     });
-    Router::new()
+    let routes = Router::new()
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{id}/state", get(session_state))
         .route("/v1/sessions/{id}/tools/{name}", post(call_tool))
         .route("/v1/tools/{name}", post(call_runtime_tool))
+        .route("/v1/sessions/{id}/live", get(live::live))
+        .route(auth::TOKEN_PATH, post(auth::give_token))
         .route(HEALTH_PATH, get(|| async { "ok" }))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            require_bearer,
-        ))
-        .with_state(state)
+        .with_state(state);
+    guard_layer(routes, guard)
 }
 
 pub async fn serve(bind: &str, runtime: Runtime) -> crate::error::Result<()> {
@@ -102,46 +62,14 @@ pub async fn serve(bind: &str, runtime: Runtime) -> crate::error::Result<()> {
         .map_err(|e| crate::error::RuntimeError::Network(e.to_string()))?;
     tracing::info!(bind, "HTTP API listening");
     let local_only = bind_is_loopback(bind);
-    axum::serve(listener, router_with_token(runtime, token, local_only))
+    axum::serve(listener, router_for(runtime, token, local_only))
         .await
         .map_err(|e| crate::error::RuntimeError::Network(e.to_string()))
 }
 
-async fn require_bearer(
-    State(st): State<Arc<ApiState>>,
-    req: Request,
-    next: Next,
-) -> axum::response::Response {
-    if st.local_only {
-        let named = req.headers().get(HOST).and_then(|v| v.to_str().ok());
-        if named.is_some_and(|host| !host_is_loopback(host)) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "this API answers callers on this machine only" })),
-            )
-                .into_response();
-        }
-    }
-    if req.uri().path() == HEALTH_PATH {
-        return next.run(req).await;
-    }
-    let Some(expected) = st.token.as_deref() else {
-        return next.run(req).await;
-    };
-    let presented = req
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix(BEARER_PREFIX));
-    if presented.is_some_and(|token| same_secret(token, expected)) {
-        next.run(req).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response()
-    }
+/// The answer to a call on a session the runtime does not have.
+fn session_not_found() -> Response {
+    (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
 }
 
 async fn list_sessions(State(st): State<Arc<ApiState>>) -> Json<Value> {
@@ -229,7 +157,7 @@ async fn session_state(
                 (StatusCode::OK, Json(h.snapshot())).into_response()
             }
         }
-        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        None => session_not_found(),
     }
 }
 
@@ -280,8 +208,10 @@ mod tests {
     async fn a_runtime_tool_is_answered_without_a_session() {
         let st = Arc::new(ApiState {
             runtime: Runtime::new(1),
-            token: None,
-            local_only: true,
+            guard: Guard {
+                token: None,
+                local_only: true,
+            },
         });
         let unknown =
             call_runtime_tool(State(st.clone()), Path("observe".into()), Json(json!({}))).await;
@@ -293,40 +223,5 @@ mod tests {
         )
         .await;
         assert_eq!(refused.status(), StatusCode::CONFLICT);
-    }
-
-    #[test]
-    fn loopback_binds_are_detected() {
-        assert!(bind_is_loopback("127.0.0.1:7733"));
-        assert!(bind_is_loopback("localhost:7733"));
-        assert!(!bind_is_loopback("0.0.0.0:7733"));
-        assert!(!bind_is_loopback("10.0.0.1:7733"));
-    }
-
-    /// The Host a caller names decides a local API's answer: this machine by
-    /// any of its names passes, and a name a web page owns does not, even
-    /// when that name points here.
-    #[test]
-    fn only_a_caller_that_names_this_machine_is_local() {
-        for host in [
-            "127.0.0.1:7733",
-            "localhost:7733",
-            "localhost",
-            "[::1]:7733",
-            "::1",
-        ] {
-            assert!(host_is_loopback(host), "{host}");
-        }
-        for host in ["evil.example:7733", "localhost.evil.example", "10.0.0.1"] {
-            assert!(!host_is_loopback(host), "{host}");
-        }
-    }
-
-    #[test]
-    fn a_token_matches_only_itself() {
-        assert!(same_secret("s3cret", "s3cret"));
-        assert!(!same_secret("s3cres", "s3cret"));
-        assert!(!same_secret("s3cret-and-more", "s3cret"));
-        assert!(!same_secret("", "s3cret"));
     }
 }

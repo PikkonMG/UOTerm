@@ -210,14 +210,13 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock::{MockServer, MOCK_CHAR, MOCK_X, MOCK_Y};
+    use crate::mock::test_login::{mock_opts, wait_for_login};
+    use crate::mock::{MockServer, MOCK_X, MOCK_Y};
     use crate::tools::TOOL_CAN_WALK;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Barrier;
-    use std::time::Duration;
     use uoterm_nav::client_data_dir_from_env;
     use uoterm_nav::MapError;
-    use uoterm_protocol::types::{ClientVersion, Era};
 
     /// Stands in for a facet. These tests must pass on a machine that holds
     /// no client files, so they cache this instead of a `MulMap`.
@@ -241,8 +240,6 @@ mod tests {
     /// How many sessions ask for the one facet.
     const SESSIONS_PER_FACET: usize = 8;
     const MAX_TEST_SESSIONS: usize = 4;
-    const LOGIN_POLLS: usize = 25;
-    const LOGIN_POLL_MS: u64 = 100;
 
     /// A loader that counts how often the cache really opens a facet.
     fn counted(
@@ -252,29 +249,6 @@ mod tests {
             loads.fetch_add(ONE_LOAD, Ordering::Relaxed);
             Ok(TestFacet)
         }
-    }
-
-    fn mock_opts(server: &MockServer) -> ConnectOptions {
-        ConnectOptions {
-            host: server.addr.ip().to_string(),
-            port: server.addr.port(),
-            account: "test".into(),
-            password: "test".into(),
-            character: MOCK_CHAR.into(),
-            version: ClientVersion::T2A,
-            era: Era::T2a,
-            ..ConnectOptions::default()
-        }
-    }
-
-    async fn wait_for_login(handle: &SessionHandle) {
-        for _ in 0..LOGIN_POLLS {
-            if handle.logged_in() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(LOGIN_POLL_MS)).await;
-        }
-        panic!("mock login must reach the world");
     }
 
     #[test]

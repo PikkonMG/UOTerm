@@ -28,9 +28,15 @@ parking_lot.workspace = true
 indexmap.workspace = true
 hex.workspace = true
 axum.workspace = true
+futures-util.workspace = true
 base64 = "0.22"
 
 [dev-dependencies]
 # A test may stop the clock and let it jump: a person on a login screen
 # takes minutes the test does not wait for.
 tokio = { workspace = true, features = ["test-util"] }
+# The live link tests talk to the API as a web page does. The same
+# version axum uses, so one copy is built.
+tokio-tungstenite = "0.29"
+# Sends one request through a router with no server, to test the guard.
+tower = { version = "0.5", features = ["util"] }

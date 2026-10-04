@@ -66,7 +66,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use uoterm_protocol::ClientVersion;
-use uoterm_runtime::tools::TOOL_WATCH;
+use uoterm_runtime::tools::{ARG_SIZE, TOOL_WATCH};
 use uoterm_view::look;
 
 /// A snapshot waits this long after the first picture, so the bars and the
@@ -912,7 +912,7 @@ fn poll_loop(
     };
     loop {
         let frame = rt.block_on(async {
-            match link.call(TOOL_WATCH, json!({ "size": radar_size })).await {
+            match link.call(TOOL_WATCH, json!({ ARG_SIZE: radar_size })).await {
                 Ok(value) => WatchFrame::from_observe(&value, clock.seconds()),
                 Err(words) => WatchFrame::error_frame(words),
             }

@@ -9,9 +9,7 @@ pub const WATCH_RADAR_SIZE: u16 = 31;
 /// The window asks for the largest radar, so the map without client files
 /// covers as much of the window as it can.
 pub const WINDOW_RADAR_SIZE: u16 = 41;
-/// With client files the window draws the map itself, so it asks for the
-/// smallest radar. The session then has less work for each picture.
-pub const WINDOW_RADAR_SIZE_WITH_ART: u16 = 5;
+pub use uoterm_world::WINDOW_RADAR_SIZE_WITH_ART;
 pub const WINDOW_TITLE: &str = "UOTerm watch";
 pub const JOURNAL_LINES: usize = 12;
 

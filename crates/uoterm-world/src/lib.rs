@@ -41,7 +41,7 @@ pub use observe::{
 };
 pub use radar::{
     clamp_radar_size, default_tile, legend, render_radar, RadarOptions, TileKind, RADAR_DEFAULT,
-    RADAR_MAX, RADAR_MIN, RADAR_SIZE,
+    RADAR_MAX, RADAR_MIN, RADAR_SIZE, WINDOW_RADAR_SIZE_WITH_ART,
 };
 pub use sounds::{SoundCue, Sounds, SOUND_CUE_CAP};
 pub use state::Waypoint;

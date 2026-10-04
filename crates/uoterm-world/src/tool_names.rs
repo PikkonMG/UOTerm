@@ -82,6 +82,11 @@ pub const TOOL_JOB_START: &str = "job_start";
 pub const TOOL_JOB_STOP: &str = "job_stop";
 /// The watch window puts this in the arguments of each call a human makes.
 pub const ARG_HUMAN: &str = "human";
+/// The width in tiles of the radar the `observe` and `watch` tools draw.
+pub const ARG_SIZE: &str = "size";
+/// The wait between two steps of one act of the human. The shard refuses a
+/// drop that comes too soon after the lift.
+pub const ACT_STEP_GAP_MS: u64 = 650;
 pub const TOOL_WATCH: &str = "watch";
 pub const TOOL_PROPERTIES: &str = "properties";
 pub const TOOL_CLOSE_MENU: &str = "close_menu";

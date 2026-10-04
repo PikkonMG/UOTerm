@@ -235,6 +235,43 @@ impl Drop for MockServer {
     }
 }
 
+/// The login of a test on this shard, and the wait until it is in the
+/// world.
+#[cfg(test)]
+pub(crate) mod test_login {
+    use super::{MockServer, MOCK_CHAR};
+    use crate::config::ConnectOptions;
+    use crate::session::SessionHandle;
+    use std::time::Duration;
+    use uoterm_protocol::types::{ClientVersion, Era};
+
+    const LOGIN_POLLS: usize = 25;
+    const LOGIN_POLL_MS: u64 = 100;
+
+    pub(crate) fn mock_opts(server: &MockServer) -> ConnectOptions {
+        ConnectOptions {
+            host: server.addr.ip().to_string(),
+            port: server.addr.port(),
+            account: "test".into(),
+            password: "test".into(),
+            character: MOCK_CHAR.into(),
+            version: ClientVersion::T2A,
+            era: Era::T2a,
+            ..ConnectOptions::default()
+        }
+    }
+
+    pub(crate) async fn wait_for_login(handle: &SessionHandle) {
+        for _ in 0..LOGIN_POLLS {
+            if handle.logged_in() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(LOGIN_POLL_MS)).await;
+        }
+        panic!("mock login must reach the world");
+    }
+}
+
 pub async fn serve(addr: SocketAddr) -> std::io::Result<SocketAddr> {
     let mut server = spawn_listener(addr, false, None, MOCK_ERA).await?;
     let addr = server.addr;

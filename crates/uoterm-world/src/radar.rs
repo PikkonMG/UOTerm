@@ -6,6 +6,9 @@ pub const RADAR_SIZE: u16 = 21;
 pub const RADAR_DEFAULT: u16 = RADAR_SIZE;
 pub const RADAR_MIN: u16 = 5;
 pub const RADAR_MAX: u16 = 41;
+/// With client files a window draws the map itself, so it asks for the
+/// smallest radar. The session then has less work for each picture.
+pub const WINDOW_RADAR_SIZE_WITH_ART: u16 = RADAR_MIN;
 
 const SYM_SELF: char = '@';
 const SYM_MOBILE: char = 'm';
