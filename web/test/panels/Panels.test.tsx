@@ -8,7 +8,7 @@ const HINTS = { drag: 'Drag: move.', lock: 'Lock it.', close: 'Close.', size: 'D
 
 function data(): PanelData {
   return {
-    look: { ui_scale: 1, opacity: 1 },
+    look: { ui_scale: 1, opacity: 1, font: null },
     hints: HINTS,
     title: 'UOTerm watch',
     waiting: null,
@@ -50,6 +50,22 @@ function data(): PanelData {
     map_items: [],
     profile: null,
     quest_arrow: null,
+    buffs: null,
+    cooldowns: null,
+    cast: null,
+    counters: null,
+    info_bar: null,
+    dps: null,
+    durability: null,
+    net_stats: null,
+    debug: null,
+    abilities: null,
+    racial: null,
+    invite: null,
+    agents: [],
+    macros: null,
+    options: null,
+    color_picker: null,
     ring: null,
     report: null,
     question: null,
@@ -82,7 +98,7 @@ describe('Panels', () => {
 
   it('grows_the_panels_by_the_ui_scale_and_tells_where_they_lie', () => {
     const covered = vi.fn();
-    const scaled = { ...data(), look: { ui_scale: 2, opacity: 0.5 } };
+    const scaled = { ...data(), look: { ui_scale: 2, opacity: 0.5, font: null } };
     const { container } = render(<Panels data={scaled} send={vi.fn()} input={vi.fn()} covered={covered} />);
     const layer = container.querySelector('.panels') as HTMLElement;
     expect(layer.style.getPropertyValue('--ui-scale')).toBe('2');
@@ -135,7 +151,7 @@ describe('Panels', () => {
     rerender(<Panels data={{ ...first, bar: { ...bar, buttons: ['Bag', 'Sheet', 'War', 'Stop'] } }} send={vi.fn()} input={vi.fn()} covered={covered} />);
     const taller = bottoms();
     expect(taller[0]).toBeGreaterThan(before[0]);
-    rerender(<Panels data={{ ...first, look: { ui_scale: 2, opacity: 1 } }} send={vi.fn()} input={vi.fn()} covered={covered} />);
+    rerender(<Panels data={{ ...first, look: { ui_scale: 2, opacity: 1, font: null } }} send={vi.fn()} input={vi.fn()} covered={covered} />);
     expect(covered.mock.calls.at(-1)?.[0][0].max.x).toBe(200);
     vi.restoreAllMocks();
   });

@@ -803,7 +803,7 @@ impl CreationView {
 
     /// The creation posts nothing, so no answer fails.
     #[wasm_bindgen(js_name = postMissing)]
-    pub fn post_missing(&mut self, _key: &str) {}
+    pub fn post_missing(&mut self, _key: &str, _status: u16) {}
 }
 
 #[cfg(test)]

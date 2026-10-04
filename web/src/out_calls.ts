@@ -12,6 +12,8 @@ import { askChatFocus } from './panels/ChatLine';
 import type { LiveOut, PageCall } from './net/live';
 
 const KEPT_PATH = '/v1/kept/';
+/** Where the profile every new character starts with is kept. */
+const DEFAULT_PROFILE_PATH = '/v1/profiles/default';
 const TEXT_FILE = 'text/plain';
 const SAVE_FAILED = 'UOTerm could not keep';
 
@@ -25,7 +27,8 @@ export type OutCall =
   | { kind: 'Download'; name: string; text: string }
   | { kind: 'ChatFocus'; take: boolean }
   | { kind: 'ChatPaste' }
-  | { kind: 'Window'; command: unknown };
+  | { kind: 'SaveDefaultProfile'; profile: unknown }
+  | { kind: 'Fullscreen'; on: boolean };
 
 /** Where the calls of one session go. */
 export interface OutPlaces {
@@ -71,9 +74,17 @@ function paste(input: OutPlaces['input']): void {
 }
 
 /**
- * Makes each call. Window commands and screenshots are the page's own
- * work, done by the panels and the screenshot of the page, not here.
+ * Asks the browser for the full screen, or lets it go. The browser grants
+ * it only during a press of the player, which the call follows at once; a
+ * refusal leaves the window as it is.
  */
+function fullscreen(on: boolean): void {
+  const shown = Boolean(document.fullscreenElement);
+  if (on && !shown) document.documentElement.requestFullscreen?.().catch(() => {});
+  if (!on && shown) document.exitFullscreen?.().catch(() => {});
+}
+
+/** Makes each call. Screenshots are the page's own work, done by the screenshot of the page, not here. */
 export function sendOut(calls: OutCall[], places: OutPlaces): void {
   for (const call of calls) {
     switch (call.kind) {
@@ -106,8 +117,13 @@ export function sendOut(calls: OutCall[], places: OutPlaces): void {
       case 'ChatPaste':
         paste(places.input);
         break;
+      case 'SaveDefaultProfile':
+        keep(DEFAULT_PROFILE_PATH, call.profile);
+        break;
+      case 'Fullscreen':
+        fullscreen(call.on);
+        break;
       case 'Screenshot':
-      case 'Window':
         break;
     }
   }

@@ -33,8 +33,8 @@ export interface TipKey {
   in_grid?: boolean;
 }
 
-/** The zone of a panel a carried thing lands on. */
-export type DropZone = { into: number } | 'wear' | { slot: number };
+/** The zone of a panel a carried thing lands on; a cell of the counter bar counts it. */
+export type DropZone = { into: number } | 'wear' | { slot: number } | { counter: number };
 
 /** A small action of a panel, as its module of the view reads it. */
 export type PanelAction = Record<string, unknown>;
@@ -63,9 +63,16 @@ export interface Framed<T> {
   body: T;
 }
 
+/** A player font: its file name among the fonts of `/v1/fonts`, and how much it grows the words. */
+export interface PlayerFont {
+  name: string;
+  scale: number;
+}
+
 export interface Look {
   ui_scale: number;
   opacity: number;
+  font: PlayerFont | null;
 }
 
 /** The tips of the title and the marks of every frame. */
@@ -290,6 +297,8 @@ export type StatusRow = ({ kind: 'title'; words: string }) | ({ kind: 'stat' } &
 
 export interface CharacterData {
   views: Choice[];
+  /** The buttons of the ability panels, right to left; an open one is chosen. */
+  panels: Choice[];
   worn: WornData | null;
   status: StatusRow[] | null;
 }
@@ -779,6 +788,212 @@ export interface QuestArrowData {
   hint: string | null;
 }
 
+export interface BuffsData {
+  side: number;
+  icons: { picture: string | null; short: string; time: Colored | null; hover: TipKey }[];
+}
+
+export interface CooldownsData {
+  bars: { label: string; seconds: string; fill: number; color: string }[];
+}
+
+export interface CastData {
+  name: Colored;
+  aside: string;
+  fill: number;
+}
+
+export interface CounterCell {
+  picture: string | null;
+  amount: Colored | null;
+  flashing: boolean;
+  hover: TipKey;
+  zone: DropZone | null;
+}
+
+export interface CountersData {
+  side: number;
+  gap: number;
+  columns: number;
+  cells: CounterCell[];
+  fixed: Colored;
+  fixed_hint: string;
+}
+
+export interface InfoBarData {
+  parts: { label: Colored; words: Colored; fill: number | null; bar_color: string }[];
+}
+
+export interface DpsData {
+  buttons: string[];
+  per_second: Colored;
+  total: string;
+  rows: { name: string; words: string }[];
+  none: string | null;
+}
+
+export interface DurabilityData {
+  art: number;
+  rows: { picture: string | null; name: string; words: Colored; fill: number }[];
+  none: string | null;
+}
+
+export interface StatsData {
+  words: Colored;
+  hint: string;
+}
+
+export interface SlotCard {
+  picture: string;
+  words: string;
+  armed: Colored | null;
+  buttons: Colored[];
+  hover: TipKey;
+}
+
+export interface AbilitiesData {
+  icon: number;
+  slots: SlotCard[];
+  all_title: string;
+  rows: { picture: string; name: Colored; slot: string | null; hover: TipKey }[];
+}
+
+export interface RacialData {
+  icon: number;
+  rows: { picture: string; name: string; passive: string | null; buttons: Colored[]; hover: TipKey | null }[];
+  none: string | null;
+}
+
+export interface InviteData {
+  words: string;
+  accept: Colored | null;
+  decline: Colored | null;
+}
+
+export type AgentRowData =
+  | { kind: 'words'; words: Colored }
+  | { kind: 'labeled'; words: string; buttons: Colored[]; width: number }
+  | { kind: 'buttons'; buttons: Colored[] }
+  | { kind: 'pictures'; pictures: { picture: string | null; name: string }[] }
+  | { kind: 'field'; hint: string; button: string; width: number; words: string };
+
+export interface AgentWindowData {
+  rows: AgentRowData[];
+}
+
+export interface MacrosData {
+  place: Place;
+  title: string;
+  status: string;
+  names: Choice[];
+  name: string;
+  lines: string;
+  wish: string;
+  name_hint: string;
+  lines_hint: string;
+  wish_hint: string;
+  add_line: Colored;
+  buttons: { words: string; color: string; enabled: boolean }[];
+  note: NoteData | null;
+}
+
+/** A hue of an option: its number in hex, its color, and the tip of its swatch. */
+export interface HueData {
+  words: string;
+  color: string;
+  hint: string;
+}
+
+export interface StepData {
+  action: string;
+  action_id: string;
+  argument: string;
+  typed: boolean;
+  hint: string;
+  choices: string[];
+  shown: string;
+}
+
+export interface MacroData {
+  name: string;
+  chord: string;
+  pad: string;
+  bound: boolean;
+  open: boolean;
+  steps: StepData[];
+}
+
+export interface KeysData {
+  macros: MacroData[];
+  groups: { label: string; actions: { id: string; label: string }[] }[];
+  defaults: { title: string; lines: string[] }[];
+  name_hint: string;
+  clear: string;
+  steps: string;
+  up: string;
+  down: string;
+  add_step: string;
+  add: string;
+}
+
+export interface HighlightsData {
+  rules: { name: string; hue: HueData; need_all: boolean; corpses_only: boolean; needs: { words: string; min: number | null }[] }[];
+  presets: string[];
+  hints: [string, string];
+  need_all: string;
+  corpses_only: string;
+  at_least: string;
+  add_need: string;
+  add: string;
+}
+
+/** The control of an option row, by its kind. */
+export type Control =
+  | { kind: 'toggle'; on: boolean }
+  | { kind: 'slider'; min: number; max: number; step: number; value: number; words: string }
+  | { kind: 'choice'; labels: string[]; index: number }
+  | { kind: 'hue'; hue: HueData }
+  | { kind: 'text'; words: string }
+  | { kind: 'file'; words: string; hint: string; fonts: boolean }
+  | { kind: 'lines'; words: string; hint: string }
+  | ({ kind: 'keys' } & KeysData)
+  | { kind: 'info_items'; items: { label: string; hue: HueData; data: number }[]; data_labels: string[]; hint: string; add: string }
+  | { kind: 'journal_tabs'; tabs: { name: string; kinds: boolean[] }[]; kind_labels: string[]; hint: string; add: string }
+  | {
+      kind: 'cooldowns';
+      rules: { label: string; hue: HueData; seconds: number; trigger: string; source: number; restart: boolean }[];
+      source_labels: string[];
+      hints: [string, string];
+      restart: string;
+      add: string;
+    }
+  | ({ kind: 'highlights' } & HighlightsData)
+  | { kind: 'counter_items'; items: { label: string; graphic: string; hue: HueData }[]; hint: string; add: string };
+
+export interface OptionRow {
+  section: string | null;
+  label: string;
+  control: Control;
+}
+
+export interface OptionsData {
+  pages: Choice[];
+  rows: OptionRow[];
+  foot: Colored[];
+  default_hint: string;
+  default_at: number;
+  remove: string;
+}
+
+export interface ColorPickerData {
+  grid: HueGridData;
+  color: string;
+  words: string;
+  eyedropper: Colored;
+  okay: string;
+  cancel: string;
+}
+
 export interface PanelData {
   look: Look;
   hints: FrameHints;
@@ -819,6 +1034,22 @@ export interface PanelData {
   map_items: Framed<MapItemData>[];
   profile: Framed<ProfileData> | null;
   quest_arrow: QuestArrowData | null;
+  buffs: Framed<BuffsData> | null;
+  cooldowns: Framed<CooldownsData> | null;
+  cast: Framed<CastData> | null;
+  counters: Framed<CountersData> | null;
+  info_bar: Framed<InfoBarData> | null;
+  dps: Framed<DpsData> | null;
+  durability: Framed<DurabilityData> | null;
+  net_stats: Framed<StatsData> | null;
+  debug: Framed<StatsData> | null;
+  abilities: Framed<AbilitiesData> | null;
+  racial: Framed<RacialData> | null;
+  invite: Framed<InviteData> | null;
+  agents: Framed<AgentWindowData>[];
+  macros: MacrosData | null;
+  options: Framed<OptionsData> | null;
+  color_picker: Framed<ColorPickerData> | null;
   ring: RingData | null;
   report: ReportData | null;
   question: QuestionData | null;

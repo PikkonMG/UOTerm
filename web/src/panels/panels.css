@@ -6,8 +6,9 @@
   inset: 0;
   pointer-events: none;
   overflow: hidden;
-  font-family: 'Barlow', sans-serif;
-  font-size: var(--size-body);
+  /* The player font of the Fonts page, when the profile names one, grown by its size. */
+  font-family: var(--player-face, 'Barlow'), sans-serif;
+  font-size: calc(var(--size-body) * var(--font-scale, 1));
   color: var(--text);
 }
 
@@ -1469,4 +1470,291 @@
 .quest-arrow {
   position: absolute;
   cursor: pointer;
+}
+
+/* The bars that follow the fight and the pack. */
+
+.buffs,
+.info-bar {
+  display: flex;
+  gap: var(--row-gap);
+  align-items: flex-start;
+}
+
+.buff {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.buff-icon,
+.counter-cell {
+  background: var(--track);
+  border-radius: var(--bar-radius);
+}
+
+.cooldowns,
+.cast,
+.dps,
+.durability,
+.invite,
+.agents,
+.abilities {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  min-height: 0;
+}
+
+.cooldown,
+.wear-words,
+.info-value {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.info-part {
+  display: flex;
+  gap: var(--row-gap);
+}
+
+.counters {
+  position: relative;
+}
+
+/* The switch that fixes the cells sits in the title row, left of the marks, as in the Rust window. */
+.counters-fixed {
+  position: absolute;
+  right: 0;
+  top: 0;
+  transform: translateY(-100%);
+}
+
+.counter-cells {
+  display: grid;
+}
+
+.counter-cell {
+  position: relative;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  padding: var(--cell-art-pad);
+  border: calc(var(--edge-width) * 2) solid transparent;
+}
+
+.counter-cell.flashing {
+  border-color: var(--waiting);
+}
+
+.counter-cell .cell-amount {
+  position: absolute;
+  right: var(--cell-art-pad);
+  bottom: var(--cell-art-pad);
+}
+
+.wear-row,
+.ability-card,
+.ability-row,
+.agent-row {
+  display: flex;
+  gap: var(--row-gap);
+  align-items: center;
+}
+
+.stats {
+  margin: 0;
+  white-space: pre;
+  cursor: default;
+}
+
+/* The ability panels. */
+
+.ability-icon {
+  flex: none;
+  background: var(--track);
+  border-radius: var(--bar-radius);
+  cursor: pointer;
+}
+
+.ability-words {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  flex: 1;
+}
+
+.ability-rows {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+/* The agent windows. */
+
+.agents {
+  overflow-y: auto;
+  height: 100%;
+}
+
+.agent-words {
+  flex: 1;
+}
+
+.agent-wide {
+  flex: 1;
+}
+
+.agent-row .field {
+  flex: 1;
+}
+
+.agent-pictures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--row-gap);
+}
+
+.agent-picture {
+  background: var(--track);
+  border: none;
+  border-radius: var(--bar-radius);
+  cursor: pointer;
+}
+
+/* The macro editor, over the other panels on a solid back. */
+
+.panel.macros {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  padding: var(--panel-pad);
+  background: var(--void);
+}
+
+.macros-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.macros-body {
+  display: flex;
+  gap: calc(var(--row-gap) * 2);
+  flex: 1;
+  min-height: 0;
+}
+
+.macros-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--row-gap) / 2);
+  width: 30%;
+  overflow-y: auto;
+}
+
+.macros-edit {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--row-gap) * 2);
+  flex: 1;
+}
+
+.macros-lines {
+  flex: 1;
+  resize: none;
+}
+
+/* The Options. */
+
+.options {
+  display: flex;
+  gap: calc(var(--row-gap) * 2);
+  height: 100%;
+  min-height: 0;
+}
+
+.options-pages {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--row-gap) / 2);
+  width: 25%;
+  overflow-y: auto;
+}
+
+.options-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  flex: 1;
+  min-width: 0;
+}
+
+.options-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.option-line {
+  display: flex;
+  gap: var(--row-gap);
+  align-items: center;
+}
+
+.option-line.wrap {
+  flex-wrap: wrap;
+}
+
+.option-list,
+.option-entry,
+.option-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+}
+
+.option-entry {
+  padding: var(--row-gap);
+  border: var(--edge-width) solid var(--glass-edge);
+  border-radius: var(--bar-radius);
+}
+
+.option-lines {
+  min-height: 5em;
+}
+
+.hue-box {
+  display: inline-flex;
+  gap: calc(var(--row-gap) / 2);
+  align-items: center;
+}
+
+.hue-words {
+  width: 6em;
+}
+
+.hue-box .swatch {
+  width: 2em;
+}
+
+.picked-swatch {
+  width: 4em;
+}
+
+.sheet-views {
+  display: flex;
+  justify-content: space-between;
+}
+
+.sheet-panels {
+  display: flex;
+  flex-direction: row-reverse;
+  gap: var(--row-gap);
 }

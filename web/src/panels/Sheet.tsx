@@ -483,7 +483,8 @@ function Party({ data, send, hover }: PartProps & { data: PartyData }) {
 
 /**
  * The sheet of the character: the Character tab with the worn and status
- * views, the Skills, Spells and Party tabs.
+ * views and the buttons of the ability panels, the Skills, Spells and
+ * Party tabs.
  */
 export function Sheet({ data, send, hover }: { data: SheetData; send: Send; hover?: Hover }) {
   const { character } = data;
@@ -492,7 +493,16 @@ export function Sheet({ data, send, hover }: { data: SheetData; send: Send; hove
       <Choices choices={data.tabs} pick={(at) => send({ tab: at })} />
       {character && (
         <div class="sheet-tab">
-          <Choices choices={character.views} pick={(at) => send({ view: at })} />
+          <div class="sheet-views">
+            <Choices choices={character.views} pick={(at) => send({ view: at })} />
+            <div class="sheet-panels">
+              {character.panels.map((panel, at) => (
+                <button type="button" key={at} class={`button segment${panel.chosen ? ' chosen' : ''}`} onClick={() => send({ panel: at })}>
+                  {panel.words}
+                </button>
+              ))}
+            </div>
+          </div>
           {character.worn && <Worn data={character.worn} send={send} hover={hover} />}
           {character.status && <Status rows={character.status} send={send} hover={hover} />}
         </div>

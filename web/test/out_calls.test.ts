@@ -98,4 +98,20 @@ describe('sendOut', () => {
     expect(fetchSpy).toHaveBeenCalledWith(PROFILE_PATH, expect.objectContaining({ method: 'PUT', body: '{"general":{}}' }));
     expect(fetchSpy).toHaveBeenCalledWith('/v1/kept/watch-hotbar.toml', expect.objectContaining({ method: 'PUT', body: '{"bars":[]}' }));
   });
+
+  it('keeps_the_default_profile_and_asks_for_the_full_screen_as_the_window_mode_says', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+    const asked = vi.fn(() => Promise.resolve());
+    document.documentElement.requestFullscreen = asked;
+    sendOut(
+      [
+        { kind: 'SaveDefaultProfile', profile: { general: {} } },
+        { kind: 'Fullscreen', on: true },
+      ],
+      places(),
+    );
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    expect(fetchSpy).toHaveBeenCalledWith('/v1/profiles/default', expect.objectContaining({ method: 'PUT' }));
+    expect(asked).toHaveBeenCalledTimes(1);
+  });
 });

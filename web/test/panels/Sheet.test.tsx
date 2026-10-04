@@ -15,6 +15,7 @@ const character: SheetData = {
   tabs,
   live: true,
   character: {
+    panels: [{ words: 'Racial', chosen: false }, { words: 'Abilities', chosen: true }],
     views: [
       { words: 'Worn', chosen: true },
       { words: 'Status', chosen: false },
@@ -149,5 +150,12 @@ describe('Sheet', () => {
     fireEvent.input(getByPlaceholderText('Tell the party'), { target: { value: 'heal me' } });
     fireEvent.click(getByText('Say'));
     expect(send).toHaveBeenLastCalledWith({ say: 'heal me' });
+  });
+  it('opens_and_closes_the_ability_panels_from_the_character_tab', () => {
+    const send = vi.fn();
+    const { getByText } = render(<Sheet data={character} send={send} />);
+    fireEvent.click(getByText('Abilities'));
+    expect(send).toHaveBeenLastCalledWith({ panel: 1 });
+    expect(getByText('Abilities').className).toContain('chosen');
   });
 });

@@ -1,13 +1,21 @@
 import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { InputEvent } from '../input/events';
+import { Abilities, Racial } from './Abilities';
 import { Activity } from './Activity';
+import { Agents } from './Agents';
 import { Board } from './Board';
 import { Book } from './Book';
+import { Buffs } from './Buffs';
 import { Build } from './Build';
 import { Chat } from './Chat';
 import { ChatLine } from './ChatLine';
+import { ColorPicker } from './ColorPicker';
+import { Cast, Cooldowns } from './Combat';
 import { ControlBar } from './ControlBar';
+import { Counters } from './Counters';
+import { Dps } from './Dps';
+import { Durability } from './Durability';
 import { Dye } from './Dye';
 import { Entry } from './Entry';
 import { dropTarget, isCarrying, PANEL_ATTRIBUTE } from './drag';
@@ -15,16 +23,20 @@ import { Frame } from './Frame';
 import { Grid } from './Grid';
 import type { Hover } from './hover';
 import { Hotbar } from './Hotbar';
+import { InfoBar } from './InfoBar';
 import { Journal } from './Journal';
 import { Launcher } from './Launcher';
 import { Loot } from './Loot';
+import { Macros } from './Macros';
 import { MapItem } from './MapItem';
 import { MarkerBox } from './MarkerBox';
 import { Markers } from './Markers';
 import { Near } from './Near';
 import { OldMenu } from './OldMenu';
+import { Options } from './Options';
 import { Pack } from './Pack';
 import { Paperdoll } from './Paperdoll';
+import { PartyInvite } from './PartyInvite';
 import { Picture } from './Picture';
 import { Profile } from './Profile';
 import { QuestArrow } from './QuestArrow';
@@ -37,12 +49,13 @@ import { ShardGump } from './ShardGump';
 import { Sheet } from './Sheet';
 import { Shop } from './Shop';
 import { Split } from './Split';
+import { Stats } from './Stats';
 import { TargetBar } from './TargetBar';
 import { Tip } from './Tip';
 import { TitleBar } from './TitleBar';
 import { Tooltip } from './Tooltip';
 import { Trade } from './Trade';
-import type { CarriedData, Framed, PanelAction, PanelData, Place, Point, TooltipData } from './types';
+import type { CarriedData, Framed, PanelAction, PanelData, Place, PlayerFont, Point, TooltipData } from './types';
 import { Vitals } from './Vitals';
 import { WorldMap } from './WorldMap';
 import './panels.css';
@@ -72,6 +85,40 @@ const QuietJournal = memo(Journal, sameData);
 const QuietGrid = memo(Grid, sameData);
 const QuietWorldMap = memo(WorldMap, sameData);
 const QuietGump = memo(ShardGump, (before, after) => before.scale === after.scale && sameData(before, after));
+const QuietOptions = memo(Options, sameData);
+
+/** The family the page gives the player font of the Fonts page. */
+const PLAYER_FACE = 'UOTerm player';
+const FONTS_PATH = '/v1/fonts/';
+
+/**
+ * The player font of the profile, loaded from the server's fonts, and the
+ * style of the panels it gives: the font and how much it grows the words.
+ * Without one, or before it comes, the panels keep their own face.
+ */
+function usePlayerFont(font: PlayerFont | null): Record<string, string | number> {
+  const [loaded, setLoaded] = useState<string | null>(null);
+  const name = font?.name ?? null;
+  useEffect(() => {
+    if (!name) return;
+    let gone = false;
+    const face = new FontFace(PLAYER_FACE, `url(${FONTS_PATH}${encodeURIComponent(name)})`);
+    face.load().then(
+      (ready) => {
+        if (gone) return;
+        document.fonts.add(ready);
+        setLoaded(name);
+      },
+      () => {},
+    );
+    return () => {
+      gone = true;
+      document.fonts.delete(face);
+    };
+  }, [name]);
+  if (!font || loaded !== font.name) return {};
+  return { '--player-face': `'${PLAYER_FACE}'`, '--font-scale': font.scale };
+}
 
 /**
  * The tooltip and the carried thing at the mouse: the one part of the
@@ -144,8 +191,9 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
 
   const chat = <ChatLine data={data.chat} send={to('chat')} input={input} />;
   const { journal, question } = data;
+  const fontStyle = usePlayerFont(data.look.font);
   return (
-    <div class="panels-root" ref={root}>
+    <div class="panels-root" ref={root} style={fontStyle}>
       <TitleBar title={data.title} />
       <div class="vignette" />
       <div class="alarm-edge" style={{ opacity: data.alarm }} />
@@ -316,6 +364,80 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
           <QuietGump data={gump} scale={scale} send={to(gump.panel)} hover={hover} key={gump.panel} />
         ))}
         {data.quest_arrow && <QuestArrow data={data.quest_arrow} send={to('quest_arrow')} />}
+        {data.buffs && (
+          <Frame {...frameOf(data.buffs)}>
+            <Buffs data={data.buffs.body} hover={hover} />
+          </Frame>
+        )}
+        {data.cooldowns && (
+          <Frame {...frameOf(data.cooldowns)}>
+            <Cooldowns data={data.cooldowns.body} />
+          </Frame>
+        )}
+        {data.cast && (
+          <Frame {...frameOf(data.cast)}>
+            <Cast data={data.cast.body} />
+          </Frame>
+        )}
+        {data.counters && (
+          <Frame {...frameOf(data.counters)}>
+            <Counters data={data.counters.body} send={to('counters')} hover={hover} />
+          </Frame>
+        )}
+        {data.info_bar && (
+          <Frame {...frameOf(data.info_bar)}>
+            <InfoBar data={data.info_bar.body} />
+          </Frame>
+        )}
+        {data.dps && (
+          <Frame {...frameOf(data.dps)}>
+            <Dps data={data.dps.body} send={to('dps')} />
+          </Frame>
+        )}
+        {data.durability && (
+          <Frame {...frameOf(data.durability)}>
+            <Durability data={data.durability.body} />
+          </Frame>
+        )}
+        {[data.net_stats, data.debug].map(
+          (stats) =>
+            stats && (
+              <Frame {...frameOf(stats)} key={stats.frame.panel}>
+                <Stats data={stats.body} send={to(stats.frame.panel)} />
+              </Frame>
+            ),
+        )}
+        {data.abilities && (
+          <Frame {...frameOf(data.abilities)}>
+            <Abilities data={data.abilities.body} send={to('abilities')} hover={hover} />
+          </Frame>
+        )}
+        {data.racial && (
+          <Frame {...frameOf(data.racial)}>
+            <Racial data={data.racial.body} send={to('racial')} hover={hover} />
+          </Frame>
+        )}
+        {data.invite && (
+          <Frame {...frameOf(data.invite)}>
+            <PartyInvite data={data.invite.body} send={to('invite')} />
+          </Frame>
+        )}
+        {data.agents.map((window) => (
+          <Frame {...frameOf(window)} key={window.frame.panel}>
+            <Agents data={window.body} send={to(window.frame.panel)} />
+          </Frame>
+        ))}
+        {data.options && (
+          <Frame {...frameOf(data.options)}>
+            <QuietOptions data={data.options.body} send={to('options')} />
+          </Frame>
+        )}
+        {data.color_picker && (
+          <Frame {...frameOf(data.color_picker)}>
+            <ColorPicker data={data.color_picker.body} send={to('color_picker')} />
+          </Frame>
+        )}
+        {data.macros && <Macros data={data.macros} send={to('macros')} />}
         {data.launcher && (
           <Frame {...frameOf(data.launcher)}>
             <Launcher data={data.launcher.body} send={to('launcher')} />

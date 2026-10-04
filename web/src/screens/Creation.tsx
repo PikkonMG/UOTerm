@@ -71,7 +71,7 @@ function redrawing(model: CreationModel, redraw: () => void): FeedView {
     dataMissing: then((path) => model.dataMissing(path)),
     postsWanted: () => model.postsWanted(),
     postArrived: then((key, json) => model.postArrived(key, json)),
-    postMissing: then((key) => model.postMissing(key)),
+    postMissing: then((key, status) => model.postMissing(key, status)),
   };
 }
 
