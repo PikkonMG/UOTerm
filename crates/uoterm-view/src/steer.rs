@@ -27,9 +27,10 @@ const WAYS: usize = 8;
 /// The ways round the screen from the right, clockwise. The map is turned
 /// by an eighth, so the right of the screen is north-east.
 const SCREEN_WAYS: [&str; WAYS] = ["ne", "e", "se", "s", "sw", "w", "nw", "n"];
-/// The keys of each way on the screen: up, right, down, left.
-const ARROW_KEYS: [&str; 4] = ["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft"];
-const LETTER_KEYS: [&str; 4] = ["W", "D", "S", "A"];
+/// The keys of each way on the screen: up, right, down, left, by the
+/// names egui gives them.
+pub const ARROW_KEYS: [&str; 4] = ["Up", "Right", "Down", "Left"];
+pub const LETTER_KEYS: [&str; 4] = ["W", "D", "S", "A"];
 
 /// Everything that walks the character this frame, besides the mouse.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -247,7 +248,7 @@ mod decide_tests {
             },
             ..Movement::default()
         };
-        let up = [KeyName("ArrowUp".into())];
+        let up = [KeyName(ARROW_KEYS[0].into())];
         let still = SteerInput::default();
         let first = steer.decide(&up, still, 0.0, &movement);
         assert!(matches!(first.as_slice(), [Act::Step { .. }]));

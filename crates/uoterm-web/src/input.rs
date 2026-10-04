@@ -274,7 +274,7 @@ mod tests {
     fn a_press_and_a_release_make_a_click_and_a_held_key_stays_down() {
         let mut inputs = Inputs::default();
         inputs.read(event(
-            json!({ "kind": "Key", "key": "ArrowUp", "pressed": true }),
+            json!({ "kind": "Key", "key": "Up", "pressed": true }),
         ));
         inputs.read(event(
             json!({ "kind": "PointerDown", "button": "Primary", "double": true }),
@@ -294,7 +294,7 @@ mod tests {
         );
         assert!(frame.primary_pressed);
         assert_eq!(frame.scroll, WHEEL_POINTS_PER_NOTCH);
-        assert_eq!(inputs.keys_down(), [KeyName("ArrowUp".into())]);
+        assert_eq!(inputs.keys_down(), [KeyName("Up".into())]);
         assert_eq!(inputs.take_frame(), FrameInput::default(), "one frame only");
     }
 

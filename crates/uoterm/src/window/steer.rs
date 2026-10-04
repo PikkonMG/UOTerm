@@ -43,3 +43,19 @@ pub fn run(
     }
     steer.by_mouse()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The window names a held key as egui does, so each walk key must be
+    /// the egui name of a key.
+    #[test]
+    fn every_walk_key_is_a_key_of_egui() {
+        for name in ARROW_KEYS.into_iter().chain(LETTER_KEYS) {
+            let key = bridge::egui_key(&KeyName(name.to_string()));
+            assert!(key.is_some(), "{name}");
+            assert_eq!(bridge::key_name(key.unwrap()), KeyName(name.to_string()));
+        }
+    }
+}

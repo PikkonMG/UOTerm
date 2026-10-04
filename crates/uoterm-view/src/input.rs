@@ -23,7 +23,7 @@ impl Mods {
 }
 
 /// A key by the egui name that saved profiles use, such as `F1`, `A` or
-/// `ArrowUp`.
+/// `Up`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct KeyName(pub String);
 

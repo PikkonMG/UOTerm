@@ -642,7 +642,7 @@ pub(crate) mod tests {
     fn a_held_arrow_walks_and_its_release_stops() {
         let mut view = settled();
         view.input_native(
-            &event(json!({"kind": "Key", "key": "ArrowUp", "pressed": true})),
+            &event(json!({"kind": "Key", "key": "Up", "pressed": true})),
             0.0,
         );
         view.tick_native(0.0, VIEW, None);
@@ -650,7 +650,7 @@ pub(crate) mod tests {
         assert_eq!(walked.len(), 1);
         assert_eq!(walked[0].calls[0].tool, uoterm_world::tool_names::TOOL_WALK);
         view.input_native(
-            &event(json!({"kind": "Key", "key": "ArrowUp", "pressed": false})),
+            &event(json!({"kind": "Key", "key": "Up", "pressed": false})),
             0.1,
         );
         view.tick_native(0.1, VIEW, None);
