@@ -1354,6 +1354,10 @@
   margin: 0;
 }
 
+.chat-panel > .button {
+  align-self: flex-start;
+}
+
 .chat-channel {
   display: flex;
   justify-content: space-between;
@@ -1384,7 +1388,6 @@
 
 .map-tile {
   position: absolute;
-  image-rendering: pixelated;
 }
 
 .map-mouse,
@@ -1407,6 +1410,7 @@
   justify-content: space-between;
   align-items: center;
   gap: var(--row-gap);
+  white-space: pre;
 }
 
 .map-item-paper {
