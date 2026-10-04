@@ -5,7 +5,7 @@
  * frame. The frames come at the pace of the Video page of the profile.
  */
 
-import { drawFrame, startFrames } from './frame_loop';
+import { drawFrame, followSize, startFrames } from './frame_loop';
 import type { InputEvent } from './input/events';
 import { PadReader } from './input/gamepad';
 import { attachKeys } from './input/keys';
@@ -81,22 +81,17 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   const detachKeys = attachKeys(window, send);
   const pointer = attachPointer(canvas, send, { pointsPerNotch: wheelPointsPerNotch() });
   const pad = new PadReader();
-  let size = { width: 0, height: 0, ratio: 0 };
-
   /** Follows the size of the canvas and the pixels of the screen. */
-  const fit = () => {
-    const now = { width: canvas.clientWidth, height: canvas.clientHeight, ratio: window.devicePixelRatio };
-    if (now.width === size.width && now.height === size.height && now.ratio === size.ratio) return;
-    size = now;
+  const fit = followSize(canvas, (size) => {
     renderer.resize(size.width, size.height, size.ratio);
     view.setPixelsPerPoint(size.ratio);
-  };
+  });
 
   const frames = startFrames({
     intervalMs: () => view.frameIntervalMs(document.hasFocus()),
     // One frame: the controller, the wants of the view, the rules, the drawing, then the calls of the frame.
     frame: () => {
-      fit();
+      const size = fit();
       const padNow = pad.read();
       if (padNow) send(padNow);
       feed.pump();

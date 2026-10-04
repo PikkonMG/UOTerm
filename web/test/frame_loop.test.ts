@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { drawFrame, startFrames, type DrawnFrame } from '../src/frame_loop';
+import { drawFrame, followSize, startFrames, type DrawnFrame } from '../src/frame_loop';
 
 /** The animation frames asked for, run by hand. */
 function fakeFrames() {
@@ -79,5 +79,26 @@ describe('drawFrame', () => {
     drawFrame(view, { draw: vi.fn() }, 2, { width: 30, height: 20 }, { x: 4, y: 5 });
     expect(view.tick).toHaveBeenCalledWith(2, 30, 20, 4, 5, true);
     expect(buffers.free).toHaveBeenCalled();
+  });
+});
+
+describe('followSize', () => {
+  it('sizes_the_world_again_when_the_canvas_or_the_screen_changes_and_not_else', () => {
+    const canvas = { clientWidth: 1024, clientHeight: 769 };
+    vi.stubGlobal('devicePixelRatio', 1.4);
+    const apply = vi.fn();
+    const follow = followSize(canvas, apply);
+    expect(follow()).toEqual({ width: 1024, height: 769, ratio: 1.4 });
+    follow();
+    expect(apply).toHaveBeenCalledTimes(1);
+    canvas.clientWidth = 1280;
+    expect(follow().width).toBe(1280);
+    vi.stubGlobal('devicePixelRatio', 2);
+    expect(follow().ratio).toBe(2);
+    expect(apply.mock.calls).toEqual([
+      [{ width: 1024, height: 769, ratio: 1.4 }],
+      [{ width: 1280, height: 769, ratio: 1.4 }],
+      [{ width: 1280, height: 769, ratio: 2 }],
+    ]);
   });
 });

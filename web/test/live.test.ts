@@ -189,6 +189,38 @@ describe('LiveLink', () => {
     link.close();
   });
 
+  /** Drops the link as often as it takes for the page to ask after its session. */
+  async function dropUntilAsked() {
+    for (let tries = 1; tries <= LOSSES_BEFORE_TOKEN_CHECK; tries += 1) {
+      FakeSocket.last().drop();
+      if (tries < LOSSES_BEFORE_TOKEN_CHECK) await vi.advanceTimersByTimeAsync(BACKOFF_MS[tries - 1]);
+    }
+  }
+
+  it('ends_the_link_when_its_session_is_gone', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ sessions: ['s2'] })));
+    const on = handlers();
+    const link = new LiveLink(SESSION, on);
+    await dropUntilAsked();
+    await vi.waitFor(() => expect(on.ended).toHaveBeenCalledOnce());
+    const made = FakeSocket.made.length;
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1] * 4);
+    expect(FakeSocket.made.length).toBe(made);
+    link.close();
+  });
+
+  it('keeps_trying_while_its_session_runs', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ sessions: [SESSION] })));
+    const on = handlers();
+    const link = new LiveLink(SESSION, on);
+    await dropUntilAsked();
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[LOSSES_BEFORE_TOKEN_CHECK - 1]);
+    FakeSocket.last().open();
+    expect(on.ended).not.toHaveBeenCalled();
+    expect(on.state).toHaveBeenLastCalledWith('open');
+    link.close();
+  });
+
   it('does_not_reopen_after_close', async () => {
     const link = new LiveLink(SESSION, handlers());
     FakeSocket.last().open();

@@ -79,3 +79,28 @@ export function drawFrame(
     buffers.free();
   }
 }
+
+/** The size of the view in CSS pixels (points), and the device pixels of one. */
+export interface ViewSize {
+  width: number;
+  height: number;
+  ratio: number;
+}
+
+/**
+ * Follows the size of `canvas` and the pixels of the screen: each call
+ * gives the size now, and calls `apply` first when it changed since the
+ * last call (the first call always). Called once a frame, it follows a
+ * resized window, a resized page and a screen of another density.
+ */
+export function followSize(canvas: { clientWidth: number; clientHeight: number }, apply: (size: ViewSize) => void): () => ViewSize {
+  let size: ViewSize | null = null;
+  return () => {
+    const now = { width: canvas.clientWidth, height: canvas.clientHeight, ratio: window.devicePixelRatio };
+    if (size?.width !== now.width || size.height !== now.height || size.ratio !== now.ratio) {
+      size = now;
+      apply(size);
+    }
+    return size;
+  };
+}

@@ -27,7 +27,7 @@ interface LoginParts {
 
 type Screen =
   | { kind: 'checking' }
-  | ({ kind: 'login' } & LoginParts)
+  | ({ kind: 'login'; note: string | null } & LoginParts)
   | { kind: 'game'; session: string; profile: GameProfile }
   | { kind: 'fault'; words: string };
 
@@ -45,6 +45,15 @@ const VIEW_RULES: LoginRules = {
   detail: savedDetail,
   canMake: (names, listFlags) => canMake(JSON.stringify(names), listFlags),
 };
+
+/** The login screens, with the words of why the page shows them, if any. */
+const loginScreen = (note: string | null): Screen => ({
+  kind: 'login',
+  note,
+  words: loginWords(),
+  creationWords: creationWords(),
+  rules: VIEW_RULES,
+});
 
 /** The game of `session`, with the profile of its character (the default profile with none). */
 async function gameOf(session: string, place: CharacterPlace | null): Promise<Screen> {
@@ -66,7 +75,7 @@ async function firstScreen(): Promise<Screen | null> {
     const { sessions } = await api<Sessions>(SESSIONS_PATH);
     await loadView();
     const place = readPlace(new URLSearchParams(location.search));
-    if (place === null) return { kind: 'login', words: loginWords(), creationWords: creationWords(), rules: VIEW_RULES };
+    if (place === null) return loginScreen(null);
     if (!sessions.includes(place.session)) return { kind: 'fault', words: NO_SUCH_SESSION };
     return await gameOf(place.session, place.character);
   } catch (error) {
@@ -102,12 +111,18 @@ function App() {
     gameOf(session, place).then(setScreen, (error: unknown) => setScreen(faultOf(error)));
   };
 
+  // A session that ended leaves the game: the login again, with the words why; a reload no longer names it.
+  const ended = () => {
+    history.replaceState(null, '', location.pathname);
+    setScreen(loginScreen(SESSION_ENDED));
+  };
+
   return (
     <>
       <Body
         screen={screen}
         onReady={ready}
-        onEnded={() => setScreen({ kind: 'fault', words: SESSION_ENDED })}
+        onEnded={ended}
         onFault={(words) => setScreen({ kind: 'fault', words: `${GAME_FAILED} ${words}` })}
       />
       {tokenWanted && <Token onAccepted={accepted} />}
@@ -135,6 +150,7 @@ function Body({ screen, onReady, onEnded, onFault }: BodyProps) {
           start={login}
           newCreation={(version, choices) => new CreationView(version, JSON.stringify(choices))}
           onReady={onReady}
+          firstNote={screen.note}
         />
       );
     case 'game':

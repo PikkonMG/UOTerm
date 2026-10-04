@@ -27,6 +27,8 @@ interface LoginScreensProps {
   newCreation(version: string, choices: CharacterChoices): CreationMaker;
   /** The character is in the world: the session, and whose profile it plays with. */
   onReady(session: string, place: CharacterPlace | null): void;
+  /** Why the page came back to the login, such as a session that ended. */
+  firstNote?: string | null;
 }
 
 /** The character list as the login asked it. */
@@ -54,10 +56,10 @@ const CONNECTING: Stage = { kind: 'connecting' };
  * characters, and the making of a new one. The login link asks; each
  * screen answers; the character in the world gives its session.
  */
-export function LoginScreens({ words, creationWords, rules, start, newCreation, onReady }: LoginScreensProps) {
+export function LoginScreens({ words, creationWords, rules, start, newCreation, onReady, firstNote = null }: LoginScreensProps) {
   const [logins, setLogins] = useState<Logins | null>(null);
   const [stage, setStage] = useState<Stage>(FORM);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(firstNote);
   /** The answer the open question of the login waits for. */
   const answer = useRef<((reply: LoginReply) => void) | null>(null);
   /** The character the replies play, to name the profile of the game. */

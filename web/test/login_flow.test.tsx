@@ -25,12 +25,20 @@ function listThenReady(replies: LoginReply[]): StartLogin {
   };
 }
 
-async function showForm(start: StartLogin, onReady = vi.fn(), newCreation = vi.fn()): Promise<HTMLElement> {
+async function showForm(start: StartLogin, onReady = vi.fn(), newCreation = vi.fn(), firstNote: string | null = null): Promise<HTMLElement> {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify(NO_LOGINS)));
   const root = document.createElement('div');
   document.body.append(root);
   render(
-    <LoginScreens words={LOGIN_WORDS} creationWords={CREATION_WORDS} rules={rules()} start={start} newCreation={newCreation} onReady={onReady} />,
+    <LoginScreens
+      words={LOGIN_WORDS}
+      creationWords={CREATION_WORDS}
+      rules={rules()}
+      start={start}
+      newCreation={newCreation}
+      onReady={onReady}
+      firstNote={firstNote}
+    />,
     root,
   );
   await vi.waitFor(() => expect(root.querySelector('form')).not.toBeNull());
@@ -88,5 +96,10 @@ describe('LoginScreens', () => {
     await connect(root);
     await vi.waitFor(() => expect(root.textContent).toContain('bad password'));
     expect(root.querySelector('form')).not.toBeNull();
+  });
+
+  it('shows_why_the_page_came_back_to_the_login', async () => {
+    const root = await showForm(listThenReady([]), vi.fn(), vi.fn(), 'the session ended');
+    expect(root.textContent).toContain('the session ended');
   });
 });

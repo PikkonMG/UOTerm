@@ -1,7 +1,7 @@
 /**
  * The live link of one session: the pictures of the session come in, the
  * tool calls of the page go out. A link that breaks opens again, waiting a
- * little longer after each failed try.
+ * little longer after each failed try, while its session runs.
  */
 
 import { api, readMessage, SESSIONS_PATH, socketUrl } from './api';
@@ -28,7 +28,11 @@ const ANSWER_TRAVEL_MS = 5_000;
  * when the page reads too slowly.
  */
 export const ANSWER_WAIT_MS = ACT_PLACES * LONGEST_ACT_MS + ANSWER_TRAVEL_MS;
-/** Failed tries to open the link in a row before the page asks whether the API wants its token. */
+/**
+ * Failed tries to open the link in a row before the page asks the API
+ * whether it wants its token and whether the session still runs; it asks
+ * again after each as many more.
+ */
 export const LOSSES_BEFORE_TOKEN_CHECK = 3;
 export const ANSWER_LATE = 'no answer came in time';
 /** A call or an act sent while the link is lost; it never left the page. */
@@ -50,6 +54,11 @@ export type LiveOut =
   | ({ kind: 'call'; id: number } & PageCall)
   | { kind: 'act'; id: number; calls: PageCall[] }
   | { kind: 'size'; size: number };
+
+/** The running sessions, as `GET /v1/sessions` gives them. */
+interface Sessions {
+  sessions: string[];
+}
 
 /** What the server sends on the link. */
 export type LiveIn =
@@ -141,18 +150,37 @@ export class LiveLink {
         this.settle(message.id, message.ok, message.ok || message.error === undefined ? message.result : { error: message.error });
         break;
       case 'ended':
-        this.stop();
-        this.failWaiting(SESSION_ENDED);
-        this.handlers.ended();
+        this.end();
         break;
     }
+  }
+
+  /** The session is over: no more tries, and the page is told. */
+  private end(): void {
+    this.stop();
+    this.failWaiting(SESSION_ENDED);
+    this.handlers.ended();
+  }
+
+  /**
+   * Asks the API for its sessions: a refusal for want of the token raises
+   * it to the page; a session no longer listed ends the link, since the
+   * link of a session that is gone never opens.
+   */
+  private checkSession(): void {
+    api<Sessions>(SESSIONS_PATH).then(
+      ({ sessions }) => {
+        if (!this.done && !sessions.includes(this.session)) this.end();
+      },
+      () => undefined,
+    );
   }
 
   /**
    * The link broke, or did not open: the answers it carried will not come;
    * try again. A link the API refuses shows no reason to the page, so after
    * a few tries in a row a call asks whether the API wants its token (the
-   * call raises it to the page).
+   * call raises it to the page) and whether the session still runs.
    */
   private lost(): void {
     if (this.done) return;
@@ -163,7 +191,7 @@ export class LiveLink {
     }
     const wait = backoffWait(this.tries);
     this.tries += 1;
-    if (this.tries === LOSSES_BEFORE_TOKEN_CHECK) api(SESSIONS_PATH).catch(() => undefined);
+    if (this.tries % LOSSES_BEFORE_TOKEN_CHECK === 0) this.checkSession();
     this.retry = setTimeout(() => (this.socket = this.connect()), wait);
   }
 
