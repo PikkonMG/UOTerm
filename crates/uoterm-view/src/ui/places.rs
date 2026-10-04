@@ -9,6 +9,8 @@ use crate::model::places;
 use crate::settings::Profile;
 
 pub const TITLE_ROW: f32 = 28.0;
+/// The row of the buttons at the foot of a window the shard opens.
+pub const FOOT_ROW: f32 = 40.0;
 /// A panel is at least this wide, so its title and marks fit.
 pub const PANEL_MIN_WIDTH: f32 = 170.0;
 /// What the title and the marks of a frame do, as their tips say.

@@ -41,7 +41,6 @@ egui_colors!(
     GOAL,
     WAITING,
     HITS,
-    HITS_POISONED,
     MANA,
     STAM,
     BAR_GHOST,

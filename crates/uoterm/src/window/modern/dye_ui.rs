@@ -7,37 +7,19 @@
 
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
 use super::super::control::Act;
-use super::super::model::hue_grid::HuePick;
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
 use super::frame::{self, PanelSpec};
-use super::hue_ui::{self, HueGridUi};
-use super::layout::{self, Spot};
+use super::hue_ui::HueGridUi;
 use crate::view::WatchFrame;
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Vec2};
+use uoterm_view::ui::hues::{dye_first_place, DyePanel, DYE_ID, TUB_SIDE, WORDS_DYE, WORDS_OKAY};
 
-pub const DYE_ID: &str = "modern:dye";
-const TUB_SIDE: f32 = 64.0;
-const FOOT_ROW: f32 = 40.0;
-const NO_HUE: u16 = 0;
-
-const WORDS_TITLE: &str = "Dye";
-const WORDS_OKAY: &str = "Okay";
-
-/// The size of the panel: the grid with its slider, and the tub beside it.
-fn panel_size() -> Vec2 {
-    let picker = hue_ui::picker_size();
-    Vec2::new(
-        picker.x + theme::ROW_GAP * 2.0 + TUB_SIDE + theme::PANEL_PAD * 2.0,
-        frame::TITLE_ROW + picker.y + FOOT_ROW + theme::PANEL_PAD * 2.0,
-    )
-}
-
-/// The tub whose colour is picked, and the pick.
+/// The tub whose colour is picked, the pick, and the grid.
 #[derive(Default)]
 pub struct DyeUi {
-    tub: Option<(u32, HuePick)>,
+    tub: DyePanel,
     grid: HueGridUi,
 }
 
@@ -52,25 +34,20 @@ impl DyeUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Option<Rect> {
-        let Some(dye) = frame.dye.as_ref() else {
-            self.tub = None;
-            return None;
-        };
-        if self.tub.is_none_or(|(tub, _)| tub != dye.serial) {
-            self.tub = Some((dye.serial, HuePick::of(NO_HUE)));
-            self.grid.stop();
-        }
-        let (_, pick) = self.tub.as_mut()?;
+        let pick = self
+            .tub
+            .follow(frame.dye.as_ref(), &mut self.grid.eyedropper)?;
+        let dye = frame.dye.as_ref()?;
         let live = frame.human_control;
         let spec = PanelSpec {
             id: DYE_ID,
-            title: WORDS_TITLE,
-            default: layout::first_place(rect, Spot::Middle(0), panel_size()),
+            title: WORDS_DYE,
+            default: bridge::rect(dye_first_place(bridge::area(rect))),
             min_size: None,
             closable: false,
         };
         let panel = frame::place(rect, &spec, profile);
-        let body = frame::draw(ui.painter(), panel, WORDS_TITLE);
+        let body = frame::draw(ui.painter(), panel, WORDS_DYE);
         let picker = self.grid.draw(ui, body.min, DYE_ID, pick, tools, live);
         self.grid.take_picked(pick, frame, tools);
         let tub = Rect::from_min_size(
@@ -102,51 +79,5 @@ impl DyeUi {
         }
         frame::controls(ui, panel, &spec, profile, tools);
         Some(panel)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::testing::draw_frames;
-    use super::*;
-    use crate::view::WatchDye;
-
-    const TUB: u32 = 0x4000_0100;
-
-    #[test]
-    fn the_panel_shows_for_a_tub_and_a_new_tub_starts_over() {
-        let frame = |serial| WatchFrame {
-            human_control: true,
-            dye: Some(WatchDye {
-                serial,
-                graphic: 0x0FAB,
-            }),
-            ..WatchFrame::default()
-        };
-        let mut dye = DyeUi::default();
-        let mut profile = Profile::default();
-        let mut shown = None;
-        draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
-            shown = dye.draw(ui, rect, &frame(TUB), tools, profile);
-        });
-        assert!(shown.is_some());
-        dye.tub = Some((TUB, HuePick::of(1001)));
-        draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
-            shown = dye.draw(ui, rect, &frame(TUB), tools, profile);
-        });
-        assert_eq!(
-            dye.tub.map(|(_, pick)| pick.hue()),
-            Some(1001),
-            "the same tub"
-        );
-        draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
-            shown = dye.draw(ui, rect, &frame(TUB + 1), tools, profile);
-        });
-        assert_eq!(dye.tub, Some((TUB + 1, HuePick::of(NO_HUE))), "another tub");
-        draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
-            shown = dye.draw(ui, rect, &WatchFrame::default(), tools, profile);
-        });
-        assert!(shown.is_none() && dye.tub.is_none());
-        assert!(panel_size().x > hue_ui::picker_size().x);
     }
 }

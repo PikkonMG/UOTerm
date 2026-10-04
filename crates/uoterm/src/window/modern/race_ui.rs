@@ -7,39 +7,32 @@
 
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
 use super::super::control::Act;
-use super::super::model::race_change::{
-    paints, palette, palette_columns, style_lists, Paint, RacePicks,
-};
+use super::super::model::race_change::{paints, palette, palette_columns, style_lists, Paint};
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
 use super::hue_ui;
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
 use uoterm_view::ui::lists::{race_change_words, race_preview_look};
+use uoterm_view::ui::places::FOOT_ROW;
+use uoterm_view::ui::shard_asks::{
+    race_first_place, RacePanel, HINT_COLOR, RACE_ID, WORDS_CHANGE, WORDS_KEEP,
+};
 use uoterm_world::RaceChange;
 
-pub const RACE_ID: &str = "modern:race_change";
-const WIDTH: f32 = 600.0;
-const HEIGHT: f32 = 420.0;
 const SIDE_WIDTH: f32 = 180.0;
 const LABEL_ROW: f32 = 20.0;
 const CONTROL_ROW: f32 = 28.0;
 const PART_GAP: f32 = 12.0;
-const FOOT_ROW: f32 = 40.0;
 const SWATCH_EDGE: f32 = 1.0;
 const MARK_WIDTH: f32 = 2.0;
-const WORDS_CHANGE: &str = "Change";
-const WORDS_KEEP: &str = "Keep my looks";
-const HINT_COLOR: &str = "Click: pick from the palette.";
 
 /// The panel, the picks of the player, and the palette that is open.
 #[derive(Default)]
 pub struct RaceUi {
-    picks: RacePicks,
-    picking: Option<Paint>,
+    race: RacePanel,
 }
 
 impl RaceUi {
@@ -53,19 +46,16 @@ impl RaceUi {
         profile: &mut Profile,
     ) -> Option<Rect> {
         let Some(change) = frame.race_change else {
-            self.picking = None;
+            self.race.stop();
             return None;
         };
-        if self.picks.change != Some(change) {
-            self.picking = None;
-        }
-        self.picks.follow(change);
+        self.race.follow(change);
         let live = frame.human_control;
         let title = race_change_words(change);
         let spec = PanelSpec {
             id: RACE_ID,
             title: &title,
-            default: layout::first_place(rect, Spot::Middle(0), Vec2::new(WIDTH, HEIGHT)),
+            default: bridge::rect(race_first_place(bridge::area(rect))),
             min_size: None,
             closable: live,
         };
@@ -95,7 +85,7 @@ impl RaceUi {
             if changed {
                 tools
                     .hand
-                    .act(Act::RaceChange(Some(self.picks.looks(change))));
+                    .act(Act::RaceChange(Some(self.race.picks.looks(change))));
             }
         }
         let closed = frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
@@ -120,18 +110,19 @@ impl RaceUi {
                 Pos2::new(area.left(), top + LABEL_ROW),
                 Vec2::new(area.width(), CONTROL_ROW),
             );
-            let place = self.picks.style_place(part);
-            let shown = styles.get(*place).map_or("", |style| style.words);
+            let mut place = *self.race.picks.style_place(part);
+            let shown = styles.get(place).map_or("", |style| style.words);
             ui.scope_builder(egui::UiBuilder::new().max_rect(list), |ui| {
                 egui::ComboBox::from_id_salt(("race-style", part as u8))
                     .selected_text(shown)
                     .width(list.width())
                     .show_ui(ui, |ui| {
                         for (at, style) in styles.iter().enumerate() {
-                            ui.selectable_value(place, at, style.words);
+                            ui.selectable_value(&mut place, at, style.words);
                         }
                     });
             });
+            self.race.pick_style(part, place);
             top = list.bottom() + PART_GAP;
         }
     }
@@ -140,7 +131,7 @@ impl RaceUi {
     fn preview(&self, ui: &egui::Ui, area: Rect, change: RaceChange, tools: &mut Tools<'_>) {
         ui.painter()
             .rect_filled(area, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        let look = race_preview_look(change, &self.picks);
+        let look = race_preview_look(change, &self.race.picks);
         if let Some((texture, sprite)) = tools.scene.doll_picture(&look) {
             let shown = theme::fit(area, sprite.width, sprite.height);
             ui.painter()
@@ -172,8 +163,8 @@ impl RaceUi {
             );
             let response =
                 ui.interact(swatch, Id::new(("race-color", paint as u8)), Sense::click());
-            hue_ui::swatch(ui, swatch, self.picks.hue(change, paint), tools);
-            if self.picking == Some(paint) {
+            hue_ui::swatch(ui, swatch, self.race.picks.hue(change, paint), tools);
+            if self.race.picking == Some(paint) {
                 ui.painter().rect_stroke(
                     swatch,
                     CornerRadius::same(CELL_RADIUS),
@@ -185,11 +176,11 @@ impl RaceUi {
                 super::super::tips::label(ui, HINT_COLOR, "");
             }
             if response.clicked() && live {
-                self.picking = (self.picking != Some(paint)).then_some(paint);
+                self.race.click_paint(paint);
             }
             top = swatch.bottom() + PART_GAP;
         }
-        if let Some(paint) = self.picking.filter(|_| live) {
+        if let Some(paint) = self.race.picking.filter(|_| live) {
             let room = Rect::from_min_max(Pos2::new(area.left(), top), area.max);
             self.palette(ui, room, change, paint, tools);
         }
@@ -208,7 +199,7 @@ impl RaceUi {
         let columns = palette_columns(hues.len());
         let rows = hues.len().div_ceil(columns).max(1);
         let cell = Vec2::new(room.width() / columns as f32, room.height() / rows as f32);
-        let place = self.picks.hue_place(paint);
+        let place = *self.race.picks.hue_place(paint);
         let mut picked = None;
         for (at, hue) in hues.iter().enumerate() {
             let area = Rect::from_min_size(
@@ -221,7 +212,7 @@ impl RaceUi {
             );
             ui.painter()
                 .rect_filled(area, CornerRadius::ZERO, tools.scene.words_color(*hue));
-            if at == *place {
+            if at == place {
                 ui.painter().rect_stroke(
                     area,
                     CornerRadius::ZERO,
@@ -235,8 +226,7 @@ impl RaceUi {
             }
         }
         if let Some(at) = picked {
-            *place = at;
-            self.picking = None;
+            self.race.pick_hue(paint, at);
         }
     }
 }
@@ -260,15 +250,15 @@ mod tests {
             ..WatchFrame::default()
         };
         let mut race = RaceUi::default();
-        race.picks.follow(HUMAN_MAN);
-        race.picks.hair = 2;
+        race.race.follow(HUMAN_MAN);
+        race.race.picks.hair = 2;
         let mut profile = Profile::default();
         let mut shown = None;
         draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
             shown = race.draw(ui, rect, &frame, tools, profile);
         });
         assert!(shown.is_some());
-        assert_eq!(race.picks.hair, 2, "the same request keeps the picks");
+        assert_eq!(race.race.picks.hair, 2, "the same request keeps the picks");
         draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
             shown = race.draw(ui, rect, &WatchFrame::default(), tools, profile);
         });

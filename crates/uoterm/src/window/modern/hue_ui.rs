@@ -7,38 +7,25 @@
 
 use super::super::actions::LocalAim;
 use super::super::boxes_ui::Tools;
-use super::super::control::Act;
 use super::super::model::hue_grid::{
-    grid_hue, hue_of, HuePick, BAD_HUE_WORDS, GRADUATION_MAX, GRADUATION_MIN, GRID_COLUMNS,
-    GRID_ROWS,
+    grid_hue, HuePick, GRADUATION_MAX, GRADUATION_MIN, GRID_COLUMNS, GRID_ROWS,
 };
 use super::super::theme;
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
+use uoterm_view::ui::hues::{
+    grid_size, picker_size, Eyedropper, HUE_CELL, SLIDER_ROW, WORDS_EYEDROPPER, WORDS_SHADE,
+};
 
-pub const CELL: f32 = 14.0;
-/// The shade slider under the grid.
-pub const SLIDER_ROW: f32 = 28.0;
 /// The eyedropper button.
 pub const EYEDROPPER_SIZE: Vec2 = Vec2::new(110.0, 28.0);
 const MARK_WIDTH: f32 = 2.0;
-const WORDS_SHADE: &str = "Shade";
-const WORDS_EYEDROPPER: &str = "Eyedropper";
-
-/// The size of the grid.
-pub fn grid_size() -> Vec2 {
-    Vec2::new(GRID_COLUMNS as f32 * CELL, GRID_ROWS as f32 * CELL)
-}
-
-/// The size of the grid with the slider under it.
-pub fn picker_size() -> Vec2 {
-    grid_size() + Vec2::new(0.0, SLIDER_ROW)
-}
 
 /// Whether the eyedropper waits for a click on a thing.
 #[derive(Default)]
 pub struct HueGridUi {
-    picking: bool,
+    pub eyedropper: Eyedropper,
 }
 
 impl HueGridUi {
@@ -54,15 +41,15 @@ impl HueGridUi {
         tools: &Tools<'_>,
         live: bool,
     ) -> Rect {
-        let grid = Rect::from_min_size(left_top, grid_size());
+        let grid = Rect::from_min_size(left_top, bridge::vec2(grid_size()));
         for index in 0..GRID_ROWS * GRID_COLUMNS {
             let cell = Rect::from_min_size(
                 grid.min
                     + Vec2::new(
-                        (index % GRID_COLUMNS) as f32 * CELL,
-                        (index / GRID_COLUMNS) as f32 * CELL,
+                        (index % GRID_COLUMNS) as f32 * HUE_CELL,
+                        (index / GRID_COLUMNS) as f32 * HUE_CELL,
                     ),
-                Vec2::splat(CELL),
+                Vec2::splat(HUE_CELL),
             );
             let hue = grid_hue(pick.graduation, index);
             ui.painter()
@@ -94,7 +81,7 @@ impl HueGridUi {
                     .text_color(theme::TEXT),
             );
         });
-        Rect::from_min_size(left_top, picker_size())
+        Rect::from_min_size(left_top, bridge::vec2(picker_size()))
     }
 
     /// The eyedropper button with its top left at `at`: the next click on
@@ -108,7 +95,7 @@ impl HueGridUi {
         tools: &Tools<'_>,
     ) -> Rect {
         let area = Rect::from_min_size(at, EYEDROPPER_SIZE);
-        let color = if self.picking {
+        let color = if self.eyedropper.picking {
             theme::WAITING
         } else {
             theme::TEXT
@@ -120,11 +107,10 @@ impl HueGridUi {
             WORDS_EYEDROPPER,
             color,
         ) {
-            if frame.target_cursor {
-                tools.hand.act(Act::CancelTarget);
+            if let Some(act) = self.eyedropper.press(frame) {
+                tools.hand.act(act);
             }
             tools.hand.aim(LocalAim::PickThing);
-            self.picking = true;
         }
         area
     }
@@ -132,23 +118,16 @@ impl HueGridUi {
     /// Takes the hue of the thing the eyedropper clicked into the pick. A
     /// hue the grid cannot show is told to the player.
     pub fn take_picked(&mut self, pick: &mut HuePick, frame: &WatchFrame, tools: &Tools<'_>) {
-        if !self.picking {
-            return;
-        }
-        if tools.hand.aiming() != Some(LocalAim::PickThing) {
-            self.picking = false;
-        }
-        if let Some(serial) = tools.hand.take_picked(LocalAim::PickThing) {
-            self.picking = false;
-            if !pick.take(hue_of(frame, serial)) {
-                tools.hand.report(BAD_HUE_WORDS);
-            }
+        let aiming = tools.hand.aiming();
+        let picked = || tools.hand.take_picked(LocalAim::PickThing);
+        if let Some(words) = self.eyedropper.follow(aiming, picked, pick, frame) {
+            tools.hand.report(words);
         }
     }
 
     /// Stops waiting for a click, as a new pick starts.
     pub fn stop(&mut self) {
-        self.picking = false;
+        self.eyedropper.stop();
     }
 }
 
@@ -165,18 +144,4 @@ pub fn swatch(ui: &egui::Ui, area: Rect, hue: u16, tools: &Tools<'_>) {
         Stroke::new(MARK_WIDTH / 2.0, Color32::from_black_alpha(u8::MAX)),
         egui::StrokeKind::Inside,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_picker_holds_the_grid_and_the_slider() {
-        assert_eq!(grid_size().x, GRID_COLUMNS as f32 * CELL);
-        assert_eq!(picker_size().y, grid_size().y + SLIDER_ROW);
-        let mut grid = HueGridUi { picking: true };
-        grid.stop();
-        assert!(!grid.picking);
-    }
 }

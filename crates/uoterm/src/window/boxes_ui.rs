@@ -20,6 +20,7 @@ use super::tips::Tips;
 use crate::view::{WatchFrame, WatchGump};
 use eframe::egui::{self, Align2, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use std::collections::{HashMap, HashSet};
+use uoterm_view::ui::grids::ClosedBoxes;
 use uoterm_view::ui::gumps::{self, flip, next_first_row, on_page, ticked, FIRST_PAGE};
 
 pub use uoterm_view::ui::gumps::{CELL, CELL_GAP};
@@ -72,11 +73,21 @@ struct GumpState {
 #[derive(Default)]
 pub struct BoxesUi {
     gumps: HashMap<u32, GumpState>,
-    /// The containers the human closed. The game keeps no "closed" state for
-    /// a container, so the window keeps it. A use of the container shows it
-    /// again.
-    closed: HashSet<u32>,
+    /// The containers the human closed.
+    closed: ClosedBoxes,
     grids: GridUi,
+}
+
+/// How far the mouse wheel turned over the panel in this frame.
+pub(super) fn wheel_over(ui: &egui::Ui, panel: Rect) -> f32 {
+    ui.input(|i| {
+        let over = i.pointer.hover_pos().is_some_and(|p| panel.contains(p));
+        if over {
+            i.raw_scroll_delta.y
+        } else {
+            0.0
+        }
+    })
 }
 
 /// The first row after the mouse wheel turned over the panel.
@@ -86,15 +97,7 @@ pub(super) fn scrolled(
     first_row: usize,
     last_first_row: usize,
 ) -> usize {
-    let turned = ui.input(|i| {
-        let over = i.pointer.hover_pos().is_some_and(|p| panel.contains(p));
-        if over {
-            i.raw_scroll_delta.y
-        } else {
-            0.0
-        }
-    });
-    next_first_row(first_row, turned, last_first_row)
+    next_first_row(first_row, wheel_over(ui, panel), last_first_row)
 }
 
 /// A click on an item of a panel: under a target cursor a click targets
@@ -136,16 +139,16 @@ pub(super) fn ask_waiting_name(ui: &egui::Ui, clicks: &mut ClickDelay, hand: &Ha
 impl BoxesUi {
     /// True when the window shows this container now.
     pub fn shows(&self, frame: &WatchFrame, container: u32) -> bool {
-        !self.closed.contains(&container) && frame.containers.iter().any(|c| c.serial == container)
+        self.closed.shows(frame, container)
     }
 
     pub fn close(&mut self, container: u32) {
-        self.closed.insert(container);
+        self.closed.close(container);
     }
 
     /// Call this when the human uses a thing. A closed container shows again.
     pub fn used(&mut self, thing: u32) {
-        self.closed.remove(&thing);
+        self.closed.used(thing);
     }
 
     /// Draws the containers as grids and, without the gump art of the
@@ -162,8 +165,7 @@ impl BoxesUi {
         profile: &mut Profile,
         gumps_as_lists: bool,
     ) -> Vec<Rect> {
-        self.closed
-            .retain(|serial| frame.containers.iter().any(|c| c.serial == *serial));
+        self.closed.keep_open(frame);
         let mut covered = self
             .grids
             .draw(ui, rect, frame, tools, profile, &mut self.closed);
@@ -376,26 +378,6 @@ impl BoxesUi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::WatchContainer;
-
-    #[test]
-    fn a_closed_container_shows_again_when_it_is_used() {
-        const BAG: u32 = 0x4000_0100;
-        let frame = WatchFrame {
-            containers: vec![WatchContainer {
-                serial: BAG,
-                ..WatchContainer::default()
-            }],
-            ..WatchFrame::default()
-        };
-        let mut boxes = BoxesUi::default();
-        assert!(boxes.shows(&frame, BAG));
-        boxes.close(BAG);
-        assert!(!boxes.shows(&frame, BAG));
-        boxes.used(BAG);
-        assert!(boxes.shows(&frame, BAG));
-        assert!(!boxes.shows(&WatchFrame::default(), BAG));
-    }
 
     #[test]
     fn every_open_gump_shows_as_a_list_without_the_gump_art() {

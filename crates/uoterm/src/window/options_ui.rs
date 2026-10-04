@@ -30,6 +30,7 @@ use crate::view::WatchFrame;
 use eframe::egui::{self, Align2, Event, Id, Key, Pos2, Rect, RichText, Sense, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use uoterm_view::ui::hues::picker_size;
 
 const OPTIONS_ID: &str = "modern:options";
 const PICKER_ID: &str = "modern:color_picker";
@@ -197,7 +198,7 @@ impl HueRows {
     ) -> Option<Rect> {
         let choice = self.open.as_mut()?;
         choice.grid.take_picked(&mut choice.pick, frame, tools);
-        let size = hue_ui::picker_size()
+        let size = bridge::vec2(picker_size())
             + Vec2::new(
                 theme::ROW_GAP * 2.0 + PICKED_SWATCH.x,
                 panel_frame::TITLE_ROW + FOOT_ROW + theme::ROW_GAP,

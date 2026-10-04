@@ -13,85 +13,58 @@
 use super::super::actions::guard::AIM_GRAB_BAG;
 use super::super::actions::LocalAim;
 use super::super::boxes_ui::{
-    ask_waiting_name, scrolled, single_or_double, Tools, CELL_GAP, CELL_RADIUS,
+    ask_waiting_name, single_or_double, wheel_over, Tools, CELL_GAP, CELL_RADIUS,
 };
-use super::super::control::{Act, DropTo};
+use super::super::control::Act;
 use super::super::desk::Zone;
 use super::super::model::clicks::ClickDelay;
-use super::super::model::grid::{self, Look, Selection};
-use super::super::model::loot::{amount_at, share_of, LootAmounts};
-use super::super::model::{highlight, loot, properties};
+use super::super::model::grid::{self, Look};
+use super::super::model::loot::share_of;
+use super::super::model::properties;
 use super::super::ring_ui::Subject;
-use super::super::settings::GridLayout;
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::super::tips;
 use super::frame::{self, FrameEvent, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::{WatchContainer, WatchFrame, WatchPackItem};
 use crate::window::bridge;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, Id, PointerButton, Pos2, Rect, Sense, Stroke, Vec2,
 };
-use std::collections::{HashMap, HashSet};
 use uoterm_view::input;
 use uoterm_view::ui::grid_clicks::{
-    cell_side, corpse_place_id, first_size, grid_click, grid_title, hover_lines, least_size,
-    CellPress, GridClick, SEARCH_ROW,
+    cell_side, grid_click, grid_title, hover_lines, least_size, CellPress, GridClick, SEARCH_ROW,
+};
+use uoterm_view::ui::grids::{
+    art_most_scale, border_hue, cell_mark, cells_fit, cells_room, grid_first_place, grid_opacity,
+    has_pile_slider, is_favorite, item_footer, shown_grids, strip_buttons, toggle_favorite,
+    toggle_lock, CellMark, ClosedBoxes, GridMemory, ShownGrid, DIMMED_ALPHA, HINT_FAVORITE,
+    HINT_LOOT_ALL, HINT_LOOT_BAG, HINT_SEARCH, STRIP_ROW, WORDS_FAVORITE, WORDS_LOOT_ALL,
+    WORDS_LOOT_BAG,
 };
 
-const PERCENT: f32 = 100.0;
 const TITLE_BUTTON_WIDTH: f32 = 44.0;
 const TITLE_GAP: f32 = 6.0;
-const STRIP_ROW: f32 = 26.0;
 const STRIP_BUTTON_WIDTH: f32 = 96.0;
 const MARK_WIDTH: f32 = 2.0;
 const LOCK_DOT: f32 = 3.0;
-const DIMMED_ALPHA: f32 = 0.3;
-/// Pictures in a cell grow no more than this when the Containers page
-/// scales them, and not at all when it does not.
-const SCALED_ART: f32 = 2.0;
-const NATURAL_ART: f32 = 1.0;
 
 /// The slider of a pile of a grid loot cell: its height at the foot of the
 /// cell.
 const PILE_SLIDER: f32 = 6.0;
 
-const WORDS_FAVORITE: &str = "Fav";
-const WORDS_LOOT_ALL: &str = "Loot";
-const WORDS_LOOT_BAG: &str = "Bag";
-const WORDS_MOVE_HERE: &str = "Move here";
-const WORDS_TO_FAVORITE: &str = "To favorite";
-const WORDS_CLEAR: &str = "Clear";
-const HINT_SEARCH: &str = "search";
-const HINT_ITEM: &str = "Click: name.  Double-click: use.  Drag: move.  Ctrl+click: choose.  \
-     Shift+click: lock the slot.";
-const HINT_LOOT_ITEM: &str =
-    "Click: grab into the grab bag.  Drag the bar: how many.  Ctrl+click: choose.";
-const HINT_FAVORITE: &str = "Make this bag the favorite bag.";
-const HINT_LOOT_ALL: &str = "Loot this corpse by the loot list.";
-const HINT_LOOT_BAG: &str = "Set the bag grabbed items go into.";
-
 /// What the player did in one grid that changes another.
 #[derive(Default)]
 pub struct GridUi {
-    search: HashMap<u32, String>,
-    first_row: HashMap<u32, usize>,
-    chosen: Selection,
+    memory: GridMemory,
     clicks: ClickDelay,
-    /// How many of each pile of a grid loot a click grabs.
-    amounts: LootAmounts,
 }
 
 /// What one grid needs to know of the frame and the page.
 struct GridView<'a> {
     frame: &'a WatchFrame,
     container: &'a WatchContainer,
-    corpse: bool,
-    grid_loot: bool,
-    /// The item property lines are needed: a rule, a search or the
-    /// highlight words.
-    wants_lines: bool,
+    shown: &'a ShownGrid,
 }
 
 impl GridUi {
@@ -104,71 +77,28 @@ impl GridUi {
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
         profile: &mut Profile,
-        closed: &mut HashSet<u32>,
+        closed: &mut ClosedBoxes,
     ) -> Vec<Rect> {
-        self.chosen.keep_present(frame);
-        self.search
-            .retain(|serial, _| frame.containers.iter().any(|c| c.serial == *serial));
-        self.amounts.keep_only(|serial| {
-            frame
-                .containers
-                .iter()
-                .any(|c| c.items.iter().any(|item| item.serial == serial))
-        });
-        let options = &profile.containers;
-        let wants_lines = !options.grid_highlight_rules.is_empty()
-            || !options.grid_highlight_properties.is_empty();
-        let corpse_look = loot::corpse_look(profile.general.grid_loot);
+        self.memory.keep_present(frame);
+        let (grids, shut) = shown_grids(frame, profile, closed, &self.memory);
         let mut covered = Vec::new();
-        // Each container first opens beside the character, a step from the
-        // one before.
-        let mut opened = 0;
-        let mut corpses = 0;
-        let mut shut = Vec::new();
-        for container in frame
-            .containers
-            .iter()
-            .filter(|c| !closed.contains(&c.serial))
-        {
-            let corpse = loot::is_corpse(frame, container.serial);
-            if corpse && !loot::shows_corpse(&profile.general, container.items.len()) {
+        for shown in &grids {
+            let Some(container) = frame.containers.iter().find(|c| c.serial == shown.serial) else {
                 continue;
-            }
-            // A grid loot closes when the corpse is out of reach.
-            if corpse && corpse_look.grid && !loot::grid_loot_alive(frame, container.serial) {
-                shut.push(container.serial);
-                continue;
-            }
-            let searching = self
-                .search
-                .get(&container.serial)
-                .is_some_and(|words| !words.trim().is_empty());
+            };
             let view = GridView {
                 frame,
                 container,
-                corpse,
-                grid_loot: corpse && corpse_look.grid,
-                wants_lines: wants_lines || searching,
+                shown,
             };
-            let default = layout::first_place(
-                rect,
-                Spot::Container(opened),
-                bridge::vec2(first_size(profile)),
-            );
-            opened += 1;
-            let id = if corpse {
-                corpses += 1;
-                corpse_place_id(corpses)
-            } else {
-                grid::place_id(container.serial)
-            };
+            let default = bridge::rect(grid_first_place(bridge::area(rect), shown.nth, profile));
             let tile_name = tools
                 .scene
                 .item_tile(container.graphic)
                 .map(|tile| tile.name.clone());
             let title = grid_title(&container.name, tile_name.as_deref());
             let spec = PanelSpec {
-                id: &id,
+                id: &shown.place_id,
                 title: &title,
                 default,
                 min_size: Some(bridge::vec2(least_size(profile))),
@@ -177,10 +107,12 @@ impl GridUi {
             let panel = frame::place(rect, &spec, profile);
             covered.push(panel);
             if self.grid(ui, panel, &spec, &view, tools, profile) == Some(FrameEvent::Closed) {
-                shut.push(container.serial);
+                closed.close(shown.serial);
             }
         }
-        closed.extend(shut);
+        for serial in shut {
+            closed.close(serial);
+        }
         ask_waiting_name(ui, &mut self.clicks, tools.hand, tools.time);
         covered
     }
@@ -197,20 +129,17 @@ impl GridUi {
         let frame = view.frame;
         let serial = view.container.serial;
         tools.desk.zone(bridge::area(panel), Zone::Into(serial));
-        let options = &profile.containers;
-        let fill = theme::with_alpha(theme::GLASS, f32::from(options.grid_opacity) / PERCENT);
-        let edge = if options.grid_border_hue == 0 {
-            theme::GLASS_EDGE
-        } else {
-            tools.scene.words_color(options.grid_border_hue)
-        };
+        let fill = theme::with_alpha(theme::GLASS, grid_opacity(profile));
+        let edge =
+            border_hue(profile).map_or(theme::GLASS_EDGE, |hue| tools.scene.words_color(hue));
         // The grid draws its own title, cut short before its buttons.
         let mut body = frame::draw_tinted(ui.painter(), panel, "", fill, edge);
         self.title_row(ui, panel, spec, view, tools, profile);
         let search = Rect::from_min_size(body.min, Vec2::new(body.width(), SEARCH_ROW));
         body.set_top(search.bottom() + CELL_GAP);
         self.search_row(ui, search, view);
-        if !self.chosen.is_empty() && frame.human_control {
+        let strip = !self.memory.chosen.is_empty() && frame.human_control;
+        if strip {
             let strip = Rect::from_min_max(
                 Pos2::new(body.left(), body.bottom() - STRIP_ROW),
                 body.right_bottom(),
@@ -218,7 +147,7 @@ impl GridUi {
             body.set_bottom(strip.top() - CELL_GAP);
             self.selection_strip(ui, strip, view, tools, profile);
         }
-        self.cells(ui, panel, body, view, tools, profile);
+        self.cells(ui, panel, body, strip, view, tools, profile);
         frame::controls(ui, panel, spec, profile, tools)
     }
 
@@ -246,10 +175,9 @@ impl GridUi {
             *right = area.left() - TITLE_GAP;
             area
         };
-        if frame.human_control && !view.corpse {
-            let favorite = profile.containers.favorite_bag == Some(serial);
+        if frame.human_control && !view.shown.corpse {
             let area = button(&mut right, TITLE_BUTTON_WIDTH);
-            let color = if favorite {
+            let color = if is_favorite(profile, serial) {
                 theme::WAITING
             } else {
                 theme::TEXT_DIM
@@ -261,14 +189,14 @@ impl GridUi {
                 WORDS_FAVORITE,
                 color,
             ) {
-                profile.containers.favorite_bag = (!favorite).then_some(serial);
+                toggle_favorite(profile, serial);
                 tools.keep_profile(profile);
             }
             if ui.rect_contains_pointer(area) {
                 tips::label(ui, HINT_FAVORITE, "");
             }
         }
-        if frame.human_control && view.grid_loot {
+        if frame.human_control && view.shown.grid_loot {
             let area = button(&mut right, TITLE_BUTTON_WIDTH);
             if theme::segment_keyed(
                 ui,
@@ -318,7 +246,7 @@ impl GridUi {
         let field = Rect::from_min_max(row.min, Pos2::new(count.left() - TITLE_GAP, row.bottom()));
         ui.painter()
             .rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        let words = self.search.entry(serial).or_default();
+        let words = self.memory.search.entry(serial).or_default();
         ui.put(
             field,
             egui::TextEdit::singleline(words)
@@ -337,21 +265,13 @@ impl GridUi {
         strip: Rect,
         view: &GridView<'_>,
         tools: &mut Tools<'_>,
-        profile: &mut Profile,
+        profile: &Profile,
     ) {
         let serial = view.container.serial;
-        let count = self.chosen.len();
-        let favorite = profile.containers.favorite_bag;
-        let buttons: [(&str, Option<u32>); 3] = [
-            (WORDS_MOVE_HERE, Some(serial)),
-            (WORDS_TO_FAVORITE, favorite),
-            (WORDS_CLEAR, None),
-        ];
+        let count = self.memory.chosen.len();
         let mut left = strip.left();
-        for (index, (words, bag)) in buttons.into_iter().enumerate() {
-            if words == WORDS_TO_FAVORITE && bag.is_none() {
-                continue;
-            }
+        let buttons = strip_buttons(serial, profile.containers.favorite_bag);
+        for (index, (words, press)) in buttons.into_iter().enumerate() {
             let area = Rect::from_min_size(
                 Pos2::new(left, strip.top()),
                 Vec2::new(STRIP_BUTTON_WIDTH, strip.height()),
@@ -359,14 +279,8 @@ impl GridUi {
             left = area.right() + TITLE_GAP;
             let key = Id::new(("grid-chosen", serial, index));
             if theme::segment_keyed(ui, area, key, words, theme::TEXT) {
-                match bag {
-                    Some(bag) => {
-                        for act in self.chosen.moves_into(bag, view.frame) {
-                            tools.hand.act(act);
-                        }
-                        self.chosen.clear();
-                    }
-                    None => self.chosen.clear(),
+                for act in self.memory.strip_press(press, view.frame) {
+                    tools.hand.act(act);
                 }
             }
         }
@@ -379,22 +293,20 @@ impl GridUi {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn cells(
         &mut self,
         ui: &egui::Ui,
         panel: Rect,
         body: Rect,
+        strip: bool,
         view: &GridView<'_>,
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) {
         let serial = view.container.serial;
         let side = cell_side(profile);
-        let (columns, rows) = grid::fits(
-            body.width() + CELL_GAP,
-            body.height() + CELL_GAP,
-            side + CELL_GAP,
-        );
+        let (columns, rows) = cells_fit(cells_room(bridge::vector(panel.size()), strip), side);
         let key = grid::layout_key(serial);
         let layout = profile
             .containers
@@ -410,12 +322,11 @@ impl GridUi {
             .collect();
         let slots = grid::arrange(&items, &layout, columns * rows);
         let all_rows = slots.len().div_ceil(columns);
-        let first_row = {
-            let kept = self.first_row.entry(serial).or_default();
-            *kept = scrolled(ui, panel, *kept, all_rows.saturating_sub(rows));
-            *kept
-        };
-        let search = self.search.get(&serial).cloned().unwrap_or_default();
+        let turned = wheel_over(ui, panel);
+        let first_row = self
+            .memory
+            .scroll(serial, turned, all_rows.saturating_sub(rows));
+        let search = self.memory.search_words(serial).to_string();
         for (at, slot) in slots
             .iter()
             .enumerate()
@@ -463,6 +374,8 @@ impl GridUi {
         let frame = view.frame;
         let painter = ui.painter();
         let serial = view.container.serial;
+        let corpse = view.shown.corpse;
+        let grid_loot = view.shown.grid_loot;
         let response = ui.interact(
             cell,
             Id::new(("grid-cell", serial, slot)),
@@ -483,12 +396,13 @@ impl GridUi {
         }
         let Some(item) = item else {
             let shift = ui.input(|i| i.modifiers.shift);
-            if frame.human_control && response.clicked() && shift && !view.corpse {
-                self.set_lock(tools, profile, serial, slot, None);
+            if frame.human_control && response.clicked() && shift && !corpse {
+                toggle_lock(profile, serial, slot, None);
+                tools.keep_profile(profile);
             }
             return;
         };
-        let lines = if view.wants_lines {
+        let lines = if view.shown.wants_lines {
             properties::lines_of(tools.readings, item.serial)
         } else {
             Vec::new()
@@ -502,13 +416,8 @@ impl GridUi {
         } else {
             1.0
         };
-        let max_scale = if profile.containers.scale_items {
-            SCALED_ART
-        } else {
-            NATURAL_ART
-        };
         if let Some((texture, sprite)) = tools.scene.item_picture(item.graphic, item.hue) {
-            let area = theme::fit_up_to(cell, sprite.width, sprite.height, max_scale);
+            let area = theme::fit_up_to(cell, sprite.width, sprite.height, art_most_scale(profile));
             painter.image(
                 texture,
                 area,
@@ -516,13 +425,9 @@ impl GridUi {
                 Color32::WHITE.gamma_multiply(alpha),
             );
         }
-        let pile_slider = view.grid_loot && item.amount > 1;
+        let pile_slider = has_pile_slider(grid_loot, item);
         let most = i32::from(item.amount);
-        let taken = if pile_slider {
-            *self.amounts.slot(item.serial, most)
-        } else {
-            most
-        };
+        let taken = self.memory.shown_amount(item, pile_slider);
         if item.amount > 1 {
             let color = if taken < most {
                 theme::GOAL
@@ -538,15 +443,11 @@ impl GridUi {
                 theme::with_alpha(color, alpha),
             );
         }
-        let rules = &profile.containers.grid_highlight_rules;
-        let marked = highlight::first_passed(rules, &lines, view.corpse)
-            .map(|rule| tools.scene.words_color(rule.hue))
-            .or_else(|| {
-                highlight::has_any_words(&profile.containers.grid_highlight_properties, &lines)
-                    .then_some(theme::GOAL)
-            })
-            .or_else(|| (look == Look::Marked).then_some(theme::GOAL));
-        let chosen = self.chosen.contains(item.serial);
+        let marked = cell_mark(profile, &lines, corpse, look).map(|mark| match mark {
+            CellMark::Hue(hue) => tools.scene.words_color(hue),
+            CellMark::Goal => theme::GOAL,
+        });
+        let chosen = self.memory.chosen.contains(item.serial);
         for (on, color) in [
             (marked.is_some(), marked.unwrap_or(theme::GOAL)),
             (chosen, theme::WAITING),
@@ -568,11 +469,6 @@ impl GridUi {
                 (tools.layers, tools.readings),
                 profile,
             );
-            let footer = match (frame.human_control, view.grid_loot) {
-                (false, _) => "",
-                (true, true) => HINT_LOOT_ITEM,
-                (true, false) => HINT_ITEM,
-            };
             tips::point_at_with(
                 tools.tips,
                 ui,
@@ -580,7 +476,7 @@ impl GridUi {
                 item.serial,
                 &item.name,
                 &extra,
-                footer,
+                item_footer(frame.human_control, grid_loot),
                 tools.time,
             );
         }
@@ -588,7 +484,7 @@ impl GridUi {
             return;
         }
         if pile_slider {
-            self.pile_slider(ui, cell, item.serial, most, taken);
+            self.pile_slider(ui, cell, item, taken);
         }
         let press = CellPress {
             click: if response.clicked() {
@@ -602,19 +498,15 @@ impl GridUi {
             drag_started: response.drag_started_by(PointerButton::Primary),
             mods: bridge::mods(ui.input(|i| i.modifiers)),
         };
-        match grid_click(press, view.corpse, view.grid_loot, frame.target_cursor) {
-            GridClick::Choose => self.chosen.toggle(item.serial),
+        match grid_click(press, corpse, grid_loot, frame.target_cursor) {
+            GridClick::Choose => self.memory.chosen.toggle(item.serial),
             GridClick::Lock => {
-                let lock = (!slot_locked).then_some(item.serial);
-                self.set_lock(tools, profile, serial, slot, lock);
+                toggle_lock(profile, serial, slot, Some(item.serial));
+                tools.keep_profile(profile);
             }
             GridClick::Grab => {
                 if let Some(bag) = tools.hand.grab_bag() {
-                    tools.hand.act(Act::Move {
-                        item: item.serial,
-                        amount: self.amounts.taken(item.serial),
-                        to: DropTo::Into(bag),
-                    });
+                    tools.hand.act(self.memory.grab_act(item.serial, bag));
                 }
             }
             GridClick::PickUp => tools.desk.pick_up(item),
@@ -645,49 +537,31 @@ impl GridUi {
 
     /// The bar at the foot of a pile of a grid loot: a click or a drag on
     /// it sets how many of the pile a click grabs.
-    fn pile_slider(&mut self, ui: &egui::Ui, cell: Rect, serial: u32, most: i32, taken: i32) {
+    fn pile_slider(&mut self, ui: &egui::Ui, cell: Rect, item: &WatchPackItem, taken: i32) {
         let bar = Rect::from_min_max(
             Pos2::new(cell.left(), cell.bottom() - PILE_SLIDER),
             cell.right_bottom(),
         );
         let slider = ui.interact(
             bar,
-            Id::new(("grid-loot-amount", serial)),
+            Id::new(("grid-loot-amount", item.serial)),
             Sense::click_and_drag(),
         );
         let painter = ui.painter();
         painter.rect_filled(bar, CornerRadius::same(CELL_RADIUS), theme::TRACK);
         let filled = Rect::from_min_size(
             bar.min,
-            Vec2::new(bar.width() * share_of(taken, most), bar.height()),
+            Vec2::new(
+                bar.width() * share_of(taken, i32::from(item.amount)),
+                bar.height(),
+            ),
         );
         painter.rect_filled(filled, CornerRadius::same(CELL_RADIUS), theme::GOAL);
         let set = slider.dragged() || slider.clicked();
         if let Some(at) = slider.interact_pointer_pos().filter(|_| set) {
             let share = (at.x - bar.left()) / bar.width().max(1.0);
-            *self.amounts.slot(serial, most) = amount_at(share, most);
+            self.memory.set_amount(item, share);
         }
-    }
-
-    /// Locks an item into a slot, or frees the slot with None.
-    fn set_lock(
-        &mut self,
-        tools: &mut Tools<'_>,
-        profile: &mut Profile,
-        container: u32,
-        slot: usize,
-        item: Option<u32>,
-    ) {
-        let layout: &mut GridLayout = profile
-            .containers
-            .grid_layouts
-            .entry(grid::layout_key(container))
-            .or_default();
-        match item {
-            Some(item) => grid::lock(layout, slot, item),
-            None => grid::unlock(layout, slot),
-        }
-        tools.keep_profile(profile);
     }
 }
 
@@ -725,7 +599,7 @@ mod tests {
         }
     }
 
-    fn draw(grids: &mut GridUi, frame: &WatchFrame, closed: &mut HashSet<u32>) -> usize {
+    fn draw(grids: &mut GridUi, frame: &WatchFrame, closed: &mut ClosedBoxes) -> usize {
         let mut profile = Profile::default();
         profile.general.grid_loot = GridLoot::GridOnly;
         let mut shown = 0;
@@ -738,10 +612,14 @@ mod tests {
     #[test]
     fn a_grid_loot_offers_the_whole_pile_and_closes_out_of_reach() {
         let mut grids = GridUi::default();
-        let mut closed = HashSet::new();
+        let mut closed = ClosedBoxes::default();
         assert_eq!(draw(&mut grids, &corpse_at(2), &mut closed), 1);
-        assert_eq!(grids.amounts.taken(COINS), 30, "the slider starts at all");
+        assert_eq!(
+            grids.memory.amounts.taken(COINS),
+            30,
+            "the slider starts at all"
+        );
         assert_eq!(draw(&mut grids, &corpse_at(9), &mut closed), 0);
-        assert!(closed.contains(&CORPSE), "out of reach, the grid closed");
+        assert!(closed.is_closed(CORPSE), "out of reach, the grid closed");
     }
 }

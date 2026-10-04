@@ -9,15 +9,10 @@
 use super::boxes_ui::{ask_waiting_name, scrolled, single_or_double, Tools, CELL_RADIUS};
 use super::control::Act;
 use super::deck_ui::layer_words;
-use super::desk::Zone;
 use super::model::clicks::ClickDelay;
-use super::model::dolls::{self, DollWatch, GUILD_COMMAND, QUESTS_COMMAND};
-use super::model::durability::is_worn_layer;
-use super::model::pages::{
-    fitted, last_left, page_count, shown_depth, threaded, turned, BookDraft, PAGES_SHOWN,
-};
+use super::model::dolls;
+use super::model::pages::{shown_depth, threaded, BookDraft, PAGES_SHOWN};
 use super::modern::frame::{self, FrameEvent, PanelSpec};
-use super::modern::layout::{self, Spot};
 use super::modern::{DyeUi, EntryUi, RaceUi, TipUi};
 use super::settings::Profile;
 use super::theme::{self, number_font, text_font};
@@ -25,108 +20,35 @@ use super::tips;
 use crate::view::{WatchBoard, WatchBook, WatchEquip, WatchFrame, WatchOldMenu, WatchPackItem};
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
-use uoterm_protocol::BOOK_PAGE_LINE_MAX;
+use uoterm_view::ui::doll::{
+    doll_buttons, doll_first_place, doll_health, doll_look, doll_worn, doll_zone, worn_footer,
+    DollPanel, DOLL_ID, DOLL_PICTURE, DOLL_ROW, WORDS_CLOSE as WORDS_DOLL_CLOSE,
+    WORDS_OUT_OF_SIGHT, WORDS_WEARS_NOTHING,
+};
+use uoterm_view::ui::pages::{
+    board_first_place, board_text, book_first_place, by_words, menu_cancel_act, menu_first_place,
+    menu_pick_act, page_line_room, poster_words, BoardDraft, BoardPress, OpenBook, BOARD_ID,
+    BOARD_LIST_WIDTH, BOARD_ROW, BOARD_ROWS, BOARD_TEXT_WIDTH, BOARD_WRITE_ROWS, BOOK_GUTTER,
+    BOOK_ID, BOOK_LINE, BOOK_LINES, BOOK_PAGE_WIDTH, COVER_ROW, HINT_AUTHOR, HINT_SUBJECT,
+    HINT_TEXT, HINT_TITLE, INK, MENU_ID, MENU_ROW, MENU_ROWS, PAGE_MARGIN, PAPER, REPLY_INDENT,
+    WORDS_BY, WORDS_CANCEL, WORDS_CLOSE, WORDS_POST, WORDS_REMOVE, WORDS_REPLY, WORDS_SAVE,
+};
+use uoterm_view::ui::places::FOOT_ROW;
 
-const MENU_ID: &str = "modern:old_menu";
-const BOOK_ID: &str = "modern:book";
-const BOARD_ID: &str = "modern:board";
-const DOLL_ID: &str = "modern:paperdoll";
-
-const MENU_WIDTH: f32 = 340.0;
-const MENU_ROWS: usize = 8;
-const MENU_ROW: f32 = 34.0;
 const ART_SIDE: f32 = 30.0;
-const TITLE_ROW: f32 = 32.0;
-const FOOT_ROW: f32 = 40.0;
-const BOOK_PAGE_WIDTH: f32 = 250.0;
-const BOOK_LINES: usize = 10;
-const BOOK_LINE: f32 = 20.0;
-const BOOK_GUTTER: f32 = 28.0;
-const BOOK_FIELD_WIDTH: f32 = 220.0;
-/// The words of a page stand this far in from its edge.
-const PAGE_MARGIN: f32 = 8.0;
-const PAPER: Color32 = Color32::from_rgb(226, 214, 184);
-const INK: Color32 = Color32::from_rgb(46, 36, 24);
-
-const DOLL_PANEL_WIDTH: f32 = 420.0;
-const DOLL_PICTURE: Vec2 = Vec2::new(140.0, 220.0);
-const DOLL_ROW: f32 = 30.0;
-const DOLL_ROWS: usize = 10;
 const HEALTH_ROW: f32 = 18.0;
-/// A mobile's hits are a share out of this.
-const PERCENT: f32 = 100.0;
-
-const WORDS_OUT_OF_SIGHT: &str = "Out of sight.";
-const WORDS_WEARS_NOTHING: &str = "Wears nothing.";
-const WORDS_STATUS: &str = "Status";
-const WORDS_VIRTUES: &str = "Virtues";
-const WORDS_QUESTS: &str = "Quests";
-const WORDS_GUILD: &str = "Guild";
-const HINT_WORN: &str = "Double-click: use.";
-const HINT_WORN_LIFT: &str = "Double-click: use.  Drag: take it off.";
-
-const WORDS_CANCEL: &str = "Cancel";
-const WORDS_CLOSE: &str = "Close";
-const WORDS_FIRST: &str = "First";
-const WORDS_BACK: &str = "Back";
-const WORDS_NEXT: &str = "Next";
-const WORDS_LAST: &str = "Last";
-const WORDS_SAVE: &str = "Save";
-const WORDS_BY: &str = "by";
-const HINT_TITLE: &str = "The title of the book";
-const HINT_AUTHOR: &str = "The author";
-const WORDS_POST: &str = "Post";
-const WORDS_REPLY: &str = "Reply";
-const WORDS_REMOVE: &str = "Remove";
-const WORDS_PICK_ONE: &str = "Click a message to read it.";
-const WORDS_LOADING: &str = "The message comes in a moment.";
-const HINT_SUBJECT: &str = "Subject";
-const HINT_TEXT: &str = "Your message";
-
-const BOARD_LIST_WIDTH: f32 = 300.0;
-const BOARD_TEXT_WIDTH: f32 = 330.0;
-const BOARD_ROWS: usize = 9;
-const BOARD_ROW: f32 = 36.0;
-const BOARD_WRITE_ROWS: usize = 4;
-/// An answer stands a little to the right of the message it answers.
-const REPLY_INDENT: f32 = 14.0;
-
-/// The book that is open: the left page that shows, from zero, and what
-/// the player wrote in it.
-struct OpenBook {
-    serial: u32,
-    left: usize,
-    draft: BookDraft<String>,
-}
-
-impl OpenBook {
-    fn new(serial: u32) -> Self {
-        Self {
-            serial,
-            left: 0,
-            draft: BookDraft::new(String::new(), String::new(), String::new),
-        }
-    }
-}
-
-/// The paperdoll that shows: whose it is, the words the shard put at its
-/// top, and whether the shard lets the character dress it.
-struct ShownDoll {
-    serial: u32,
-    text: String,
-    can_lift: bool,
-}
+const BOOK_FIELD_WIDTH: f32 = 220.0;
+const PAPER_COLOR: Color32 = bridge::color(PAPER);
+const INK_COLOR: Color32 = bridge::color(INK);
 
 #[derive(Default)]
 pub struct PagesUi {
     first_entry: usize,
     book: Option<OpenBook>,
     first_post: usize,
-    subject: String,
-    text: String,
+    board: BoardDraft,
     /// The paperdolls the shard opened, and the one that shows.
-    dolls: DollWatch,
-    doll: Option<ShownDoll>,
+    doll: DollPanel,
     first_worn: usize,
     clicks: ClickDelay,
     entry: EntryUi,
@@ -138,7 +60,7 @@ pub struct PagesUi {
 impl PagesUi {
     /// Closes the paperdoll that shows, as "close all gumps" does.
     pub fn close_doll(&mut self) {
-        self.doll = None;
+        self.doll.close();
     }
 
     /// Draws the windows that show in the Modern style. The dye picker
@@ -155,13 +77,13 @@ impl PagesUi {
         classic: bool,
         gump_art: bool,
     ) -> Vec<Rect> {
-        let fresh_doll = self.dolls.take(frame).cloned();
+        let fresh_doll = self.doll.follow(frame);
         let mut covered = Vec::new();
         if classic {
             self.first_entry = 0;
             self.book = None;
             self.first_post = 0;
-            self.doll = None;
+            self.doll.close();
             return covered;
         }
         match &frame.old_menu {
@@ -176,15 +98,10 @@ impl PagesUi {
             Some(board) => covered.push(self.board(ui, rect, board, frame, tools, profile)),
             None => self.first_post = 0,
         }
-        if let Some(doll) = fresh_doll {
+        if fresh_doll {
             self.first_worn = 0;
-            self.doll = Some(ShownDoll {
-                serial: doll.serial,
-                text: doll.text,
-                can_lift: doll.can_lift,
-            });
         }
-        if self.doll.is_some() {
+        if self.doll.doll.is_some() {
             covered.push(self.paperdoll(ui, rect, frame, tools, profile));
         }
         covered.extend(self.race.draw(ui, rect, frame, tools, profile));
@@ -209,6 +126,7 @@ impl PagesUi {
     ) -> Rect {
         let Some((serial, title, can_lift)) = self
             .doll
+            .doll
             .as_ref()
             .map(|doll| (doll.serial, doll.text.clone(), doll.can_lift))
         else {
@@ -220,38 +138,21 @@ impl PagesUi {
         let spec = PanelSpec {
             id: DOLL_ID,
             title: &title,
-            default: layout::first_place(
-                rect,
-                Spot::Middle(0),
-                Vec2::new(
-                    DOLL_PANEL_WIDTH,
-                    theme::PANEL_PAD * 2.0
-                        + frame::TITLE_ROW
-                        + DOLL_ROWS as f32 * DOLL_ROW
-                        + FOOT_ROW,
-                ),
-            ),
+            default: bridge::rect(doll_first_place(bridge::area(rect))),
             min_size: None,
             closable: true,
         };
         let panel = frame::place(rect, &spec, profile);
         let body = frame::draw(ui.painter(), panel, &title);
         if dresses && live {
-            let zone = if own { Zone::Wear } else { Zone::Into(serial) };
-            tools.desk.zone(bridge::area(panel), zone);
+            tools
+                .desk
+                .zone(bridge::area(panel), doll_zone(frame, serial));
         }
-        let picture = Rect::from_min_size(body.min, DOLL_PICTURE);
+        let picture = Rect::from_min_size(body.min, bridge::vec2(DOLL_PICTURE));
         ui.painter()
             .rect_filled(picture, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        let look = if own {
-            Some(&frame.look)
-        } else {
-            frame
-                .mobiles
-                .iter()
-                .find(|mobile| mobile.serial == serial)
-                .map(|mobile| &mobile.look)
-        };
+        let look = doll_look(frame, serial);
         let health = Rect::from_min_size(
             Pos2::new(picture.left(), picture.bottom() + theme::ROW_GAP),
             Vec2::new(picture.width(), HEALTH_ROW),
@@ -277,11 +178,7 @@ impl PagesUi {
                     Pos2::new(picture.right() + theme::ROW_GAP * 2.0, body.top()),
                     Pos2::new(body.right(), body.bottom() - FOOT_ROW),
                 );
-                let worn: Vec<&WatchEquip> = look
-                    .equipment
-                    .iter()
-                    .filter(|item| is_worn_layer(item.layer))
-                    .collect();
+                let worn = doll_worn(look);
                 self.worn_rows(ui, list, &worn, frame, tools, dresses);
             }
         }
@@ -295,7 +192,7 @@ impl PagesUi {
             );
         }
         if frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed) {
-            self.doll = None;
+            self.doll.close();
         }
         panel
     }
@@ -353,18 +250,13 @@ impl PagesUi {
                 },
             );
             if response.hovered() && !tools.desk.carries() && !tools.ring.is_open() {
-                let footer = match (live, dresses) {
-                    (false, _) => "",
-                    (true, true) => HINT_WORN_LIFT,
-                    (true, false) => HINT_WORN,
-                };
                 tips::point_at(
                     tools.tips,
                     ui,
                     tools.hand,
                     item.serial,
                     "",
-                    footer,
+                    worn_footer(live, dresses),
                     tools.time,
                 );
             }
@@ -402,20 +294,7 @@ impl PagesUi {
         own: bool,
         tools: &Tools<'_>,
     ) {
-        let mut buttons = vec![
-            (
-                WORDS_STATUS,
-                Act::MobileStatus {
-                    serial,
-                    close: false,
-                },
-            ),
-            (WORDS_VIRTUES, Act::VirtueGump(serial)),
-        ];
-        if own {
-            buttons.push((WORDS_QUESTS, Act::Command(QUESTS_COMMAND.into())));
-            buttons.push((WORDS_GUILD, Act::Command(GUILD_COMMAND.into())));
-        }
+        let buttons = doll_buttons(serial, own);
         let mut at = foot;
         let mut pressed = None;
         for (words, act) in buttons {
@@ -425,9 +304,9 @@ impl PagesUi {
                 pressed = Some(act);
             }
         }
-        let (_, closed) = theme::button(ui, at, WORDS_CLOSE, theme::TEXT_DIM);
+        let (_, closed) = theme::button(ui, at, WORDS_DOLL_CLOSE, theme::TEXT_DIM);
         if closed {
-            self.doll = None;
+            self.doll.close();
         }
         if let Some(act) = pressed {
             tools.hand.act(act);
@@ -443,19 +322,11 @@ impl PagesUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Rect {
-        let rows = menu.entries.len().clamp(1, MENU_ROWS);
         let live = frame.human_control;
         let spec = PanelSpec {
             id: MENU_ID,
             title: &menu.question,
-            default: layout::first_place(
-                rect,
-                Spot::Middle(0),
-                Vec2::new(
-                    MENU_WIDTH,
-                    theme::PANEL_PAD * 2.0 + TITLE_ROW + rows as f32 * MENU_ROW + FOOT_ROW,
-                ),
-            ),
+            default: bridge::rect(menu_first_place(bridge::area(rect), menu.entries.len())),
             min_size: None,
             closable: live,
         };
@@ -503,9 +374,7 @@ impl PagesUi {
                 theme::TEXT,
             );
             if live && response.clicked() {
-                // The shard counts the entries from one.
-                let index = u16::try_from(entry_index + 1).unwrap_or(u16::MAX);
-                tools.hand.act(Act::OldMenuPick(Some(index)));
+                tools.hand.act(menu_pick_act(entry_index));
             }
         }
         let mut canceled = false;
@@ -515,7 +384,7 @@ impl PagesUi {
         }
         let closed = frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
         if live && (canceled || closed) {
-            tools.hand.act(Act::OldMenuPick(None));
+            tools.hand.act(menu_cancel_act());
         }
         panel
     }
@@ -534,60 +403,38 @@ impl PagesUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Rect {
-        if self
-            .book
-            .as_ref()
-            .is_none_or(|open| open.serial != book.serial)
-        {
-            self.book = Some(OpenBook::new(book.serial));
-        }
-        let Some(open) = self.book.as_mut() else {
-            return Rect::NOTHING;
-        };
-        open.draft.take_shard_words(book);
+        let open = OpenBook::follow(&mut self.book, book);
         let live = frame.human_control;
         let writing = live && book.writable;
-        let count = page_count(book);
         let paper_height = BOOK_LINES as f32 * BOOK_LINE;
         let spec = PanelSpec {
             id: BOOK_ID,
             title: &book.title,
-            default: layout::first_place(
-                rect,
-                Spot::Middle(0),
-                Vec2::new(
-                    BOOK_PAGE_WIDTH * PAGES_SHOWN as f32 + BOOK_GUTTER + theme::PANEL_PAD * 2.0,
-                    frame::TITLE_ROW + TITLE_ROW + paper_height + FOOT_ROW + theme::PANEL_PAD * 2.0,
-                ),
-            ),
+            default: bridge::rect(book_first_place(bridge::area(rect))),
             min_size: None,
             closable: live,
         };
         let panel = frame::place(rect, &spec, profile);
         let body = frame::draw(ui.painter(), panel, &book.title);
-        let cover_row = Rect::from_min_size(body.left_top(), Vec2::new(body.width(), TITLE_ROW));
+        let cover_row = Rect::from_min_size(body.left_top(), Vec2::new(body.width(), COVER_ROW));
         cover(ui, cover_row, &mut open.draft, writing, book.serial);
-        let mut acts = Vec::new();
-        if live && !book.writable {
-            let numbers = open.left + 1..open.left + 1 + PAGES_SHOWN;
-            acts.extend(open.draft.ask_missing(book, numbers));
-        }
+        let mut acts = open.asks(book, live);
         for side in 0..PAGES_SHOWN {
             let number = open.left + side;
             let paper = Rect::from_min_size(
                 body.left_top()
-                    + Vec2::new(side as f32 * (BOOK_PAGE_WIDTH + BOOK_GUTTER), TITLE_ROW),
+                    + Vec2::new(side as f32 * (BOOK_PAGE_WIDTH + BOOK_GUTTER), COVER_ROW),
                 Vec2::new(BOOK_PAGE_WIDTH, paper_height),
             );
-            let fill = if writing { theme::TRACK } else { PAPER };
+            let fill = if writing { theme::TRACK } else { PAPER_COLOR };
             ui.painter()
                 .rect_filled(paper, CornerRadius::same(CELL_RADIUS), fill);
-            let Some(page) = open.draft.pages.get_mut(number) else {
+            let Some(page) = open.draft.pages.get(number) else {
                 continue;
             };
             if writing {
                 let key = Id::new(("book-page", book.serial, number));
-                page.changed |= page_edit(ui, paper, key, &mut page.field);
+                page_edit(ui, paper, key, open, number);
             } else {
                 page_words(ui, paper, &page.field);
             }
@@ -596,30 +443,20 @@ impl PagesUi {
                 Align2::CENTER_BOTTOM,
                 (number + 1).to_string(),
                 number_font(theme::SIZE_SMALL),
-                if writing { theme::TEXT_DIM } else { INK },
+                if writing { theme::TEXT_DIM } else { INK_COLOR },
             );
         }
         let foot = Pos2::new(body.left(), body.bottom() - FOOT_ROW + theme::ROW_GAP);
         let mut at = foot;
         let mut to = open.left;
-        for (words, target) in [
-            (WORDS_FIRST, 0),
-            (WORDS_BACK, turned(open.left, false, count)),
-            (WORDS_NEXT, turned(open.left, true, count)),
-            (WORDS_LAST, last_left(count)),
-        ] {
+        for (words, target) in open.turns(book) {
             let (area, pressed) = theme::button(ui, at, words, theme::TEXT);
             at = Pos2::new(area.right() + theme::ROW_GAP, foot.y);
             if pressed {
                 to = target;
             }
         }
-        if to != open.left {
-            open.left = to;
-            if writing {
-                acts.extend(open.draft.written());
-            }
-        }
+        acts.extend(open.turn(to, writing));
         let mut closing = false;
         if live {
             at.x += BOOK_GUTTER;
@@ -651,7 +488,7 @@ fn cover(ui: &mut egui::Ui, row: Rect, draft: &mut BookDraft<String>, writing: b
         ui.painter().text(
             row.left_center(),
             Align2::LEFT_CENTER,
-            format!("{WORDS_BY} {}", draft.author),
+            by_words(&draft.author),
             text_font(theme::SIZE_BODY),
             theme::TEXT_DIM,
         );
@@ -702,19 +539,21 @@ fn page_words(ui: &egui::Ui, paper: Rect, words: &str) {
             Align2::LEFT_TOP,
             line,
             text_font(theme::SIZE_BODY),
-            INK,
+            INK_COLOR,
         );
     }
 }
 
 /// The field of a page the player writes. A line too wide for the page
-/// breaks, and a page that is full takes no more. True when the words
-/// changed.
-fn page_edit(ui: &mut egui::Ui, paper: Rect, key: Id, words: &mut String) -> bool {
-    let before = words.clone();
+/// breaks, and a page that is full takes no more.
+fn page_edit(ui: &mut egui::Ui, paper: Rect, key: Id, open: &mut OpenBook, number: usize) {
+    let Some(page) = open.draft.pages.get(number) else {
+        return;
+    };
+    let mut words = page.field.clone();
     let output = ui
         .scope_builder(egui::UiBuilder::new().max_rect(paper), |ui| {
-            egui::TextEdit::multiline(words)
+            egui::TextEdit::multiline(&mut words)
                 .id(key)
                 .frame(false)
                 .desired_width(paper.width())
@@ -726,12 +565,12 @@ fn page_edit(ui: &mut egui::Ui, paper: Rect, key: Id, words: &mut String) -> boo
         })
         .inner;
     if !output.response.changed() {
-        return false;
+        return;
     }
     let caret = output
         .cursor_range
         .map_or(words.chars().count(), |range| range.primary.ccursor.index);
-    let room = paper.width() - PAGE_MARGIN * 2.0;
+    let room = page_line_room();
     let fits = |line: &str| {
         ui.fonts(|fonts| {
             fonts
@@ -741,44 +580,25 @@ fn page_edit(ui: &mut egui::Ui, paper: Rect, key: Id, words: &mut String) -> boo
                 <= room
         })
     };
-    match fitted(words, caret, fits, BOOK_PAGE_LINE_MAX) {
-        Some((kept, new_caret)) => {
-            if kept != *words {
-                *words = kept;
-                let mut state = output.state;
-                let at = egui::text::CCursor::new(new_caret);
-                state
-                    .cursor
-                    .set_char_range(Some(egui::text::CCursorRange::one(at)));
-                state.store(ui.ctx(), key);
-            }
-            true
-        }
-        // The page is full: the key does nothing.
-        None => {
-            *words = before;
-            false
-        }
+    // A page that is full takes no more: the key does nothing.
+    let Some(new_caret) = open.write_page(number, &words, caret, fits) else {
+        return;
+    };
+    if open.draft.pages[number].field != words {
+        let mut state = output.state;
+        let at = egui::text::CCursor::new(new_caret);
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(at)));
+        state.store(ui.ctx(), key);
     }
 }
 
-/// The health of the mobile of a paperdoll: the character's hits, or the
-/// share of hits the shard told of another.
+/// The health of the mobile of a paperdoll.
 fn health_bar(ui: &egui::Ui, area: Rect, frame: &WatchFrame, serial: u32) {
-    let share = if serial == frame.serial {
-        (frame.hits_max > 0).then(|| f32::from(frame.hits) / f32::from(frame.hits_max))
-    } else {
-        frame
-            .mobiles
-            .iter()
-            .find(|mobile| mobile.serial == serial)
-            .and_then(|mobile| mobile.hits_percent)
-            .map(|percent| f32::from(percent) / PERCENT)
-    };
-    let Some(share) = share else {
-        return;
-    };
-    theme::bar(ui.painter(), area, share, theme::HITS);
+    if let Some(share) = doll_health(frame, serial) {
+        theme::bar(ui.painter(), area, share, theme::HITS);
+    }
 }
 
 impl PagesUi {
@@ -796,20 +616,13 @@ impl PagesUi {
         let spec = PanelSpec {
             id: BOARD_ID,
             title: &board.name,
-            default: layout::first_place(
-                rect,
-                Spot::Middle(0),
-                Vec2::new(
-                    BOARD_LIST_WIDTH + BOOK_GUTTER + BOARD_TEXT_WIDTH + theme::PANEL_PAD * 2.0,
-                    TITLE_ROW + list_height + FOOT_ROW + theme::PANEL_PAD * 2.0,
-                ),
-            ),
+            default: bridge::rect(board_first_place(bridge::area(rect))),
             min_size: None,
             closable: live,
         };
         let panel = frame::place(rect, &spec, profile);
         let inner = frame::draw(ui.painter(), panel, &board.name);
-        let inner = Rect::from_min_max(inner.min - Vec2::new(0.0, TITLE_ROW), inner.max);
+        let inner = Rect::from_min_max(inner.min - Vec2::new(0.0, COVER_ROW), inner.max);
         let rows = threaded(&board.posts);
         let last_first = rows.len().saturating_sub(BOARD_ROWS);
         self.first_post = scrolled(ui, panel, self.first_post, last_first);
@@ -821,7 +634,7 @@ impl PagesUi {
         {
             let indent = REPLY_INDENT * shown_depth(*depth) as f32;
             let row = Rect::from_min_size(
-                inner.left_top() + Vec2::new(indent, TITLE_ROW + i as f32 * BOARD_ROW),
+                inner.left_top() + Vec2::new(indent, COVER_ROW + i as f32 * BOARD_ROW),
                 Vec2::new(BOARD_LIST_WIDTH - indent, BOARD_ROW - theme::ROW_GAP / 2.0),
             );
             let response = ui.interact(row, Id::new(("board-post", post.serial)), Sense::click());
@@ -842,7 +655,7 @@ impl PagesUi {
             painter.text(
                 row.left_bottom() + Vec2::new(theme::ROW_GAP, -2.0),
                 Align2::LEFT_BOTTOM,
-                format!("{}  {}", post.poster, post.time),
+                poster_words(post),
                 text_font(theme::SIZE_SMALL),
                 theme::TEXT_FAINT,
             );
@@ -856,29 +669,24 @@ impl PagesUi {
         let text_left = inner.left() + BOARD_LIST_WIDTH + BOOK_GUTTER;
         let write_height = BOARD_WRITE_ROWS as f32 * BOOK_LINE + BOARD_ROW;
         let paper = Rect::from_min_max(
-            Pos2::new(text_left, inner.top() + TITLE_ROW),
+            Pos2::new(text_left, inner.top() + COVER_ROW),
             Pos2::new(
                 inner.right(),
-                inner.top() + TITLE_ROW + list_height - write_height,
+                inner.top() + COVER_ROW + list_height - write_height,
             ),
         );
         ui.painter()
-            .rect_filled(paper, CornerRadius::same(CELL_RADIUS), PAPER);
-        let words = match reading.map(|post| post.lines.as_ref()) {
-            None => WORDS_PICK_ONE.to_string(),
-            Some(None) => WORDS_LOADING.to_string(),
-            Some(Some(lines)) => lines.join("\n"),
-        };
+            .rect_filled(paper, CornerRadius::same(CELL_RADIUS), PAPER_COLOR);
         let mut job = egui::text::LayoutJob::single_section(
-            words,
-            egui::TextFormat::simple(text_font(theme::SIZE_BODY), INK),
+            board_text(reading),
+            egui::TextFormat::simple(text_font(theme::SIZE_BODY), INK_COLOR),
         );
         job.wrap.max_width = paper.width() - theme::PANEL_PAD * 2.0;
         let galley = ui.painter().layout_job(job);
         ui.painter().with_clip_rect(paper).galley(
             paper.left_top() + Vec2::splat(theme::PANEL_PAD / 2.0),
             galley,
-            INK,
+            INK_COLOR,
         );
         let closed = frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
         if !live {
@@ -890,7 +698,7 @@ impl PagesUi {
         );
         let text_box = Rect::from_min_max(
             Pos2::new(text_left, subject_row.bottom() + theme::ROW_GAP),
-            Pos2::new(inner.right(), inner.top() + TITLE_ROW + list_height),
+            Pos2::new(inner.right(), inner.top() + COVER_ROW + list_height),
         );
         for field in [subject_row, text_box] {
             ui.painter()
@@ -898,7 +706,7 @@ impl PagesUi {
         }
         ui.put(
             subject_row,
-            egui::TextEdit::singleline(&mut self.subject)
+            egui::TextEdit::singleline(&mut self.board.subject)
                 .frame(false)
                 .hint_text(HINT_SUBJECT)
                 .font(text_font(theme::SIZE_BODY))
@@ -906,7 +714,7 @@ impl PagesUi {
         );
         ui.put(
             text_box,
-            egui::TextEdit::multiline(&mut self.text)
+            egui::TextEdit::multiline(&mut self.board.text)
                 .frame(false)
                 .hint_text(HINT_TEXT)
                 .font(text_font(theme::SIZE_BODY))
@@ -930,19 +738,18 @@ impl PagesUi {
             next = Pos2::new(at.right() + theme::ROW_GAP, foot.y);
         }
         let (_, close_pressed) = theme::button(ui, next, WORDS_CLOSE, theme::TEXT_DIM);
-        let ready = !self.subject.trim().is_empty();
-        if (posted || replied) && ready {
-            tools.hand.act(Act::BoardPost {
-                subject: self.subject.trim().to_string(),
-                text: self.text.clone(),
-                reply_to: reading.filter(|_| replied).map(|post| post.serial),
-            });
-            self.subject.clear();
-            self.text.clear();
-        } else if let Some(post) = reading.filter(|_| removed) {
-            tools.hand.act(Act::BoardRemove(post.serial));
-        } else if close_pressed || closed {
-            tools.hand.act(Act::BoardClose);
+        let press = [
+            (posted, BoardPress::Post),
+            (replied, BoardPress::Reply),
+            (removed, BoardPress::Remove),
+            (close_pressed || closed, BoardPress::Close),
+        ]
+        .into_iter()
+        .find_map(|(pressed, press)| pressed.then_some(press));
+        if let Some(act) =
+            press.and_then(|press| self.board.press(press, reading.map(|post| post.serial)))
+        {
+            tools.hand.act(act);
         }
         panel
     }
@@ -951,11 +758,9 @@ impl PagesUi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::WatchPaperdoll;
     use crate::window::modern::testing::draw_frames;
 
     const BOOK: u32 = 0x4000_0B00;
-    const STRANGER: u32 = 0x0000_0A11;
 
     fn book_frame(writable: bool) -> WatchFrame {
         WatchFrame {
@@ -983,13 +788,10 @@ mod tests {
     }
 
     #[test]
-    fn a_book_takes_the_words_of_the_shard_and_goes_with_the_book() {
+    fn a_book_shows_while_the_shard_has_it_open() {
         let mut pages = PagesUi::default();
         assert_eq!(draw(&mut pages, &book_frame(true), false).len(), 1);
-        let open = pages.book.as_ref().expect("the book is open");
-        assert_eq!(open.draft.pages.len(), 5);
-        assert_eq!(open.draft.pages[0].field, "Once\nupon");
-        assert_eq!(open.draft.author, "Ann");
+        assert!(pages.book.is_some());
         assert!(draw(&mut pages, &WatchFrame::default(), false).is_empty());
         assert!(pages.book.is_none());
     }
@@ -999,32 +801,5 @@ mod tests {
         let mut pages = PagesUi::default();
         assert!(draw(&mut pages, &book_frame(false), true).is_empty());
         assert!(pages.book.is_none());
-    }
-
-    #[test]
-    fn a_paperdoll_the_shard_sends_shows_until_closed() {
-        let mut pages = PagesUi::default();
-        let mut frame = WatchFrame {
-            paperdoll: Some(WatchPaperdoll {
-                serial: STRANGER,
-                text: "Someone the Brave".into(),
-                seq: 1,
-                can_lift: true,
-            }),
-            ..WatchFrame::default()
-        };
-        assert!(draw(&mut pages, &frame, false).is_empty(), "an old doll");
-        frame.paperdoll = Some(WatchPaperdoll {
-            seq: 2,
-            ..frame.paperdoll.clone().expect("a doll")
-        });
-        assert_eq!(draw(&mut pages, &frame, false).len(), 1);
-        let doll = pages.doll.as_ref().expect("the doll shows");
-        assert!(doll.can_lift && doll.serial == STRANGER);
-        pages.close_doll();
-        assert!(
-            draw(&mut pages, &frame, false).is_empty(),
-            "closed with the rest"
-        );
     }
 }

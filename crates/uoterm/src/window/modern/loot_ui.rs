@@ -9,26 +9,17 @@ use super::super::model::loot::{self, NEARBY_LOOT_TILES};
 use super::super::settings::Profile;
 use super::super::theme::{self, number_font, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, Id, Pos2, Rect, Vec2};
 use std::collections::HashSet;
-use uoterm_view::ui::lists;
+use uoterm_view::ui::lists::{
+    self, corpse_state_words, loot_first_place, LOOT_ID, LOOT_MAX_ROWS, LOOT_ROW,
+    WORDS_LOOT_ALL_NEAR, WORDS_LOOT_ONE, WORDS_LOOT_OPEN, WORDS_LOOT_TITLE, WORDS_NO_CORPSE,
+};
 
-pub const LOOT_ID: &str = "modern:loot";
-const WIDTH: f32 = 300.0;
-const ROW: f32 = 26.0;
-const MAX_ROWS: usize = 8;
 const BUTTON_WIDTH: f32 = 54.0;
 const BUTTON_GAP: f32 = 6.0;
-
-const WORDS_TITLE: &str = "Nearby loot";
-const WORDS_OPEN: &str = "Open";
-const WORDS_LOOT: &str = "Loot";
-const WORDS_LOOT_ALL: &str = "Loot all in reach";
-const WORDS_NONE: &str = "No corpse near.";
-const WORDS_EMPTY: &str = "empty";
-const WORDS_SHUT: &str = "shut";
 
 #[derive(Default)]
 pub struct LootUi {
@@ -56,37 +47,30 @@ impl LootUi {
         profile: &mut Profile,
     ) -> (Rect, bool) {
         let corpses = loot::nearby_corpses(frame, NEARBY_LOOT_TILES);
-        let rows = corpses.len().clamp(1, MAX_ROWS) + 1;
-        let height = frame::TITLE_ROW + rows as f32 * ROW + theme::PANEL_PAD * 2.0;
         let spec = PanelSpec {
             id: LOOT_ID,
-            title: WORDS_TITLE,
-            default: layout::first_place(rect, Spot::RightColumn(0), Vec2::new(WIDTH, height)),
+            title: WORDS_LOOT_TITLE,
+            default: bridge::rect(loot_first_place(bridge::area(rect), corpses.len())),
             min_size: None,
             closable: true,
         };
         let panel = frame::place(rect, &spec, profile);
-        let body = frame::draw(ui.painter(), panel, WORDS_TITLE);
+        let body = frame::draw(ui.painter(), panel, WORDS_LOOT_TITLE);
         let live = frame.human_control;
         if corpses.is_empty() {
             ui.painter().text(
                 body.left_top(),
                 Align2::LEFT_TOP,
-                WORDS_NONE,
+                WORDS_NO_CORPSE,
                 text_font(theme::SIZE_BODY),
                 theme::TEXT_FAINT,
             );
         }
-        for (at, corpse) in corpses.iter().take(MAX_ROWS).enumerate() {
+        for (at, corpse) in corpses.iter().take(LOOT_MAX_ROWS).enumerate() {
             let row = Rect::from_min_size(
-                body.left_top() + Vec2::new(0.0, at as f32 * ROW),
-                Vec2::new(body.width(), ROW - BUTTON_GAP / 2.0),
+                body.left_top() + Vec2::new(0.0, at as f32 * LOOT_ROW),
+                Vec2::new(body.width(), LOOT_ROW - BUTTON_GAP / 2.0),
             );
-            let state = match (corpse.open, corpse.items) {
-                (false, _) => WORDS_SHUT.to_string(),
-                (true, 0) => WORDS_EMPTY.to_string(),
-                (true, items) => items.to_string(),
-            };
             ui.painter().text(
                 row.left_center(),
                 Align2::LEFT_CENTER,
@@ -107,7 +91,7 @@ impl LootUi {
             ui.painter().text(
                 Pos2::new(open_area.left() - BUTTON_GAP, row.center().y),
                 Align2::RIGHT_CENTER,
-                format!("{state}  {}", corpse.distance),
+                corpse_state_words(corpse),
                 number_font(theme::SIZE_SMALL),
                 theme::TEXT_DIM,
             );
@@ -118,7 +102,7 @@ impl LootUi {
                 ui,
                 open_area,
                 Id::new(("loot-open", corpse.serial)),
-                WORDS_OPEN,
+                WORDS_LOOT_OPEN,
                 theme::TEXT,
             ) {
                 self.opened.insert(corpse.serial);
@@ -128,7 +112,7 @@ impl LootUi {
                 ui,
                 loot_area,
                 Id::new(("loot-one", corpse.serial)),
-                WORDS_LOOT,
+                WORDS_LOOT_ONE,
                 theme::GOAL,
             ) {
                 tools.hand.act(Act::Loot(corpse.serial));
@@ -136,10 +120,10 @@ impl LootUi {
         }
         if live && !corpses.is_empty() {
             let all = Rect::from_min_size(
-                Pos2::new(body.left(), body.bottom() - ROW + BUTTON_GAP / 2.0),
-                Vec2::new(body.width(), ROW - BUTTON_GAP / 2.0),
+                Pos2::new(body.left(), body.bottom() - LOOT_ROW + BUTTON_GAP / 2.0),
+                Vec2::new(body.width(), LOOT_ROW - BUTTON_GAP / 2.0),
             );
-            if theme::segment(ui, all, WORDS_LOOT_ALL, theme::GOAL) {
+            if theme::segment(ui, all, WORDS_LOOT_ALL_NEAR, theme::GOAL) {
                 tools.hand.act(Act::AgentRun {
                     agent: AUTOLOOT.to_string(),
                     list: None,

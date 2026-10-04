@@ -7,16 +7,22 @@
 
 pub mod bars;
 pub mod control_bar;
+pub mod deals;
 pub mod deck;
+pub mod doll;
 pub mod grid_clicks;
+pub mod grids;
 pub mod gumps;
 pub mod hud;
+pub mod hues;
 pub mod launch;
 pub mod layout;
 pub mod lists;
+pub mod pages;
 pub mod places;
 pub mod question;
 pub mod ring;
+pub mod shard_asks;
 pub mod sheet;
 pub mod text_field;
 pub mod theme;

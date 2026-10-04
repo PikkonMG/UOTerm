@@ -15,9 +15,8 @@ use super::boxes_ui::{
 use super::control::Act;
 use super::desk::Zone;
 use super::model::clicks::ClickDelay;
-use super::model::deals::{stepped, typed_offer, with_thousands, Cart};
+use super::model::deals::{stepped, with_thousands, Cart};
 use super::modern::frame::{self, FrameEvent, PanelSpec};
-use super::modern::layout::{self, Spot};
 use super::settings::Profile;
 use super::theme::{self, number_font, text_font};
 use super::tips;
@@ -25,69 +24,27 @@ use crate::view::{WatchFrame, WatchGood, WatchPackItem, WatchShop, WatchTrade};
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Vec2};
 use std::collections::HashMap;
+use uoterm_view::ui::deals::{
+    accept_button, deal_act, gold_words, left_words, owned_words, price_words, shop_first_place,
+    shop_least, shop_words, side_head, take_good, total_words, trade_first_place, trade_id,
+    trade_side, trade_title, traded_footer, TradeOffer, COIN_ROW, HINT_GOOD, SHOP_ID, SHOP_ROW,
+    SIDE_HEAD, STEP_DOWN, STEP_UP, TRADE_COLUMNS, TRADE_GAP, TRADE_ROWS, WORDS_CANCEL, WORDS_CLEAR,
+    WORDS_CLOSE, WORDS_GOLD, WORDS_PLATINUM, WORDS_YOU,
+};
+use uoterm_view::ui::places::FOOT_ROW;
 
-const SHOP_ID: &str = "modern:shop";
-const TRADE_PLACE_ID: &str = "modern:trade:";
-const SHOP_WIDTH: f32 = 460.0;
-const SHOP_ROWS: usize = 8;
-const SHOP_LEAST_ROWS: usize = 3;
-const SHOP_ROW: f32 = 34.0;
-const FOOT_ROW: f32 = 40.0;
 const STEP_SIDE: f32 = 22.0;
 const COUNT_WIDTH: f32 = 40.0;
 const ART_SIDE: f32 = 30.0;
-const TRADE_COLUMNS: usize = 4;
-const TRADE_ROWS: usize = 3;
-const TRADE_GAP: f32 = 24.0;
-const SIDE_HEAD: f32 = 26.0;
-const COIN_ROW: f32 = 30.0;
-const COIN_ROWS: usize = 2;
 const COIN_LABEL_WIDTH: f32 = 70.0;
 const COIN_FIELD_WIDTH: f32 = 90.0;
-/// The words of an offer field start as nothing offered.
-const NOTHING_OFFERED: &str = "0";
 
-const WORDS_BUY: &str = "Buy";
-const WORDS_SELL: &str = "Sell";
-const WORDS_FROM: &str = "from";
-const WORDS_TO: &str = "to";
-const WORDS_CLEAR: &str = "Clear";
-const WORDS_CLOSE: &str = "Close";
-const WORDS_TOTAL: &str = "Total";
-const WORDS_GOLD: &str = "Gold";
-const WORDS_PLATINUM: &str = "Platinum";
-const WORDS_GP: &str = "gp";
-const WORDS_OF: &str = "of";
-const WORDS_TRADE_WITH: &str = "Trade with";
-const WORDS_ACCEPT: &str = "Accept";
-const WORDS_UNDO_ACCEPT: &str = "Undo accept";
-const WORDS_CANCEL: &str = "Cancel";
-const WORDS_YOU: &str = "You";
-const WORDS_ACCEPTED: &str = "accepted";
-const WORDS_THINKS: &str = "not yet";
-const HINT_GOOD: &str = "Double-click: take one.  Shift: all.";
-const HINT_TRADED: &str = "Double-click: use.  Drag: take it back.";
-const HINT_THEIRS: &str = "Double-click: use.";
-
-/// What the player typed and offered in one trade.
+/// What the player typed and offered in one trade, and the first row
+/// shown of each side.
+#[derive(Default)]
 struct TradeState {
-    gold: String,
-    platinum: String,
-    /// The gold and platinum sent to the shard.
-    offered: (u32, u32),
-    /// The first row shown of the character's side and of the other one.
+    offer: TradeOffer,
     first_rows: [usize; 2],
-}
-
-impl Default for TradeState {
-    fn default() -> Self {
-        Self {
-            gold: NOTHING_OFFERED.into(),
-            platinum: NOTHING_OFFERED.into(),
-            offered: (0, 0),
-            first_rows: [0; 2],
-        }
-    }
 }
 
 #[derive(Default)]
@@ -98,11 +55,6 @@ pub struct DealUi {
     /// Each trade that is open, by the character's box of it.
     trades: HashMap<u32, TradeState>,
     clicks: ClickDelay,
-}
-
-/// The height of the shop panel with room for `rows` goods.
-fn shop_height(rows: usize) -> f32 {
-    theme::PANEL_PAD * 2.0 + frame::TITLE_ROW + rows as f32 * SHOP_ROW + FOOT_ROW * 2.0
 }
 
 /// The picture of an item in a cell, with its amount when asked.
@@ -191,21 +143,12 @@ impl DealUi {
             self.first_good = 0;
         }
         let live = frame.human_control;
-        let (deal_words, link_word) = if shop.buying {
-            (WORDS_BUY, WORDS_FROM)
-        } else {
-            (WORDS_SELL, WORDS_TO)
-        };
-        let title = format!("{deal_words} {link_word} {}", shop.vendor_name);
+        let (deal_words, title) = shop_words(shop);
         let spec = PanelSpec {
             id: SHOP_ID,
             title: &title,
-            default: layout::first_place(
-                rect,
-                Spot::Middle(0),
-                Vec2::new(SHOP_WIDTH, shop_height(SHOP_ROWS)),
-            ),
-            min_size: Some(Vec2::new(SHOP_WIDTH, shop_height(SHOP_LEAST_ROWS))),
+            default: bridge::rect(shop_first_place(bridge::area(rect))),
+            min_size: Some(bridge::vec2(shop_least())),
             closable: live,
         };
         let panel = frame::place(rect, &spec, profile);
@@ -232,7 +175,7 @@ impl DealUi {
         ui.painter().text(
             totals.right_center(),
             Align2::RIGHT_CENTER,
-            format!("{WORDS_TOTAL}  {} {WORDS_GP}", self.cart.total(&shop.goods)),
+            total_words(self.cart.total(&shop.goods)),
             number_font(theme::SIZE_BODY),
             theme::TEXT,
         );
@@ -240,7 +183,7 @@ impl DealUi {
             ui.painter().text(
                 totals.left_center(),
                 Align2::LEFT_CENTER,
-                format!("{WORDS_GOLD}  {}", with_thousands(frame.gold)),
+                gold_words(&with_thousands(frame.gold)),
                 number_font(theme::SIZE_BODY),
                 theme::WAITING,
             );
@@ -260,10 +203,9 @@ impl DealUi {
                 WORDS_CLOSE,
                 theme::TEXT_DIM,
             );
-            let rows = self.cart.rows(&shop.goods);
-            if dealt && !rows.is_empty() {
-                tools.hand.act(Act::Checkout(rows));
-            } else if dealt || closed {
+            if dealt {
+                tools.hand.act(deal_act(&self.cart, shop));
+            } else if closed {
                 tools.hand.act(Act::ShopClose);
             } else if cleared {
                 self.cart.clear();
@@ -308,7 +250,7 @@ impl DealUi {
         painter.text(
             Pos2::new(name.right() + theme::ROW_GAP * 2.0, row.center().y),
             Align2::LEFT_CENTER,
-            format!("x{}", self.cart.left(good)),
+            left_words(self.cart.left(good)),
             number_font(theme::SIZE_SMALL),
             theme::TEXT_FAINT,
         );
@@ -332,7 +274,7 @@ impl DealUi {
         painter.text(
             Pos2::new(minus.left() - theme::ROW_GAP * 2.0, row.center().y),
             Align2::RIGHT_CENTER,
-            format!("{} {WORDS_GP}", good.price),
+            price_words(good.price),
             number_font(theme::SIZE_BODY),
             theme::WAITING,
         );
@@ -354,11 +296,10 @@ impl DealUi {
             tools.hand,
             serial,
             tools.time,
-        ) && self.cart.left(good) > 0
-        {
-            self.cart.take(good, all);
+        ) {
+            take_good(&mut self.cart, good, all);
         }
-        for (area, words, up) in [(minus, "-", false), (plus, "+", true)] {
+        for (area, words, up) in [(minus, STEP_DOWN, false), (plus, STEP_UP, true)] {
             let key = Id::new(("shop-step", serial, up));
             if theme::segment_keyed(ui, area, key, words, theme::TEXT) {
                 let next = stepped(count, up, all, good.item.amount);
@@ -379,23 +320,14 @@ impl DealUi {
         profile: &mut Profile,
     ) -> Rect {
         let live = frame.human_control;
-        let side_width = TRADE_COLUMNS as f32 * (CELL + CELL_GAP) - CELL_GAP;
-        let side_height = TRADE_ROWS as f32 * (CELL + CELL_GAP) - CELL_GAP;
-        let size = Vec2::new(
-            side_width * 2.0 + TRADE_GAP + theme::PANEL_PAD * 2.0,
-            frame::TITLE_ROW
-                + SIDE_HEAD
-                + side_height
-                + COIN_ROWS as f32 * COIN_ROW
-                + FOOT_ROW
-                + theme::PANEL_PAD * 2.0,
-        );
-        let id = format!("{TRADE_PLACE_ID}{}", index + 1);
-        let title = format!("{WORDS_TRADE_WITH} {}", trade.with);
+        let side = trade_side();
+        let (side_width, side_height) = (side.x, side.y);
+        let id = trade_id(index);
+        let title = trade_title(trade);
         let spec = PanelSpec {
             id: &id,
             title: &title,
-            default: layout::first_place(rect, Spot::Middle(index), size),
+            default: bridge::rect(trade_first_place(bridge::area(rect), index)),
             min_size: None,
             closable: live,
         };
@@ -415,17 +347,13 @@ impl DealUi {
         ];
         for (at, (who, accepted, items, mine)) in sides.into_iter().enumerate() {
             let left = body.left() + at as f32 * (side_width + TRADE_GAP);
-            let (mark, color) = if accepted {
-                (WORDS_ACCEPTED, theme::HITS_POISONED)
-            } else {
-                (WORDS_THINKS, theme::TEXT_FAINT)
-            };
+            let (head, color) = side_head(who, accepted);
             ui.painter().text(
                 Pos2::new(left, body.top()),
                 Align2::LEFT_TOP,
-                format!("{who}: {mark}"),
+                head,
                 text_font(theme::SIZE_BODY),
-                color,
+                bridge::color(color),
             );
             let cells = Rect::from_min_size(
                 Pos2::new(left, body.top() + SIDE_HEAD),
@@ -453,19 +381,22 @@ impl DealUi {
             }
             let coins_top = cells.bottom() + theme::ROW_GAP;
             if mine {
-                offer_fields(ui, Pos2::new(left, coins_top), trade, state, tools, live);
+                offer_fields(
+                    ui,
+                    Pos2::new(left, coins_top),
+                    trade,
+                    &mut state.offer,
+                    tools,
+                    live,
+                );
             } else {
                 their_offer(ui, Pos2::new(left, coins_top), trade);
             }
         }
         if live {
             let foot = Pos2::new(body.left(), body.bottom() - FOOT_ROW + theme::ROW_GAP);
-            let (words, color) = if trade.i_accept {
-                (WORDS_UNDO_ACCEPT, theme::WAITING)
-            } else {
-                (WORDS_ACCEPT, theme::GOAL)
-            };
-            let (accept, accepted) = theme::button(ui, foot, words, color);
+            let (words, color) = accept_button(trade.i_accept);
+            let (accept, accepted) = theme::button(ui, foot, words, bridge::color(color));
             let (_, canceled) = theme::button(
                 ui,
                 Pos2::new(accept.right() + theme::ROW_GAP, foot.y),
@@ -505,12 +436,7 @@ fn traded_cell(
     );
     item_art(ui, cell, item, tools, true);
     let live = frame.human_control;
-    let footer = match (live, mine) {
-        (false, _) => "",
-        (true, true) => HINT_TRADED,
-        (true, false) => HINT_THEIRS,
-    };
-    item_tip(ui, &response, item, tools, footer);
+    item_tip(ui, &response, item, tools, traded_footer(live, mine));
     if !live {
         return;
     }
@@ -534,13 +460,14 @@ fn offer_fields(
     ui: &mut egui::Ui,
     left_top: Pos2,
     trade: &WatchTrade,
-    state: &mut TradeState,
+    offer: &mut TradeOffer,
     tools: &Tools<'_>,
     live: bool,
 ) {
-    let have = (trade.my_gold, trade.my_platinum);
-    let mut offered = state.offered;
-    let fields = [(WORDS_GOLD, false, have.0), (WORDS_PLATINUM, true, have.1)];
+    let fields = [
+        (WORDS_GOLD, false, trade.my_gold),
+        (WORDS_PLATINUM, true, trade.my_platinum),
+    ];
     for (at, (words, platinum, owned)) in fields.into_iter().enumerate() {
         let row = Rect::from_min_size(
             left_top + Vec2::new(0.0, at as f32 * COIN_ROW),
@@ -562,15 +489,15 @@ fn offer_fields(
         );
         ui.painter()
             .rect_filled(field, CornerRadius::same(CELL_RADIUS), theme::TRACK);
-        let typed = if platinum {
-            &mut state.platinum
+        let mut typed = if platinum {
+            offer.platinum.clone()
         } else {
-            &mut state.gold
+            offer.gold.clone()
         };
         let edit = ui.add_enabled_ui(live, |ui| {
             ui.put(
                 field,
-                egui::TextEdit::singleline(typed)
+                egui::TextEdit::singleline(&mut typed)
                     .id(Id::new(("trade-offer", trade.mine, platinum)))
                     .frame(false)
                     .margin(egui::Margin::symmetric(8, 4))
@@ -579,25 +506,17 @@ fn offer_fields(
             )
         });
         if edit.inner.changed() {
-            if let Some(words) = typed_offer(&mut offered, platinum, typed, have) {
-                *typed = words;
+            if let Some(act) = offer.typed(trade, platinum, &typed) {
+                tools.hand.act(act);
             }
         }
         ui.painter().text(
             Pos2::new(field.right() + theme::ROW_GAP, row.center().y),
             Align2::LEFT_CENTER,
-            format!("{WORDS_OF} {}", with_thousands(owned)),
+            owned_words(&with_thousands(owned)),
             number_font(theme::SIZE_SMALL),
             theme::TEXT_FAINT,
         );
-    }
-    if offered != state.offered {
-        state.offered = offered;
-        tools.hand.act(Act::TradeGold {
-            trade: trade.mine,
-            gold: offered.0,
-            platinum: offered.1,
-        });
     }
 }
 
@@ -624,29 +543,6 @@ fn their_offer(ui: &egui::Ui, left_top: Pos2, trade: &WatchTrade) {
             with_thousands(amount),
             number_font(theme::SIZE_BODY),
             theme::WAITING,
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_shop_is_as_tall_as_its_rows_and_its_foot() {
-        assert_eq!(
-            shop_height(SHOP_ROWS) - shop_height(SHOP_LEAST_ROWS),
-            (SHOP_ROWS - SHOP_LEAST_ROWS) as f32 * SHOP_ROW
-        );
-        assert!(shop_height(1) > FOOT_ROW * 2.0);
-    }
-
-    #[test]
-    fn an_offer_starts_at_nothing() {
-        let state = TradeState::default();
-        assert_eq!(
-            (state.gold.as_str(), state.offered),
-            (NOTHING_OFFERED, (0, 0))
         );
     }
 }

@@ -8,35 +8,25 @@
 //! has control.
 
 use super::super::boxes_ui::{Tools, CELL_RADIUS};
-use super::super::model::asked::{asked_dialog, kept_words, AskedDialog};
+use super::super::model::asked::{asked_dialog, AskedDialog};
 use super::super::settings::Profile;
 use super::super::theme::{self, text_font};
 use super::frame::{self, FrameEvent, PanelSpec};
-use super::layout::{self, Spot};
 use crate::view::WatchFrame;
+use crate::window::bridge;
 use eframe::egui::{self, Align2, CornerRadius, Id, Key, Pos2, Rect, Vec2};
+use uoterm_view::ui::places::FOOT_ROW;
+use uoterm_view::ui::shard_asks::{
+    entry_first_place, entry_hint, entry_text_room, entry_title, AskedField, ENTRY_ID, FIELD_ROW,
+    WORDS_CANCEL, WORDS_OKAY, WORDS_TAKE_CONTROL,
+};
 
-pub const ENTRY_ID: &str = "modern:entry";
-const WIDTH: f32 = 400.0;
-const FIELD_ROW: f32 = 30.0;
-const FOOT_ROW: f32 = 40.0;
 const FIELD_ID: &str = "modern-entry-field";
-
-const WORDS_TITLE: &str = "The shard asks";
-const WORDS_OKAY: &str = "Okay";
-const WORDS_CANCEL: &str = "Cancel";
-const WORDS_TAKE_CONTROL: &str = "Take control to answer.";
-const HINT_WORDS: &str = "Type the answer and press Enter.";
-const HINT_DIGITS: &str = "Digits only. Press Enter.";
 
 /// The dialog, and the words typed for the question it shows.
 #[derive(Default)]
 pub struct EntryUi {
-    /// The question the field was made for. A new one gets an empty field.
-    shown: Option<AskedDialog>,
-    words: String,
-    /// The field has had the keys once.
-    focused: bool,
+    field: AskedField,
 }
 
 impl EntryUi {
@@ -49,38 +39,21 @@ impl EntryUi {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Option<Rect> {
-        let Some(dialog) = asked_dialog(frame) else {
-            self.shown = None;
-            return None;
-        };
-        if self.shown.as_ref() != Some(&dialog) {
-            self.words.clear();
-            self.focused = false;
-            self.shown = Some(dialog.clone());
-        }
+        let dialog = asked_dialog(frame);
+        self.field.follow(dialog.as_ref());
+        let dialog = dialog?;
         let live = frame.human_control;
-        let title = if dialog.title.is_empty() {
-            WORDS_TITLE
-        } else {
-            dialog.title.as_str()
-        };
-        let text_width = WIDTH - theme::PANEL_PAD * 2.0;
+        let title = entry_title(&dialog);
         let description = ui.painter().layout(
             dialog.description.clone(),
             text_font(theme::SIZE_BODY),
             theme::TEXT_DIM,
-            text_width,
+            entry_text_room(),
         );
-        let height = theme::PANEL_PAD * 2.0
-            + frame::TITLE_ROW
-            + description.size().y
-            + theme::ROW_GAP
-            + FIELD_ROW
-            + FOOT_ROW;
         let spec = PanelSpec {
             id: ENTRY_ID,
             title,
-            default: layout::first_place(rect, Spot::Middle(0), Vec2::new(WIDTH, height)),
+            default: bridge::rect(entry_first_place(bridge::area(rect), description.size().y)),
             min_size: None,
             closable: live && dialog.can_cancel,
         };
@@ -116,7 +89,9 @@ impl EntryUi {
         }
         let closed = frame::controls(ui, panel, &spec, profile, tools) == Some(FrameEvent::Closed);
         if okay && live {
-            tools.hand.act(dialog.commands.answer_act(&self.words));
+            tools
+                .hand
+                .act(dialog.commands.answer_act(&self.field.words));
         } else if (cancel || closed) && live {
             tools.hand.act(dialog.commands.cancel_act());
         }
@@ -129,16 +104,13 @@ impl EntryUi {
         ui.painter()
             .rect_filled(area, CornerRadius::same(CELL_RADIUS), theme::TRACK);
         let id = Id::new(FIELD_ID);
-        let hint = if dialog.numeric {
-            HINT_DIGITS
-        } else {
-            HINT_WORDS
-        };
+        let hint = entry_hint(dialog);
+        let mut words = self.field.words.clone();
         let response = ui
             .add_enabled_ui(live, |ui| {
                 ui.put(
                     area,
-                    egui::TextEdit::singleline(&mut self.words)
+                    egui::TextEdit::singleline(&mut words)
                         .id(id)
                         .frame(false)
                         .hint_text(hint)
@@ -149,11 +121,11 @@ impl EntryUi {
             })
             .inner;
         if response.changed() {
-            self.words = kept_words(&self.words, dialog.numeric, dialog.max_chars);
+            self.field.typed(&words, dialog);
         }
-        if live && !self.focused {
+        if live && !self.field.focused {
             response.request_focus();
-            self.focused = true;
+            self.field.focused = true;
         }
         response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
     }
@@ -186,7 +158,7 @@ mod tests {
             |ui, rect, tools, profile| shown = entry.draw(ui, rect, &asking, tools, profile),
         );
         assert!(shown.is_some());
-        assert_eq!(entry.words, "123", "digits only, three at most");
+        assert_eq!(entry.field.words, "123", "digits only, three at most");
         let prompt = WatchFrame {
             human_control: true,
             prompt: true,
@@ -195,7 +167,10 @@ mod tests {
         draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
             shown = entry.draw(ui, rect, &prompt, tools, profile);
         });
-        assert!(entry.words.is_empty(), "a new question has an empty field");
+        assert!(
+            entry.field.words.is_empty(),
+            "a new question has an empty field"
+        );
         draw_frames(&mut profile, &[Vec::new()], |ui, rect, tools, profile| {
             shown = entry.draw(ui, rect, &WatchFrame::default(), tools, profile);
         });
