@@ -1373,6 +1373,46 @@ mod tests {
     }
 
     #[test]
+    fn the_steps_of_a_macro_change_by_the_editor() {
+        let mut view = options_open();
+        press(
+            &mut view,
+            PANEL_OPTIONS,
+            json!({ "page": Page::Macros.index() }),
+        );
+        let keys = rows_on(Page::Macros)
+            .find(|row| row.kind == OptionKind::KeyList)
+            .unwrap()
+            .label;
+        press(&mut view, PANEL_OPTIONS, json!({ "add": keys }));
+        press(
+            &mut view,
+            PANEL_OPTIONS,
+            json!({ "step_add": { "at": 0, "action": "say" } }),
+        );
+        press(
+            &mut view,
+            PANEL_OPTIONS,
+            json!({ "step_argument": { "at": 0, "step": 0, "words": "hail" } }),
+        );
+        press(
+            &mut view,
+            PANEL_OPTIONS,
+            json!({ "macro_name": { "at": 0, "words": "greet" } }),
+        );
+        let out = press(&mut view, PANEL_OPTIONS, json!({ "foot": OKAY }));
+        let binding = saved_profiles(&out)[0].macros.key_bindings[0].clone();
+        assert_eq!(binding.name, "greet");
+        assert_eq!(
+            (
+                binding.steps[0].action.as_str(),
+                binding.steps[0].argument.as_str()
+            ),
+            ("say", "hail")
+        );
+    }
+
+    #[test]
     fn a_picked_hue_goes_to_its_entry_and_lists_grow_by_their_rules() {
         let mut view = options_open();
         press(

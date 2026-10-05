@@ -1566,6 +1566,7 @@
 .stats {
   margin: 0;
   white-space: pre;
+  text-align: start;
   cursor: default;
 }
 
