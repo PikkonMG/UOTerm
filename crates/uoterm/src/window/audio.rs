@@ -11,7 +11,7 @@ mod midi;
 
 pub use uoterm_view::audio::Step;
 
-use super::settings::{SoundKind, SoundOptions};
+use super::settings::SoundOptions;
 use crate::view::WatchFrame;
 use effects::{Effects, ONE_CHANNEL, SAMPLE_RATE};
 use midi::{MidiSource, SoundFonts};
@@ -22,10 +22,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uoterm_nav::{MusicList, SoundData};
-use uoterm_view::audio::{
-    gain, music_file, nearness, new_cues, pick_combat_track, rain_sound, rain_volume, step_sound,
-    EffectCue, Moment, MusicFile, Score, HEARD, UNHEARD,
-};
+use uoterm_view::audio::{music_file, AudioOut, Mixer, MusicFile};
 
 const SAMPLE_FULL_SCALE: f32 = 32_768.0;
 /// The window keeps this many decoded sounds. When full, it starts again.
@@ -42,19 +39,12 @@ struct Device {
     music: Player,
 }
 
-/// The music asked for last: its number, its volume, and the SoundFont
-/// setting when the track has a MIDI file. The same ask plays on.
+/// The music that plays: its number, and the SoundFont when the track has
+/// a MIDI file. A new SoundFont for a track with no MIDI file plays on.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct MusicAsked {
-    number: Option<u16>,
-    kind: SoundKind,
+struct MusicPlaying {
+    number: u16,
     sound_font: Option<PathBuf>,
-}
-
-/// The rain that plays, and its loop. No loop when the files lack it.
-struct Rain {
-    sound: u16,
-    player: Option<Player>,
 }
 
 pub struct Audio {
@@ -66,16 +56,12 @@ pub struct Audio {
     sounds: Option<SoundData>,
     music_list: Option<MusicList>,
     decoded: HashMap<u16, Arc<[f32]>>,
-    /// The number of the last sound cue played. None before the first frame.
-    last_cue: Option<u64>,
-    music: Option<MusicAsked>,
-    score: Score,
+    mixer: Mixer,
+    music: Option<MusicPlaying>,
     sound_fonts: SoundFonts,
     effects: Effects,
-    rain: Option<Rain>,
-    steps_taken: usize,
-    /// The volume of all sound, by the window focus.
-    gain: f32,
+    /// The loop of the rain that plays. None when the files lack it.
+    rain: Option<Player>,
 }
 
 impl Audio {
@@ -99,14 +85,11 @@ impl Audio {
             sounds,
             music_list: uopath.and_then(|dir| MusicList::open(dir).ok()),
             decoded: HashMap::new(),
-            last_cue: None,
+            mixer: Mixer::default(),
             music: None,
-            score: Score::default(),
             sound_fonts: SoundFonts::default(),
             effects: Effects::default(),
             rain: None,
-            steps_taken: 0,
-            gain: HEARD,
         }
     }
 
@@ -131,90 +114,120 @@ impl Audio {
         if self.device.is_none() {
             return;
         }
-        self.follow_focus(focused, options);
-        let moment = Moment {
-            region: frame.music,
-            war: frame.war,
-            dead: frame.dead,
-        };
-        let combat_music = || pick_combat_track(rand::random());
-        let music = self.score.follow(moment, options, combat_music);
-        self.follow_music(music, SoundKind::Music, options);
-        self.follow_rain(frame.weather, options);
-        for cue in new_cues(&frame.sounds, &mut self.last_cue) {
-            let tiles_away =
-                uoterm_protocol::types::tile_distance((cue.x, cue.y), (frame.x, frame.y)) as f32;
-            self.play_sound(cue.sound, SoundKind::Effects, tiles_away, options);
+        for voice in self.effects.take_ended() {
+            self.mixer.ended(voice);
         }
-        for step in steps {
-            self.steps_taken += 1;
-            let sound = step_sound(*step, self.steps_taken);
-            self.play_sound(sound, SoundKind::Footsteps, step.tiles_away, options);
-        }
+        let combat_seed = rand::random;
+        let mut outs = self.mixer.follow(frame, options, focused, combat_seed);
+        outs.extend(self.mixer.steps(steps, options));
+        self.carry_out(outs, options);
     }
 
     /// Plays a sound effect of the window itself, such as a container gump
     /// that opens, as loud as a sound at the character.
     pub fn play_effect(&mut self, sound: u16, options: &SoundOptions) {
         if self.device.is_some() {
-            self.play_sound(sound, SoundKind::Effects, 0.0, options);
+            let outs = self.mixer.effect(sound, options);
+            self.carry_out(outs, options);
         }
     }
 
     /// Call this when the player changed the sound options, so what plays
     /// follows at once.
-    pub fn options_changed(&self, options: &SoundOptions) {
-        let Some(device) = &self.device else {
-            return;
-        };
-        if let Some(music) = &self.music {
-            device
-                .music
-                .set_volume(options.volume(music.kind) * self.gain);
-        }
-        self.effects.set_volumes(options, self.gain);
-        if let Some(player) = self.rain.as_ref().and_then(|rain| rain.player.as_ref()) {
-            player.set_volume(rain_volume(options) * self.gain);
+    pub fn options_changed(&mut self, options: &SoundOptions) {
+        if self.device.is_some() {
+            let volumes = self.mixer.volumes(options);
+            self.carry_out(vec![volumes], options);
         }
     }
 
-    fn follow_focus(&mut self, focused: bool, options: &SoundOptions) {
-        let gain = gain(focused, options.play_in_background);
-        if gain != self.gain {
-            self.gain = gain;
-            self.options_changed(options);
+    /// Does what the mixer asks of the sound device.
+    fn carry_out(&mut self, outs: Vec<AudioOut>, options: &SoundOptions) {
+        for out in outs {
+            match out {
+                AudioOut::Effect {
+                    voice,
+                    sound,
+                    volume,
+                    replace,
+                } => {
+                    if let Some(replaced) = replace {
+                        self.effects.stop(replaced);
+                    }
+                    match (self.samples(sound), &self.device) {
+                        (Some(samples), Some(device)) => {
+                            self.effects
+                                .start(device.sink.mixer(), voice, &samples, volume);
+                        }
+                        _ => self.mixer.ended(voice),
+                    }
+                }
+                AudioOut::Music {
+                    track,
+                    volume,
+                    sound_font,
+                } => self.start_music(track, volume, sound_font, options),
+                AudioOut::MusicStop => {
+                    self.music = None;
+                    self.music_note = "";
+                    if let Some(device) = &self.device {
+                        device.music.stop();
+                    }
+                }
+                AudioOut::Rain { sound, volume } => self.start_rain(sound, volume),
+                // The old loop stops when its player drops.
+                AudioOut::RainStop => self.rain = None,
+                AudioOut::Volumes {
+                    voices,
+                    music,
+                    rain,
+                } => {
+                    self.effects.set_volumes(&voices);
+                    if let Some(device) = &self.device {
+                        device.music.set_volume(music);
+                    }
+                    if let Some(player) = &self.rain {
+                        player.set_volume(rain);
+                    }
+                }
+            }
         }
     }
 
-    fn follow_music(&mut self, number: Option<u16>, kind: SoundKind, options: &SoundOptions) {
-        let number = number.filter(|music| !options.filters_music(*music));
-        let track = number
-            .and_then(|music| self.music_list.as_ref()?.track(music))
+    fn start_music(
+        &mut self,
+        number: u16,
+        volume: f32,
+        sound_font: Option<PathBuf>,
+        options: &SoundOptions,
+    ) {
+        let track = self
+            .music_list
+            .as_ref()
+            .and_then(|list| list.track(number))
             .cloned();
         let has_midi = track.as_ref().is_some_and(|track| track.midi.is_some());
-        let asked = MusicAsked {
+        let playing = MusicPlaying {
             number,
-            kind,
-            sound_font: options.midi_sound_font.clone().filter(|_| has_midi),
+            sound_font: sound_font.filter(|_| has_midi),
         };
-        if self.music.as_ref() == Some(&asked) {
-            return;
-        }
-        self.music = Some(asked);
-        self.music_note = "";
         let Some(device) = &self.device else {
             return;
         };
+        device.music.set_volume(volume);
+        if self.music.as_ref() == Some(&playing) {
+            return;
+        }
+        self.music_note = "";
         device.music.stop();
+        let font = playing
+            .sound_font
+            .as_deref()
+            .and_then(|path| self.sound_fonts.get(path));
+        self.music = Some(playing);
         let Some(track) = track else {
             return;
         };
-        device.music.set_volume(options.volume(kind) * self.gain);
-        let font = options
-            .midi_sound_font
-            .as_deref()
-            .filter(|_| has_midi)
-            .and_then(|path| self.sound_fonts.get(path));
         match music_file(&track, font.is_some()) {
             Some(MusicFile::Mp3(path)) => {
                 let Ok(file) = std::fs::File::open(path) else {
@@ -241,43 +254,15 @@ impl Audio {
         device.music.play();
     }
 
-    fn follow_rain(&mut self, weather: Option<(u8, u8)>, options: &SoundOptions) {
-        let wanted = rain_sound(weather, options);
-        if self.rain.as_ref().map(|rain| rain.sound) == wanted {
-            return;
-        }
-        // The old loop stops when its player drops.
-        self.rain = None;
-        let Some(sound) = wanted else {
-            return;
-        };
+    fn start_rain(&mut self, sound: u16, volume: f32) {
         let samples = self.samples(sound);
-        let player = samples.zip(self.device.as_ref()).map(|(samples, device)| {
+        self.rain = samples.zip(self.device.as_ref()).map(|(samples, device)| {
             let player = Player::connect_new(device.sink.mixer());
-            player.set_volume(rain_volume(options) * self.gain);
+            player.set_volume(volume);
             let source = SamplesBuffer::new(ONE_CHANNEL, SAMPLE_RATE, samples.to_vec());
             player.append(source.repeat_infinite());
             player
         });
-        self.rain = Some(Rain { sound, player });
-    }
-
-    fn play_sound(&mut self, sound: u16, kind: SoundKind, tiles_away: f32, options: &SoundOptions) {
-        let cue = EffectCue {
-            sound,
-            kind,
-            nearness: nearness(tiles_away),
-        };
-        if self.gain <= UNHEARD || cue.loudness(options) <= 0.0 || options.filters_sound(sound) {
-            return;
-        }
-        let Some(samples) = self.samples(sound) else {
-            return;
-        };
-        if let Some(device) = &self.device {
-            self.effects
-                .start(device.sink.mixer(), cue, &samples, options, self.gain);
-        }
     }
 
     fn samples(&mut self, sound: u16) -> Option<Arc<[f32]>> {

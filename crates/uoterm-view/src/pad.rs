@@ -7,7 +7,8 @@
 //! each frame. The window reads it with gilrs, the browser with the
 //! Gamepad API.
 
-use crate::geom::Vector;
+use crate::geom::{Area, Point, Rgba, Vector};
+use crate::scene::Overlay;
 use crate::settings::{KeyBinding, MacroStep, PadChord, Profile};
 use crate::steer::way_of;
 
@@ -84,6 +85,43 @@ pub struct PadFrame {
     pub macros: Vec<Vec<MacroStep>>,
     /// The buttons pressed this frame, for the key editor.
     pub pressed: Option<PadChord>,
+}
+
+/// The soft pointer the right stick moves, where the client cannot move
+/// the mouse: an arrow this long down its left edge, with its tip at the
+/// pointer, white with a black edge.
+const SOFT_POINTER_LENGTH: f32 = 18.0;
+/// The arrow leans this far right of its left edge, at its end.
+const SOFT_POINTER_LEAN: f32 = 12.0;
+const SOFT_POINTER_EDGE_WIDTH: f32 = 1.5;
+const SOFT_POINTER_EDGE: Rgba = Rgba::from_rgb(0, 0, 0);
+
+/// Where the pointer stands after the right stick moved it `by`: from `at`,
+/// or from the middle of `room` when it is not over the window, and never
+/// out of `room`. None when the stick does not move it.
+pub fn moved_pointer(at: Option<Point>, by: Vector, room: Area) -> Option<Point> {
+    if by == Vector::ZERO {
+        return None;
+    }
+    let moved = at.unwrap_or_else(|| room.center()) + by;
+    Some(Point::new(
+        moved.x.clamp(room.min.x, room.max.x),
+        moved.y.clamp(room.min.y, room.max.y),
+    ))
+}
+
+/// The soft pointer at `at`, for a client that cannot move the mouse.
+pub fn soft_pointer(at: Point) -> Overlay {
+    Overlay::Polygon {
+        points: vec![
+            at,
+            at + Vector::new(0.0, SOFT_POINTER_LENGTH),
+            at + Vector::new(SOFT_POINTER_LEAN, SOFT_POINTER_LEAN),
+        ],
+        fill: Rgba::WHITE,
+        width: SOFT_POINTER_EDGE_WIDTH,
+        edge: SOFT_POINTER_EDGE,
+    }
 }
 
 /// The buttons that were down in the last frame, in the order they went
@@ -261,6 +299,39 @@ mod read_tests {
     use crate::settings::Profile;
 
     const SECONDS: f32 = 1.0 / 60.0;
+
+    const ROOM: Area = Area {
+        min: Point { x: 0.0, y: 0.0 },
+        max: Point { x: 100.0, y: 50.0 },
+    };
+
+    #[test]
+    fn the_right_stick_moves_the_pointer_inside_the_window() {
+        let by = Vector::new(10.0, 5.0);
+        let at = Some(Point::new(20.0, 20.0));
+        assert_eq!(moved_pointer(at, by, ROOM), Some(Point::new(30.0, 25.0)));
+        let far = Vector::new(500.0, -500.0);
+        assert_eq!(moved_pointer(at, far, ROOM), Some(Point::new(100.0, 0.0)));
+        assert_eq!(moved_pointer(at, Vector::ZERO, ROOM), None);
+    }
+
+    #[test]
+    fn a_pointer_not_over_the_window_starts_from_its_middle() {
+        let by = Vector::new(1.0, 1.0);
+        assert_eq!(moved_pointer(None, by, ROOM), Some(Point::new(51.0, 26.0)));
+    }
+
+    #[test]
+    fn the_soft_pointer_is_drawn_with_its_tip_at_the_pointer() {
+        let at = Point::new(30.0, 40.0);
+        let Overlay::Polygon { points, .. } = soft_pointer(at) else {
+            panic!("an arrow");
+        };
+        assert_eq!(points.first(), Some(&at));
+        assert!(points
+            .iter()
+            .all(|point| point.x >= at.x && point.y >= at.y));
+    }
 
     #[test]
     fn a_stick_pushed_far_runs() {

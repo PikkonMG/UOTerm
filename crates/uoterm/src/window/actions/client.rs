@@ -107,14 +107,14 @@ impl Controls {
             .take_pad(self.pad.poll(profile, raw.predicted_dt));
         pad::leave_pressed(ctx, pad.pressed);
         let last = ctx.input(|input| input.pointer.latest_pos());
-        let mut at = last.unwrap_or_else(|| ctx.screen_rect().center());
-        let pointer = bridge::vec2(pad.pointer);
-        if pointer != egui::Vec2::ZERO {
-            let room = raw.screen_rect.unwrap_or_else(|| ctx.screen_rect());
-            at = room.clamp(at + pointer);
-            raw.events.push(Event::PointerMoved(at));
-            ctx.send_viewport_cmd(ViewportCommand::CursorPosition(at));
+        let room = raw.screen_rect.unwrap_or_else(|| ctx.screen_rect());
+        let moved = pad::moved_pointer(last.map(bridge::point), pad.pointer, bridge::area(room))
+            .map(bridge::pos2);
+        if let Some(moved) = moved {
+            raw.events.push(Event::PointerMoved(moved));
+            ctx.send_viewport_cmd(ViewportCommand::CursorPosition(moved));
         }
+        let at = moved.or(last).unwrap_or_else(|| ctx.screen_rect().center());
         for click in self.shared.take_clicks() {
             let (button, times) = match click {
                 PointerClick::Left => (PointerButton::Primary, 1),
