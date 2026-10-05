@@ -3,6 +3,7 @@
 //! form, and the names a saved login takes. The window and the web client
 //! both log in with these.
 
+use crate::model::creation::can_make;
 use serde::Serialize;
 use uoterm_protocol::crypto::EncryptionMode;
 
@@ -153,6 +154,38 @@ pub fn saved_detail(account: &str, host: &str, port: u16) -> String {
     format!("{account} @ {}", server_words(host, port))
 }
 
+/// The note New character gives when the account has no room for one
+/// more, or None when the making may begin.
+pub fn no_room_note(names: &[String], list_flags: u32) -> Option<&'static str> {
+    (!can_make(names, list_flags)).then_some(WORDS_NO_ROOM)
+}
+
+/// What the character list keeps while it shows: the slot whose Delete
+/// was pressed once. A new list starts with none asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CharacterList {
+    pub delete_asked: Option<usize>,
+}
+
+impl CharacterList {
+    /// A press on the Delete of a slot. The first press asks; a second
+    /// press on the same slot deletes. True when the delete goes now.
+    pub fn press_delete(&mut self, slot: usize) -> bool {
+        let sure = self.delete_asked == Some(slot);
+        self.delete_asked = if sure { None } else { Some(slot) };
+        sure
+    }
+
+    /// The words of the Delete button of a slot.
+    pub fn delete_words(&self, slot: usize) -> &'static str {
+        if self.delete_asked == Some(slot) {
+            WORDS_DELETE_SURE
+        } else {
+            WORDS_DELETE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +221,20 @@ mod tests {
         assert_eq!(words["encryptions"][1][0], "osi");
         assert_eq!(words["labels"][3], "Password");
         assert_eq!(words["character_slots"], CHARACTER_SLOTS);
+    }
+
+    #[test]
+    fn a_delete_asks_once_more_on_the_same_slot_and_a_full_account_has_no_room() {
+        let mut list = CharacterList::default();
+        assert_eq!(list.delete_words(1), WORDS_DELETE);
+        assert!(!list.press_delete(1), "the first press asks");
+        assert_eq!(list.delete_words(1), WORDS_DELETE_SURE);
+        assert_eq!(list.delete_words(2), WORDS_DELETE);
+        assert!(!list.press_delete(2), "another slot asks again");
+        assert!(list.press_delete(2));
+        assert_eq!(list.delete_asked, None);
+        let full = vec!["A".to_string(); 5];
+        assert_eq!(no_room_note(&full, 0), Some(WORDS_NO_ROOM));
+        assert_eq!(no_room_note(&["Mara".into(), String::new()], 0), None);
     }
 }

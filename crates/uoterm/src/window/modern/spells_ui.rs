@@ -20,7 +20,7 @@ use crate::view::{WatchFrame, WatchSpellbook};
 use crate::window::bridge;
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Sense, Vec2};
 use uoterm_assist::spells::School;
-use uoterm_view::ui::lists::{self, spell_book_words, spell_chosen};
+use uoterm_view::ui::lists::{spell_book_words, SpellTab};
 use uoterm_view::ui::sheet::{
     assigned_words, assigns_spell, HINT_ASSIGN, HINT_SPELL, WORDS_ASSIGN, WORDS_CAST,
     WORDS_EMPTY_BOOK, WORDS_NO_BOOK, WORDS_PICK_SPELL as WORDS_PICK, WORDS_PIN, WORDS_REAGENTS,
@@ -35,34 +35,27 @@ const LINE: f32 = 16.0;
 
 #[derive(Default)]
 pub struct SpellsTab {
-    /// The book the player chose, by its serial.
-    book: Option<u32>,
+    /// The book the tab shows.
+    book: SpellTab,
     /// The spell the player clicked.
     selected: Option<u16>,
     first_row: usize,
-    /// The school asked for before the shard told of a book of it.
-    wanted: Option<School>,
 }
 
 impl SpellsTab {
     /// Shows the book of a school. False when the character has none yet;
     /// the tab turns to one when the shard tells of it.
     pub fn choose_school(&mut self, frame: &WatchFrame, school: School) -> bool {
-        let book = lists::choose_school(frame, school);
-        match book {
-            Some(serial) => {
-                self.book = Some(serial);
-                self.first_row = 0;
-                self.wanted = None;
-            }
-            None => self.wanted = Some(school),
+        let chosen = self.book.choose_school(frame, school);
+        if chosen {
+            self.first_row = 0;
         }
-        book.is_some()
+        chosen
     }
 
     /// The school of the book the tab shows.
     pub fn school(&self, frame: &WatchFrame) -> Option<School> {
-        spell_chosen(frame, self.book).map(|book| book_info(&book.school, book.graphic).school)
+        self.book.school(frame)
     }
 
     /// Draws the tab in `body`. Gives what the player pinned or dragged
@@ -75,11 +68,11 @@ impl SpellsTab {
         tools: &mut Tools<'_>,
         profile: &mut Profile,
     ) -> Option<Offer> {
-        if let Some(school) = self.wanted {
-            self.choose_school(frame, school);
+        if self.book.follow(frame) {
+            self.first_row = 0;
         }
         let books: Vec<&WatchSpellbook> = frame.spellbooks.iter().collect();
-        let Some(contents) = spell_chosen(frame, self.book) else {
+        let Some(contents) = self.book.shown(frame) else {
             self.no_book(ui, body, frame, tools);
             return None;
         };
@@ -105,7 +98,7 @@ impl SpellsTab {
                 &words,
                 color,
             ) {
-                self.book = Some(books[at].serial);
+                self.book.book = Some(books[at].serial);
                 self.first_row = 0;
             }
         }
@@ -438,24 +431,20 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_shows_the_chosen_book_or_the_first_and_finds_a_school() {
+    fn a_chosen_school_shows_its_book_from_the_top() {
         let frame = WatchFrame {
             spellbooks: vec![book(1, "magery"), book(2, "chivalry")],
             ..WatchFrame::default()
         };
-        let mut tab = SpellsTab::default();
-        assert_eq!(tab.school(&frame), Some(School::Magery));
-        assert!(tab.choose_school(&frame, School::Chivalry));
-        assert_eq!(tab.book, Some(2));
-        assert!(!tab.choose_school(&frame, School::Bushido));
-        assert_eq!(tab.school(&frame), Some(School::Chivalry));
-        assert_eq!(tab.wanted, Some(School::Bushido), "it waits for the book");
-        let later = WatchFrame {
-            spellbooks: vec![book(1, "magery"), book(3, "bushido")],
-            ..WatchFrame::default()
+        let mut tab = SpellsTab {
+            first_row: 3,
+            ..SpellsTab::default()
         };
-        assert!(tab.choose_school(&later, School::Bushido));
-        assert_eq!(tab.wanted, None);
+        assert!(!tab.choose_school(&frame, School::Bushido));
+        assert_eq!(tab.first_row, 3, "no book yet: the list stays");
+        assert!(tab.choose_school(&frame, School::Chivalry));
+        assert_eq!(tab.school(&frame), Some(School::Chivalry));
+        assert_eq!(tab.first_row, 0);
     }
 
     #[test]

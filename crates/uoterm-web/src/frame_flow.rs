@@ -43,7 +43,7 @@ use uoterm_view::sky::{
 };
 use uoterm_view::steer::{Movement, SteerInput};
 use uoterm_view::ui::abilities::{ABILITIES_ID, RACIAL_ID};
-use uoterm_view::ui::deck::hotbar_key_slot;
+use uoterm_view::ui::deck::hotbar_slots_pressed;
 use uoterm_view::ui::launch::{self, JOURNAL_ID, RADAR_ID};
 use uoterm_view::ui::ring::Subject;
 
@@ -205,10 +205,7 @@ impl WebView {
         };
         if frame.human_control {
             if focus == Focus::Free {
-                for slot in unused
-                    .iter()
-                    .filter_map(|press| hotbar_key_slot(&press.key))
-                {
+                for slot in hotbar_slots_pressed(&unused) {
                     self.press_slot(frame, slot);
                 }
             }

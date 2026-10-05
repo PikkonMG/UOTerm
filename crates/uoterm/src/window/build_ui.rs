@@ -34,11 +34,12 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sense, TextFormat, Vec2,
 };
 use uoterm_nav::HousePart;
+use uoterm_view::asks::HINT_WISH_OFF;
 use uoterm_view::ui::build::{
     build_first_place, command_rows, counts_words, limits_of, part_ask, storey_words, storeys_of,
     take_part_answer, BUILD_ID, BUTTON_ROWS, FIELD_ROW, FOOT_ROW, GAP, HINT_PICK, HINT_STOREY,
-    HINT_WISH, HINT_WISH_OFF, KIND_ROW, LIST_ROW, LIST_ROWS, NOTE_SECONDS, PIECE_SIDE,
-    WORDS_ASKING, WORDS_FIND, WORDS_FLOOR, WORDS_NO_PARTS, WORDS_PICK, WORDS_REMOVE, WORDS_TITLE,
+    HINT_WISH, KIND_ROW, LIST_ROW, LIST_ROWS, NOTE_SECONDS, PIECE_SIDE, WORDS_ASKING, WORDS_FIND,
+    WORDS_FLOOR, WORDS_NO_PARTS, WORDS_PICK, WORDS_REMOVE, WORDS_TITLE,
 };
 use uoterm_view::ui::chat_panel::{
     asking_label, channel_ask, chat_first_place, chat_title, say_act, ChatButton, ChatPanel,

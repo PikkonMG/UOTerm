@@ -12,7 +12,7 @@ use super::theme::PANEL_PAD;
 use crate::act::Act;
 use crate::frame::WatchFrame;
 use crate::geom::Vector;
-use crate::input::KeyName;
+use crate::input::{KeyName, KeyPress};
 use crate::model::abilities::{
     ability_of, icon_of, race_of, racial_command, slot_hue, toggle_command, AbilitySlot,
 };
@@ -131,8 +131,17 @@ impl Slot {
 }
 
 /// The slot a key presses, while no field takes the keys.
-pub fn hotbar_key_slot(key: &KeyName) -> Option<usize> {
+fn hotbar_key_slot(key: &KeyName) -> Option<usize> {
     HOTBAR_KEYS.iter().position(|name| *name == key.0)
+}
+
+/// The slots the keys that went down this frame press, in their order.
+pub fn hotbar_slots_pressed(presses: &[KeyPress]) -> Vec<usize> {
+    presses
+        .iter()
+        .filter(|press| press.pressed)
+        .filter_map(|press| hotbar_key_slot(&press.key))
+        .collect()
 }
 
 /// The picture a slot shows.
@@ -190,8 +199,16 @@ impl KeptHotbars {
         };
     }
 
-    pub fn first_free(&self, character: &str) -> Option<usize> {
+    fn first_free(&self, character: &str) -> Option<usize> {
         (0..HOTBAR_SLOTS).find(|slot| self.slot(character, *slot).is_none())
+    }
+
+    /// Puts `what` on the first free slot of the character. Gives that
+    /// slot, or None when the bar is full.
+    pub fn pin(&mut self, character: &str, what: Slot) -> Option<usize> {
+        let free = self.first_free(character)?;
+        self.set(character, free, Some(what));
+        Some(free)
     }
 }
 
@@ -311,6 +328,7 @@ pub fn worn_rows(height: f32, count: usize) -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::frame::{WatchContainer, WatchEquip, WatchLook, WatchPackItem};
+    use crate::input::Mods;
     use crate::model::abilities::FLIGHT_ICON;
     use crate::settings::KeyBinding;
     use uoterm_protocol::types::{LAYER_BACKPACK, LAYER_CLOAK, LAYER_ROBE};
@@ -325,6 +343,23 @@ mod tests {
             Some(HOTBAR_SLOTS - 1)
         );
         assert_eq!(hotbar_key_slot(&KeyName("A".into())), None);
+        let press = |key: &str, pressed: bool| KeyPress {
+            key: KeyName(key.into()),
+            mods: Mods::default(),
+            pressed,
+            repeat: false,
+        };
+        let presses = [
+            press("3", true),
+            press("A", true),
+            press("1", false),
+            press("0", true),
+        ];
+        assert_eq!(
+            hotbar_slots_pressed(&presses),
+            vec![2, HOTBAR_SLOTS - 1],
+            "a key coming up presses nothing"
+        );
         let frame = WatchFrame::default();
         let axe = Slot::Item {
             serial: 1,
@@ -456,6 +491,20 @@ mod tests {
         );
         bars.set(MARA, 0, None);
         assert_eq!(bars.first_free(MARA), Some(0));
+    }
+
+    #[test]
+    fn a_pin_takes_the_first_free_slot_until_the_bar_is_full() {
+        let mut bars = KeptHotbars::default();
+        let command = |text: &str| Slot::Command { text: text.into() };
+        bars.set(MARA, 0, Some(command("first")));
+        assert_eq!(bars.pin(MARA, command("second")), Some(1));
+        assert_eq!(bars.slot(MARA, 1), Some(&command("second")));
+        for _ in 2..HOTBAR_SLOTS {
+            assert!(bars.pin(MARA, command("more")).is_some());
+        }
+        assert_eq!(bars.pin(MARA, command("late")), None, "the bar is full");
+        assert_eq!(bars.pin("Cedric", command("own")), Some(0));
     }
 
     #[test]

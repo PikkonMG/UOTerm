@@ -11,6 +11,7 @@
 use super::theme::{ALARM, GOAL, TEXT, TEXT_FAINT, WAITING};
 use crate::act::{Act, Answer, Ask};
 use crate::actions::resolve::play_line;
+use crate::asks::HINT_WISH_OFF;
 use crate::geom::{Rgba, Vector};
 
 pub const MACROS_SIZE: Vector = Vector::new(820.0, 520.0);
@@ -39,7 +40,6 @@ const WORDS_CLOSE: &str = "Close";
 pub const HINT_NAME: &str = "Macro name";
 pub const HINT_LINES: &str = "One command on each line. See docs/SCRIPTS.md.";
 const HINT_WISH: &str = "Say the next step in plain words, for example: heal myself with a bandage";
-const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
 const NOTE_NEEDS_NAME: &str = "Give the macro a name first.";
 const NOTE_BAR_FULL: &str = "The hotbar is full. Right-click a slot to clear it.";
 const NOTE_PINNED: &str = "The macro is on the hotbar.";

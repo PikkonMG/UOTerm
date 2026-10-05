@@ -37,8 +37,8 @@ use uoterm_view::settings::SkillGroupSet;
 use uoterm_view::ui::abilities::SHEET_PANEL_BUTTONS;
 use uoterm_view::ui::deck::{layer_words, wear_choices, Slot, WearChoice, WORDS_BAR_FULL};
 use uoterm_view::ui::lists::{
-    choose_school, next_sort, party_entries, skill_entries, spell_book_words, spell_chosen,
-    status_lines, wear_color, PartyEntry, SkillEntry, StatusLine,
+    next_sort, party_entries, skill_entries, spell_book_words, status_lines, wear_color,
+    PartyEntry, SkillEntry, SpellTab, StatusLine,
 };
 use uoterm_view::ui::question::{WORDS_NO, WORDS_YES};
 use uoterm_view::ui::ring::Subject as RingSubject;
@@ -69,12 +69,10 @@ pub(crate) struct SheetState {
     wear_note: Option<(String, bool, f64)>,
     sort: Option<(SkillSort, bool)>,
     asking_reset: bool,
-    /// The book the player chose, by its serial.
-    book: Option<u32>,
+    /// The book the spells tab shows.
+    book: SpellTab,
     /// The spell the player clicked.
     spell: Option<u16>,
-    /// The school asked for before the shard told of a book of it.
-    wanted: Option<School>,
     /// The member the words go to; None for the whole party.
     tell_to: Option<u32>,
 }
@@ -471,12 +469,7 @@ impl WebView {
         {
             state.wear_note = None;
         }
-        if let Some(school) = state.wanted {
-            if let Some(book) = choose_school(frame, school) {
-                state.book = Some(book);
-                state.wanted = None;
-            }
-        }
+        state.book.follow(frame);
         if state
             .tell_to
             .is_some_and(|to| !frame.party_members.iter().any(|member| member.serial == to))
@@ -690,7 +683,7 @@ impl WebView {
 
     fn spells_data(&mut self, frame: &WatchFrame) -> SpellsData {
         let live = frame.human_control;
-        let Some(contents) = spell_chosen(frame, self.panels.sheet.book).cloned() else {
+        let Some(contents) = self.panels.sheet.book.shown(frame).cloned() else {
             return SpellsData {
                 books: Vec::new(),
                 no_book: Some(OpenBooks {
@@ -918,7 +911,7 @@ impl WebView {
             }
             SheetAction::Book(at) => {
                 if let Some(book) = frame.spellbooks.get(at) {
-                    self.panels.sheet.book = Some(book.serial);
+                    self.panels.sheet.book.book = Some(book.serial);
                 }
             }
             SheetAction::Spell(click) => {
@@ -1055,7 +1048,7 @@ impl WebView {
                 }
             }
             SheetAction::Cast(id) => {
-                if let Some(book) = spell_chosen(frame, self.panels.sheet.book) {
+                if let Some(book) = self.panels.sheet.book.shown(frame) {
                     self.hand.act(Act::CastFrom {
                         spell: id,
                         book: book.serial,
@@ -1118,22 +1111,12 @@ impl WebView {
     /// Turns the spells tab to a book of this school, now or when the
     /// shard tells of one. False when the character has none yet.
     pub(crate) fn choose_school(&mut self, frame: &WatchFrame, school: School) -> bool {
-        let book = choose_school(frame, school);
-        let state = &mut self.panels.sheet;
-        match book {
-            Some(serial) => {
-                state.book = Some(serial);
-                state.wanted = None;
-            }
-            None => state.wanted = Some(school),
-        }
-        book.is_some()
+        self.panels.sheet.book.choose_school(frame, school)
     }
 
     /// The school of the book the spells tab shows.
     pub(crate) fn shown_school(&self, frame: &WatchFrame) -> Option<School> {
-        spell_chosen(frame, self.panels.sheet.book)
-            .map(|book| book_info(&book.school, book.graphic).school)
+        self.panels.sheet.book.school(frame)
     }
 }
 
