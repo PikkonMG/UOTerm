@@ -2,7 +2,9 @@
 //! client files. The browser keeps each one for as long as the client
 //! files do not change.
 
-use super::{on_art, on_art_mut, table, WebState};
+use super::{
+    encoded, encoded_answer, on_art, on_art_mut, table, EncodedTable, EncodedTables, WebState,
+};
 use crate::art::client_art::ClientArt;
 use crate::creation_files::read_creation_tables;
 use axum::extract::{Path, Query, State};
@@ -12,6 +14,7 @@ use axum::routing::get;
 use axum::Router;
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use uoterm_nav::{frames_question_fits, Action};
 use uoterm_view::model::compare::ItemLayers;
 use uoterm_view::model::creation::{
@@ -49,10 +52,31 @@ async fn from_files<T: Send + 'static>(
     on_art(state, read, move |value| answer(value, &files_tag)).await
 }
 
+/// A large table, made as JSON the first time it is asked for: later
+/// answers neither read the client files nor make the JSON again.
+async fn once_encoded(
+    state: &WebState,
+    place: fn(&EncodedTables) -> &OnceLock<EncodedTable>,
+    make: fn(&ClientArt) -> EncodedTable,
+) -> Response {
+    if let Some(made) = place(&state.encoded).get() {
+        return encoded_answer(made, &state.files_tag);
+    }
+    let tables = state.encoded.clone();
+    from_files(
+        state,
+        move |art| place(&tables).get_or_init(|| make(art)).clone(),
+        |made, tag| encoded_answer(&made, tag),
+    )
+    .await
+}
+
 async fn tiledata(State(state): State<WebState>) -> Response {
-    from_files(&state, ClientArt::tiledata_tables, |tiles, tag| {
-        table(tiles.as_deref(), tag)
-    })
+    once_encoded(
+        &state,
+        |tables| &tables.tiledata,
+        |art| encoded(art.tiledata_tables().as_deref()),
+    )
     .await
 }
 
@@ -107,12 +131,17 @@ async fn light(State(state): State<WebState>, Path(id): Path<u8>) -> Response {
 
 /// Every message of the text database by its number.
 async fn cliloc(State(state): State<WebState>) -> Response {
-    from_files(&state, ClientArt::cliloc_table, |words, tag| {
-        let by_number = words
-            .as_deref()
-            .map(|words| words.entries().collect::<BTreeMap<_, _>>());
-        table(by_number, tag)
-    })
+    once_encoded(
+        &state,
+        |tables| &tables.cliloc,
+        |art| {
+            encoded(
+                art.cliloc_table()
+                    .as_deref()
+                    .map(|words| words.entries().collect::<BTreeMap<_, _>>()),
+            )
+        },
+    )
     .await
 }
 
@@ -234,6 +263,26 @@ mod tests {
             answer.headers()["cache-control"],
             "public, max-age=31536000, immutable"
         );
+    }
+
+    /// The tiledata is made as JSON once; a second page gets the same
+    /// bytes without a new read.
+    #[tokio::test]
+    async fn the_tiledata_is_made_as_json_once() {
+        let (state, _files) = test_state();
+        assert!(state.encoded.tiledata.get().is_none());
+        let first = json(state.clone(), "/v1/data/tiledata").await;
+        let made = state.encoded.tiledata.get().cloned().flatten();
+        assert!(
+            made.as_ref().is_some_and(Result::is_ok),
+            "kept after one ask"
+        );
+        let second = json(state.clone(), "/v1/data/tiledata").await;
+        assert_eq!(first, second);
+        assert_eq!(state.encoded.tiledata.get().cloned().flatten(), made);
+        let no_words = send(state.clone(), get("/v1/data/cliloc")).await;
+        assert_eq!(no_words.status(), StatusCode::NOT_FOUND);
+        assert_eq!(state.encoded.cliloc.get(), Some(&None), "kept as missing");
     }
 
     #[tokio::test]

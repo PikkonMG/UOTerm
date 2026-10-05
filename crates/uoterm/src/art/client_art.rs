@@ -3,6 +3,7 @@
 //! themselves, so the session sends no pictures. Each picture is made on
 //! the CPU, hues and all, as RGBA bytes.
 
+use super::facet_maps::FacetMaps;
 use super::figure::{self, FrameCache, Source};
 use super::text::UoFonts;
 use std::collections::HashMap;
@@ -113,12 +114,9 @@ pub struct ClientArt {
     seasons: Arc<SeasonArt>,
     /// None when the client files hold no colors for a world map.
     radar: Option<RadarColors>,
-    /// None marks a map the client files do not hold.
-    maps: HashMap<u8, Option<MulMap>>,
+    /// The map files, with the UltimaLive blocks of the window's session.
+    maps: FacetMaps,
     cells: HashMap<(u8, u16, u16), Cell>,
-    /// The UltimaLive blocks laid over the maps, each with the count of
-    /// changes it was laid at.
-    live_blocks: HashMap<(u8, u32), u64>,
     /// None when the client files hold no tiledata.
     tiles: Option<Arc<TileData>>,
     /// None when the client files hold no land textures.
@@ -133,17 +131,6 @@ pub struct ClientArt {
     /// large, and the window does not read it. None inside when the client
     /// files hold none.
     cliloc: OnceLock<Option<Arc<ClilocData>>>,
-}
-
-/// The map files of a facet, opened the first time they are asked for.
-fn facet_files<'a>(
-    maps: &'a mut HashMap<u8, Option<MulMap>>,
-    uopath: &Path,
-    map_index: u8,
-) -> Option<&'a MulMap> {
-    maps.entry(map_index)
-        .or_insert_with(|| MulMap::open(uopath, map_index).ok())
-        .as_ref()
 }
 
 impl ClientArt {
@@ -161,9 +148,8 @@ impl ClientArt {
             radar: RadarColors::open(uopath).ok(),
             gumps: GumpArt::open(uopath).ok(),
             seasons: Arc::new(SeasonArt::open(&uoterm_runtime::config::config_dir())),
-            maps: HashMap::new(),
+            maps: FacetMaps::default(),
             cells: HashMap::new(),
-            live_blocks: HashMap::new(),
             tiles: TileData::open(uopath).ok().map(Arc::new),
             textures: TexmapData::open(uopath).ok(),
             lights: LightData::open(uopath).ok(),
@@ -173,49 +159,14 @@ impl ClientArt {
         })
     }
 
-    /// Lays the map blocks an UltimaLive shard changed over the map files.
-    /// A block is laid again only when it changed again, and the tiles read
-    /// before a change are read anew. Gives the blocks laid now.
+    /// Lays the map blocks an UltimaLive shard changed over the map files
+    /// of the window's session. The tiles read before a change are read
+    /// anew. Gives the blocks laid now.
     pub fn take_live_map(&mut self, live: &WatchLiveMap) -> Vec<MapBlockAt> {
-        let fresh: Vec<_> = live
-            .blocks
-            .iter()
-            .filter(|block| self.live_blocks.get(&(live.map, block.block)) != Some(&block.changed))
-            .collect();
-        if fresh.is_empty() {
-            return Vec::new();
+        let laid = self.maps.take_live_map(&self.uopath, live);
+        if !laid.is_empty() {
+            self.cells.retain(|(map, _, _), _| *map != live.map);
         }
-        let Some(map) = facet_files(&mut self.maps, &self.uopath, live.map) else {
-            return Vec::new();
-        };
-        let high = u32::from(map.blocks_high());
-        let mut laid = Vec::with_capacity(fresh.len());
-        for block in fresh {
-            let number = u64::from(block.block);
-            let land = block
-                .land
-                .as_ref()
-                .map_or(Ok(()), |land| map.set_live_land(number, land));
-            let statics = block
-                .statics
-                .as_ref()
-                .map_or(Ok(()), |records| map.set_live_statics(number, records));
-            self.live_blocks
-                .insert((live.map, block.block), block.changed);
-            if let Err(error) = land.and(statics) {
-                tracing::warn!(%error, block = number, "an UltimaLive block was left out");
-                continue;
-            }
-            let (bx, by) = (block.block / high, block.block % high);
-            if let (Ok(bx), Ok(by)) = (u16::try_from(bx), u16::try_from(by)) {
-                laid.push(MapBlockAt {
-                    map: live.map,
-                    bx,
-                    by,
-                });
-            }
-        }
-        self.cells.retain(|(map, _, _), _| *map != live.map);
         laid
     }
 
@@ -224,7 +175,7 @@ impl ClientArt {
         let key = (map_index, x, y);
         if !self.cells.contains_key(&key) {
             let (block_x, block_y) = (x / BLOCK_SIDE, y / BLOCK_SIDE);
-            let block = self.cell_block(map_index, block_x, block_y);
+            let block = self.cell_block(None, map_index, block_x, block_y);
             if self.cells.len() + block.len() > CELL_CACHE_CAP {
                 self.cells.clear();
             }
@@ -243,9 +194,16 @@ impl ClientArt {
     }
 
     /// The 64 tiles of one block of a facet, row by row from its north west
-    /// corner. Empty past the edge of the map, or with no map files.
-    pub fn cell_block(&mut self, map_index: u8, block_x: u16, block_y: u16) -> Vec<Cell> {
-        let Some(map) = facet_files(&mut self.maps, &self.uopath, map_index) else {
+    /// corner, with the UltimaLive blocks of `live` when it is given.
+    /// Empty past the edge of the map, or with no map files.
+    pub fn cell_block(
+        &mut self,
+        live: Option<&FacetMaps>,
+        map_index: u8,
+        block_x: u16,
+        block_y: u16,
+    ) -> Vec<Cell> {
+        let Some(map) = self.maps.facet_under(live, &self.uopath, map_index) else {
             return Vec::new();
         };
         let (Some(left), Some(top)) = (
@@ -495,8 +453,13 @@ impl ClientArt {
     /// The picture of the land round `middle` in its radar colors, as the
     /// map of a start town shows it. None when no tile round it has a
     /// color.
-    pub fn near_picture(&mut self, map_index: u8, middle: (u16, u16)) -> Option<Picture> {
-        let pixels = near_pixels(middle, |x, y| self.radar_rgb(map_index, x, y))?;
+    pub fn near_picture(
+        &mut self,
+        live: Option<&FacetMaps>,
+        map_index: u8,
+        middle: (u16, u16),
+    ) -> Option<Picture> {
+        let pixels = near_pixels(middle, |x, y| self.radar_rgb_under(live, map_index, x, y))?;
         Some(Picture {
             width: SPAN,
             height: SPAN,
@@ -508,8 +471,15 @@ impl ClientArt {
     /// One tile of the whole-world picture of a map, in its radar colors,
     /// as the world map of a web page lays it. None for a tile past the
     /// picture, or with no known land.
-    pub fn map_tile_picture(&mut self, map_index: u8, tile: (usize, usize)) -> Option<Picture> {
-        let pixels = map_tile_pixels(map_index, tile, |x, y| self.radar_rgb(map_index, x, y))?;
+    pub fn map_tile_picture(
+        &mut self,
+        live: Option<&FacetMaps>,
+        map_index: u8,
+        tile: (usize, usize),
+    ) -> Option<Picture> {
+        let pixels = map_tile_pixels(map_index, tile, |x, y| {
+            self.radar_rgb_under(live, map_index, x, y)
+        })?;
         Some(Picture {
             width: MAP_TILE_SIDE,
             height: MAP_TILE_SIDE,
@@ -520,8 +490,13 @@ impl ClientArt {
 
     /// The land of a map item in its radar colors. None when no tile of it
     /// has a color.
-    pub fn map_item_picture(&mut self, map: &WatchMap) -> Option<Picture> {
-        let (width, height, rgba) = land_rgba(map, |facet, x, y| self.radar_rgb(facet, x, y))?;
+    pub fn map_item_picture(
+        &mut self,
+        live: Option<&FacetMaps>,
+        map: &WatchMap,
+    ) -> Option<Picture> {
+        let (width, height, rgba) =
+            land_rgba(map, |facet, x, y| self.radar_rgb_under(live, facet, x, y))?;
         Some(Picture {
             width,
             height,
@@ -533,8 +508,20 @@ impl ClientArt {
     /// The color of one tile on a map of the world: the color of its
     /// highest item, or of its land. None past the edge of the map.
     pub fn radar_rgb(&mut self, map_index: u8, x: u16, y: u16) -> Option<[u8; 3]> {
+        self.radar_rgb_under(None, map_index, x, y)
+    }
+
+    /// [`ClientArt::radar_rgb`] with the UltimaLive blocks of `live` when
+    /// it is given.
+    fn radar_rgb_under(
+        &mut self,
+        live: Option<&FacetMaps>,
+        map_index: u8,
+        x: u16,
+        y: u16,
+    ) -> Option<[u8; 3]> {
         let radar = self.radar.as_ref()?;
-        let map = facet_files(&mut self.maps, &self.uopath, map_index)?;
+        let map = self.maps.facet_under(live, &self.uopath, map_index)?;
         if !map.in_bounds(x, y) {
             return None;
         }
@@ -548,7 +535,7 @@ impl ClientArt {
     /// The height of the land of one tile, as the classic client reads it
     /// for a target of a place. None past the edge of the map.
     pub fn land_z(&mut self, map_index: u8, x: u16, y: u16) -> Option<i8> {
-        let map = facet_files(&mut self.maps, &self.uopath, map_index)?;
+        let map = self.maps.facet(&self.uopath, map_index)?;
         map.in_bounds(x, y)
             .then(|| map.column(x, y).land.north_west)
     }
@@ -844,12 +831,12 @@ mod tests {
         uoterm_nav::fixtures::write_mini_client(&dir);
         let mut client = ClientArt::open(&dir).unwrap();
         assert_eq!(
-            client.cell_block(0, 0, 0).len(),
+            client.cell_block(None, 0, 0, 0).len(),
             usize::from(BLOCK_SIDE * BLOCK_SIDE)
         );
-        assert!(client.cell_block(0, FIRST_TOO_FAR, 0).is_empty());
-        assert!(client.cell_block(0, 0, FIRST_TOO_FAR).is_empty());
-        assert!(client.cell_block(0, u16::MAX, u16::MAX).is_empty());
+        assert!(client.cell_block(None, 0, FIRST_TOO_FAR, 0).is_empty());
+        assert!(client.cell_block(None, 0, 0, FIRST_TOO_FAR).is_empty());
+        assert!(client.cell_block(None, 0, u16::MAX, u16::MAX).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -942,12 +929,12 @@ mod tests {
         const TRAMMEL: u8 = 1;
         let (x, y) = (3484u16, 2570u16);
         let mut client = ClientArt::open(&dir).unwrap();
-        let block = client.cell_block(TRAMMEL, x / BLOCK_SIDE, y / BLOCK_SIDE);
+        let block = client.cell_block(None, TRAMMEL, x / BLOCK_SIDE, y / BLOCK_SIDE);
         assert_eq!(block.len(), usize::from(BLOCK_SIDE * BLOCK_SIDE));
         let at = usize::from((y % BLOCK_SIDE) * BLOCK_SIDE + x % BLOCK_SIDE);
         assert_eq!(client.cell(TRAMMEL, x, y), Some(&block[at]));
         assert!(client
-            .cell_block(TRAMMEL, u16::MAX / BLOCK_SIDE, 0)
+            .cell_block(None, TRAMMEL, u16::MAX / BLOCK_SIDE, 0)
             .is_empty());
     }
 

@@ -3,6 +3,7 @@
 //! browser. Nothing here draws to a screen.
 
 pub mod client_art;
+pub mod facet_maps;
 pub mod figure;
 pub mod png;
 pub mod text;

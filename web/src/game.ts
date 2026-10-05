@@ -131,6 +131,7 @@ export function startGame(session: string, canvas: HTMLCanvasElement, overlay: H
       }
     });
     parts.push(forgetChatFocus);
+    view.setSession(session);
     view.setTextMeasure(plateMeasure());
     view.setBodyMeasure(bodyMeasure());
     setDragDistance(clickDistance());

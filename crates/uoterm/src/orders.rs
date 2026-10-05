@@ -8,6 +8,7 @@
 //! box is off, and the rest of the window works the same.
 
 use serde_json::Value;
+use std::sync::OnceLock;
 use uoterm_view::act::Act;
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::orders::{
@@ -42,9 +43,16 @@ pub fn api_key() -> Option<String> {
         .filter(|key| !key.is_empty())
 }
 
+/// The one HTTP client of every request to Jev, so they share its
+/// connections.
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 /// Sends one request to Jev. The error is words for the human.
 async fn post(key: &str, request: &Value) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = client()
         .post(API_URL)
         .bearer_auth(key)
         .json(request)
@@ -94,4 +102,14 @@ where
         .ok_or(NO_SUCH_HOTKEY)?;
     let name = choices[place];
     hotkey_lines(&hotkeys(Some(name.to_string())).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client;
+
+    #[test]
+    fn every_request_uses_the_same_client() {
+        assert!(std::ptr::eq(client(), client()));
+    }
 }

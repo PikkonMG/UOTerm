@@ -131,24 +131,42 @@ fn is_sound_font(path: &std::path::Path) -> bool {
         })
 }
 
+/// The file at `path` when it is inside one of `folders` once every link
+/// and `..` in the names is followed, as that real path. None for a file
+/// elsewhere, or one that is not there.
+fn inside(path: &std::path::Path, folders: &[&std::path::Path]) -> Option<std::path::PathBuf> {
+    let path = path.canonicalize().ok()?;
+    folders
+        .iter()
+        .filter_map(|folder| folder.canonicalize().ok())
+        .any(|folder| path.starts_with(folder))
+        .then_some(path)
+}
+
 /// The MIDI sound font the profile names. Not found when it names none,
-/// or names a file that is no sound font.
+/// names a file that is no sound font, or one outside the config folder
+/// and the folder of the client files: a profile file must not open any
+/// file of this machine to the page.
 async fn sound_font(
     State(state): State<WebState>,
     Query(query): Query<SoundFontQuery>,
     request: Request,
 ) -> Response {
     let config_dir = state.config_dir.clone();
+    let client_files = state.client_files.clone();
     let chosen = tokio::task::spawn_blocking(move || {
         let profile = profile_of(
             &config_dir,
             query.shard.as_deref(),
             query.character.as_deref(),
         )?;
+        let mut folders = vec![config_dir.as_path()];
+        folders.extend(client_files.as_deref());
         Ok::<_, StatusCode>(
             profile
                 .sound
                 .midi_sound_font
+                .and_then(|path| inside(&path, &folders))
                 .filter(|path| is_sound_font(path)),
         )
     })
@@ -270,5 +288,36 @@ mod tests {
         std::fs::write(&font, b"not a sound font").unwrap();
         let other = send(state, get("/v1/soundfont")).await;
         assert_eq!(other.status(), StatusCode::NOT_FOUND, "only a sound font");
+    }
+
+    /// A profile file can name any path; only a font in the config folder
+    /// or in the folder of the client files is sent.
+    #[tokio::test]
+    async fn a_sound_font_outside_the_known_folders_is_not_found() {
+        let (state, _files) = test_state();
+        let elsewhere = super::super::tests::temp_folder();
+        let outside = elsewhere.0.join("music.sf2");
+        std::fs::write(&outside, SOUND_FONT_BYTES).unwrap();
+        std::fs::create_dir_all(&state.config_dir).unwrap();
+        let in_config = state.config_dir.join("music.sf2");
+        std::fs::write(&in_config, SOUND_FONT_BYTES).unwrap();
+        let climbs_out = state
+            .config_dir
+            .join("..")
+            .join("..")
+            .join(elsewhere.0.file_name().unwrap())
+            .join("music.sf2");
+        let store = crate::window::ProfileStore::in_folder(&state.config_dir);
+        for (font, expected) in [
+            (outside, StatusCode::NOT_FOUND),
+            (climbs_out, StatusCode::NOT_FOUND),
+            (in_config, StatusCode::OK),
+        ] {
+            let mut profile = Profile::default();
+            profile.sound.midi_sound_font = Some(font.clone());
+            store.save_default(&profile);
+            let answer = send(state.clone(), get("/v1/soundfont")).await;
+            assert_eq!(answer.status(), expected, "{}", font.display());
+        }
     }
 }
