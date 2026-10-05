@@ -567,7 +567,17 @@ impl WebArt {
                 self.multis.insert(id, read(answer));
             }
             DataPath::Light(id) => {
-                self.lights.insert(id, read(answer));
+                // A shape whose levels do not fill its size would read past
+                // its end when lit.
+                let shape = match read::<LightShape>(answer) {
+                    Table::Here(shape)
+                        if shape.width.checked_mul(shape.height) == Some(shape.levels.len()) =>
+                    {
+                        Table::Here(shape)
+                    }
+                    _ => Table::Missing,
+                };
+                self.lights.insert(id, shape);
             }
             DataPath::Frames(key) => {
                 self.frames.insert(key, read(answer));
@@ -1135,5 +1145,16 @@ mod tests {
         assert!(art.data_arrived("/v1/gump-mask/5", &mask));
         assert!(!art.gump_drawn_at(5, 0, 0));
         assert!(art.gump_drawn_at(5, 1, 0));
+    }
+
+    #[test]
+    fn a_light_shape_that_does_not_fill_its_size_is_missing() {
+        let mut art = WebArt::default();
+        let whole = json!({ "width": 2, "height": 1, "levels": [1, 2] });
+        let short = json!({ "width": 2, "height": 2, "levels": [1, 2] });
+        assert!(art.data_arrived(&format!("{LIGHT_PREFIX}1"), &whole));
+        assert!(art.data_arrived(&format!("{LIGHT_PREFIX}2"), &short));
+        assert!(matches!(art.light_shape(1), Art::Ready(shape) if shape.levels == [1, 2]));
+        assert!(matches!(art.light_shape(2), Art::Missing));
     }
 }

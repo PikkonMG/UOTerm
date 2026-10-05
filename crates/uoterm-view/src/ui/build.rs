@@ -50,7 +50,6 @@ pub const WORDS_FIND: &str = "Find";
 pub const WORDS_ASKING: &str = "Jev looks at the catalog...";
 pub const WORDS_NO_PARTS: &str = "The catalog needs the client files.";
 pub const HINT_WISH: &str = "Say the part in plain words, for example: a stone wall";
-pub const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
 
 /// Where the designer first stands in a window.
 pub fn build_first_place(window: Area) -> Area {

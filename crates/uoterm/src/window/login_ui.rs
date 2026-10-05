@@ -24,13 +24,13 @@
 use super::creation_ui::{self, Art, Asked as CreationAsked};
 use super::link::Link;
 use super::map_view::MapPictures;
-use super::model::creation::{can_make, Creation, CreationFiles};
+use super::model::creation::{Creation, CreationFiles};
 use super::model::login::{
-    account_name, host_name, port_number, save_name, saved_detail, server_words, CHARACTER_SLOTS,
-    ENCRYPTIONS, LABELS, NEEDS_NAME, WORDS_CANCEL, WORDS_CONNECT, WORDS_CONNECTING, WORDS_DELETE,
-    WORDS_DELETE_SURE, WORDS_EMPTY_SLOT, WORDS_ENCRYPTION, WORDS_MAKE, WORDS_NOT_SAVED,
-    WORDS_NO_ROOM, WORDS_NO_SAVED, WORDS_PICK_CHARACTER, WORDS_PICK_SHARD, WORDS_SAVE, WORDS_SAVED,
-    WORDS_SAVED_AS, WORDS_SAVE_AS, WORDS_SAVE_LOGIN, WORDS_TITLE,
+    account_name, host_name, no_room_note, port_number, save_name, saved_detail, server_words,
+    CharacterList, CHARACTER_SLOTS, ENCRYPTIONS, LABELS, NEEDS_NAME, WORDS_CANCEL, WORDS_CONNECT,
+    WORDS_CONNECTING, WORDS_DELETE, WORDS_EMPTY_SLOT, WORDS_ENCRYPTION, WORDS_MAKE,
+    WORDS_NOT_SAVED, WORDS_NO_SAVED, WORDS_PICK_CHARACTER, WORDS_PICK_SHARD, WORDS_SAVE,
+    WORDS_SAVED, WORDS_SAVED_AS, WORDS_SAVE_AS, WORDS_SAVE_LOGIN, WORDS_TITLE,
 };
 use super::orders;
 use super::scene::Scene;
@@ -45,6 +45,8 @@ use uoterm_protocol::ClientVersion;
 use uoterm_runtime::{
     CharacterChoices, CharacterRequest, EncryptionMode, LoginPicker, LoginQuestion, Profile,
 };
+use uoterm_view::asks::HINT_WISH_OFF;
+use uoterm_view::ui::question::{WORDS_NO, WORDS_YES};
 
 const PANEL_SIZE: Vec2 = Vec2::new(880.0, 560.0);
 const LIST_WIDTH: f32 = 300.0;
@@ -67,15 +69,12 @@ const SAVE_BUTTON_WIDTH: f32 = 76.0;
 const WORDS_PASSWORD_VARIABLE: &str = "Password variable";
 const HINT_PASSWORD_VARIABLE: &str = "Optional: a variable that holds the password";
 const WORDS_EDIT: &str = "Edit";
-const WORDS_YES: &str = "Yes";
-const WORDS_NO: &str = "No";
 const WORDS_DELETE_SAVED: &str = "Delete this saved login?";
 const WORDS_EDITING: &str = "Change the fields, then press Save.";
 const WORDS_FIND: &str = "Find";
 const WORDS_ASKING: &str = "Jev looks at the list...";
 const WORDS_NOT_SURE: &str = "Jev is not sure which one you mean. Click one.";
 const HINT_WISH: &str = "Say who you want to play, for example: my miner on the test shard";
-const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
 const HINT_PASSWORD_ENV: &str = "From the environment when empty";
 const PASSWORD_FIELD: usize = 3;
 const PASSWORD_ID: &str = "login-password";
@@ -292,8 +291,8 @@ struct LoginFlow {
     note: Option<(String, bool)>,
     /// The first frame starts the login. A fault brings the form back.
     connect_at_once: bool,
-    /// The slot waiting to be deleted once the human says yes.
-    delete_asked: Option<usize>,
+    /// The slot whose Delete was pressed once.
+    characters: CharacterList,
     /// The new character the human makes, while he makes one.
     creating: Option<Creation>,
     files: CreationFiles,
@@ -322,7 +321,7 @@ impl LoginFlow {
             jev_answers,
             note: None,
             connect_at_once: start.connect_at_once,
-            delete_asked: None,
+            characters: CharacterList::default(),
             creating: None,
             files: read_creation_files(start.uopath),
             version: start.version,
@@ -510,7 +509,7 @@ impl LoginFlow {
             std::mem::replace(&mut self.stage, Stage::Connecting)
         {
             self.creating = None;
-            self.delete_asked = None;
+            self.characters = CharacterList::default();
             let _ = reply.send(request);
         }
     }
@@ -530,10 +529,9 @@ impl LoginFlow {
         let Stage::Characters { names, choices, .. } = &self.stage else {
             return;
         };
-        if can_make(names, choices.list_flags) {
-            self.creating = Some(Creation::new(self.version(), choices.clone()));
-        } else {
-            self.note = Some((WORDS_NO_ROOM.into(), true));
+        match no_room_note(names, choices.list_flags) {
+            None => self.creating = Some(Creation::new(self.version(), choices.clone())),
+            Some(note) => self.note = Some((note.into(), true)),
         }
     }
 
@@ -577,7 +575,7 @@ impl LoginFlow {
                 if let Some(words) = refused {
                     self.note = Some((words, true));
                 }
-                self.delete_asked = None;
+                self.characters = CharacterList::default();
                 self.creating = None;
                 self.stage = Stage::Characters {
                     names,
@@ -758,22 +756,14 @@ fn character_stage(flow: &mut LoginFlow, ui: &mut egui::Ui, body: Rect, names: &
         if name.is_none() {
             continue;
         }
-        let asked = flow.delete_asked == Some(slot);
         let cross = Rect::from_min_size(
             Pos2::new(row.right() + GAP, row.top()),
             Vec2::new(DELETE_WIDTH, row.height()),
         );
-        let words = if asked {
-            WORDS_DELETE_SURE
-        } else {
-            WORDS_DELETE
-        };
-        if theme::segment(ui, cross, words, theme::ALARM) {
-            if asked {
-                flow.answer_request(CharacterRequest::Delete(slot));
-                return;
-            }
-            flow.delete_asked = Some(slot);
+        let words = flow.characters.delete_words(slot);
+        if theme::segment(ui, cross, words, theme::ALARM) && flow.characters.press_delete(slot) {
+            flow.answer_request(CharacterRequest::Delete(slot));
+            return;
         }
     }
     let (_, make) = theme::button(
@@ -1142,7 +1132,7 @@ fn pick_list(ui: &egui::Ui, body: Rect, title: &str, names: &[String]) -> Option
 mod tests {
     use super::super::modern::testing::{click, Canvas, ENV_PICTURES, SCREEN};
     use super::*;
-    use crate::window::model::login::{BAD_PORT, NEEDS_ACCOUNT};
+    use crate::window::model::login::{BAD_PORT, NEEDS_ACCOUNT, WORDS_NO_ROOM};
     use std::sync::Mutex;
 
     const OLD_VERSION: ClientVersion = ClientVersion::new(5, 0, 9, 1);

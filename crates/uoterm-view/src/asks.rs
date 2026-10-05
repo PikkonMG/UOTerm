@@ -17,6 +17,9 @@ pub const NOT_SURE: &str = "Jev is not sure which one you mean. Pick it from the
 pub const NO_PLACE_ON_MAP: &str = "The marker file names no place on this map.";
 /// What the human reads when Jev picks none of the places.
 pub const NO_SUCH_PLACE: &str = "Jev is not sure which place you mean. Click the map instead.";
+/// What the human reads where plain words need a TypeSafe key and there
+/// is none.
+pub const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
 const KEY_SCRIPTS: &str = "scripts";
 const KEY_TEXT: &str = "text";
 

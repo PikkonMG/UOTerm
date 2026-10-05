@@ -36,7 +36,6 @@ pub const HINT_PIN: &str = "Click: put a pin here.";
 pub const HINT_PIN_MOVE: &str = "Drag: move the pin.  Double-click: take it off.";
 pub const WORDS_MARK: &str = "Mark";
 pub const HINT_WISH: &str = "Say the place in plain words, for example: Britain bank";
-pub const HINT_WISH_OFF: &str = "Plain words need a TypeSafe key. Set TYPESAFE_API_KEY.";
 pub const WORDS_ASKING: &str = "Jev looks for the place...";
 
 const PROFILE_WIDTH: f32 = 420.0;

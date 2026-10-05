@@ -19,10 +19,11 @@ use super::theme::{self, number_font, text_font};
 use crate::view::{WatchFrame, WatchMap};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::HashMap;
+use uoterm_view::asks::HINT_WISH_OFF;
 use uoterm_view::ui::map_item::{
     foot_place, map_item_first_place, map_item_id, map_item_land, place_ask, plotting,
     profile_first_place, profile_words, take_place_answer, MapItemButton, PinDeed, ProfilePanel,
-    COURSE_WIDTH, FIELD_ROW, GAP, HINT_PIN, HINT_PIN_MOVE, HINT_PROFILE, HINT_WISH, HINT_WISH_OFF,
+    COURSE_WIDTH, FIELD_ROW, GAP, HINT_PIN, HINT_PIN_MOVE, HINT_PROFILE, HINT_WISH,
     MAP_ITEM_BUTTONS, MARK_WIDTH, PIN_RADIUS, PIN_REACH, PIN_RING, PROFILE_ID, PROFILE_LINE,
     PROFILE_ROWS, PROFILE_TITLE_ROW, WORDS_ASKING, WORDS_CLOSE, WORDS_MARK, WORDS_NO_FILES,
     WORDS_TITLE,

@@ -14,6 +14,7 @@ use super::boxes_ui::{scrolled, Tools, CELL_GAP, CELL_RADIUS};
 use super::control::{Act, Answer, Ask, Asker};
 use super::desk::Zone;
 use super::kept;
+use super::keys;
 use super::model::clicks::ClickDelay;
 use super::model::durability::{is_worn_layer, worn_wear, Wear};
 use super::model::places;
@@ -35,13 +36,12 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Id, Key, Pos2, Rect, Sen
 use uoterm_assist::spells::School;
 use uoterm_view::art::Sprite;
 use uoterm_view::desk::CARRY_ALPHA;
-use uoterm_view::input::KeyName;
 use uoterm_view::ui::abilities::SHEET_PANEL_BUTTONS;
 use uoterm_view::ui::deck::{
-    self, hotbar_cells, hotbar_size, slot_choices, wear_choices, worn_rows, KeptHotbars, Press,
-    SlotPicture, WearChoice, HINT_EMPTY_SLOT, HINT_SLOT, HOTBAR_FILE, HOTBAR_ID, HOTBAR_KEYS,
-    HOTBAR_SLOTS, SLOT_ROW, WORDS_BAR_FULL, WORDS_HOTBAR, WORDS_NO_MACROS, WORDS_PICK_FOR,
-    WORN_COLUMNS,
+    self, hotbar_cells, hotbar_size, hotbar_slots_pressed, slot_choices, wear_choices, worn_rows,
+    KeptHotbars, Press, SlotPicture, WearChoice, HINT_EMPTY_SLOT, HINT_SLOT, HOTBAR_FILE,
+    HOTBAR_ID, HOTBAR_KEYS, HOTBAR_SLOTS, SLOT_ROW, WORDS_BAR_FULL, WORDS_HOTBAR, WORDS_NO_MACROS,
+    WORDS_PICK_FOR, WORN_COLUMNS,
 };
 use uoterm_view::ui::sheet::{
     sheet_first_place, sheet_least, CHARACTER_VIEWS, HINT_WEAR, HINT_WEAR_OFF, HINT_WORN,
@@ -301,15 +301,19 @@ impl DeckUi {
     }
 
     fn pin(&mut self, character: &str, what: Slot) -> bool {
-        let Some(free) = self.hotbars.first_free(character) else {
-            return false;
-        };
-        self.set_slot(character, free, Some(what));
-        true
+        let pinned = self.hotbars.pin(character, what).is_some();
+        if pinned {
+            self.save_hotbars();
+        }
+        pinned
     }
 
     fn set_slot(&mut self, character: &str, slot: usize, what: Option<Slot>) {
         self.hotbars.set(character, slot, what);
+        self.save_hotbars();
+    }
+
+    fn save_hotbars(&self) {
         kept::save(HOTBAR_FILE, &self.hotbars);
     }
 
@@ -904,7 +908,11 @@ impl DeckUi {
         let panel = frame::place(rect, &spec, profile);
         let body = frame::draw(ui.painter(), panel, WORDS_HOTBAR);
         let bar = Rect::from_min_size(body.left_top(), Vec2::new(width, side));
-        let typing = ui.ctx().wants_keyboard_input();
+        let keyed = if ui.ctx().wants_keyboard_input() {
+            Vec::new()
+        } else {
+            hotbar_slots_pressed(&keys::presses(ui.ctx()))
+        };
         let mut cells = Vec::with_capacity(HOTBAR_SLOTS);
         for (slot, key) in HOTBAR_KEYS.into_iter().enumerate() {
             let cell = Rect::from_min_size(
@@ -948,10 +956,7 @@ impl DeckUi {
                     other => tips::label(ui, &other.words(frame), HINT_SLOT),
                 }
             }
-            let key_pressed = !typing
-                && bridge::egui_key(&KeyName(key.to_string()))
-                    .is_some_and(|key| ui.input(|i| i.key_pressed(key)));
-            if response.clicked() || key_pressed {
+            if response.clicked() || keyed.contains(&slot) {
                 self.press(&what, frame, tools, profile);
             } else if response.secondary_clicked() {
                 self.set_slot(&frame.name, slot, None);
@@ -1122,6 +1127,7 @@ fn slot_face(ui: &egui::Ui, cell: Rect, what: &Slot, frame: &WatchFrame, tools: 
 mod tests {
     use super::*;
     use crate::window::model::abilities::AbilitySlot;
+    use uoterm_view::input::KeyName;
 
     const MARA: &str = "Mara";
 

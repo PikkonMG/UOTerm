@@ -197,21 +197,27 @@ impl WebView {
     /// the hotbars.
     pub(crate) fn set_slot(&mut self, character: &str, slot: usize, what: Option<Slot>) {
         self.hotbars.set(character, slot, what);
+        self.save_hotbars();
+    }
+
+    /// Puts `what` on the first free slot, and keeps the hotbars. False
+    /// when the bar is full.
+    pub(crate) fn pin(&mut self, character: &str, what: Slot) -> bool {
+        let pinned = self.hotbars.pin(character, what).is_some();
+        if pinned {
+            self.save_hotbars();
+        }
+        pinned
+    }
+
+    /// Asks the page to keep the hotbars.
+    fn save_hotbars(&mut self) {
         if let Ok(data) = serde_json::to_value(&self.hotbars) {
             self.hand.push(OutCall::SaveKept {
                 name: HOTBAR_FILE.to_string(),
                 data,
             });
         }
-    }
-
-    /// Puts `what` on the first free slot. False when the bar is full.
-    pub(crate) fn pin(&mut self, character: &str, what: Slot) -> bool {
-        let Some(free) = self.hotbars.first_free(character) else {
-            return false;
-        };
-        self.set_slot(character, free, Some(what));
-        true
     }
 
     /// Puts a script line on the first free slot. False when the bar is

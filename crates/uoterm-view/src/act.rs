@@ -782,11 +782,6 @@ impl Act {
             Self::Order(order, _) => format!("Order: {order}"),
         }
     }
-    /// True when the act is a lift then a drop. The caller waits
-    /// `LIFT_TO_DROP` between the two calls.
-    pub fn is_two_step(&self) -> bool {
-        matches!(self.calls().as_slice(), [(TOOL_LIFT, _), (TOOL_DROP, _)])
-    }
 
     /// The act as a web page sends it on its live link: its calls, each
     /// marked as the human's, and its words.
@@ -913,7 +908,6 @@ mod moved_tests {
         };
         let names: Vec<&str> = act.calls().iter().map(|(name, _)| *name).collect();
         assert_eq!(names, vec![TOOL_LIFT, TOOL_DROP]);
-        assert!(act.is_two_step());
     }
 
     #[test]
@@ -921,7 +915,6 @@ mod moved_tests {
         let act = Act::Use(BAG);
         assert_eq!(act.calls().len(), 1);
         assert_eq!(act.calls()[0].0, TOOL_USE);
-        assert!(!act.is_two_step());
     }
 
     #[test]
