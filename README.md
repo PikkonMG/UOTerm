@@ -46,6 +46,45 @@ When the shard opens the house designer, both looks show the parts of the client
 
 The Options have the pages of the classic client: General, Sound, Video, Macros, Tooltip, Fonts, Speech, Combat & Spells, Counters, Info Bar, Containers, Experimental, Ignore List, Interface, Nameplates, Journal, World Map and Agents. Apply and Okay keep a change, Cancel drops it, and Default puts one page back. The options, the places of the windows and the gumps you keep open are a profile for each character of each shard, in the `profiles` folder of the UOTerm config folder (Linux `~/.config/uoterm`, Windows `%APPDATA%\uoterm`): `default.toml` is where a new character starts, and each character has `<shard>/<character>.toml`. The hotbar of each character is kept in `watch-hotbar.toml`.
 
+## Web client
+
+`uoterm web` serves the play window to a browser. The page looks and works like the Modern look of the play window. Three.js draws the world. The rules run as WebAssembly built from `crates/uoterm-view`, the same crate the play window uses. The Classic look stays in the Rust window.
+
+Prerequisites, besides the Rust toolchain:
+
+- Node.js and npm.
+- The WebAssembly target: `rustup target add wasm32-unknown-unknown`.
+- `wasm-bindgen-cli` 0.2.100, the exact version the workspace pins: `cargo install wasm-bindgen-cli --version 0.2.100`.
+
+Build the page, then start the server:
+
+```bash
+cd web && npm ci && npm run build && cd ..
+uoterm web --uopath /path/to/uo-client-files
+```
+
+The command prints `Open http://127.0.0.1:7733/`. Open that address, log in from the page, and pick a character. The page needs the client files for the world art, the map and the sounds; sessions the page starts use the same `uopath`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--bind` | `api_bind` in `uoterm.toml`, else `127.0.0.1:7733` | Listen address |
+| `--web-dir` | `web/dist` | The folder `npm run build` made |
+| `--uopath` | `uopath` in `uoterm.toml` | The client files |
+
+The build runs `npm run wasm` (the WebAssembly view and the fonts), `npm run theme` (`src/theme.css`, made from `uoterm_view::ui::theme`), `tsc` and `vite build`. For work on the page, `cd web && npm run dev` starts the Vite server. It sends `/v1` and `/health` to `uoterm web` on `127.0.0.1:7733`, so start `uoterm web` first. Run the checks with `npm run lint` and `npm run test`.
+
+Home network: bind to all interfaces and set a token. A bind that is not loopback is refused without `UOTERM_API_TOKEN`.
+
+```bash
+UOTERM_API_TOKEN=replace-me uoterm web --bind 0.0.0.0:7733
+```
+
+Open `http://<this-machine>:7733/` on the phone or laptop and enter the token once. The page trades it for a cookie. Use plain HTTP on a trusted home network only: the token and the password of a login go over the link as they are. Do not expose the port to the internet. The page itself loads with no token; every route of the API wants it.
+
+The server answers a web page only when the page came from the server itself. A request with an `Origin` header that is not the server is refused with 403. A server on loopback also refuses a request whose `Host` is not this machine. The routes are in `docs/AGENT_API.md`.
+
+Where a rule lives: a UI rule goes in `crates/uoterm-view`, never in a window. The play window and the page both use that crate, and it has no egui, no Three.js, no tokio and no file access. The page uses the same theme tokens as the Modern look: the colors and sizes are in `uoterm_view::ui::theme`, and `npm run theme` writes them to `web/src/theme.css` (build output, not edited by hand).
+
 ## Requirements
 
 - Rust 1.87 or later (stable). `rust-toolchain.toml` pins `stable`.
@@ -215,6 +254,7 @@ Stop with Ctrl+C on the `connect` process, then on the mock shard if you used on
 | `uoterm mock-shard [--bind HOST:PORT]` | Demo | Unencrypted demo shard. Default `127.0.0.1:2593`. Do not run this while a live shard uses that port. |
 | `uoterm connect ...` | Server | Login and HTTP API. Blocks until Ctrl+C. `--view` opens the watch window in the same process. `--text-view` prints the radar in that terminal. |
 | `uoterm populate --manifest PATH [--api-bind ADDR]` | Server | Start many sessions, then HTTP API. |
+| `uoterm web [--bind HOST:PORT] [--web-dir DIR] [--uopath DIR]` | Server | The HTTP API, the client file routes and the page of the web client. Blocks until Ctrl+C. See "Web client" above. |
 | `uoterm session list` | Client | Session ids on the API. |
 | `uoterm session attach <id>` | Client | Print state for one id. |
 | `uoterm say "text"` | Client | Tool `say`. Persona rejects `*emotes*`. |
@@ -466,7 +506,10 @@ CI (`.github/workflows/ci.yml`) builds on Ubuntu and Windows: `cargo fmt`, `clip
 - `crates/uoterm-assist` — spells, weapon moves, potions and other game data
 - `crates/uoterm-script` — the script language: parser and step interpreter
 - `crates/uoterm-runtime` — session, mock shard, reflex, scripts, agents, hotkeys, HTTP
-- `crates/uoterm` — CLI binary
+- `crates/uoterm-view` — the UI rules both windows use (no egui, builds for WebAssembly)
+- `crates/uoterm-web` — the WebAssembly wrapper of `uoterm-view` for the browser
+- `crates/uoterm` — CLI binary, play window, `uoterm web` routes
+- `web/` — the page: Three.js, Preact, Vite
 
 Docs: `docs/PROTOCOL.md` (wire protocol), `docs/AGENT_API.md` (tools, HTTP, MCP), `docs/SCRIPTS.md` (script language), `docs/AGENTS.md` (agents, hotkeys, recording), `docs/PERSONAS.md` (persona files), `docs/playbooks/` (driver, login, hunt, walk, navigation, loot, bank, death, moongate, dungeon, mounts, runebook, buy, sell, containers, talk, inspect, equip), `LEGAL.md`.
 

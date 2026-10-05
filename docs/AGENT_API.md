@@ -228,6 +228,103 @@ When `UOTERM_API_TOKEN` is set, every route except `/health` requires `Authoriza
 
 An API bound to this machine answers only a caller that names this machine in its `Host` header (`127.0.0.1`, `localhost` or `::1`, with any port). A web page that points a name it owns at this machine names itself, and is refused with 403.
 
+### Token cookie and web pages
+
+A web page cannot put headers on a WebSocket. So it sends the token once to `POST /v1/web/token` with the body `{"token": "..."}`. A right token gets 204 and a `uoterm_token` cookie (`HttpOnly; SameSite=Strict; Path=/`); a wrong one gets 401. The server takes the token from the bearer header or from this cookie. The token may hold only visible ASCII marks, without `"`, `,`, `;` or `\`; the server refuses to start with another token.
+
+A request with an `Origin` header must come from a page of this server: the `Origin` must be `http://` and the `Host` of the request. Any other `Origin` gets 403. A caller that is no web page sends no `Origin`, and is not affected. `GET /health` and `POST /v1/web/token` need no token.
+
+## Web client routes
+
+`uoterm web` serves these routes besides the ones above, behind the same token, loopback and origin rules. `uoterm connect` and `uoterm play` do not serve them, except the live link and the login link, which the HTTP API of every command serves. A path under `/v1/` that has no route is 404 `{"error": "not found"}`. Any other path gets the built page.
+
+### Live link
+
+`GET /v1/sessions/{id}/live` is a WebSocket. A message is 1 MiB at most. The server calls the `watch` tool every 33 ms and sends a `frame` only when it differs from the last one it sent on this link.
+
+| Page sends | Meaning |
+| --- | --- |
+| `{"kind":"call","id":1,"tool":"say","args":{...}}` | One tool call |
+| `{"kind":"act","id":2,"calls":[{"tool":"...","args":{...}}]}` | Calls made in order, 650 ms apart (`ACT_STEP_GAP_MS`), stopping at the first that fails. 4 steps at most (`MAX_ACT_STEPS`) |
+| `{"kind":"size","size":N}` | The radar size the frames use |
+
+| Server sends | Meaning |
+| --- | --- |
+| `{"kind":"frame","watch":{...}}` | The result of the `watch` tool |
+| `{"kind":"answer","id":1,"ok":true,"result":{...}}` | The answer to the call or act with that `id`. A refused one has `ok: false` and `error` |
+| `{"kind":"ended"}` | The session is gone; the link closes |
+
+An act runs on the server, so a page that closes during a lift and its drop does not leave the item in the hand. The acts of one session run one at a time, whatever link sent them. One act runs and 4 wait; one more is answered with an error. An act with no call, or with more than 4, is answered with an error. A message the server cannot read is ignored. A session id that does not exist is 404.
+
+### Login link
+
+`GET /v1/login/live` is a WebSocket, 64 KiB per message. The first message must come within 10 s and must be a login:
+
+```json
+{"kind":"login","host":"127.0.0.1","port":2593,"account":"a","password":"p",
+ "shard":"","character":"","era":null,"version":null,"encryption":"none"}
+```
+
+`shard`, `character`, `era`, `version` and `encryption` are optional. The password is used for this login only and is stored nowhere. The server sends each question of the login, and the page answers each one:
+
+| Server sends | Page answers |
+| --- | --- |
+| `{"kind":"ask","ask":{"kind":"Shard","names":[...]},"version":"..."}` | `{"kind":"reply","reply":{"kind":"Pick","index":0}}` |
+| `{"kind":"ask","ask":{"kind":"Characters","names":[...],"refused":null,"choices":{...}},"version":"..."}` | `{"kind":"reply","reply":{"kind":"Request","request":{"Play":0}}}`. A request is `{"Play":slot}`, `{"Delete":slot}`, `{"Make":{...wish}}` or `"Leave"` |
+| `{"kind":"ready","session":"s1"}` | The page opens the live link of that session. The login link closes |
+| `{"kind":"failed","words":"..."}` | The login ended with a fault. The link closes |
+
+`version` is the client version the login speaks. A reply that does not fit the open question is not taken, and the question is sent again. A page that closes before the end plays no character, and a session the page cannot learn of is stopped. The words of a fault in a message name only its kind and place, never its text.
+
+### Pictures, map and tables
+
+These need client files (`--uopath`, or `uopath` in `uoterm.toml`). With none, they answer 503 (the sounds and the music too). A picture or a table has an `ETag` from the version of the client files and of UOTerm, and the browser keeps it for a year.
+
+| Route | Notes |
+| --- | --- |
+| `POST /v1/art` | JSON `ArtRequest`. A PNG, with the point of the picture that goes on the tile in the `x-uoterm-anchor` header (`x,y`). 404 for no picture, 400 for one too large. 4 pictures are made at one time |
+| `POST /v1/text/measure` | The lines words break into in a UO font, and the height of one line |
+| `GET /v1/gump-mask/{id}` | The width, height and mask bits (base64) of a gump |
+| `GET /v1/map/{map}/{block_x}/{block_y}` | The 64 tiles of one block. 404 past the edge of the map |
+| `GET /v1/map/near/{map}/{x}/{y}` | PNG: the land round a tile in radar colors |
+| `GET /v1/map-picture/{map}/{tx}/{ty}` | PNG: one tile of the whole-world picture of a map |
+| `GET /v1/map-item/{facet}/{start_x}/{start_y}/{end_x}/{end_y}` | PNG: the land of a map item between its corners |
+| `POST /v1/map/live` | The `live_map` value of `watch`, 8 MiB at most. Gives the blocks that changed. Not kept by the browser |
+| `GET /v1/data/{table}` | `tiledata`, `animdata`, `anim-rules`, `radarcol`, `seasons`, `cliloc`, `creation`, `item-layers`, and with an id: `multis/{id}`, `lights/{id}`, `hues-text/{hue}`. `frames/{body}/{action}/{direction}/{mounted}` counts the frames of a body |
+
+### Sound
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/sound/{id}` | One sound as a WAV file |
+| `GET /v1/music/{id}?midi=true` | The MP3 file of a track. A MIDI file only with `midi=true`. The `x-uoterm-repeats` header says if the track repeats |
+| `GET /v1/soundfont?shard=&character=` | The MIDI sound font the profile names (the default profile with no query). 404 when none |
+
+### Files of the config folder
+
+These are the same files the play window reads, so the options are the same in both.
+
+| Route | Notes |
+| --- | --- |
+| `GET`, `PUT /v1/profiles/default` | The default profile, as JSON |
+| `GET`, `PUT /v1/profiles/{shard}/{character}` | The profile of a character. `shard` is `host:port`. A character with no profile has the default one |
+| `GET`, `PUT /v1/kept/{name}` | `watch-hotbar.toml` and `watch-grab-bags.toml` are read and written. `markers` is read only (PUT is 405) |
+| `POST /v1/map-markers/user` | Changes the own marker file, 64 KiB at most. 400 for an invalid marker, 409 when the file no longer holds the marker the change expects |
+| `GET /v1/fonts`, `GET /v1/fonts/{name}` | The player fonts of the `Fonts` folder. Only a listed name is read |
+| `POST /v1/screenshots` | Body: a PNG, 32 MiB at most. Saves it in the `screenshots` folder. 201 `{"file": name}`; 400 for a body that is no PNG |
+| `GET /v1/logins` | The saved logins and the server of the config file. No password |
+| `PUT /v1/logins/{name}` | Saves a login form under `name`, and gives the list. A body with a password is refused |
+
+### Jev
+
+These run in UOTerm, so the TypeSafe key never goes to the browser. 503 when there is no key, 404 for an unknown session, 409 with `{"error": words}` when Jev gives no answer.
+
+| Route | Body | Answer |
+| --- | --- | --- |
+| `POST /v1/sessions/{id}/jev/order` | `{"words": "...", "frame": {...}}` (`frame` is a `watch` result) | `{"act": ...}`, in the form the page sends on its live link |
+| `POST /v1/sessions/{id}/jev/pick` | `{"question": ..., "names": [...], "wish": "..."}` | `{"index": N}`, or null when Jev is not sure |
+| `POST /v1/sessions/{id}/jev/lines` | `{"wish": "..."}` | `{"lines": [...]}`: the script lines of the hotkey the wish names |
+
 ## Names on a shard with no property lists
 
 A shard says at login whether it sends property lists, the tooltips that name every object. When it does not, the session reads names the way a player does, one every half second: it asks for the name of each nameless mobile, as the client asks for the name it shows over a head, and clicks each nameless item once and takes the name the shard shows over it. What a click tells of an item comes back in `properties`, in the form of the shard's era: on the oldest shards, the label lines, which say it all in words (for example `a vanquishing katana crafted by Bob`, or a bag's name and then what it holds); on later ones, the click info (its name, its maker, its quality and magic, whether the magic is known, its charges). `properties` asks again by a new click when the last answer is more than 10 s old, and never more than once a second for one object.
