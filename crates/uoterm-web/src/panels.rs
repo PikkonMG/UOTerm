@@ -462,18 +462,17 @@ pub(crate) struct PanelState {
 }
 
 impl WebView {
-    /// The room the panels stand in: the view, in the points of the panel
-    /// layer, which the UI scale grows.
+    /// The room the panels stand in: the whole view. The panels and the
+    /// world count in the same points, which the UI scale grows.
     pub(crate) fn panel_room(&self) -> Area {
-        let scale = self.profile.video.ui_scale.max(f32::EPSILON);
-        Area::from_min_size(Point::new(0.0, 0.0), self.view.size() / scale)
+        self.view
     }
 
     /// The data of every panel at `time`.
     pub fn panel_data(&mut self, time: f64) -> PanelData {
         let fonts = &self.profile.fonts;
         let look = Look {
-            ui_scale: self.profile.video.ui_scale,
+            ui_scale: self.ui_scale(),
             opacity: f32::from(self.profile.interface.gump_opacity) / PERCENT,
             font: fonts
                 .truetype_font
@@ -903,6 +902,7 @@ pub(crate) mod tests {
     use uoterm_view::settings::Profile;
     use uoterm_view::ui::hud::VITALS_ID;
     use uoterm_view::ui::launch::JOURNAL_ID;
+    use uoterm_view::video::UI_SCALE_MAX;
 
     /// The acts among the calls for the page.
     pub fn out_acts(out: &[OutCall]) -> Vec<PageAct> {
@@ -1014,14 +1014,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_panels_grow_by_the_ui_scale() {
+    fn the_panels_and_the_world_share_the_points_the_ui_scale_grows() {
         let mut view = settled();
-        let small = view.panel_room();
+        assert_eq!(view.panel_room(), VIEW);
         let mut profile = Profile::default();
         profile.video.ui_scale = 2.0;
         view.set_profile(&serde_json::to_string(&profile).unwrap());
-        assert_eq!(view.panel_room().width(), small.width() / 2.0);
+        assert_eq!(view.ui_scale(), 2.0);
         assert_eq!(view.panel_data(0.0).look.ui_scale, 2.0);
+        profile.video.ui_scale = UI_SCALE_MAX * 2.0;
+        view.set_profile(&serde_json::to_string(&profile).unwrap());
+        assert_eq!(view.ui_scale(), UI_SCALE_MAX);
+        assert_eq!(view.panel_data(0.0).look.ui_scale, UI_SCALE_MAX);
     }
 
     #[test]

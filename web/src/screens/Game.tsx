@@ -22,13 +22,14 @@ const NO_WORDS: WorldWords = { plates: [], floats: [] };
  */
 export function Game({ session, profile, onEnded, onFault }: GameProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const overlay = useRef<HTMLDivElement>(null);
   const game = useRef<GameHandle | null>(null);
   const [panels, setPanels] = useState<PanelData | null>(null);
   const [words, setWords] = useState<WorldWords>(NO_WORDS);
 
   useEffect(() => {
-    if (!canvas.current) return;
-    const started = startGame(session, canvas.current, profile, { panels: setPanels, words: setWords });
+    if (!canvas.current || !overlay.current) return;
+    const started = startGame(session, canvas.current, overlay.current, profile, { panels: setPanels, words: setWords });
     game.current = started;
     started.ended.then(onEnded, (error: unknown) => onFault(error instanceof Error ? error.message : String(error)));
     return () => {
@@ -41,8 +42,10 @@ export function Game({ session, profile, onEnded, onFault }: GameProps) {
   return (
     <>
       <canvas ref={canvas} class="world" />
-      <Plates plates={words.plates} floats={words.floats} />
-      {panels && handle && <Panels data={panels} send={handle.panel} input={handle.input} covered={handle.covered} />}
+      <div ref={overlay}>
+        <Plates plates={words.plates} floats={words.floats} scale={panels?.look.ui_scale ?? 1} />
+        {panels && handle && <Panels data={panels} send={handle.panel} input={handle.input} covered={handle.covered} />}
+      </div>
     </>
   );
 }

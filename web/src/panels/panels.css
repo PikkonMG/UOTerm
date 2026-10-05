@@ -788,10 +788,15 @@
   background: var(--button-hover);
 }
 
-/* The words over the world, under the panels. */
+/* The words over the world, under the panels, in the points the UI scale grows. */
 .world-words {
   position: fixed;
-  inset: 0;
+  left: 0;
+  top: 0;
+  width: calc(100% / var(--ui-scale));
+  height: calc(100% / var(--ui-scale));
+  transform: scale(var(--ui-scale));
+  transform-origin: 0 0;
   pointer-events: none;
   overflow: hidden;
   color: var(--text);

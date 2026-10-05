@@ -6,6 +6,7 @@
  */
 
 import type { Point } from './input/pointer';
+import { pointScale } from './points';
 import type { PlacedPlate, PlacedWords } from './panels/types';
 import type { WorldDraw } from './world/renderer';
 
@@ -95,7 +96,7 @@ export function drawFrame(
   }
 }
 
-/** The size of the view in CSS pixels (points), and the device pixels of one. */
+/** The size of the view in points, and the device pixels of one point. */
 export interface ViewSize {
   width: number;
   height: number;
@@ -103,15 +104,17 @@ export interface ViewSize {
 }
 
 /**
- * Follows the size of `canvas` and the pixels of the screen: each call
- * gives the size now, and calls `apply` first when it changed since the
- * last call (the first call always). Called once a frame, it follows a
- * resized window, a resized page and a screen of another density.
+ * Follows the size of `canvas`, the pixels of the screen and the UI scale
+ * (`pointScale`): each call gives the size now, in points, and calls
+ * `apply` first when it changed since the last call (the first call
+ * always). Called once a frame, it follows a resized window, a resized
+ * page, a screen of another density and a new UI scale.
  */
 export function followSize(canvas: { clientWidth: number; clientHeight: number }, apply: (size: ViewSize) => void): () => ViewSize {
   let size: ViewSize | null = null;
   return () => {
-    const now = { width: canvas.clientWidth, height: canvas.clientHeight, ratio: window.devicePixelRatio };
+    const scale = pointScale();
+    const now = { width: canvas.clientWidth / scale, height: canvas.clientHeight / scale, ratio: window.devicePixelRatio * scale };
     if (size?.width !== now.width || size.height !== now.height || size.ratio !== now.ratio) {
       size = now;
       apply(size);

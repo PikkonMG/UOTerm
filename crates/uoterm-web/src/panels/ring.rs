@@ -104,7 +104,7 @@ impl WebView {
     /// own lines, as the ring of the Rust window does.
     pub(crate) fn open_ring(&mut self, at: Point, serial: u32, name: &str, subject: Subject) {
         self.panels.ring.open = Some(OpenRing {
-            at: self.to_panel(at),
+            at,
             serial,
             name: name.to_string(),
             subject,

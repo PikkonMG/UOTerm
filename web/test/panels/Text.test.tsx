@@ -47,7 +47,7 @@ describe('shard words', () => {
       name_color: [255, 255, 255, 255] as [number, number, number, number],
       bar: null,
     };
-    const plates = render(<Plates plates={[plate]} floats={[{ words: MARKUP, x: 0, y: 0, color: [255, 255, 255, 255], alpha: 1, number: false }]} />);
+    const plates = render(<Plates plates={[plate]} floats={[{ words: MARKUP, x: 0, y: 0, color: [255, 255, 255, 255], alpha: 1, number: false }]} scale={1} />);
     expect(plates.container.querySelector('b')).toBeNull();
     expect(plates.container.textContent).toBe(`${MARKUP}${MARKUP}`);
   });

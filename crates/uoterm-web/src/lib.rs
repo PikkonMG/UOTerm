@@ -38,6 +38,7 @@ use uoterm_view::actions::controls::Controls;
 use uoterm_view::actions::PointerClick;
 use uoterm_view::art::{ArtRequest, WorldArt};
 use uoterm_view::atlas::{ATLAS_SIDE, WHITE_SIDE};
+use uoterm_view::audio::{AudioOut, Mixer};
 use uoterm_view::clicks::ChatMode;
 use uoterm_view::floats::Floats;
 use uoterm_view::frame::WatchFrame;
@@ -47,14 +48,14 @@ use uoterm_view::guard::GRAB_BAGS_FILE;
 use uoterm_view::keys::chat::ChatLine;
 use uoterm_view::model::game_view::ShardReports;
 use uoterm_view::model::world_map::MAP_FILES_KEPT;
-use uoterm_view::pad::PadState;
+use uoterm_view::pad::{moved_pointer, PadState};
 use uoterm_view::scene::{SceneState, WHEEL_POINTS_PER_NOTCH};
 use uoterm_view::settings::{Profile, UiStyle};
 use uoterm_view::sky::Sky;
 use uoterm_view::steer::Steer;
 use uoterm_view::tips::Tips;
 use uoterm_view::ui::deck::{KeptHotbars, HOTBAR_FILE};
-use uoterm_view::video::frame_interval;
+use uoterm_view::video::{frame_interval, ui_scale};
 use wasm_bindgen::prelude::*;
 
 /// The kept files of the config folder the view reads, under this path.
@@ -162,6 +163,17 @@ pub struct WebView {
     last_tick: Option<f64>,
     /// The tooltip of the thing under the mouse on the map.
     tooltip: Option<TooltipData>,
+    /// Follows the frames for the sound, and the sound to play.
+    mixer: Mixer,
+    /// What the sound device of the page has to do, since it last asked.
+    audio: Vec<AudioOut>,
+    /// True while the page has the keyboard.
+    focused: bool,
+    /// The pointer the right stick of a controller moved, which the view
+    /// draws: the page cannot move the mouse. None once the mouse moves.
+    soft_pointer: Option<Point>,
+    /// The mouse the page gave in the last tick.
+    page_mouse: Option<Point>,
 }
 
 /// The pointer clicks a controller or a key asked for, as the input of the
@@ -227,6 +239,11 @@ impl WebView {
             body_measure: None,
             last_tick: None,
             tooltip: None,
+            mixer: Mixer::default(),
+            audio: Vec::new(),
+            focused: true,
+            soft_pointer: None,
+            page_mouse: None,
         };
         view.take_profile(profile);
         view
@@ -255,7 +272,25 @@ impl WebView {
             Err(error) => WatchFrame::error_frame(error.to_string()),
         };
         self.controls.received(&mut frame);
+        if frame.error.is_empty() {
+            // The clock in milliseconds is the number by chance that picks
+            // the combat track: the browser view has no other.
+            let combat_seed = || (now * MS_PER_SECOND) as u32;
+            let outs = self
+                .mixer
+                .follow(&frame, &self.profile.sound, self.focused, combat_seed);
+            self.audio.extend(outs);
+        }
         self.frame = Some(frame);
+    }
+
+    /// What the sound device of the page has to do now: the sounds and the
+    /// music of the frames since the last call, and new volumes when the
+    /// options or the focus changed.
+    pub fn audio_out_native(&mut self) -> Vec<AudioOut> {
+        let mut out = std::mem::take(&mut self.audio);
+        out.extend(self.mixer.hear(self.focused, &self.profile.sound));
+        out
     }
 
     /// The picture the view shows now.
@@ -346,8 +381,6 @@ impl WebView {
     /// `mouse` when it is over the page. Gives what to draw.
     pub fn tick_native(&mut self, now: f64, view: Area, mouse: Option<Point>) -> DrawBuffers {
         let mut input = self.inputs.take_frame();
-        // The clicks a controller or a key asked for in the last frame.
-        clicks_of(self.controls.take_clicks(), mouse, &mut input);
         let seconds = self.last_tick.map_or(0.0, |last| (now - last).max(0.0)) as f32;
         self.last_tick = Some(now);
         self.view = view;
@@ -360,7 +393,10 @@ impl WebView {
             self.capture_keys(&input.presses, pad.pressed.take());
             input.presses.clear();
         }
-        self.controls.take_pad(pad);
+        let pad = self.controls.take_pad(pad);
+        let mouse = self.follow_soft_pointer(mouse, pad.pointer, view);
+        // The clicks a controller or a key asked for in the last frame.
+        clicks_of(self.controls.take_clicks(), mouse, &mut input);
         let frame = match self.frame.take() {
             Some(frame) if frame.error.is_empty() => frame,
             other => {
@@ -371,6 +407,26 @@ impl WebView {
         let buffers = self.run_frame(&frame, now, view, mouse, input);
         self.frame = Some(frame);
         buffers
+    }
+
+    /// Moves the soft pointer by `moved` of the right stick, inside `view`.
+    /// A mouse that moved takes the pointer back. Gives where the pointer
+    /// is now: the soft one, or the mouse.
+    fn follow_soft_pointer(
+        &mut self,
+        mouse: Option<Point>,
+        moved: Vector,
+        view: Area,
+    ) -> Option<Point> {
+        if mouse != self.page_mouse {
+            self.page_mouse = mouse;
+            self.soft_pointer = None;
+        }
+        let from = self.soft_pointer.or(mouse);
+        if let Some(at) = moved_pointer(from, moved, view) {
+            self.soft_pointer = Some(at);
+        }
+        self.soft_pointer.or(mouse)
     }
 
     /// The buffers of a frame with no world: the art of the panels only.
@@ -637,6 +693,34 @@ impl WebView {
         self.set_body_measure(page_measure(measure));
     }
 
+    /// What the sound device of the page has to do now: `AudioOut[]`.
+    #[wasm_bindgen(js_name = audioOut)]
+    pub fn audio_out(&mut self) -> JsValue {
+        to_js(&self.audio_out_native())
+    }
+
+    /// The voice `voice` of a sound effect came to its end, or could not
+    /// play: its room goes to the next sound.
+    #[wasm_bindgen(js_name = soundEnded)]
+    pub fn sound_ended(&mut self, voice: f64) {
+        self.mixer.ended(voice as u64);
+    }
+
+    /// Whether the page has the keyboard: a page in the background is
+    /// silent unless the Sound page lets it play there.
+    #[wasm_bindgen(js_name = setFocused)]
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// How many CSS pixels one point of the view has: the UI scale of the
+    /// Video page. The page gives the view its size and every place in
+    /// points, and grows the world, its words and the panels by it.
+    #[wasm_bindgen(js_name = uiScale)]
+    pub fn ui_scale(&self) -> f32 {
+        ui_scale(&self.profile.video)
+    }
+
     /// The time between two frames the Video page asks for, in
     /// milliseconds, while the page is focused or not.
     #[wasm_bindgen(js_name = frameIntervalMs)]
@@ -704,6 +788,88 @@ pub(crate) mod tests {
         view.tick_native(0.0, VIEW, None);
         view.take_out_native();
         view
+    }
+
+    /// A picture of Mara with the sound cues `(seq, sound)` of the shard.
+    fn watch_with_cues(cues: &[(u64, u16)]) -> String {
+        let mut watch: Value = serde_json::from_str(&fixture_watch_with_backpack()).unwrap();
+        watch["sounds"] = cues
+            .iter()
+            .map(|&(seq, sound)| json!({ "seq": seq, "sound": sound, "x": 1000, "y": 1000 }))
+            .collect();
+        watch.to_string()
+    }
+
+    fn effects(out: &[AudioOut]) -> Vec<u16> {
+        out.iter()
+            .filter_map(|out| match out {
+                AudioOut::Effect { sound, .. } => Some(*sound),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_sound_cue_is_played_once() {
+        let mut view = WebView::new(&serde_json::to_string(&Profile::default()).unwrap());
+        view.frame(&watch_with_cues(&[(1, 0x2E)]), 0.0);
+        view.frame(&watch_with_cues(&[(1, 0x2E), (2, 0x57)]), 0.1);
+        let out = view.audio_out_native();
+        assert_eq!(effects(&out), vec![0x57]);
+        view.frame(&watch_with_cues(&[(1, 0x2E), (2, 0x57)]), 0.2);
+        assert!(effects(&view.audio_out_native()).is_empty());
+    }
+
+    #[test]
+    fn a_page_out_of_focus_is_silent_by_the_sound_options() {
+        let mut view = WebView::new(&serde_json::to_string(&Profile::default()).unwrap());
+        view.frame(&watch_with_cues(&[]), 0.0);
+        view.set_focused(false);
+        view.frame(&watch_with_cues(&[(1, 0x2E)]), 0.1);
+        assert!(effects(&view.audio_out_native()).is_empty());
+        view.set_focused(true);
+        view.frame(&watch_with_cues(&[(1, 0x2E), (2, 0x2E)]), 0.2);
+        assert_eq!(effects(&view.audio_out_native()), vec![0x2E]);
+    }
+
+    #[test]
+    fn a_voice_that_ended_makes_room_for_its_sound_again() {
+        let mut view = WebView::new(&serde_json::to_string(&Profile::default()).unwrap());
+        view.frame(&watch_with_cues(&[]), 0.0);
+        view.frame(&watch_with_cues(&[(1, 0x2E)]), 0.1);
+        let out = view.audio_out_native();
+        let [AudioOut::Effect { voice, .. }] = out.as_slice() else {
+            panic!("one effect: {out:?}");
+        };
+        view.frame(&watch_with_cues(&[(2, 0x2E)]), 0.2);
+        assert!(effects(&view.audio_out_native()).is_empty(), "still plays");
+        view.sound_ended(*voice as f64);
+        view.frame(&watch_with_cues(&[(3, 0x2E)]), 0.3);
+        assert_eq!(effects(&view.audio_out_native()), vec![0x2E]);
+    }
+
+    fn pad_sticks(view: &mut WebView, sticks: [f32; 4], now: f64) {
+        let pad = json!({ "kind": "Pad", "sticks": sticks, "buttons": [] });
+        view.input_native(&pad.to_string(), now);
+    }
+
+    #[test]
+    fn the_right_stick_moves_a_soft_pointer_that_the_view_draws() {
+        let mut profile = Profile::default();
+        profile.macros.controller_enabled = true;
+        let mut view = WebView::new(&serde_json::to_string(&profile).unwrap());
+        view.frame(&fixture_watch_with_backpack(), 0.0);
+        view.tick_native(0.0, VIEW, None);
+        let plain = view.tick_native(0.1, VIEW, None).overlay.indices.len();
+        pad_sticks(&mut view, [0.0, 0.0, 1.0, 0.0], 0.1);
+        let drawn = view.tick_native(0.2, VIEW, None).overlay.indices.len();
+        assert!(drawn > plain, "the soft pointer is drawn");
+        pad_sticks(&mut view, [0.0; 4], 0.2);
+        let still = view.tick_native(0.3, VIEW, None).overlay.indices.len();
+        assert_eq!(still, drawn, "it stays where the stick left it");
+        let mouse = Some(Point::new(5.0, 5.0));
+        let moved = view.tick_native(0.4, VIEW, mouse).overlay.indices.len();
+        assert_eq!(moved, plain, "the mouse takes the pointer back");
     }
 
     #[test]

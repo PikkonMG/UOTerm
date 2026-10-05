@@ -1,10 +1,12 @@
 /**
  * The play window of one session: the view (WebAssembly) runs the rules,
  * the live link brings the pictures of the session and carries its calls,
- * the art feed fetches what the view wants, and the renderer draws each
- * frame. The frames come at the pace of the Video page of the profile.
+ * the art feed fetches what the view wants, the renderer draws each frame
+ * and the player plays its sound. The frames come at the pace of the Video
+ * page of the profile, and everything counts in the points of its UI scale.
  */
 
+import { Player, resumeOnGesture, type AudioOut } from './audio/player';
 import { drawFrame, followSize, startFrames, type WorldWords } from './frame_loop';
 import type { InputEvent } from './input/events';
 import { PadReader } from './input/gamepad';
@@ -18,18 +20,23 @@ import { setArtMostScale } from './panels/Picture';
 import { bodyMeasure, plateMeasure } from './panels/measure';
 import type { CoveredArea } from './panels/Panels';
 import type { PanelAction, PanelData } from './panels/types';
+import { setPointScale } from './points';
+import { takeScreenshot } from './screenshot';
 import { tearDown } from './teardown';
-import init, { artMostScale, atlasSide, clickDistance, wheelPointsPerNotch, WebView, whiteSide } from './wasm/uoterm_web.js';
+import init, { artMostScale, atlasSide, clickDistance, renderMidi, wheelPointsPerNotch, WebView, whiteSide } from './wasm/uoterm_web.js';
 import { WorldRenderer } from './world/renderer';
 
 const MS_PER_SECOND = 1000;
 /** `Date.getMonth()` counts from 0; the journal counts months from 1. */
 const FIRST_MONTH = 1;
+/** The folder of the config folder the server keeps screenshots in, for the journal line. */
+const SCREENSHOTS_FOLDER = 'screenshots';
 
-/** The profile the view starts with, and the path it is kept at (`profilePath` of `screens/login_state`). */
+/** The profile the view starts with, the path it is kept at (`profilePath` of `screens/login_state`), and where its sound font comes from (`soundFontPath`). */
 export interface GameProfile {
   path: string;
   value: unknown;
+  soundFont: string;
 }
 
 export interface GameHandle {
@@ -73,10 +80,12 @@ const clock = () => performance.now() / MS_PER_SECOND;
 
 /**
  * Plays `session` on `canvas`, which the page sizes; its size in CSS pixels
- * is the size of the view in points. After a frame `show` gets the panels
- * and the words over the world that changed since the last.
+ * by the UI scale is the size of the view in points. `overlay` holds the
+ * words over the world and the panels, for the screenshots. After a frame
+ * `show` gets the panels and the words over the world that changed since
+ * the last.
  */
-export function startGame(session: string, canvas: HTMLCanvasElement, profile: GameProfile, show: Shows): GameHandle {
+export function startGame(session: string, canvas: HTMLCanvasElement, overlay: HTMLElement, profile: GameProfile, show: Shows): GameHandle {
   const view = new WebView(JSON.stringify(profile.value));
   view.setTextMeasure(plateMeasure());
   view.setBodyMeasure(bodyMeasure());
@@ -104,7 +113,12 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
     state: () => {},
   });
   const places: OutPlaces = { session, profilePath: profile.path, link, answer, input: (event) => send(event) };
-  const out = (calls: OutCall[]) => sendOut(calls, places);
+  /** A screenshot was asked for: it is taken right after the next draw, while the canvas still shows it. */
+  let shotWanted = false;
+  const out = (calls: OutCall[]) => {
+    shotWanted ||= calls.some((call) => call.kind === 'Screenshot');
+    sendOut(calls, places);
+  };
   const send = (event: InputEvent) => {
     if (!stopped) out(view.input(JSON.stringify(event), clock()));
   };
@@ -114,7 +128,28 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   const detachKeys = attachKeys(window, send);
   const pointer = attachPointer(canvas, send, { pointsPerNotch: wheelPointsPerNotch() });
   const pad = new PadReader();
-  /** Follows the size of the canvas and the pixels of the screen. */
+  const sound = new AudioContext();
+  const stopResume = resumeOnGesture(window, sound);
+  const player = new Player(sound, {
+    ended: (voice) => {
+      if (!stopped) view.soundEnded(voice);
+    },
+    soundFontPath: profile.soundFont,
+    renderMidi,
+  });
+  /** Takes the screenshot of the frame just drawn; its journal line comes from the view. */
+  const screenshot = () => {
+    shotWanted = false;
+    takeScreenshot(canvas, overlay).then(
+      (file) => {
+        if (!stopped) view.screenshotTaken(true, `${SCREENSHOTS_FOLDER}/${file}`);
+      },
+      (error: unknown) => {
+        if (!stopped) view.screenshotTaken(false, error instanceof Error ? error.message : String(error));
+      },
+    );
+  };
+  /** Follows the size of the canvas, the pixels of the screen and the UI scale. */
   const fit = followSize(canvas, (size) => {
     renderer.resize(size.width, size.height, size.ratio);
     view.setPixelsPerPoint(size.ratio);
@@ -125,15 +160,19 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   let lastWords = '';
   const frames = startFrames({
     intervalMs: () => view.frameIntervalMs(document.hasFocus()),
-    // One frame: the controller, the wants of the view, the rules, the drawing, then the calls of the frame.
+    // One frame: the controller, the wants of the view, the rules, the drawing, then the calls and the sound of the frame.
     frame: () => {
+      setPointScale(view.uiScale());
       const size = fit();
       const padNow = pad.read();
       if (padNow) send(padNow);
       feed.pump();
       tellLocalTime(view);
+      view.setFocused(document.hasFocus());
       const words = drawFrame(view, renderer, clock(), size, pointer.mouse());
       out(view.takeOut());
+      if (shotWanted) screenshot();
+      player.play(view.audioOut() as AudioOut[]);
       const panels = view.panelsJson(clock());
       if (panels !== lastPanels) {
         lastPanels = panels;
@@ -156,6 +195,8 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
     stopped = true;
     tearDown([
       () => frames.stop(),
+      stopResume,
+      () => player.close(),
       detachKeys,
       () => pointer.detach(),
       () => link.close(),

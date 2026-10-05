@@ -1,3 +1,4 @@
+import { toPoints } from '../points';
 import { followDrag, ZONE_ATTRIBUTE } from './drag';
 import { hoverOn, type Hover } from './hover';
 import { ShareBar } from './Rows';
@@ -24,7 +25,7 @@ export function Near({ data, send, hover }: { data: NearData; send: Send; hover?
           onDblClick={() => send({ double: row.serial })}
           onContextMenu={(event) => {
             event.preventDefault();
-            send({ menu: { serial: row.serial, x: event.clientX, y: event.clientY } });
+            send({ menu: { serial: row.serial, ...toPoints(event.clientX, event.clientY) } });
           }}
           onPointerDown={(event) => {
             if (event.button === 0) followDrag(event, { dropped: (at) => send({ pull: { serial: row.serial, ...at } }) });

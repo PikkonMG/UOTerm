@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { toPoints } from '../points';
 import { followDrag, ZONE_ATTRIBUTE } from './drag';
 import { hoverOn, type Hover } from './hover';
 import { Picture } from './Picture';
@@ -102,7 +103,7 @@ function Worn({ data, send, hover }: PartProps & { data: WornData }) {
             onDblClick={() => send({ worn_double: row.serial })}
             onContextMenu={(event) => {
               event.preventDefault();
-              send({ worn_menu: { serial: row.serial, x: event.clientX, y: event.clientY } });
+              send({ worn_menu: { serial: row.serial, ...toPoints(event.clientX, event.clientY) } });
             }}
             onPointerDown={(event) => {
               if (event.button === 0) followDrag(event, { carries: true, started: () => send({ worn_drag: row.serial }) });

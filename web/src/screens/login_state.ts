@@ -68,6 +68,7 @@ const PROFILES_PATH = '/v1/profiles';
 /** Where the profile of every character is kept until the page knows the shard and the character. */
 export const DEFAULT_PROFILE_PATH = `${PROFILES_PATH}/default`;
 const PATH_SEPARATOR = '/';
+const SOUND_FONT_PATH = '/v1/soundfont';
 const SESSION_QUERY = 'session';
 const SHARD_QUERY = 'shard';
 const CHARACTER_QUERY = 'character';
@@ -95,6 +96,12 @@ export function characterOf(reply: LoginReply, names: string[]): string | null {
 /** The login server of a host and a port, as profiles name a shard. */
 export function shardOf(host: string, port: number): string {
   return `${host.trim()}${PORT_SEPARATOR}${port}`;
+}
+
+/** Where the MIDI sound font the profile of a character names comes from; that of the default profile with none. */
+export function soundFontPath(place: CharacterPlace | null): string {
+  if (place === null) return SOUND_FONT_PATH;
+  return `${SOUND_FONT_PATH}?${new URLSearchParams({ [SHARD_QUERY]: place.shard, [CHARACTER_QUERY]: place.character })}`;
 }
 
 /** Where the profile of a character is kept; the default profile with none. */

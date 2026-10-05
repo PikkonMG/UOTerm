@@ -18,11 +18,12 @@ const box = (area: { min: { x: number; y: number }; max: { x: number; y: number 
 
 /**
  * The words over the world: the name plates and the words over heads,
- * each where the view laid it out, in the points of the view.
+ * each where the view laid it out, in the points of the view, which the
+ * UI `scale` grows.
  */
-export function Plates({ plates, floats }: { plates: PlacedPlate[]; floats: PlacedWords[] }) {
+export function Plates({ plates, floats, scale }: { plates: PlacedPlate[]; floats: PlacedWords[]; scale: number }) {
   return (
-    <div class="world-words">
+    <div class="world-words" style={{ '--ui-scale': scale }}>
       {plates.map((plate, at) => {
         const name = plain(plate.name_color);
         return (
