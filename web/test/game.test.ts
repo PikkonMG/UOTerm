@@ -6,6 +6,8 @@ import { FakeSocket } from './fake_socket';
 /** What the fakes of the view and the renderer did, and how the renderer behaves. */
 const made = vi.hoisted(() => ({
   viewsFreed: 0,
+  /** The session each view was told its pictures are of. */
+  sessions: [] as string[],
   rendererFails: false,
   disposeFails: false,
 }));
@@ -19,6 +21,9 @@ vi.mock('../src/wasm/uoterm_web.js', () => ({
   wheelPointsPerNotch: () => 1,
   whiteSide: () => 1,
   WebView: class {
+    setSession(session: string): void {
+      made.sessions.push(session);
+    }
     setTextMeasure(): void {}
     setBodyMeasure(): void {}
     setFullscreen(): void {}
@@ -51,6 +56,7 @@ function start() {
 
 beforeEach(() => {
   made.viewsFreed = 0;
+  made.sessions = [];
   made.rendererFails = false;
   made.disposeFails = false;
   FakeSocket.install();
@@ -68,6 +74,7 @@ describe('startGame', () => {
     made.rendererFails = true;
     const listened = vi.spyOn(window, 'addEventListener');
     expect(start).toThrow('no WebGL');
+    expect(made.sessions).toEqual([SESSION]);
     expect(made.viewsFreed).toBe(1);
     expect(FakeSocket.made).toHaveLength(0);
     expect(listened).not.toHaveBeenCalled();

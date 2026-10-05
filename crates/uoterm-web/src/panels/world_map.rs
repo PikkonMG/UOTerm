@@ -23,8 +23,8 @@ use uoterm_view::art::WorldArt;
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::geom::{Area, Point, Vector};
 use uoterm_view::map_lay::{
-    map_tiles_on, mark_layout, near_still_serves, place_words, session_markers, whole_tile, Lay,
-    MapFiles, Marks, MODERN_LOOK, ZOOM_MIN,
+    map_tiles_on, mark_layout, near_still_serves, place_words, session_markers, whole_tile,
+    with_session, Lay, MapFiles, Marks, MODERN_LOOK, ZOOM_MIN,
 };
 use uoterm_view::model::world_map::{
     self, marker_fault_words, MapFolder, MarkerChange, MAP_FILES_KEPT, MARKER_COLORS,
@@ -345,16 +345,19 @@ impl WebView {
         };
         self.panels.world_map.near = Some((frame.map, middle));
         let redraw = format!("{REDRAW_QUERY}{}", self.panels.world_map.redraw);
+        // The session goes after the count of redraws, which starts the
+        // query.
+        let live = self.art.session();
         let land = (!whole).then(|| {
-            let mut land = land_data(frame.map, middle, lay);
-            land.path.push_str(&redraw);
+            let mut land = land_data(frame.map, middle, lay, None);
+            land.path = with_session(&format!("{}{redraw}", land.path), live);
             land
         });
         let tiles = if whole {
             map_tiles_on(field, lay, frame.map)
                 .into_iter()
                 .map(|tile| MapTileData {
-                    path: format!("{}{redraw}", tile.path),
+                    path: with_session(&format!("{}{redraw}", tile.path), live),
                     place: Place::from(tile.area),
                 })
                 .collect()
@@ -781,6 +784,23 @@ mod tests {
         press(&mut view, PANEL_WORLD_MAP, json!({ "button": 0 }));
         let redrawn = view.panel_data(0.0).world_map.unwrap().body;
         assert_ne!(redrawn.tiles[0].path, world.tiles[0].path, "asked again");
+    }
+
+    /// Each picture of the map names the session after the count of
+    /// redraws, so the server lays the live map of that session over it.
+    #[test]
+    fn every_picture_of_the_world_map_names_the_session() {
+        let mut view = open_map(true);
+        view.set_session("s7");
+        let near = view.panel_data(0.0).world_map.unwrap().body;
+        let land = near.land.unwrap().path;
+        assert!(land.ends_with("?drawn=0&session=s7"), "{land}");
+        press(&mut view, PANEL_WORLD_MAP, json!({ "view": true }));
+        let world = view.panel_data(0.0).world_map.unwrap().body;
+        assert!(world
+            .tiles
+            .iter()
+            .all(|tile| tile.path.ends_with("&session=s7")));
     }
 
     #[test]

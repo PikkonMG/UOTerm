@@ -14,8 +14,8 @@ use serde_json::Value;
 use uoterm_view::frame::WatchFrame;
 use uoterm_view::geom::{Area, Point, Vector};
 use uoterm_view::map_lay::{
-    mark_layout, near_map_path, near_still_serves, session_markers, zoomed, Lay, MapFiles,
-    MarkPlace, Marks, WordsAnchor, MODERN_LOOK, SPAN,
+    mark_layout, near_map_path, near_still_serves, session_markers, with_session, zoomed, Lay,
+    MapFiles, MarkPlace, Marks, WordsAnchor, MODERN_LOOK, SPAN,
 };
 use uoterm_view::model::places;
 use uoterm_view::ui::launch::RADAR_ID;
@@ -230,7 +230,7 @@ impl WebView {
         };
         let body = RadarData {
             side,
-            land: land_data(frame.map, middle, lay),
+            land: land_data(frame.map, middle, lay, self.art.session()),
             marks: mark_layout(field, lay, &marks, &MODERN_LOOK)
                 .into_iter()
                 .map(MarkData::from)
@@ -257,10 +257,11 @@ impl WebView {
     }
 }
 
-/// The picture of the land round `middle` of `map`, and the matrix that
-/// lays its pixels on the field by `lay`: one pixel for each tile, from
-/// the north west corner, as the window lays its texture.
-pub(super) fn land_data(map: u8, middle: (u16, u16), lay: Lay) -> LandData {
+/// The picture of the land round `middle` of `map` as `session` sees it,
+/// and the matrix that lays its pixels on the field by `lay`: one pixel
+/// for each tile, from the north west corner, as the window lays its
+/// texture.
+pub(super) fn land_data(map: u8, middle: (u16, u16), lay: Lay, session: Option<&str>) -> LandData {
     let half = (SPAN / 2) as f32;
     let left = f32::from(middle.0) - half;
     let top = f32::from(middle.1) - half;
@@ -268,7 +269,7 @@ pub(super) fn land_data(map: u8, middle: (u16, u16), lay: Lay) -> LandData {
     let across = lay.screen(left + 1.0, top) - origin;
     let down = lay.screen(left, top + 1.0) - origin;
     LandData {
-        path: near_map_path(map, middle.0, middle.1),
+        path: with_session(&near_map_path(map, middle.0, middle.1), session),
         side: SPAN,
         matrix: [across.x, across.y, down.x, down.y, origin.x, origin.y],
     }
@@ -309,6 +310,14 @@ mod tests {
             far,
             format!("/v1/map/near/0/{}/1000", 1000 + REDRAW_TILES * 2)
         );
+    }
+
+    #[test]
+    fn the_land_of_the_radar_names_the_session() {
+        let mut view = settled();
+        view.set_session("s7");
+        let radar = view.panel_data(0.0).radar.unwrap().body;
+        assert_eq!(radar.land.path, "/v1/map/near/0/1000/1000?session=s7");
     }
 
     #[test]

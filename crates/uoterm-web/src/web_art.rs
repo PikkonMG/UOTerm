@@ -22,6 +22,7 @@ use uoterm_view::art::{
 use uoterm_view::atlas::{ShelfPacker, ATLAS_SIDE};
 use uoterm_view::frame::{WatchLiveMap, WatchLook};
 use uoterm_view::geom::{Point, Vector};
+use uoterm_view::map_lay::with_session;
 use uoterm_view::model::world_map::{MarkerChange, MARKER_CHANGE_PATH};
 
 /// A block the scene has not read for this many frames is dropped. The
@@ -51,9 +52,7 @@ pub const MEASURE_PATH: &str = "/v1/text/measure";
 /// `{SESSIONS_PREFIX}{id}{LIVE_MAP_END}`.
 const SESSIONS_PREFIX: &str = "/v1/sessions/";
 const LIVE_MAP_END: &str = "/map/live";
-/// A block of the map is asked for with the session whose live map lies
-/// over it: `{path}{SESSION_QUERY}{id}`.
-const SESSION_QUERY: &str = "?session=";
+/// A path the server answers whatever query it has.
 const QUERY_START: char = '?';
 const PATH_SEPARATOR: char = '/';
 
@@ -400,17 +399,26 @@ impl WebArt {
         self.session = Some(session.to_string());
     }
 
+    /// The session the pictures are of, once the page named it.
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
+    }
+
     /// The paths of the tables to get, each one time. A block of the map
     /// names the session.
     pub fn take_data_wanted(&mut self) -> Vec<String> {
-        let mut paths = self.wants.take();
-        if let Some(session) = &self.session {
-            for path in paths.iter_mut().filter(|path| path.starts_with(MAP_PREFIX)) {
-                path.push_str(SESSION_QUERY);
-                path.push_str(session);
-            }
-        }
-        paths
+        let session = self.session.as_deref();
+        self.wants
+            .take()
+            .into_iter()
+            .map(|path| {
+                if path.starts_with(MAP_PREFIX) {
+                    with_session(&path, session)
+                } else {
+                    path
+                }
+            })
+            .collect()
     }
 
     /// The bodies to post, each one time.

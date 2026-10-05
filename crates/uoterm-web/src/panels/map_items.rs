@@ -13,6 +13,7 @@ use serde_json::Value;
 use uoterm_view::act::{Act, Asker};
 use uoterm_view::frame::{WatchFrame, WatchMap};
 use uoterm_view::geom::{Area, Point, Vector};
+use uoterm_view::map_lay::with_session;
 use uoterm_view::model::map_item::{map_item_path, pixel_at, point_of};
 use uoterm_view::ui::map_item::{
     map_item_first_place, map_item_id, map_item_land, place_ask, plotting, profile_first_place,
@@ -186,7 +187,7 @@ impl WebView {
                 let on_land = Area::from_min_size(Point::new(0.0, 0.0), land.size());
                 let body = MapItemData {
                     live,
-                    path: map_item_path(map),
+                    path: with_session(&map_item_path(map), self.art.session()),
                     paper: paper.size(),
                     land: land.size(),
                     edge: land.min.x - paper.min.x,
@@ -388,6 +389,12 @@ mod tests {
         let mut view = with_map(true, true);
         let data = view.panel_data(0.0).map_items.remove(0);
         assert_eq!(data.body.path, "/v1/map-item/1/1000/1200/1400/1600");
+        view.set_session("s7");
+        let seen = view.panel_data(0.0).map_items.remove(0);
+        assert_eq!(
+            seen.body.path,
+            "/v1/map-item/1/1000/1200/1400/1600?session=s7"
+        );
         assert_eq!(data.body.pins[1].number, "2");
         let land = data.body.land;
         let frame = view.frame_ref().unwrap().clone();

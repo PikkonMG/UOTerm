@@ -206,6 +206,29 @@ pub fn session_markers(reads: &mut ReadCache, profile: &Profile, map: u8) -> Vec
         .unwrap_or_default()
 }
 
+/// The name of the query that names the session whose live map lies over
+/// a path of the map: a block, the land near a tile, a tile of the world
+/// picture, the land of a map item.
+pub const SESSION_PARAM: &str = "session";
+const QUERY_START: char = '?';
+const QUERY_NEXT: char = '&';
+
+/// `path` asking for the map as `session` sees it, after the query `path`
+/// already has. The path as it is with no session.
+pub fn with_session(path: &str, session: Option<&str>) -> String {
+    match session {
+        Some(session) => {
+            let join = if path.contains(QUERY_START) {
+                QUERY_NEXT
+            } else {
+                QUERY_START
+            };
+            format!("{path}{join}{SESSION_PARAM}={session}")
+        }
+        None => path.to_string(),
+    }
+}
+
 /// The path of the picture of the land near tile `x`, `y` of `map`.
 pub fn near_map_path(map: u8, x: u16, y: u16) -> String {
     format!("{NEAR_MAP_PREFIX}/{map}/{x}/{y}")
@@ -673,6 +696,20 @@ fn world_round_me(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_map_path_names_the_session_after_its_own_query() {
+        assert_eq!(
+            with_session("/v1/map/near/0/1/2", Some("s1")),
+            "/v1/map/near/0/1/2?session=s1"
+        );
+        assert_eq!(
+            with_session("/v1/map-picture/0/0/0?drawn=2", Some("s1")),
+            "/v1/map-picture/0/0/0?drawn=2&session=s1"
+        );
+        assert_eq!(with_session("/v1/map/0/0/0", None), "/v1/map/0/0/0");
+    }
+
     use super::*;
     use serde_json::json;
 
