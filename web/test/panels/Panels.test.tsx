@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/preact';
+import { act, fireEvent, render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { Panels } from '../../src/panels/Panels';
 import type { PanelData } from '../../src/panels/types';
@@ -153,6 +153,45 @@ describe('Panels', () => {
     expect(taller[0]).toBeGreaterThan(before[0]);
     rerender(<Panels data={{ ...first, look: { ui_scale: 2, opacity: 1, font: null } }} send={vi.fn()} input={vi.fn()} covered={covered} />);
     expect(covered.mock.calls.at(-1)?.[0][0].max.x).toBe(200);
+    vi.restoreAllMocks();
+  });
+
+  it('tells_the_view_where_the_panels_lie_again_when_the_player_font_comes', async () => {
+    // A box as the page draws it: as tall as the font grows its words.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      const grow = Number((this.closest('.panels-root') as HTMLElement | null)?.style.getPropertyValue('--font-scale') || 1);
+      const height = 10 * grow;
+      return { left: 0, top: 0, right: 100, bottom: height, width: 100, height, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    let fontCame: (face: unknown) => void = () => {};
+    vi.stubGlobal(
+      'FontFace',
+      class {
+        load = () => new Promise((resolve) => (fontCame = resolve));
+      },
+    );
+    Object.defineProperty(document, 'fonts', { configurable: true, value: { add: vi.fn(), delete: vi.fn() } });
+    const covered = vi.fn();
+    const bar = {
+      place: { x: 0, y: 0, w: 880, h: 60 },
+      location: { numbers: '1, 2, 0', map_words: 'map', map: '0', faces_words: 'faces', facing: '' },
+      folded: false,
+      launcher_words: 'Panels',
+      launcher_shows: false,
+      status: null,
+      buttons: ['Take control'],
+    };
+    const withFont = { ...data(), hotbar: null, bar, look: { ui_scale: 1, opacity: 1, font: { name: 'big.ttf', scale: 3 } } };
+    const { unmount } = render(<Panels data={withFont} send={vi.fn()} input={vi.fn()} covered={covered} />);
+    const bottom = () => covered.mock.calls.at(-1)?.[0][0].max.y;
+    expect(bottom()).toBe(10);
+    await act(async () => fontCame({}));
+    expect(bottom()).toBe(30);
+    act(() => {
+      unmount();
+    });
+    Reflect.deleteProperty(document, 'fonts');
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 

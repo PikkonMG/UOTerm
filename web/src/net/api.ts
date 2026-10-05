@@ -11,6 +11,7 @@ export const SESSIONS_PATH = '/v1/sessions';
 export interface Sessions {
   sessions: string[];
 }
+
 /** Where the page trades the token for the cookie that carries it. */
 const TOKEN_PATH = '/v1/web/token';
 const JSON_TYPE = 'application/json';
@@ -35,6 +36,11 @@ export class ApiFailed extends Error {
     super(words);
     this.name = 'ApiFailed';
   }
+}
+
+/** The words of a fault, for the player. */
+export function wordsOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** The listeners of one happening: each hears it until it stops. */

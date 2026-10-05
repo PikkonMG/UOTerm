@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LiveOut } from '../src/net/live';
 import type { InputEvent } from '../src/input/events';
 import { CHAT_ATTRIBUTE } from '../src/input/keys';
-import { sendOut } from '../src/out_calls';
+import { giveToken } from '../src/net/api';
+import { DOWNLOAD_URL_LIFE_MS, sendOut } from '../src/out_calls';
 
 const SESSION = 's1';
 const PROFILE_PATH = '/v1/profiles/127.0.0.1:2593/Mara';
@@ -33,16 +34,27 @@ describe('sendOut', () => {
     ]);
   });
 
-  it('gives_the_player_a_text_file_to_keep', () => {
+  it('gives_the_player_a_text_file_to_keep_from_a_link_in_the_page', () => {
+    vi.useFakeTimers();
     const made = vi.fn<(blob: Blob) => string>().mockReturnValue('blob:journal');
-    vi.stubGlobal('URL', { createObjectURL: made, revokeObjectURL: vi.fn() });
-    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const revoked = vi.fn<(url: string) => void>();
+    vi.stubGlobal('URL', { createObjectURL: made, revokeObjectURL: revoked });
+    let inPage = false;
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      inPage = document.body.contains(this);
+    });
     sendOut([{ kind: 'Download', name: 'Mara-20261004-090507.txt', text: 'Bob: hail' }], places());
     expect(made).toHaveBeenCalledTimes(1);
     const link = clicked.mock.contexts[0] as HTMLAnchorElement;
     expect(link.download).toBe('Mara-20261004-090507.txt');
     expect(link.href).toBe('blob:journal');
+    expect(inPage).toBe(true);
+    expect(document.body.contains(link)).toBe(false);
+    expect(revoked).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(DOWNLOAD_URL_LIFE_MS);
+    expect(revoked).toHaveBeenCalledWith('blob:journal');
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it('gives_the_chat_line_the_keys_and_takes_them_back_as_the_view_asks', () => {
@@ -113,5 +125,19 @@ describe('sendOut', () => {
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
     expect(fetchSpy).toHaveBeenCalledWith('/v1/profiles/default', expect.objectContaining({ method: 'PUT' }));
     expect(asked).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps_a_save_refused_for_the_token_once_the_token_is_given_the_newest_by_path', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response('{"error":"unauthorized"}', { status: 401 })));
+    const out = places();
+    sendOut([{ kind: 'SaveProfile', profile: { general: { old: true } } }], out);
+    sendOut([{ kind: 'SaveProfile', profile: { general: {} } }], out);
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    // Lets both refusals park before the token comes.
+    await new Promise((settled) => setTimeout(settled));
+    fetchSpy.mockImplementation(() => Promise.resolve(new Response(null, { status: 204 })));
+    await giveToken('right');
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4));
+    expect(fetchSpy).toHaveBeenLastCalledWith(PROFILE_PATH, expect.objectContaining({ method: 'PUT', body: '{"general":{}}' }));
   });
 });

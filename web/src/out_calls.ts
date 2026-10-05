@@ -5,7 +5,7 @@
  * the id of its call.
  */
 
-import { api, jsonInit, METHOD_POST, METHOD_PUT } from './net/api';
+import { api, jsonInit, METHOD_POST, METHOD_PUT, TokenNeeded, whenTokenGiven, wordsOf } from './net/api';
 import type { InputEvent } from './input/events';
 import { CHAT_ATTRIBUTE } from './input/keys';
 import { askChatFocus } from './panels/ChatLine';
@@ -16,6 +16,12 @@ const KEPT_PATH = '/v1/kept/';
 const DEFAULT_PROFILE_PATH = '/v1/profiles/default';
 const TEXT_FILE = 'text/plain';
 const SAVE_FAILED = 'UOTerm could not keep';
+/**
+ * How long the address of a downloaded file lives after its click: the
+ * browser reads the file after the click returns, so the address must
+ * outlive it.
+ */
+export const DOWNLOAD_URL_LIFE_MS = 1_000;
 
 export type OutCall =
   | { kind: 'Act'; id: number; act: { calls: PageCall[]; words: string } }
@@ -42,14 +48,34 @@ export interface OutPlaces {
   input(event: InputEvent): void;
 }
 
-/** The words of a fault. */
-function wordsOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/** The saves the API refused for want of its token, the newest value by path: they go again once it has it. */
+const parkedSaves = new Map<string, unknown>();
+let stopHearingToken: (() => void) | undefined;
+
+/** Sends every parked save again, now the API has its token. */
+function resendParked(): void {
+  stopHearingToken?.();
+  stopHearingToken = undefined;
+  const saves = [...parkedSaves];
+  parkedSaves.clear();
+  for (const [path, value] of saves) keep(path, value);
 }
 
-/** Puts `value` at `path`; a refusal goes to the console, as the window logs a file it could not write. */
+/**
+ * Puts `value` at `path`. A save refused for want of the token waits for
+ * it, the newest by path; any other refusal goes to the console, as the
+ * window logs a file it could not write.
+ */
 function keep(path: string, value: unknown): void {
-  api<void>(path, jsonInit(METHOD_PUT, value)).catch((error: unknown) => console.error(`${SAVE_FAILED} ${path}: ${wordsOf(error)}`));
+  parkedSaves.delete(path);
+  api<void>(path, jsonInit(METHOD_PUT, value)).catch((error: unknown) => {
+    if (!(error instanceof TokenNeeded)) {
+      console.error(`${SAVE_FAILED} ${path}: ${wordsOf(error)}`);
+      return;
+    }
+    parkedSaves.set(path, value);
+    stopHearingToken ??= whenTokenGiven(resendParked);
+  });
 }
 
 /** Gives the player a text file to keep, as the browser downloads one. */
@@ -58,8 +84,10 @@ function download(name: string, text: string): void {
   const link = document.createElement('a');
   link.href = url;
   link.download = name;
+  document.body.append(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFE_MS);
 }
 
 /** The field of the chat line, when it shows. */

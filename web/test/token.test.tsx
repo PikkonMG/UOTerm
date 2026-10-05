@@ -1,6 +1,6 @@
 import { render } from 'preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Token, WRONG_TOKEN } from '../src/screens/Token';
+import { Token, TOKEN_AUTOCOMPLETE, TOKEN_FIELD_NAME, WRONG_TOKEN } from '../src/screens/Token';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -41,5 +41,14 @@ describe('Token', () => {
     const root = document.createElement('div');
     render(<Token onAccepted={() => {}} />, root);
     expect(root.querySelector('input')?.type).toBe('password');
+  });
+
+  it('is_not_saved_or_filled_as_the_password_of_the_site', () => {
+    const root = document.createElement('div');
+    render(<Token onAccepted={() => {}} />, root);
+    const field = root.querySelector('input');
+    expect(field?.getAttribute('autocomplete')).toBe(TOKEN_AUTOCOMPLETE);
+    expect(field?.name).toBe(TOKEN_FIELD_NAME);
+    expect(TOKEN_AUTOCOMPLETE).toBe('one-time-code');
   });
 });

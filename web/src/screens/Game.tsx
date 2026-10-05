@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { WorldWords } from '../frame_loop';
 import { startGame, type GameHandle, type GameProfile } from '../game';
+import { wordsOf } from '../net/api';
 import { Panels } from '../panels/Panels';
 import { Plates } from '../panels/Plates';
 import type { PanelData } from '../panels/types';
@@ -29,9 +30,15 @@ export function Game({ session, profile, onEnded, onFault }: GameProps) {
 
   useEffect(() => {
     if (!canvas.current || !overlay.current) return;
-    const started = startGame(session, canvas.current, overlay.current, profile, { panels: setPanels, words: setWords });
+    let started: GameHandle;
+    try {
+      started = startGame(session, canvas.current, overlay.current, profile, { panels: setPanels, words: setWords });
+    } catch (error) {
+      onFault(wordsOf(error));
+      return;
+    }
     game.current = started;
-    started.ended.then(onEnded, (error: unknown) => onFault(error instanceof Error ? error.message : String(error)));
+    started.ended.then(onEnded, (error: unknown) => onFault(wordsOf(error)));
     return () => {
       game.current = null;
       started.stop();

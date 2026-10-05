@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { isClick } from './drag';
+import { isClick, useWindowDrag } from './drag';
 import { Note } from './Note';
 import type { MapItemData, Point, Send } from './types';
 import { WishField } from './WishField';
@@ -30,6 +30,7 @@ function onLand(at: { clientX: number; clientY: number }, land: HTMLElement | nu
 export function MapItem({ data, send }: { data: MapItemData; send: Send }) {
   const [dragged, setDragged] = useState<Dragged | null>(null);
   const [missing, setMissing] = useState(false);
+  const follow = useWindowDrag();
   const spots = data.pins.map((pin, at) => (dragged?.pin === at ? dragged.at : pin.at));
   const course = spots.map((spot) => `${spot.x},${spot.y}`).join(' ');
   const drag = (event: PointerEvent, pin: number) => {
@@ -44,13 +45,10 @@ export function MapItem({ data, send }: { data: MapItemData; send: Send }) {
       setDragged({ pin, at: onLand(moving, land, data.land) });
     };
     const up = (released: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
       setDragged(null);
       if (moved) send({ move_pin: { pin, ...onLand(released, land, data.land) } });
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    follow(move, up);
   };
   return (
     <div class="map-item">

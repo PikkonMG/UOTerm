@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/preact';
+import { act, fireEvent, render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { WorldMap } from '../../src/panels/WorldMap';
 import type { WorldMapData } from '../../src/panels/types';
@@ -56,5 +56,16 @@ describe('WorldMap', () => {
     expect(send).toHaveBeenLastCalledWith({ click: { x: 30, y: 40, ctrl: true } });
     fireEvent.wheel(field, { deltaY: -200, deltaMode: 0 });
     expect(send).toHaveBeenLastCalledWith({ wheel: 2 });
+  });
+
+  it('stops_following_a_drag_when_it_goes', () => {
+    const send = vi.fn();
+    const { container, unmount } = render(<WorldMap data={data} send={send} />);
+    fireEvent.pointerDown(container.querySelector('.map-field') as HTMLElement, { button: 0, clientX: 30, clientY: 40 });
+    act(() => {
+      unmount();
+    });
+    fireEvent.pointerMove(window, { clientX: 130, clientY: 140 });
+    expect(send).not.toHaveBeenCalled();
   });
 });

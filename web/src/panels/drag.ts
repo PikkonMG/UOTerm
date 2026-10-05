@@ -7,6 +7,7 @@
  * `Desk::landing` of the view decides what that does.
  */
 
+import { useEffect, useRef } from 'preact/hooks';
 import { toPoints } from '../points';
 import type { DropZone, Point } from './types';
 
@@ -64,6 +65,35 @@ export function followDrag(from: { clientX: number; clientY: number }, steps: Dr
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
+}
+
+/** Follows the pointer on the window until its button comes up: `move` on each move, `up` once it comes up. */
+export type WindowDrag = (move: (event: PointerEvent) => void, up?: (event: PointerEvent) => void) => void;
+
+/**
+ * The drags of one panel on the window. The window stops calling when the
+ * button comes up, when a new drag starts, or when the panel goes before
+ * the button comes up.
+ */
+export function useWindowDrag(): WindowDrag {
+  /** Stops following the drag on its way. */
+  const stopDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopDrag.current?.(), []);
+  return (move, up) => {
+    stopDrag.current?.();
+    const released = (event: PointerEvent) => {
+      stop();
+      up?.(event);
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', released);
+      stopDrag.current = null;
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', released);
+    stopDrag.current = stop;
+  };
 }
 
 /** What lies under a drop: the zone of a panel, and whether it is on a panel at all. */

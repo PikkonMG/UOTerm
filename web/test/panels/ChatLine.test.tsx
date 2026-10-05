@@ -1,6 +1,6 @@
 import { fireEvent, render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
-import { askChatFocus, ChatLine } from '../../src/panels/ChatLine';
+import { askChatFocus, ChatLine, forgetChatFocus } from '../../src/panels/ChatLine';
 import type { ChatData } from '../../src/panels/types';
 
 const data: ChatData = {
@@ -45,6 +45,13 @@ describe('ChatLine', () => {
     const { getByPlaceholderText } = render(<ChatLine data={data} send={vi.fn()} input={vi.fn()} />);
     expect(document.activeElement).toBe(getByPlaceholderText(data.hint));
     askChatFocus(false);
+    expect(document.activeElement).not.toBe(getByPlaceholderText(data.hint));
+  });
+
+  it('forgets_an_ask_the_field_did_not_do_when_the_game_stops', () => {
+    askChatFocus(true);
+    forgetChatFocus();
+    const { getByPlaceholderText } = render(<ChatLine data={data} send={vi.fn()} input={vi.fn()} />);
     expect(document.activeElement).not.toBe(getByPlaceholderText(data.hint));
   });
 });

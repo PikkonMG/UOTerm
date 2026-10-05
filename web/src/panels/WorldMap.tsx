@@ -1,6 +1,6 @@
 import { useRef, useState } from 'preact/hooks';
 import { wheelNotches } from '../input/pointer';
-import { isClick } from './drag';
+import { isClick, useWindowDrag } from './drag';
 import { Note } from './Note';
 import { Mark } from './Radar';
 import type { Point, Send, WorldMapData } from './types';
@@ -27,6 +27,7 @@ export function WorldMap({ data, send }: { data: WorldMapData; send: Send }) {
   const [missing, setMissing] = useState<Set<string>>(new Set());
   /** Where the main button went down on the field, until it comes up. */
   const pressedAt = useRef<Point | null>(null);
+  const follow = useWindowDrag();
   const miss = (path: string) => setMissing((known) => new Set(known).add(path));
   const shownPaths = [...(data.land ? [data.land.path] : []), ...data.tiles.map((tile) => tile.path)];
   const noLand = shownPaths.length > 0 && shownPaths.every((path) => missing.has(path));
@@ -43,12 +44,7 @@ export function WorldMap({ data, send }: { data: WorldMapData; send: Send }) {
       send({ drag: { x: (now.x - last.x) / scale, y: (now.y - last.y) / scale } });
       last = now;
     };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    follow(move);
   };
   const release = (event: PointerEvent) => {
     const from = pressedAt.current;

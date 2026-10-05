@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { LoginFailed, type LoginAsk, type LoginForm, type LoginReply } from '../src/net/login';
+import { AskReplaced, LoginFailed, type LoginAsk, type LoginForm, type LoginReply } from '../src/net/login';
 import { LoginScreens, type StartLogin } from '../src/screens/LoginScreens';
 import { CREATE, CREATION_WORDS, namePageView } from './fake_creation';
 import { LOGIN_WORDS, rules } from './fake_login';
@@ -140,5 +140,22 @@ describe('LoginScreens', () => {
     await connect(root);
     await vi.waitFor(() => expect(tries.length).toBe(2));
     expect(tries[1]).toMatchObject({ host: 'play.example.com', account: 'acct2', password: 'second', encryption: 'osi', era: 't2a', version: '5.0.9.1' });
+  });
+
+  it('drops_the_open_question_when_a_newer_one_comes', async () => {
+    const replies: LoginReply[] = [];
+    let first: Promise<LoginReply> | undefined;
+    const start: StartLogin = async (_form, onAsk) => {
+      first = onAsk(LIST, VERSION);
+      replies.push(await onAsk(LIST, VERSION));
+      return 's1';
+    };
+    const onReady = vi.fn();
+    const root = await showForm(start, onReady);
+    await connect(root);
+    await expect(first).rejects.toBeInstanceOf(AskReplaced);
+    await act(async () => button(root, 'Mara').click());
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalled());
+    expect(replies).toEqual([{ kind: 'Request', request: { Play: 0 } }]);
   });
 });

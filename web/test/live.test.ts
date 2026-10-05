@@ -8,6 +8,7 @@ import {
   LINK_LOST_WAITING,
   LiveLink,
   LOSSES_BEFORE_TOKEN_CHECK,
+  SESSION_ENDED,
   type LiveHandlers,
 } from '../src/net/live';
 import { FakeSocket } from './fake_socket';
@@ -126,9 +127,39 @@ describe('LiveLink', () => {
   it('fails_a_call_at_once_while_the_link_is_lost', () => {
     const on = handlers();
     const link = new LiveLink(SESSION, on);
+    FakeSocket.last().open();
+    FakeSocket.last().drop();
     link.send({ kind: 'act', id: ACT_ID, calls: [] });
     expect(on.answer).toHaveBeenCalledWith(ACT_ID, false, { error: LINK_LOST });
     expect(FakeSocket.last().sent).toEqual([]);
+    link.close();
+  });
+
+  it('sends_a_call_made_before_the_first_link_opens_when_it_opens', async () => {
+    const on = handlers();
+    const link = new LiveLink(SESSION, on);
+    link.send({ kind: 'call', id: CALL_ID, tool: 'observe', args: {} });
+    FakeSocket.last().drop();
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
+    expect(on.answer).not.toHaveBeenCalled();
+    FakeSocket.last().open();
+    expect(FakeSocket.last().sentJson()).toEqual([{ kind: 'call', id: CALL_ID, tool: 'observe', args: {} }]);
+    FakeSocket.last().receive({ kind: 'answer', id: CALL_ID, ok: true, result: { tick: 1 } });
+    expect(on.answer).toHaveBeenCalledWith(CALL_ID, true, { tick: 1 });
+    link.close();
+  });
+
+  it('fails_a_call_made_before_the_first_link_opens_when_the_session_ends', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response('{"sessions":[]}')));
+    const on = handlers();
+    const link = new LiveLink(SESSION, on);
+    link.send({ kind: 'act', id: ACT_ID, calls: [] });
+    for (let tries = 0; tries < LOSSES_BEFORE_TOKEN_CHECK; tries += 1) {
+      FakeSocket.last().drop();
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[BACKOFF_MS.length - 1]);
+    }
+    expect(on.ended).toHaveBeenCalledTimes(1);
+    expect(on.answer).toHaveBeenCalledWith(ACT_ID, false, { error: SESSION_ENDED });
     link.close();
   });
 

@@ -90,11 +90,20 @@ export class LoginFailed extends Error {
   }
 }
 
+/** A newer question of the login came before the page answered this one: the old one is dropped, and the login goes on. */
+export class AskReplaced extends Error {
+  constructor() {
+    super('a newer question of the login came first');
+    this.name = 'AskReplaced';
+  }
+}
+
 /**
  * Logs in with `form`, and asks `onAsk` each question of the login, with
  * the client version of the login (`7.0.102.3`). Gives the id of the new
  * session; rejects with `LoginFailed`, or with the error of `onAsk`, which
- * closes the link and so ends the login.
+ * closes the link and so ends the login. An `AskReplaced` of `onAsk` only
+ * drops its question.
  */
 export function login(form: LoginForm, onAsk: (ask: LoginAsk, version: string) => Promise<LoginReply>): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -113,7 +122,9 @@ export function login(form: LoginForm, onAsk: (ask: LoginAsk, version: string) =
         (reply) => {
           if (!ended) socket.send(JSON.stringify({ kind: 'reply', reply }));
         },
-        (error: unknown) => end(() => reject(error)),
+        (error: unknown) => {
+          if (!(error instanceof AskReplaced)) end(() => reject(error));
+        },
       );
     socket.onopen = () => socket.send(JSON.stringify({ kind: 'login', ...form }));
     socket.onclose = () => end(() => reject(new LoginFailed(LOGIN_CLOSED)));

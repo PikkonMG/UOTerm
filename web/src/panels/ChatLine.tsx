@@ -25,6 +25,11 @@ export function askChatFocus(take: boolean): void {
   applyFocus(document.querySelector<HTMLInputElement>(`[${CHAT_ATTRIBUTE}]`));
 }
 
+/** Lets go of an ask the field has not done yet, as when the game stops: the next game starts with none. */
+export function forgetChatFocus(): void {
+  focusAsked = null;
+}
+
 interface ChatLineProps {
   data: ChatData;
   send: Send;

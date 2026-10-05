@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/preact';
+import { act, fireEvent, render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { MapItem } from '../../src/panels/MapItem';
 import type { MapItemData } from '../../src/panels/types';
@@ -50,5 +50,17 @@ describe('MapItem', () => {
     fireEvent.input(getByPlaceholderText('Say the place'), { target: { value: 'bank' } });
     fireEvent.click(getByText('Mark'));
     expect(send).toHaveBeenLastCalledWith({ wish: 'bank' });
+  });
+
+  it('stops_following_a_drag_when_it_goes', () => {
+    const send = vi.fn();
+    const { container, unmount } = render(<MapItem data={data} send={send} />);
+    fireEvent.pointerDown(container.querySelectorAll('.map-pin')[1] as Element, { button: 0, clientX: 100, clientY: 20 });
+    act(() => {
+      unmount();
+    });
+    fireEvent.pointerMove(window, { clientX: 120, clientY: 30 });
+    fireEvent.pointerUp(window, { clientX: 120, clientY: 30 });
+    expect(send).not.toHaveBeenCalled();
   });
 });

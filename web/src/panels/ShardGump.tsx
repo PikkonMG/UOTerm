@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { Hover } from './hover';
 import { hoverOn } from './hover';
-import { PANEL_ATTRIBUTE } from './drag';
+import { PANEL_ATTRIBUTE, useWindowDrag } from './drag';
 import { Picture, TiledPicture } from './Picture';
 import type { GumpPicture, GumpPieceData, HtmlLine, Point, Send, ShardGumpData } from './types';
 
@@ -146,6 +146,7 @@ function Piece({ piece, send, hover }: { piece: GumpPieceData; send: Send; hover
  */
 export function ShardGump({ data, scale, send, hover }: { data: ShardGumpData; scale: number; send: Send; hover?: Hover }) {
   const [moved, setMoved] = useState<Point | null>(null);
+  const follow = useWindowDrag();
   const shown = moved ?? data.at;
   const begin = (event: PointerEvent) => {
     const target = event.target as HTMLElement | null;
@@ -157,13 +158,10 @@ export function ShardGump({ data, scale, send, hover }: { data: ShardGumpData; s
       setMoved(last);
     };
     const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
       setMoved(null);
       send({ place: last });
     };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    follow(move, up);
   };
   return (
     <section

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { api, jsonInit, METHOD_PUT } from '../net/api';
-import type { CharacterChoices, LoginAsk, LoginForm, LoginReply } from '../net/login';
+import { api, jsonInit, METHOD_PUT, wordsOf } from '../net/api';
+import { AskReplaced, type CharacterChoices, type LoginAsk, type LoginForm, type LoginReply } from '../net/login';
 import { Characters } from './Characters';
 import { Creation } from './Creation';
 import type { CreationMaker, CreationWords } from './creation_model';
@@ -63,20 +63,21 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
   /** The form of the last login, shown again when it fails; its password is empty. */
   const [kept, setKept] = useState<KeptLogin | null>(null);
   /** The answer the open question of the login waits for. */
-  const answer = useRef<((reply: LoginReply) => void) | null>(null);
+  const answer = useRef<{ resolve(reply: LoginReply): void; reject(error: AskReplaced): void } | null>(null);
   /** The character the replies play, to name the profile of the game. */
   const chosen = useRef<string | null>(null);
   const asked = useRef(0);
 
   useEffect(() => {
     api<Logins>(LOGINS_PATH).then(setLogins, (error: unknown) => {
-      setNote(error instanceof Error ? error.message : String(error));
+      setNote(wordsOf(error));
     });
   }, []);
 
   const onAsk = (ask: LoginAsk, version: string) =>
-    new Promise<LoginReply>((resolve) => {
-      answer.current = resolve;
+    new Promise<LoginReply>((resolve, reject) => {
+      answer.current?.reject(new AskReplaced());
+      answer.current = { resolve, reject };
       asked.current += 1;
       if (nextScreen(ask) === 'picking') setStage({ kind: 'picking', names: ask.names });
       else if (ask.kind === 'Characters') {
@@ -87,7 +88,7 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
 
   const reply = (sent: LoginReply, names: string[]) => {
     if (sent.kind === 'Request') chosen.current = characterOf(sent, names);
-    answer.current?.(sent);
+    answer.current?.resolve(sent);
     answer.current = null;
     setStage(CONNECTING);
   };
@@ -105,7 +106,7 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
       (error: unknown) => {
         answer.current = null;
         setStage(FORM);
-        setNote(error instanceof Error ? error.message : String(error));
+        setNote(wordsOf(error));
       },
     );
   };

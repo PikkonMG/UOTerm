@@ -1,4 +1,4 @@
-import { fireEvent, render } from '@testing-library/preact';
+import { act, fireEvent, render } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { ShardGump } from '../../src/panels/ShardGump';
 import type { ShardGumpData } from '../../src/panels/types';
@@ -85,5 +85,16 @@ describe('ShardGump', () => {
     expect(container.textContent).toContain(MARKUP);
     const bold = [...container.querySelectorAll('.gump-html span')].find((span) => span.textContent === 'bold') as HTMLElement;
     expect(bold.style.fontWeight).toBe('bold');
+  });
+
+  it('stops_following_a_drag_when_it_goes', () => {
+    const send = vi.fn();
+    const { container, unmount } = render(<ShardGump data={gump} scale={2} send={send} />);
+    fireEvent.pointerDown(container.querySelector('.shard-gump') as HTMLElement, { button: 0, clientX: 100, clientY: 100 });
+    act(() => {
+      unmount();
+    });
+    fireEvent.pointerUp(window, { clientX: 140, clientY: 120 });
+    expect(send).not.toHaveBeenCalled();
   });
 });

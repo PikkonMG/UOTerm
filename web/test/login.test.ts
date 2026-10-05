@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { login, LoginFailed, LOGIN_CLOSED, type LoginAsk, type LoginForm, type LoginReply } from '../src/net/login';
+import { AskReplaced, login, LoginFailed, LOGIN_CLOSED, type LoginAsk, type LoginForm, type LoginReply } from '../src/net/login';
 import { FakeSocket } from './fake_socket';
 
 const FORM: LoginForm = { host: '127.0.0.1', port: 2593, account: 'test', password: 'pw', shard: null, character: 'Mara' };
@@ -49,5 +49,21 @@ describe('login', () => {
     socket.receive({ kind: 'ask', ask: SHARD_ASK, version: VERSION });
     await expect(session).rejects.toEqual(new LoginFailed('gone'));
     expect(socket.readyState).toBe(FakeSocket.CLOSED);
+  });
+
+  it('drops_a_question_a_newer_one_replaced_and_goes_on', async () => {
+    const onAsk = vi.fn().mockRejectedValueOnce(new AskReplaced()).mockResolvedValueOnce(PICK_SECOND);
+    const session = login(FORM, onAsk);
+    const socket = FakeSocket.last();
+    socket.open();
+    socket.receive({ kind: 'ask', ask: SHARD_ASK, version: VERSION });
+    socket.receive({ kind: 'ask', ask: SHARD_ASK, version: VERSION });
+    await vi.waitFor(() => expect(socket.sent.length).toBe(2));
+    socket.receive({ kind: 'ready', session: 's1' });
+    await expect(session).resolves.toBe('s1');
+    expect(socket.sentJson()).toEqual([
+      { kind: 'login', ...FORM },
+      { kind: 'reply', reply: PICK_SECOND },
+    ]);
   });
 });

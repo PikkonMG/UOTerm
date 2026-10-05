@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { wordsOf } from '../net/api';
 import type { LoginForm } from '../net/login';
 import type { LoginRules, LoginWords } from './login_state';
 
@@ -155,7 +156,7 @@ export function Login({ saved, blank, kept, words, rules, note, onConnect, onSav
       setSaveName(null);
       setTold(`${words.saved_as} ${name}.`);
     } catch (error) {
-      setFault(error instanceof Error ? error.message : String(error));
+      setFault(wordsOf(error));
     }
   };
 

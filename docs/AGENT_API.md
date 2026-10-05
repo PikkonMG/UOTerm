@@ -290,7 +290,8 @@ These need client files (`--uopath`, or `uopath` in `uoterm.toml`). With none, t
 | `GET /v1/map-picture/{map}/{tx}/{ty}` | PNG: one tile of the whole-world picture of a map |
 | `GET /v1/map-item/{facet}/{start_x}/{start_y}/{end_x}/{end_y}` | PNG: the land of a map item between its corners |
 | `POST /v1/map/live` | The `live_map` value of `watch`, 8 MiB at most. Gives the blocks that changed. Not kept by the browser |
-| `GET /v1/data/{table}` | `tiledata`, `animdata`, `anim-rules`, `radarcol`, `seasons`, `cliloc`, `creation`, `item-layers`, and with an id: `multis/{id}`, `lights/{id}`, `hues-text/{hue}`. `frames/{body}/{action}/{direction}/{mounted}` counts the frames of a body |
+| `GET /v1/data/{table}` | `tiledata`, `animdata`, `anim-rules`, `radarcol`, `seasons`, `cliloc`, `item-layers`, and with an id: `multis/{id}`, `lights/{id}`, `hues-text/{hue}`. `frames/{body}/{action}/{direction}/{mounted}` counts the frames of a body |
+| `GET /v1/data/creation?towns=…` | What the character creation reads: `{"professions", "skill_names", "town_texts", "words", "hue_colors"}`. `towns` is a comma-separated list of the text numbers of the start-town words the shard offers (it may be empty or left out). `words` holds only the text numbers of the professions and of these towns (null when the client files have no `Cliloc.enu`). `hue_colors` gives `[r, g, b]` by hue for each hue of the palettes. 400 for a `towns` value that is not a list of numbers |
 
 ### Sound
 
@@ -317,10 +318,11 @@ These are the same files the play window reads, so the options are the same in b
 
 ### Jev
 
-These run in UOTerm, so the TypeSafe key never goes to the browser. 503 when there is no key, 404 for an unknown session, 409 with `{"error": words}` when Jev gives no answer.
+These run in UOTerm, so the TypeSafe key never goes to the browser. `GET /v1/jev` tells the page whether Jev can answer: `{"on": bool}`, true when UOTerm has a TypeSafe key. The key itself is not sent. The other routes give 503 when there is no key, 404 for an unknown session, and 409 with `{"error": words}` when Jev gives no answer.
 
 | Route | Body | Answer |
 | --- | --- | --- |
+| `GET /v1/jev` | None | `{"on": bool}` |
 | `POST /v1/sessions/{id}/jev/order` | `{"words": "...", "frame": {...}}` (`frame` is a `watch` result) | `{"act": ...}`, in the form the page sends on its live link |
 | `POST /v1/sessions/{id}/jev/pick` | `{"question": ..., "names": [...], "wish": "..."}` | `{"index": N}`, or null when Jev is not sure |
 | `POST /v1/sessions/{id}/jev/lines` | `{"wish": "..."}` | `{"lines": [...]}`: the script lines of the hotkey the wish names |

@@ -35,7 +35,7 @@ export const ANSWER_WAIT_MS = ACT_PLACES * LONGEST_ACT_MS + ANSWER_TRAVEL_MS;
  */
 export const LOSSES_BEFORE_TOKEN_CHECK = 3;
 export const ANSWER_LATE = 'no answer came in time';
-/** A call or an act sent while the link is lost; it never left the page. */
+/** A call or an act sent while a link that was open is lost; it never left the page. */
 export const LINK_LOST = 'the link to UOTerm is lost';
 /** The link broke while an answer was on its way; the server finishes an act it started. */
 export const LINK_LOST_WAITING = 'the link was lost; the act may have run';
@@ -54,6 +54,9 @@ export type LiveOut =
   | ({ kind: 'call'; id: number } & PageCall)
   | { kind: 'act'; id: number; calls: PageCall[] }
   | { kind: 'size'; size: number };
+
+/** A message of the page that waits for its answer: a call or an act. */
+type AnsweredOut = Exclude<LiveOut, { kind: 'size' }>;
 
 /** What the server sends on the link. */
 export type LiveIn =
@@ -86,6 +89,10 @@ export class LiveLink {
   private readonly waiting = new Map<number, Timer>();
   /** The last size the page asked for, sent again on each new link. */
   private size: LiveOut | undefined;
+  /** True once a link opened. */
+  private everOpen = false;
+  /** The calls and acts sent before the first link opened, sent when it does. */
+  private readonly early: AnsweredOut[] = [];
 
   constructor(
     private readonly session: string,
@@ -95,8 +102,9 @@ export class LiveLink {
   }
 
   /**
-   * Sends a message. A call or an act on a lost link fails at once; one
-   * whose answer does not come in `ANSWER_WAIT_MS` fails then.
+   * Sends a message. A call or an act before the first link opens waits
+   * for it; one on a link lost after that fails at once; one whose answer
+   * does not come in `ANSWER_WAIT_MS` fails then.
    */
   send(message: LiveOut): void {
     if (message.kind === 'size') {
@@ -105,7 +113,8 @@ export class LiveLink {
       return;
     }
     if (!this.isOpen()) {
-      this.handlers.answer(message.id, false, { error: LINK_LOST });
+      if (this.everOpen) this.handlers.answer(message.id, false, { error: LINK_LOST });
+      else this.early.push(message);
       return;
     }
     const late = setTimeout(() => this.settle(message.id, false, { error: ANSWER_LATE }), ANSWER_WAIT_MS);
@@ -113,9 +122,10 @@ export class LiveLink {
     this.socket.send(JSON.stringify(message));
   }
 
-  /** Closes the link for good. Answers still on their way are let go. */
+  /** Closes the link for good. Answers still on their way, and calls not sent yet, are let go. */
   close(): void {
     this.stop();
+    this.early.length = 0;
     for (const timer of this.waiting.values()) clearTimeout(timer);
     this.waiting.clear();
   }
@@ -125,8 +135,10 @@ export class LiveLink {
     socket.onopen = () => {
       this.tries = 0;
       this.reportedOpen = true;
+      this.everOpen = true;
       this.handlers.state('open');
       if (this.size) socket.send(JSON.stringify(this.size));
+      for (const message of this.early.splice(0)) this.send(message);
     };
     socket.onmessage = (event: MessageEvent) => {
       const message = readMessage<LiveIn>(event.data);
@@ -154,6 +166,7 @@ export class LiveLink {
   private end(): void {
     this.stop();
     this.failWaiting(SESSION_ENDED);
+    for (const message of this.early.splice(0)) this.handlers.answer(message.id, false, { error: SESSION_ENDED });
     this.handlers.ended();
   }
 

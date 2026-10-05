@@ -1,5 +1,5 @@
 import { memo } from 'preact/compat';
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { InputEvent } from '../input/events';
 import { toPoints } from '../points';
 import { Abilities, Racial } from './Abilities';
@@ -117,8 +117,10 @@ function usePlayerFont(font: PlayerFont | null): Record<string, string | number>
       document.fonts.delete(face);
     };
   }, [name]);
-  if (!font || loaded !== font.name) return {};
-  return { '--player-face': `'${PLAYER_FACE}'`, '--font-scale': font.scale };
+  /** The scale of the font once it came; undefined before. */
+  const scale = font && loaded === font.name ? font.scale : undefined;
+  // The same style while the font stays, so a change of it is a change of the style.
+  return useMemo((): Record<string, string | number> => (scale === undefined ? {} : { '--player-face': `'${PLAYER_FACE}'`, '--font-scale': scale }), [scale]);
 }
 
 /**
@@ -178,9 +180,10 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
     return () => window.removeEventListener('pointerup', up);
   }, []);
 
+  const fontStyle = usePlayerFont(data.look.font);
   // The page is measured when the view gave new panel data (its places,
-  // its UI scale, or words that change a height), and not on other frames:
-  // the game gives new data only when it changed.
+  // its UI scale, or words that change a height) or the player font came,
+  // and not on other frames: the game gives new data only when it changed.
   useLayoutEffect(() => {
     if (!root.current) return;
     const areas = coveredAreas(root.current);
@@ -188,11 +191,10 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
     if (json === lastCovered.current) return;
     lastCovered.current = json;
     covered(areas);
-  }, [data]);
+  }, [data, fontStyle]);
 
   const chat = <ChatLine data={data.chat} send={to('chat')} input={input} />;
   const { journal, question } = data;
-  const fontStyle = usePlayerFont(data.look.font);
   return (
     <div class="panels-root" ref={root} style={fontStyle}>
       <TitleBar title={data.title} />

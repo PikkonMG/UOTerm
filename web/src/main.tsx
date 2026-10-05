@@ -2,7 +2,7 @@ import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import './app.css';
 import { loadView, type GameProfile } from './game';
-import { api, SESSIONS_PATH, TokenNeeded, whenTokenNeeded, type Sessions } from './net/api';
+import { api, SESSIONS_PATH, TokenNeeded, whenTokenNeeded, wordsOf, type Sessions } from './net/api';
 import { SESSION_ENDED } from './net/live';
 import { login } from './net/login';
 import type { CreationWords } from './screens/creation_model';
@@ -57,7 +57,7 @@ async function gameOf(session: string, place: CharacterPlace | null): Promise<Sc
   return { kind: 'game', session, profile: { path, value, soundFont: soundFontPath(place) } };
 }
 
-const faultOf = (error: unknown): Screen => ({ kind: 'fault', words: error instanceof Error ? error.message : String(error) });
+const faultOf = (error: unknown): Screen => ({ kind: 'fault', words: wordsOf(error) });
 
 /**
  * Asks the API whether the page may call it, then opens the session the
