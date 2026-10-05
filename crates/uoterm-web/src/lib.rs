@@ -626,6 +626,13 @@ impl WebView {
         self.fullscreen = shown;
     }
 
+    /// The session the pictures are of: the map the view asks for is the
+    /// one of that session.
+    #[wasm_bindgen(js_name = setSession)]
+    pub fn set_session(&mut self, session: &str) {
+        self.art.set_session(session);
+    }
+
     /// Whether Jev can answer, as the server says.
     #[wasm_bindgen(js_name = setOrdersOn)]
     pub fn set_orders_on(&mut self, on: bool) {

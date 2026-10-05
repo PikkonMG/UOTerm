@@ -261,6 +261,23 @@ async fn font(
     }
 }
 
+/// Writes a new screenshot file in `folder`, and the folder when there is
+/// none. A file `write` did not write whole is taken away again, so no
+/// broken picture stays in the folder.
+fn write_new_file(
+    folder: &std::path::Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(folder)?;
+    let (path, mut file) = create_new_file(folder)?;
+    if let Err(error) = write(&mut file) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
+}
+
 /// Saves a PNG of the page in the `screenshots` folder, as the window
 /// saves its own. Gives the name of the file.
 async fn save_screenshot(State(state): State<WebState>, picture: Bytes) -> Response {
@@ -269,9 +286,7 @@ async fn save_screenshot(State(state): State<WebState>, picture: Bytes) -> Respo
     }
     on_blocking(move || {
         let folder = screenshots_dir(&state.config_dir);
-        let saved = std::fs::create_dir_all(&folder)
-            .and_then(|()| create_new_file(&folder))
-            .and_then(|(path, mut file)| file.write_all(&picture).map(|()| path));
+        let saved = write_new_file(&folder, |file| file.write_all(&picture));
         match saved {
             Ok(path) => {
                 let file = path.file_name().map(|name| name.to_string_lossy());
@@ -621,6 +636,17 @@ mod tests {
         );
         let written = std::fs::read(home.path().join("screenshots").join(file)).unwrap();
         assert_eq!(written, PNG_START);
+    }
+
+    #[test]
+    fn a_screenshot_not_written_whole_is_taken_away() {
+        let home = test_config_dir();
+        let folder = home.path().join("screenshots");
+        let failed = super::write_new_file(&folder, |_| {
+            Err(std::io::Error::new(std::io::ErrorKind::StorageFull, "full"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
     }
 
     #[tokio::test]

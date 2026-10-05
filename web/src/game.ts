@@ -100,6 +100,7 @@ const clock = () => performance.now() / MS_PER_SECOND;
  */
 export function startGame(session: string, canvas: HTMLCanvasElement, overlay: HTMLElement, profile: GameProfile, show: Shows): GameHandle {
   const view = new WebView(JSON.stringify(profile.value));
+  view.setSession(session);
   view.setTextMeasure(plateMeasure());
   view.setBodyMeasure(bodyMeasure());
   setDragDistance(clickDistance());

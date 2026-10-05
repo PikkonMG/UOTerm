@@ -582,6 +582,27 @@ pub fn file_safe(words: &str) -> String {
     safe
 }
 
+/// The end of the name of a file [`write_whole`] writes before it takes
+/// the place of the real one.
+const PART_FILE_END: &str = "tmp";
+
+/// Writes `contents` to `path` as one change: first to a file of its own
+/// in the same folder, then that file takes the place of `path`. A reader
+/// never sees half a file, and of two writers at one time, one wins whole.
+pub fn write_whole(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name"))?;
+    let mut part_name = name.to_os_string();
+    part_name.push(format!(".{}.{PART_FILE_END}", uuid::Uuid::new_v4()));
+    let part = path.with_file_name(part_name);
+    let written = std::fs::write(&part, contents).and_then(|()| std::fs::rename(&part, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
 /// The words a [`file_safe`] name was made from. A `%` with no two hex
 /// digits after it stays as it is.
 pub fn from_file_safe(safe: &str) -> String {
@@ -703,7 +724,7 @@ impl LoginStore {
         let text = toml::to_string(profile)
             .map_err(|e| crate::error::RuntimeError::Usage(format!("profile: {e}")))?;
         std::fs::create_dir_all(&self.kept)
-            .and_then(|()| std::fs::write(&path, text))
+            .and_then(|()| write_whole(&path, text))
             .map_err(|e| {
                 crate::error::RuntimeError::Usage(format!("profile {}: {e}", path.display()))
             })?;
@@ -782,6 +803,41 @@ pub fn password_from_env(var: &str) -> crate::error::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two writers at one time: each read finds one whole file, and no
+    /// part file is left in the folder.
+    #[test]
+    fn a_whole_write_is_never_seen_half_done() {
+        const WRITERS: usize = 2;
+        const ROUNDS: usize = 50;
+        const FILE_BYTES: usize = 64 * 1024;
+        let dir = std::env::temp_dir().join(format!("uoterm-write-whole-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kept.toml");
+        let contents: Vec<Vec<u8>> = (0..WRITERS)
+            .map(|writer| vec![b'a' + writer as u8; FILE_BYTES])
+            .collect();
+        std::thread::scope(|scope| {
+            for body in &contents {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..ROUNDS {
+                        write_whole(path, body).unwrap();
+                    }
+                });
+            }
+            for _ in 0..ROUNDS {
+                if let Ok(read) = std::fs::read(&path) {
+                    assert!(contents.contains(&read), "a file of {} bytes", read.len());
+                }
+            }
+        });
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1, "only the file itself");
+        assert!(write_whole(&dir.join("no-folder").join("kept.toml"), "x").is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_named_version_is_said_as_it_is() {

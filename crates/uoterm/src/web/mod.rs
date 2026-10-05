@@ -16,8 +16,9 @@ mod sound_routes;
 pub use files::serve_page;
 
 use crate::art::client_art::ClientArt;
+use crate::art::facet_maps::FacetMaps;
 use crate::lru::LruCache;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::Request;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, ETAG};
 use axum::http::{HeaderValue, StatusCode};
@@ -27,9 +28,10 @@ use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::time::SystemTime;
 use tokio::sync::Semaphore;
 use tower_http::services::ServeFile;
@@ -56,6 +58,8 @@ pub struct WebState {
     /// unavailable. The lock is held only on a blocking thread: pictures
     /// and tables share it, a map block or a light shape takes it alone.
     pub art: Option<Arc<RwLock<ClientArt>>>,
+    /// The folder of the client files. None when there are none.
+    pub client_files: Option<PathBuf>,
     /// Names the version of the client files and of UOTerm in every ETag.
     pub files_tag: String,
     /// One permit for each picture made at one time.
@@ -83,6 +87,25 @@ pub struct WebState {
     /// that draws the map again does not make them again. One state serves
     /// one version of the client files, so the map and the tile name one.
     pub map_tiles: Arc<Mutex<LruCache<MapTileKey, Vec<u8>>>>,
+    /// The map files with the UltimaLive blocks of each session that sent
+    /// a live map, by the id of the session. Each is let go when its
+    /// session ends. The lock is taken after the lock of the client files.
+    pub live_maps: Arc<Mutex<HashMap<String, FacetMaps>>>,
+    /// The large tables as JSON, made the first time a page asks for
+    /// them. One state serves one version of the client files, so the
+    /// files tag names each one.
+    pub encoded: Arc<EncodedTables>,
+}
+
+/// A table as JSON: None when the client files do not hold it, the status
+/// to answer when it did not turn into JSON.
+pub type EncodedTable = Option<Result<Bytes, StatusCode>>;
+
+/// The tables of megabytes that every page asks for, each made once.
+#[derive(Default)]
+pub struct EncodedTables {
+    pub tiledata: OnceLock<EncodedTable>,
+    pub cliloc: OnceLock<EncodedTable>,
 }
 
 /// A tile of the whole-world picture: its map and its place.
@@ -110,6 +133,7 @@ impl WebState {
         let program = std::env::current_exe().unwrap_or_default();
         Self {
             art: art.map(|art| Arc::new(RwLock::new(art))),
+            client_files: uopath.map(Path::to_path_buf),
             files_tag: uopath
                 .map(|path| files_tag(path, &config_dir, &program))
                 .unwrap_or_default(),
@@ -126,6 +150,8 @@ impl WebState {
             jev_key,
             login_config: AppConfig::default(),
             map_tiles: Arc::new(Mutex::new(LruCache::new(MAP_TILES_KEPT))),
+            live_maps: Arc::default(),
+            encoded: Arc::default(),
         }
     }
 
@@ -138,22 +164,27 @@ impl WebState {
     }
 }
 
-/// Every path of the API. A path no route has is not found, whatever the
-/// method, so it never gets the page.
-const API_PATHS: &str = "/v1/{*rest}";
+/// Every path of the API, the root of the API with and without its last
+/// slash too. A path no route has is not found, whatever the method, so it
+/// never gets the page.
+const API_PATHS: [&str; 3] = ["/v1", "/v1/", "/v1/{*rest}"];
 
 /// Every route of this module, and not found for any other path of the
 /// API.
 pub fn router(state: WebState) -> Router {
-    Router::new()
+    let routes = Router::new()
         .merge(art_routes::routes())
         .merge(map_routes::routes())
         .merge(data_routes::routes())
         .merge(sound_routes::routes())
         .merge(profile_routes::routes())
         .merge(jev_routes::routes())
-        .merge(login_routes::routes())
-        .route(API_PATHS, any(|| async { not_found() }))
+        .merge(login_routes::routes());
+    API_PATHS
+        .into_iter()
+        .fold(routes, |routes, path| {
+            routes.route(path, any(|| async { not_found() }))
+        })
         .with_state(state)
 }
 
@@ -260,31 +291,43 @@ async fn on_locked_art<T: 'static>(
 }
 
 /// An answer the browser keeps for as long as `etag` names it.
-fn kept(etag: &str, content_type: &str, body: Vec<u8>) -> Response {
+fn kept(etag: &str, content_type: &str, body: impl Into<Body>) -> Response {
     (
         [
             (CONTENT_TYPE, content_type.to_string()),
             (CACHE_CONTROL, KEEP_FOREVER.to_string()),
             (ETAG, format!("\"{etag}\"")),
         ],
-        body,
+        body.into(),
     )
         .into_response()
 }
 
+/// A table as JSON. See [`EncodedTable`].
+fn encoded<T: Serialize>(value: Option<T>) -> EncodedTable {
+    value.map(|value| {
+        serde_json::to_vec(&value)
+            .map(Bytes::from)
+            .map_err(|error| {
+                tracing::warn!(%error, "a table did not turn into JSON");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
+    })
+}
+
 /// A table as JSON the browser keeps for this version of the client files.
 /// Not found when the client files do not hold it.
-fn table<T: Serialize>(value: Option<T>, files_tag: &str) -> Response {
-    let Some(value) = value else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    match serde_json::to_vec(&value) {
-        Ok(body) => kept(files_tag, CONTENT_JSON, body),
-        Err(error) => {
-            tracing::warn!(%error, "a table did not turn into JSON");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
+fn encoded_answer(table: &EncodedTable, files_tag: &str) -> Response {
+    match table {
+        Some(Ok(body)) => kept(files_tag, CONTENT_JSON, body.clone()),
+        Some(Err(status)) => status.into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// [`encoded_answer`] for a table made now.
+fn table<T: Serialize>(value: Option<T>, files_tag: &str) -> Response {
+    encoded_answer(&encoded(value), files_tag)
 }
 
 /// Runs `work` on a blocking thread and gives its answer: for the files
@@ -501,6 +544,9 @@ mod tests {
             String::from_utf8(bytes.to_vec()).unwrap()
         };
         for (method, path) in [
+            ("GET", "/v1"),
+            ("GET", "/v1/"),
+            ("POST", "/v1"),
             ("GET", "/v1/typo"),
             ("POST", "/v1/typo"),
             ("GET", "/v1/sessions/s1/nothing"),

@@ -150,8 +150,13 @@ fn same_origin(origin: &str, host: Option<&str>, local_only: bool) -> bool {
 }
 
 async fn require_bearer(State(guard): State<Guard>, req: Request, next: Next) -> Response {
-    let host = req.headers().get(HOST).and_then(|v| v.to_str().ok());
-    if guard.local_only && host.is_some_and(|host| !host_is_loopback(host)) {
+    // An HTTP/2 caller names the host in the address of the request.
+    let host = req
+        .headers()
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| req.uri().authority().map(|authority| authority.as_str()));
+    if guard.local_only && !host.is_some_and(host_is_loopback) {
         return forbidden(ONLY_THIS_MACHINE);
     }
     if let Some(origin) = req.headers().get(ORIGIN) {
@@ -464,6 +469,30 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// A caller that names no host may be on any machine, so a local API
+    /// refuses it; a host in the address of the request counts.
+    #[tokio::test]
+    async fn a_local_api_refuses_a_caller_that_names_no_host() {
+        let bearer = format!("{BEARER_PREFIX}{TOKEN}");
+        let call = |uri: &str| {
+            axum::http::Request::get(uri)
+                .header(AUTHORIZATION, &bearer)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let app = router_for(
+            Runtime::new(TEST_SESSIONS),
+            crate::config::AppConfig::default(),
+            Some(TOKEN.to_string()),
+            true,
+        );
+        let no_host = app.clone().oneshot(call(SESSIONS_PATH)).await.unwrap();
+        assert_eq!(no_host.status(), StatusCode::FORBIDDEN);
+        let in_address = format!("http://{LOCAL_HOST}{SESSIONS_PATH}");
+        let named = app.oneshot(call(&in_address)).await.unwrap();
+        assert_eq!(named.status(), StatusCode::OK);
     }
 
     /// A caller that is no web page sends no origin, and passes as before.

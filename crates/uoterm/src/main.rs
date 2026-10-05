@@ -933,13 +933,27 @@ async fn web_client(
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|e| RuntimeError::Network(e.to_string()))?;
-    println!("Open http://{bind}/");
+    println!("{}", open_line(&bind));
     tokio::select! {
         served = axum::serve(listener, app) => {
             served.map_err(|e| RuntimeError::Network(e.to_string()))?;
             Err(RuntimeError::Network(WEB_ENDED.into()))
         }
         stopped = wait_ctrl_c() => stopped,
+    }
+}
+
+/// Where the player opens the page of `uoterm web` bound to `bind`. A bind
+/// to every address of this machine names no address a browser can open,
+/// so the line says to use the address of this machine.
+fn open_line(bind: &str) -> String {
+    match bind.parse::<SocketAddr>() {
+        Ok(addr) if addr.ip().is_unspecified() => format!(
+            "Open port {} on this machine's address, as http://<this machine's address>:{}/",
+            addr.port(),
+            addr.port()
+        ),
+        _ => format!("Open http://{bind}/"),
     }
 }
 
@@ -989,6 +1003,20 @@ fn emit_state(as_json: bool, state: &Value) -> Result<(), RuntimeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bind_to_every_address_names_no_address_to_open() {
+        assert_eq!(open_line("127.0.0.1:7733"), "Open http://127.0.0.1:7733/");
+        for bind in ["0.0.0.0:7733", "[::]:7733"] {
+            let line = open_line(bind);
+            assert!(line.contains("this machine's address"), "{line}");
+            assert!(line.contains(":7733/"), "{line}");
+            assert!(
+                !line.contains("0.0.0.0") && !line.contains("[::]"),
+                "{line}"
+            );
+        }
+    }
     use clap::Parser;
 
     const VERSION_MODERN_EXAMPLE: &str = "7.0.102.3";

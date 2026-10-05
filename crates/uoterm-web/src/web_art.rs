@@ -45,10 +45,16 @@ const FRAMES_PREFIX: &str = "/v1/data/frames/";
 const TEXT_RGB_PREFIX: &str = "/v1/data/hues-text/";
 const GUMP_MASK_PREFIX: &str = "/v1/gump-mask/";
 const MAP_PREFIX: &str = "/v1/map/";
-/// The routes a page posts to: the lines of words in a UO font, and the
-/// live map of a picture.
+/// The route a page posts the lines of words in a UO font to.
 pub const MEASURE_PATH: &str = "/v1/text/measure";
-pub const LIVE_MAP_PATH: &str = "/v1/map/live";
+/// A session posts the live map of a picture to
+/// `{SESSIONS_PREFIX}{id}{LIVE_MAP_END}`.
+const SESSIONS_PREFIX: &str = "/v1/sessions/";
+const LIVE_MAP_END: &str = "/map/live";
+/// A block of the map is asked for with the session whose live map lies
+/// over it: `{path}{SESSION_QUERY}{id}`.
+const SESSION_QUERY: &str = "?session=";
+const QUERY_START: char = '?';
 const PATH_SEPARATOR: char = '/';
 
 /// One picture the page gets from the server: the key it keeps the
@@ -74,7 +80,7 @@ pub struct Upload {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Post {
     pub key: String,
-    pub path: &'static str,
+    pub path: String,
     pub body: Value,
 }
 
@@ -189,8 +195,10 @@ impl DataPath {
         }
     }
 
-    /// The table a path names. None for a path this art never asks for.
+    /// The table a path names, with or without its query. None for a path
+    /// this art never asks for.
     fn of(path: &str) -> Option<Self> {
+        let path = path.split_once(QUERY_START).map_or(path, |(path, _)| path);
         Some(match path {
             TILEDATA_PATH => Self::TileData,
             RADAR_PATH => Self::Radar,
@@ -309,6 +317,9 @@ pub struct WebArt {
     marker_answers: Vec<Result<(), Option<u16>>>,
     /// The live map last posted.
     live_map: Option<Value>,
+    /// The session the pictures are of. Its live map goes to the server
+    /// under it, and the blocks of the map are asked for with it.
+    session: Option<String>,
     /// The tables when the server has no animation files.
     no_anim: AnimRules,
 }
@@ -344,6 +355,7 @@ impl Default for WebArt {
             next_post: 0,
             marker_answers: Vec::new(),
             live_map: None,
+            session: None,
             no_anim: AnimRules::default(),
         };
         for table in [
@@ -383,9 +395,22 @@ impl WebArt {
         std::mem::take(&mut self.wanted)
     }
 
-    /// The paths of the tables to get, each one time.
+    /// The session the pictures are of.
+    pub fn set_session(&mut self, session: &str) {
+        self.session = Some(session.to_string());
+    }
+
+    /// The paths of the tables to get, each one time. A block of the map
+    /// names the session.
     pub fn take_data_wanted(&mut self) -> Vec<String> {
-        self.wants.take()
+        let mut paths = self.wants.take();
+        if let Some(session) = &self.session {
+            for path in paths.iter_mut().filter(|path| path.starts_with(MAP_PREFIX)) {
+                path.push_str(SESSION_QUERY);
+                path.push_str(session);
+            }
+        }
+        paths
     }
 
     /// The bodies to post, each one time.
@@ -394,7 +419,7 @@ impl WebArt {
             std::mem::take(&mut *self.to_measure.borrow_mut());
         for (key, text, look) in measured {
             let body = serde_json::json!({ "text": text, "look": look });
-            self.post(MEASURE_PATH, body, PostFor::Measure(key));
+            self.post(MEASURE_PATH.to_string(), body, PostFor::Measure(key));
         }
         std::mem::take(&mut self.posts)
     }
@@ -416,7 +441,7 @@ impl WebArt {
         std::mem::take(&mut self.atlas_reset)
     }
 
-    fn post(&mut self, path: &'static str, body: Value, about: PostFor) {
+    fn post(&mut self, path: String, body: Value, about: PostFor) {
         self.next_post += 1;
         let key = self.next_post;
         self.posted.insert(key, about);
@@ -486,8 +511,8 @@ impl WebArt {
     }
 
     /// The live map of a picture, the `live_map` value of the `watch`
-    /// tool. A new one goes to the server, which answers the blocks it
-    /// changed.
+    /// tool. A new one goes to the server under the session, which answers
+    /// the blocks it changed. With no session yet it waits.
     pub fn see_live_map(&mut self, live: &Value) {
         let has_blocks = live
             .get("blocks")
@@ -496,8 +521,12 @@ impl WebArt {
         if !has_blocks || self.live_map.as_ref() == Some(live) {
             return;
         }
+        let Some(session) = &self.session else {
+            return;
+        };
+        let path = format!("{SESSIONS_PREFIX}{session}{LIVE_MAP_END}");
         self.live_map = Some(live.clone());
-        self.post(LIVE_MAP_PATH, live.clone(), PostFor::LiveMap);
+        self.post(path, live.clone(), PostFor::LiveMap);
     }
 
     /// The answer to a post came.
@@ -533,7 +562,7 @@ impl WebArt {
     /// Sends a change of the player's own marker file.
     pub fn post_marker_change(&mut self, change: &MarkerChange) {
         let body = serde_json::to_value(change).unwrap_or_default();
-        self.post(MARKER_CHANGE_PATH, body, PostFor::MarkerChange);
+        self.post(MARKER_CHANGE_PATH.to_string(), body, PostFor::MarkerChange);
     }
 
     /// The answers to the changes of the own marker file since the last
@@ -1115,13 +1144,32 @@ mod tests {
         art.take_data_wanted();
         let live = json!({ "map": 0, "revision": 1, "blocks": [{ "block": 1, "changed": 1 }] });
         art.see_live_map(&live);
+        assert!(art.take_posts().is_empty(), "no session yet");
+        art.set_session("s1");
+        art.see_live_map(&live);
         art.see_live_map(&live);
         let posts = art.take_posts();
         assert_eq!(posts.len(), 1, "the same live map goes one time");
+        assert_eq!(posts[0].path, "/v1/sessions/s1/map/live");
         let key: u64 = posts[0].key.parse().unwrap();
         art.post_arrived(key, &json!([{ "map": 0, "bx": 1, "by": 1 }]));
         assert!(matches!(art.cell(0, 8, 8), Art::Pending), "asked again");
-        assert_eq!(art.take_data_wanted(), ["/v1/map/0/1/1"]);
+        assert_eq!(art.take_data_wanted(), ["/v1/map/0/1/1?session=s1"]);
+    }
+
+    /// A block is asked for with the session, and its answer comes back
+    /// under that path; the other tables name no session.
+    #[test]
+    fn a_block_names_the_session_of_the_pictures() {
+        let mut art = WebArt::default();
+        art.set_session("s2");
+        assert!(matches!(art.cell(1, 24, 40), Art::Pending));
+        let paths = art.take_data_wanted();
+        assert!(paths.contains(&TILEDATA_PATH.to_string()), "{paths:?}");
+        let block = "/v1/map/1/3/5?session=s2";
+        assert!(paths.contains(&block.to_string()), "{paths:?}");
+        assert!(art.data_arrived(block, &json!(vec![Cell::default(); BLOCK_CELLS])));
+        assert!(matches!(art.cell(1, 24, 40), Art::Ready(_)));
     }
 
     #[test]

@@ -7,6 +7,9 @@
 //! link keeps its own last picture, so two pages on one session both stay
 //! up to date.
 //!
+//! Each call of the page runs in a task of its own, so a tool that waits
+//! does not hold the radar size or the other calls of the page back.
+//!
 //! An act of more than one step runs here, not in the page, with
 //! `ACT_STEP_GAP_MS` between the steps. A page that closes in the middle
 //! of a lift and its drop does not leave the item in the hand. The acts of
@@ -51,12 +54,16 @@ const MAX_ACT_STEPS: usize = 4;
 const MAX_WAITING_ACTS: usize = 4;
 /// The act that runs, and the acts that wait.
 const ACT_PLACES: usize = MAX_WAITING_ACTS + 1;
+/// The calls of one link that may run at one time. A page makes a few at
+/// most, and a tool that waits for words or a target holds one.
+const CALLS_AT_ONCE: usize = 8;
 const KIND_FRAME: &str = "frame";
 const KIND_ANSWER: &str = "answer";
 const KIND_ENDED: &str = "ended";
 const EMPTY_ACT: &str = "an act needs at least one call";
 const ACT_TOO_LONG: &str = "an act has too many steps";
 const ACTS_WAITING: &str = "too many acts wait; try again when they are done";
+const CALLS_RUNNING: &str = "too many calls run; try again when they are done";
 
 /// What the page sends.
 #[derive(Deserialize)]
@@ -141,10 +148,12 @@ async fn run_live(socket: WebSocket, handle: SessionHandle, line: Arc<ActLine>) 
     let (outbox, letters) = mpsc::channel(LIVE_OUTBOX);
     tokio::spawn(write_letters(sink, letters));
     let size = AtomicU16::new(WINDOW_RADAR_SIZE_WITH_ART);
+    let calls = Arc::new(Semaphore::new(CALLS_AT_ONCE));
     let link = Link {
         handle: &handle,
         line: &line,
         size: &size,
+        calls: &calls,
         outbox: &outbox,
     };
     tokio::select! {
@@ -158,6 +167,8 @@ struct Link<'a> {
     handle: &'a SessionHandle,
     line: &'a Arc<ActLine>,
     size: &'a AtomicU16,
+    /// One place for each call of the page that runs.
+    calls: &'a Arc<Semaphore>,
     outbox: &'a mpsc::Sender<String>,
 }
 
@@ -211,17 +222,29 @@ async fn read_page(mut stream: SplitStream<WebSocket>, link: &Link<'_>) {
             continue;
         };
         match serde_json::from_str::<FromPage>(&text) {
-            Ok(FromPage::Call { id, call }) => {
-                let answer = link.handle.call(call.into()).await;
-                if link.outbox.send(answer_letter(id, answer)).await.is_err() {
-                    return;
-                }
-            }
+            Ok(FromPage::Call { id, call }) => start_call(link, id, call),
             Ok(FromPage::Act { id, calls }) => start_act(link, id, calls),
             Ok(FromPage::Size { size }) => link.size.store(size, Ordering::Relaxed),
             Err(error) => tracing::debug!(%error, "the live link read a message it does not know"),
         }
     }
+}
+
+/// Starts a call in a task of its own. It is refused when `CALLS_AT_ONCE`
+/// calls of the link run.
+fn start_call(link: &Link<'_>, id: u64, call: PageCall) {
+    let Ok(place) = link.calls.clone().try_acquire_owned() else {
+        let _ = link
+            .outbox
+            .try_send(answer_letter(id, ToolResult::err(CALLS_RUNNING)));
+        return;
+    };
+    let (handle, outbox) = (link.handle.clone(), link.outbox.clone());
+    tokio::spawn(async move {
+        let answer = handle.call(call.into()).await;
+        drop(place);
+        let _ = outbox.send(answer_letter(id, answer)).await;
+    });
 }
 
 /// Starts an act in a task of its own, which keeps running when the page
@@ -303,7 +326,9 @@ pub(super) mod tests {
     use tokio_tungstenite::tungstenite::{self, Message as PageMessage};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
     use uoterm_protocol::types::PKT_DROP;
-    use uoterm_world::tool_names::{ARG_HUMAN, ARG_SIZE, TOOL_DROP, TOOL_LIFT, TOOL_OBSERVE};
+    use uoterm_world::tool_names::{
+        ARG_HUMAN, ARG_SIZE, TOOL_DROP, TOOL_LIFT, TOOL_OBSERVE, TOOL_WAIT_JOURNAL,
+    };
     use uoterm_world::RADAR_MAX;
 
     pub(in crate::api) type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -320,6 +345,8 @@ pub(super) mod tests {
     /// Steps of the act a closed page leaves behind, and the gaps to wait
     /// for them: one gap between them and two to spare.
     const ACT_WAIT_GAPS: u64 = 3;
+    /// How long a slow call of a test waits.
+    const SLOW_CALL_MS: u64 = 2_000;
 
     /// The task of a test API server. Dropping it stops the server, which
     /// dropping a `JoinHandle` does not.
@@ -474,6 +501,46 @@ pub(super) mod tests {
         assert_eq!(answer["id"], CALL_ID);
         assert_eq!(answer["ok"], true);
         assert!(answer["result"].get("self_state").is_some());
+    }
+
+    /// A call that waits for words no one says, until its time is up.
+    fn slow_call(id: u64) -> Value {
+        const NEVER_SAID: &str = "words no one says";
+        json!({"kind": "call", "id": id, "tool": TOOL_WAIT_JOURNAL,
+               "args": {"q": NEVER_SAID, "timeout_ms": SLOW_CALL_MS}})
+    }
+
+    /// A slow call does not hold back the calls after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slow_call_does_not_hold_the_next_one() {
+        const SLOW_ID: u64 = CALL_ID + 1;
+        let server = serve_with_mock_session().await;
+        let mut ws = connect_live(server.addr, &server.id).await;
+        let started = Instant::now();
+        send_json(&mut ws, slow_call(SLOW_ID)).await;
+        send_json(
+            &mut ws,
+            json!({"kind": "call", "id": CALL_ID, "tool": TOOL_OBSERVE, "args": {}}),
+        )
+        .await;
+        assert_eq!(next_of_kind(&mut ws, KIND_ANSWER).await["id"], CALL_ID);
+        assert!(started.elapsed() < Duration::from_millis(SLOW_CALL_MS));
+        assert_eq!(next_of_kind(&mut ws, KIND_ANSWER).await["id"], SLOW_ID);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_past_the_running_ones_is_refused() {
+        let server = serve_with_mock_session().await;
+        let mut ws = connect_live(server.addr, &server.id).await;
+        let running = CALLS_AT_ONCE as u64;
+        for id in 0..running {
+            send_json(&mut ws, slow_call(id)).await;
+        }
+        send_json(&mut ws, slow_call(running)).await;
+        let answer = next_of_kind(&mut ws, KIND_ANSWER).await;
+        assert_eq!(answer["id"], running);
+        assert_eq!(answer["ok"], false);
+        assert_eq!(answer["error"], CALLS_RUNNING);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
