@@ -162,6 +162,11 @@ pub struct WebView {
     last_tick: Option<f64>,
     /// The tooltip of the thing under the mouse on the map.
     tooltip: Option<TooltipData>,
+    /// Jev can answer: the server has a TypeSafe key. The page reads it
+    /// from the server; until then Jev is not asked.
+    orders_on: bool,
+    /// The page shows in the full screen of the browser now.
+    fullscreen: bool,
 }
 
 /// The pointer clicks a controller or a key asked for, as the input of the
@@ -227,6 +232,8 @@ impl WebView {
             body_measure: None,
             last_tick: None,
             tooltip: None,
+            orders_on: false,
+            fullscreen: false,
         };
         view.take_profile(profile);
         view
@@ -554,6 +561,19 @@ impl WebView {
     #[wasm_bindgen(js_name = panelsJson)]
     pub fn panels_json(&mut self, now: f64) -> String {
         serde_json::to_string(&self.panel_data(now)).unwrap_or_default()
+    }
+
+    /// Whether the page shows in the full screen now: the browser tells
+    /// each change, also one the player made himself.
+    #[wasm_bindgen(js_name = setFullscreen)]
+    pub fn set_fullscreen(&mut self, shown: bool) {
+        self.fullscreen = shown;
+    }
+
+    /// Whether Jev can answer, as the server says.
+    #[wasm_bindgen(js_name = setOrdersOn)]
+    pub fn set_orders_on(&mut self, on: bool) {
+        self.orders_on = on;
     }
 
     /// The clock of the computer now, as the page reads it, for the times

@@ -14,7 +14,7 @@
 
 use super::asks::HueGridData;
 use super::sheet::Choice;
-use super::{Colored, FrameSpec, Framed, PANEL_COLOR_PICKER, PANEL_OPTIONS};
+use super::{font_file_name, Colored, FrameSpec, Framed, PANEL_COLOR_PICKER, PANEL_OPTIONS};
 use crate::out::OutCall;
 use crate::{kept, WebView};
 use serde::{Deserialize, Serialize};
@@ -24,27 +24,24 @@ use uoterm_view::actions::editor::{step_words, Capture, MacroEditor, Move, Press
 use uoterm_view::actions::{ActionId, Group, ACTIONS};
 use uoterm_view::guard::LocalAim;
 use uoterm_view::input::KeyPress;
-use uoterm_view::keys::default_keys;
 use uoterm_view::model::highlight;
 use uoterm_view::model::hue_grid::{GRID_COLUMNS, GRID_ROWS};
 use uoterm_view::model::places;
-use uoterm_view::pad::default_buttons;
 use uoterm_view::settings::{
     rows_on, Choice as Choosable, CooldownSource, InfoBarData, JournalKind, KeyBinding, OptionKind,
     OptionRow, OptionValue, PadChord, Page, WindowMode,
 };
 use uoterm_view::ui::hues::{Eyedropper, WORDS_EYEDROPPER};
 use uoterm_view::ui::options::{
-    at_least, foot_color, format_ids, hue_words, new_cooldown, new_counter_item, new_info_bar_item,
-    new_journal_tab, new_property_need, options_first_place, parse_hue, parse_ids, parse_lines,
-    picker_first_place, snap, Foot, HueKey, OptionsPanel, FOOT, HINT_DEFAULT, HINT_IDS, HINT_LABEL,
-    HINT_LINES, HINT_MACRO_NAME, HINT_NO_FILE, HINT_PROPERTY, HINT_RULE_NAME, HINT_SWATCH,
-    HINT_TAB_NAME, HINT_TRIGGER, LINE_BREAK, OPTIONS_ID, OPTIONS_LEAST, PICKER_ID,
-    WORDS_ADD_COOLDOWN, WORDS_ADD_ITEM, WORDS_ADD_MACRO, WORDS_ADD_NEED, WORDS_ADD_PRESET,
-    WORDS_ADD_RULE, WORDS_ADD_STEP, WORDS_ADD_TAB, WORDS_AT_LEAST, WORDS_CANCEL, WORDS_CLEAR,
-    WORDS_COLOR, WORDS_CORPSES_ONLY, WORDS_DEFAULT_BUTTONS, WORDS_DEFAULT_KEYS, WORDS_DOWN,
-    WORDS_NEED_ALL, WORDS_NO_BUTTON, WORDS_NO_KEY, WORDS_OKAY, WORDS_OPTIONS, WORDS_PRESS_BUTTON,
-    WORDS_PRESS_KEY, WORDS_REMOVE, WORDS_RESTART, WORDS_STEPS, WORDS_SUGGESTIONS, WORDS_UP,
+    at_least, chord_words, default_lines, foot_color, format_ids, hue_words, new_cooldown,
+    new_counter_item, new_info_bar_item, new_journal_tab, new_property_need, options_first_place,
+    pad_words, parse_hue, parse_ids, parse_lines, picker_first_place, preset_words, snap,
+    step_shown, Foot, HueKey, OptionsPanel, FOOT, HINT_DEFAULT, HINT_IDS, HINT_LABEL, HINT_LINES,
+    HINT_MACRO_NAME, HINT_NO_FILE, HINT_PROPERTY, HINT_RULE_NAME, HINT_SWATCH, HINT_TAB_NAME,
+    HINT_TRIGGER, LINE_BREAK, OPTIONS_ID, OPTIONS_LEAST, PICKER_ID, WORDS_ADD_COOLDOWN,
+    WORDS_ADD_ITEM, WORDS_ADD_MACRO, WORDS_ADD_NEED, WORDS_ADD_RULE, WORDS_ADD_STEP, WORDS_ADD_TAB,
+    WORDS_AT_LEAST, WORDS_CANCEL, WORDS_CLEAR, WORDS_COLOR, WORDS_CORPSES_ONLY, WORDS_DOWN,
+    WORDS_NEED_ALL, WORDS_OKAY, WORDS_OPTIONS, WORDS_REMOVE, WORDS_RESTART, WORDS_STEPS, WORDS_UP,
 };
 use uoterm_view::ui::theme::{css_color, TEXT, WAITING};
 
@@ -470,13 +467,21 @@ impl WebView {
                 hue: self.hue_data(hue),
             },
             (OptionKind::Text, OptionValue::Text(words)) => Control::Text { words },
-            (OptionKind::FilePath, OptionValue::FilePath(path)) => Control::File {
-                words: path
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_default(),
-                hint: HINT_NO_FILE,
-                fonts: page == Page::Fonts,
-            },
+            (OptionKind::FilePath, OptionValue::FilePath(path)) => {
+                // A player font goes by its file name among the server's
+                // fonts, as the look of the panels names it.
+                let fonts = page == Page::Fonts;
+                let words = match path {
+                    Some(path) if fonts => font_file_name(&path).unwrap_or_default(),
+                    Some(path) => path.display().to_string(),
+                    None => String::new(),
+                };
+                Control::File {
+                    words,
+                    hint: HINT_NO_FILE,
+                    fonts,
+                }
+            }
             (OptionKind::TextList, OptionValue::TextList(lines)) => Control::Lines {
                 words: lines.join(LINE_BREAK),
                 hint: HINT_LINES,
@@ -551,7 +556,7 @@ impl WebView {
                         .collect(),
                     presets: highlight::presets()
                         .into_iter()
-                        .map(|preset| format!("{WORDS_ADD_PRESET} {}", preset.name))
+                        .map(|preset| preset_words(&preset.name))
                         .collect(),
                     hints: [HINT_RULE_NAME, HINT_PROPERTY],
                     need_all: WORDS_NEED_ALL,
@@ -585,20 +590,8 @@ impl WebView {
             .enumerate()
             .map(|(at, binding)| MacroData {
                 name: binding.name.clone(),
-                chord: match (editor.capture, &binding.chord) {
-                    (Some(Capture::Chord(waiting)), _) if waiting == at => {
-                        WORDS_PRESS_KEY.to_string()
-                    }
-                    (_, Some(chord)) => chord.to_string(),
-                    (_, None) => WORDS_NO_KEY.to_string(),
-                },
-                pad: match (editor.capture, &binding.pad) {
-                    (Some(Capture::Pad(waiting)), _) if waiting == at => {
-                        WORDS_PRESS_BUTTON.to_string()
-                    }
-                    (_, Some(pad)) => pad.to_string(),
-                    (_, None) => WORDS_NO_BUTTON.to_string(),
-                },
+                chord: chord_words(editor.capture, at, binding.chord.as_ref()),
+                pad: pad_words(editor.capture, at, binding.pad.as_ref()),
                 bound: binding.chord.is_some() || binding.pad.is_some(),
                 open: editor.open == Some(at),
                 steps: binding
@@ -614,11 +607,7 @@ impl WebView {
                             typed,
                             hint: kind.map_or("", |kind| kind.hint()),
                             choices: kind.map(|kind| kind.choices()).unwrap_or_default(),
-                            shown: if typed {
-                                WORDS_SUGGESTIONS.to_string()
-                            } else {
-                                step.argument.clone()
-                            },
+                            shown: step_shown(typed, &step.argument).to_string(),
                         }
                     })
                     .collect(),
@@ -638,21 +627,10 @@ impl WebView {
                     .collect(),
             })
             .collect();
-        let defaults = [
-            (WORDS_DEFAULT_KEYS, default_keys().collect::<Vec<_>>()),
-            (WORDS_DEFAULT_BUTTONS, default_buttons().collect::<Vec<_>>()),
-        ]
-        .into_iter()
-        .map(|(title, list)| DefaultList {
-            title,
-            lines: list
-                .into_iter()
-                .map(|(trigger, action, argument)| {
-                    format!("{trigger}: {}", step_words(action, argument))
-                })
-                .collect(),
-        })
-        .collect();
+        let defaults = default_lines()
+            .into_iter()
+            .map(|(title, lines)| DefaultList { title, lines })
+            .collect();
         KeysData {
             macros,
             groups,
@@ -687,7 +665,7 @@ impl WebView {
 
     pub(super) fn options_data(&mut self) -> Option<Framed<OptionsData>> {
         let spec = self.options_spec()?;
-        let draft = self.panels.options.panel.draft(&self.profile).clone();
+        let draft = self.panels.options.panel.take_draft(&self.profile);
         let page = self.panels.options.panel.page;
         let mut section = "";
         let mut rows = Vec::new();
@@ -704,6 +682,7 @@ impl WebView {
             });
         }
         let changed = draft.changed();
+        self.panels.options.panel.draft = Some(draft);
         let body = OptionsData {
             pages: Page::LABELS
                 .iter()
@@ -957,10 +936,10 @@ impl WebView {
     }
 
     /// Does what a button of the foot does, as the Rust window does: the
-    /// profile is kept, the full screen follows the window mode, and Save
-    /// as default keeps the start of new characters.
+    /// profile is kept, the full screen follows the window mode when the
+    /// page does not show as it asks, and Save as default keeps the start
+    /// of new characters.
     fn press_foot(&mut self, foot: Foot) {
-        let mode_before = self.profile.video.window_mode;
         let done = self
             .panels
             .options
@@ -973,11 +952,9 @@ impl WebView {
             return;
         }
         self.keep_profile();
-        let mode = self.profile.video.window_mode;
-        if mode != mode_before {
-            self.hand.push(OutCall::Fullscreen {
-                on: mode == WindowMode::Fullscreen,
-            });
+        let wanted = self.profile.video.window_mode == WindowMode::Fullscreen;
+        if wanted != self.fullscreen {
+            self.hand.push(OutCall::Fullscreen { on: wanted });
         }
         if done.save_as_default {
             let saving = places::for_saving(&self.profile);
@@ -1324,6 +1301,17 @@ mod tests {
         );
         let out = press(&mut view, PANEL_OPTIONS, json!({ "foot": APPLY }));
         assert!(out.contains(&OutCall::Fullscreen { on: true }));
+        view.set_fullscreen(true);
+        let out = press(&mut view, PANEL_OPTIONS, json!({ "foot": APPLY }));
+        assert!(!out
+            .iter()
+            .any(|call| matches!(call, OutCall::Fullscreen { .. })));
+        view.set_fullscreen(false);
+        let out = press(&mut view, PANEL_OPTIONS, json!({ "foot": APPLY }));
+        assert!(
+            out.contains(&OutCall::Fullscreen { on: true }),
+            "after the player left the full screen, Apply asks again"
+        );
     }
 
     #[test]
@@ -1410,6 +1398,38 @@ mod tests {
             ),
             ("say", "hail")
         );
+    }
+
+    #[test]
+    fn every_row_of_every_page_has_its_control() {
+        let mut view = options_open();
+        for index in 0..Page::LABELS.len() {
+            press(&mut view, PANEL_OPTIONS, json!({ "page": index }));
+            let rows = view.panel_data(0.0).options.unwrap().body.rows;
+            let page = Page::from_index(index);
+            assert_eq!(rows.len(), rows_on(page).count(), "{page:?}");
+        }
+    }
+
+    #[test]
+    fn a_font_the_window_keeps_by_its_path_shows_by_its_file_name() {
+        let mut view = view_with("human_control", json!(true), true);
+        view.profile.fonts.truetype_font =
+            Some("/home/me/.config/uoterm/Fonts/Avadonian.ttf".into());
+        view.toggle_options();
+        press(
+            &mut view,
+            PANEL_OPTIONS,
+            json!({ "page": Page::Fonts.index() }),
+        );
+        let rows = view.panel_data(0.0).options.unwrap().body.rows;
+        let words = rows.iter().find_map(|row| match &row.control {
+            Control::File {
+                words, fonts: true, ..
+            } => Some(words.clone()),
+            _ => None,
+        });
+        assert_eq!(words.as_deref(), Some("Avadonian.ttf"));
     }
 
     #[test]

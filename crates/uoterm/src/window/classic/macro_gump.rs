@@ -12,7 +12,7 @@ use crate::window::actions::editor::{Capture, MacroEditor};
 use crate::window::model::key_macros;
 use crate::window::settings::{MacroStep, Page};
 use eframe::egui::Pos2;
-use uoterm_view::ui::options::{WORDS_NO_KEY, WORDS_PRESS_KEY};
+use uoterm_view::ui::options::chord_words;
 
 pub const MACRO_ID: &str = "macro";
 
@@ -90,11 +90,7 @@ impl GumpBody for MacroGump {
         );
         let mut changed = take_capture(&mut self.editor, g, &mut keys);
         let look = text().bordered();
-        let chord = match (self.editor.capture, &keys[at].chord) {
-            (Some(Capture::Chord(_)), _) => WORDS_PRESS_KEY.to_string(),
-            (_, Some(chord)) => chord.to_string(),
-            (_, None) => WORDS_NO_KEY.to_string(),
-        };
+        let chord = chord_words(self.editor.capture, at, keys[at].chord.as_ref());
         if g.nice_button(
             "key",
             MARGIN,

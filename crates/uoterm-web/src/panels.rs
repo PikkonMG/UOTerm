@@ -477,10 +477,10 @@ impl WebView {
             opacity: f32::from(self.profile.interface.gump_opacity) / PERCENT,
             font: fonts
                 .truetype_font
-                .as_ref()
-                .and_then(|path| path.file_name())
+                .as_deref()
+                .and_then(font_file_name)
                 .map(|name| PlayerFont {
-                    name: name.to_string_lossy().to_string(),
+                    name,
                     scale: fonts.truetype_size / DEFAULT_TRUETYPE_SIZE,
                 }),
         };
@@ -884,6 +884,13 @@ pub(crate) fn click_item(
         hand.act(act);
     }
     doubled
+}
+
+/// The name of a player font in the server's `Fonts` folder, from the
+/// file the profile names: the window may keep a whole path.
+pub(crate) fn font_file_name(path: &std::path::Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
 }
 
 /// The notches of a wheel over a panel's lines or map, from the notches

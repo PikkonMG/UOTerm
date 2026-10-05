@@ -18,10 +18,6 @@ use uoterm_view::ui::macros::{
 };
 use uoterm_view::ui::theme::css_color;
 
-/// The page asks Jev and shows his answer or the server's words when he
-/// cannot answer: it does not know beforehand whether a key is set.
-const ORDERS_ON: bool = true;
-
 /// The macro editor.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MacrosData {
@@ -107,10 +103,10 @@ impl WebView {
             wish: editor.wish.clone(),
             name_hint: HINT_NAME,
             lines_hint: HINT_LINES,
-            wish_hint: wish_hint(ORDERS_ON),
+            wish_hint: wish_hint(self.orders_on),
             add_line: Colored {
                 words: WORDS_ADD_LINE.to_string(),
-                color: css_color(add_line_color(ORDERS_ON)),
+                color: css_color(add_line_color(self.orders_on)),
             },
             buttons: editor
                 .buttons(live)
@@ -136,6 +132,7 @@ impl WebView {
             return;
         };
         let time = self.hand.time();
+        let orders_on = self.orders_on;
         let editor = &mut self.panels.macros;
         match action {
             MacrosAction::Pick(at) => {
@@ -147,7 +144,7 @@ impl WebView {
             MacrosAction::Lines(words) => editor.lines = words,
             MacrosAction::Wish(words) => editor.wish = words,
             MacrosAction::AddLine(_) => {
-                if let Some(ask) = editor.wish_ask(ORDERS_ON, time) {
+                if let Some(ask) = editor.wish_ask(orders_on, time) {
                     self.hand.ask(Asker::Macros, ask);
                 }
             }
@@ -237,6 +234,17 @@ mod tests {
         let mut view = editor(false);
         assert!(out_acts(&press(&mut view, PANEL_MACROS, json!({ "button": RUN }))).is_empty());
         press(&mut view, PANEL_MACROS, json!({ "wish": "heal me" }));
+        let asked_jev =
+            |out: &[OutCall]| out.iter().any(|call| matches!(call, OutCall::Jev { .. }));
+        let out = press(&mut view, PANEL_MACROS, json!({ "add_line": true }));
+        assert!(!asked_jev(&out), "no key: Jev is not asked");
+        let off = view.panel_data(0.0).macros.unwrap();
+        assert_eq!(off.wish_hint, wish_hint(false));
+        view.set_orders_on(true);
+        assert_eq!(
+            view.panel_data(0.0).macros.unwrap().wish_hint,
+            wish_hint(true)
+        );
         let out = press(&mut view, PANEL_MACROS, json!({ "add_line": true }));
         assert!(out.iter().any(|call| matches!(
             call,

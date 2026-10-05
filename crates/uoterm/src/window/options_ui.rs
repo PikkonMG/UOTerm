@@ -11,12 +11,11 @@ use super::actions::{ActionId, Group, ACTIONS};
 use super::audio::Audio;
 use super::boxes_ui::Tools;
 use super::bridge;
-use super::keys::default_keys;
 use super::model::highlight;
 use super::model::places;
 use super::modern::frame::{self as panel_frame, FrameEvent, PanelSpec};
 use super::modern::hue_ui::{self, HueGridUi};
-use super::pad::{default_buttons, pressed_this_frame};
+use super::pad::pressed_this_frame;
 use super::settings::{
     rows_on, Choice, CooldownRule, CooldownSource, CounterItem, HighlightRule, InfoBarData,
     InfoBarItem, JournalKind, JournalTab, KeyBinding, MacroStep, OptionKind, OptionRow,
@@ -28,19 +27,18 @@ use eframe::egui::{self, Align2, Event, Id, Pos2, Rect, RichText, Sense, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use uoterm_view::ui::options::{
-    at_least, foot_color, format_ids, hue_words, new_cooldown, new_counter_item, new_info_bar_item,
-    new_journal_tab, new_property_need, options_first_place, parse_ids, parse_lines,
-    picker_first_place, snap, Foot, HueKey, HueRows, OptionsPanel, COOLDOWN_SECONDS_MAX,
-    COOLDOWN_SECONDS_MIN, COOLDOWN_SECONDS_STEP, FOOT, HEX_PREFIX, HINT_DEFAULT, HINT_IDS,
-    HINT_LABEL, HINT_LINES, HINT_MACRO_NAME, HINT_NO_FILE, HINT_PROPERTY, HINT_RULE_NAME,
-    HINT_SWATCH, HINT_TAB_NAME, HINT_TRIGGER, HUE_DIGITS, LINE_BREAK, OPTIONS_FOOT_ROW as FOOT_ROW,
-    OPTIONS_ID, OPTIONS_LEAST, PAGE_LIST_WIDTH, PAGE_ROW, PICKED_SWATCH, PICKER_ID, SECONDS_SUFFIX,
-    WORDS_ADD_COOLDOWN, WORDS_ADD_ITEM, WORDS_ADD_MACRO, WORDS_ADD_NEED, WORDS_ADD_PRESET,
-    WORDS_ADD_RULE, WORDS_ADD_STEP, WORDS_ADD_TAB, WORDS_AT_LEAST, WORDS_CANCEL, WORDS_CLEAR,
-    WORDS_COLOR, WORDS_CORPSES_ONLY, WORDS_DEFAULT_BUTTONS, WORDS_DEFAULT_KEYS, WORDS_DOWN,
-    WORDS_NEED_ALL, WORDS_NO_BUTTON, WORDS_NO_KEY, WORDS_OKAY, WORDS_OPTIONS as WORDS_TITLE,
-    WORDS_PRESS_BUTTON, WORDS_PRESS_KEY, WORDS_REMOVE, WORDS_RESTART, WORDS_STEPS,
-    WORDS_SUGGESTIONS, WORDS_UP,
+    at_least, chord_words, default_lines, foot_color, format_ids, hue_words, new_cooldown,
+    new_counter_item, new_info_bar_item, new_journal_tab, new_property_need, options_first_place,
+    pad_words, parse_ids, parse_lines, picker_first_place, preset_words, snap, step_shown, Foot,
+    HueKey, HueRows, OptionsPanel, COOLDOWN_SECONDS_MAX, COOLDOWN_SECONDS_MIN,
+    COOLDOWN_SECONDS_STEP, FOOT, HEX_PREFIX, HINT_DEFAULT, HINT_IDS, HINT_LABEL, HINT_LINES,
+    HINT_MACRO_NAME, HINT_NO_FILE, HINT_PROPERTY, HINT_RULE_NAME, HINT_SWATCH, HINT_TAB_NAME,
+    HINT_TRIGGER, HUE_DIGITS, LINE_BREAK, OPTIONS_FOOT_ROW as FOOT_ROW, OPTIONS_ID, OPTIONS_LEAST,
+    PAGE_LIST_WIDTH, PAGE_ROW, PICKED_SWATCH, PICKER_ID, SECONDS_SUFFIX, WORDS_ADD_COOLDOWN,
+    WORDS_ADD_ITEM, WORDS_ADD_MACRO, WORDS_ADD_NEED, WORDS_ADD_RULE, WORDS_ADD_STEP, WORDS_ADD_TAB,
+    WORDS_AT_LEAST, WORDS_CANCEL, WORDS_CLEAR, WORDS_COLOR, WORDS_CORPSES_ONLY, WORDS_DOWN,
+    WORDS_NEED_ALL, WORDS_OKAY, WORDS_OPTIONS as WORDS_TITLE, WORDS_REMOVE, WORDS_RESTART,
+    WORDS_STEPS, WORDS_UP,
 };
 
 const COLUMN_GAP: f32 = 16.0;
@@ -202,7 +200,7 @@ impl OptionsUi {
         if !self.panel.open {
             return Vec::new();
         }
-        let mut draft = self.panel.draft(profile).clone();
+        let mut draft = self.panel.take_draft(profile);
         let spec = PanelSpec {
             id: OPTIONS_ID,
             title: WORDS_TITLE,
@@ -602,22 +600,14 @@ impl OptionsUi {
             .hint_text(HINT_MACRO_NAME)
             .desired_width(NAME_WIDTH);
         let mut changed = ui.add(name).changed();
-        let chord_words = match (self.panel.macros.capture, &binding.chord) {
-            (Some(Capture::Chord(waiting)), _) if waiting == at => WORDS_PRESS_KEY.to_string(),
-            (_, Some(chord)) => chord.to_string(),
-            (_, None) => WORDS_NO_KEY.to_string(),
-        };
+        let chord_words = chord_words(self.panel.macros.capture, at, binding.chord.as_ref());
         if ui
             .add_sized([CHORD_WIDTH, height], egui::Button::new(chord_words))
             .clicked()
         {
             self.panel.macros.capture(Capture::Chord(at));
         }
-        let pad_words = match (self.panel.macros.capture, &binding.pad) {
-            (Some(Capture::Pad(waiting)), _) if waiting == at => WORDS_PRESS_BUTTON.to_string(),
-            (_, Some(pad)) => pad.to_string(),
-            (_, None) => WORDS_NO_BUTTON.to_string(),
-        };
+        let pad_words = pad_words(self.panel.macros.capture, at, binding.pad.as_ref());
         if ui
             .add_sized([CHORD_WIDTH, height], egui::Button::new(pad_words))
             .clicked()
@@ -737,11 +727,7 @@ fn argument_editor(ui: &mut egui::Ui, place: (usize, usize), step: &mut MacroSte
     if choices.is_empty() {
         return changed;
     }
-    let shown = if kind.is_typed() {
-        WORDS_SUGGESTIONS
-    } else {
-        step.argument.as_str()
-    };
+    let shown = step_shown(kind.is_typed(), &step.argument);
     let picked = egui::ComboBox::from_id_salt(("macro-step-argument", place))
         .width(CONTROL_WIDTH)
         .selected_text(shown.to_string())
@@ -768,14 +754,11 @@ fn argument_editor(ui: &mut egui::Ui, place: (usize, usize), step: &mut MacroSte
 
 /// The default keys and controller buttons, in words, under the macros.
 fn default_lists(ui: &mut egui::Ui) {
-    for (title, list) in [
-        (WORDS_DEFAULT_KEYS, default_keys().collect::<Vec<_>>()),
-        (WORDS_DEFAULT_BUTTONS, default_buttons().collect::<Vec<_>>()),
-    ] {
+    for (title, lines) in default_lines() {
         ui.add_space(SECTION_GAP);
         ui.label(RichText::new(title).color(theme::TEXT_DIM));
-        for (trigger, action, argument) in list {
-            ui.label(format!("{trigger}: {}", step_words(action, argument)));
+        for line in lines {
+            ui.label(line);
         }
     }
 }
@@ -973,10 +956,7 @@ fn highlight_rules(
     );
     ui.horizontal(|ui| {
         for preset in highlight::presets() {
-            if ui
-                .button(format!("{WORDS_ADD_PRESET} {}", preset.name))
-                .clicked()
-            {
+            if ui.button(preset_words(&preset.name)).clicked() {
                 rules.push(preset);
                 changed = true;
             }

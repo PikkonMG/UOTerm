@@ -11,7 +11,7 @@ use super::text_field::TextField;
 use super::world_map::{ANSWER_GO_X, ANSWER_GO_Y, ANSWER_RELOAD};
 use crate::window::model::host;
 use crate::window::model::world_map::{
-    self, Marker, MarkerFields, MarkerFile, MARKER_COLORS, USER_MARKERS,
+    self, Marker, MarkerChange, MarkerFields, MarkerFile, MARKER_COLORS, USER_MARKERS,
 };
 use eframe::egui::{Color32, Pos2};
 
@@ -303,10 +303,11 @@ impl MarkersManager {
             }
             shown.len() as i32 * ROW_HEIGHT
         });
-        if let Some(at) = removed {
-            match host::world_map::remove_user_marker(&host::world_map::map_dir(), at) {
+        if let Some(expected) = removed.and_then(|at| markers.get(at).cloned().map(|m| (at, m))) {
+            let (at, expected) = expected;
+            match change_markers(&MarkerChange::Remove { at, expected }) {
                 Ok(()) => markers_changed(cx),
-                Err(error) => self.error = Some(error.to_string()),
+                Err(fault) => self.error = Some(fault.to_string()),
             }
         }
     }
@@ -367,11 +368,31 @@ impl GumpBody for MarkersManager {
     }
 }
 
+/// Makes a change of the player's own marker file, by the checked
+/// operations every window and page uses.
+fn change_markers(change: &MarkerChange) -> Result<(), host::world_map::MarkerFault> {
+    host::world_map::change_user_markers(&host::world_map::map_dir(), change)
+}
+
+/// The change a marker box makes: an add, or a keep of the marker it
+/// edits, which expects that marker still at its place.
+fn marker_change(editing: Option<(usize, Marker)>, marker: Marker) -> MarkerChange {
+    match editing {
+        None => MarkerChange::Add(marker),
+        Some((at, expected)) => MarkerChange::Keep {
+            at,
+            marker,
+            expected,
+        },
+    }
+}
+
 /// The box that adds a marker to the player's own file, or changes one of
 /// its markers.
 pub struct UserMarker {
-    /// The place of the marker in the player's file, when it is changed.
-    editing: Option<usize>,
+    /// The place of the marker in the player's file and the marker there,
+    /// when it is changed.
+    editing: Option<(usize, Marker)>,
     map: u8,
     icon: String,
     x: TextField,
@@ -382,7 +403,7 @@ pub struct UserMarker {
 }
 
 impl UserMarker {
-    fn new(editing: Option<usize>, marker: Marker) -> Self {
+    fn new(editing: Option<(usize, Marker)>, marker: Marker) -> Self {
         let fields = MarkerFields::of(&marker);
         let number = |words: &str| {
             let mut field = TextField::new(words);
@@ -408,7 +429,7 @@ impl UserMarker {
 
     /// A box that changes the marker at a place of the player's file.
     pub fn editing(at: usize, marker: Marker) -> Self {
-        Self::new(Some(at), marker)
+        Self::new(Some((at, marker.clone())), marker)
     }
 
     /// The marker the fields make, when they are right.
@@ -429,13 +450,13 @@ impl UserMarker {
         let Some(marker) = self.marker() else {
             return false;
         };
-        match host::world_map::keep_user_marker(&host::world_map::map_dir(), self.editing, marker) {
+        match change_markers(&marker_change(self.editing.clone(), marker)) {
             Ok(()) => {
                 markers_changed(cx);
                 true
             }
-            Err(error) => {
-                self.error = Some(error.to_string());
+            Err(fault) => {
+                self.error = Some(fault.to_string());
                 false
             }
         }
@@ -627,7 +648,13 @@ mod tests {
                 ..unnamed_marker()
             },
         );
-        assert_eq!(changed.editing, Some(2));
+        assert_eq!(changed.editing.as_ref().map(|(at, _)| *at), Some(2));
+        let made = changed.marker().unwrap();
+        assert!(matches!(
+            marker_change(changed.editing.clone(), made.clone()),
+            MarkerChange::Keep { at: 2, ref expected, .. } if expected.name == "Yew"
+        ));
+        assert_eq!(marker_change(None, made.clone()), MarkerChange::Add(made));
         assert_eq!(changed.name.text(), "Yew");
         assert!(changed.x.numeric && !changed.name.numeric);
     }

@@ -1,6 +1,7 @@
 //! The questions a web page asks Jev: an order in plain words, a pick
 //! from a list of names, and the script lines of a wish. They run here, so
-//! the key of TypeSafe never goes to the browser.
+//! the key of TypeSafe never goes to the browser; the page learns only
+//! whether Jev can answer.
 
 use super::{refused, WebState};
 use crate::orders;
@@ -8,7 +9,7 @@ use crate::window::Link;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,8 +21,12 @@ const NO_SESSION: &str = "not found";
 /// An order reads only what is near in the picture, not its time.
 const ORDER_FRAME_TIME: f64 = 0.0;
 
+/// Where the page reads whether Jev can answer: `{"on": bool}`.
+pub(super) const JEV_STATE_PATH: &str = "/v1/jev";
+
 pub(super) fn routes() -> Router<WebState> {
     Router::new()
+        .route(JEV_STATE_PATH, get(jev_state))
         .route("/v1/sessions/{id}/jev/order", post(order))
         .route("/v1/sessions/{id}/jev/pick", post(pick))
         .route("/v1/sessions/{id}/jev/lines", post(lines))
@@ -38,6 +43,12 @@ fn jev_key(state: &WebState, id: &str) -> Result<String, (StatusCode, &'static s
         return Err((StatusCode::NOT_FOUND, NO_SESSION));
     }
     Ok(key)
+}
+
+/// Whether Jev can answer: a TypeSafe key is set. The key itself stays
+/// here.
+async fn jev_state(State(state): State<WebState>) -> Response {
+    Json(json!({ "on": state.jev_key.is_some() })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -127,6 +138,7 @@ async fn lines(
 mod tests {
     use super::super::tests::{send, temp_folder};
     use super::super::WebState;
+    use super::JEV_STATE_PATH;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::{json, Value};
@@ -162,6 +174,29 @@ mod tests {
         for (path, body) in asks() {
             let answer = send(state.clone(), post(path, &body)).await;
             assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_page_learns_whether_jev_can_answer_and_never_the_key() {
+        let config = temp_folder();
+        for key in [None, Some(TEST_KEY.to_string())] {
+            let on = key.is_some();
+            let state = WebState::open(None, config.path().to_path_buf(), Runtime::new(1), key);
+            let request = axum::http::Request::get(JEV_STATE_PATH)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let answer = send(state, request).await;
+            assert_eq!(answer.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(answer.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&text).unwrap(),
+                json!({ "on": on })
+            );
+            assert!(!text.contains(TEST_KEY));
         }
     }
 

@@ -14,10 +14,8 @@ use super::macro_steps::{take_capture, StepList};
 use super::registry::{well_known, GumpBody, GumpContext, GumpId, GumpKind, GumpRules};
 use super::text::TextLook;
 use super::text_field::TextField;
-use crate::window::actions::editor::{step_words, Capture, MacroEditor};
-use crate::window::keys::default_keys;
+use crate::window::actions::editor::{Capture, MacroEditor};
 use crate::window::model::options_draft::Draft;
-use crate::window::pad::default_buttons;
 use crate::window::settings::{
     rows_on, Choice, InfoBarData, InfoBarItem, JournalKind, JournalTab, KeyBinding, OptionKind,
     OptionRow, OptionValue, Page, Profile,
@@ -26,10 +24,9 @@ use eframe::egui::{Color32, Pos2, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use uoterm_view::ui::options::{
-    format_ids, new_info_bar_item, new_journal_tab, parse_ids, parse_lines, snap, WORDS_ADD_ITEM,
-    WORDS_ADD_MACRO, WORDS_ADD_TAB, WORDS_CLEAR, WORDS_DEFAULT_BUTTONS, WORDS_DEFAULT_KEYS,
-    WORDS_NO_BUTTON, WORDS_NO_KEY, WORDS_PRESS_BUTTON, WORDS_PRESS_KEY, WORDS_REMOVE,
-    WORDS_SAVE_DEFAULT, WORDS_STEPS,
+    chord_words, default_lines, format_ids, new_info_bar_item, new_journal_tab, pad_words,
+    parse_ids, parse_lines, snap, WORDS_ADD_ITEM, WORDS_ADD_MACRO, WORDS_ADD_TAB, WORDS_CLEAR,
+    WORDS_REMOVE, WORDS_SAVE_DEFAULT, WORDS_STEPS,
 };
 
 pub const OPTIONS: GumpKind = GumpKind {
@@ -471,11 +468,7 @@ impl Options {
                 changed = true;
             }
             let mut x = ROW_X + NAME_WIDTH + LABEL_GAP;
-            let chord = match (self.macros.capture, &keys[at].chord) {
-                (Some(Capture::Chord(waiting)), _) if waiting == at => WORDS_PRESS_KEY.to_string(),
-                (_, Some(chord)) => chord.to_string(),
-                (_, None) => WORDS_NO_KEY.to_string(),
-            };
+            let chord = chord_words(self.macros.capture, at, keys[at].chord.as_ref());
             if g.nice_button(
                 ("chord", at),
                 x,
@@ -489,11 +482,7 @@ impl Options {
                 self.macros.capture(Capture::Chord(at));
             }
             x += WIDE_BUTTON + LABEL_GAP;
-            let pad = match (self.macros.capture, &keys[at].pad) {
-                (Some(Capture::Pad(waiting)), _) if waiting == at => WORDS_PRESS_BUTTON.to_string(),
-                (_, Some(pad)) => pad.to_string(),
-                (_, None) => WORDS_NO_BUTTON.to_string(),
-            };
+            let pad = pad_words(self.macros.capture, at, keys[at].pad.as_ref());
             if g.nice_button(
                 ("pad", at),
                 x,
@@ -580,13 +569,9 @@ impl Options {
             changed = true;
         }
         y += BUTTON_HEIGHT + SECTION_GAP;
-        for (title, list) in [
-            (WORDS_DEFAULT_KEYS, default_keys().collect::<Vec<_>>()),
-            (WORDS_DEFAULT_BUTTONS, default_buttons().collect::<Vec<_>>()),
-        ] {
+        for (title, lines) in default_lines() {
             y += g.label(ROW_X, y, title, &text()).y as i32 + ROW_GAP;
-            for (trigger, action, argument) in list {
-                let words = format!("{trigger}: {}", step_words(action, argument));
+            for words in lines {
                 y += g.label(ROW_X, y, &words, &text()).y as i32;
             }
             y += SECTION_GAP;

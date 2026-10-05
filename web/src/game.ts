@@ -10,6 +10,7 @@ import type { InputEvent } from './input/events';
 import { PadReader } from './input/gamepad';
 import { attachKeys } from './input/keys';
 import { attachPointer } from './input/pointer';
+import { api } from './net/api';
 import { ArtFeed } from './net/art';
 import { LiveLink } from './net/live';
 import { sendOut, type OutCall, type OutPlaces } from './out_calls';
@@ -68,6 +69,18 @@ export async function loadView(): Promise<void> {
   await loading;
 }
 
+/** Where the server says whether Jev can answer. */
+const JEV_STATE_PATH = '/v1/jev';
+
+/** Whether Jev can answer: the server has a TypeSafe key. A failed read counts as no. */
+async function readOrdersOn(): Promise<boolean> {
+  try {
+    return (await api<{ on: boolean }>(JEV_STATE_PATH)).on;
+  } catch {
+    return false;
+  }
+}
+
 /** The clock of the page, in seconds: the one clock of every call of the view. */
 const clock = () => performance.now() / MS_PER_SECOND;
 
@@ -83,6 +96,16 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
   setDragDistance(clickDistance());
   setArtMostScale(artMostScale());
   let stopped = false;
+  void readOrdersOn().then((on) => {
+    if (!stopped) view.setOrdersOn(on);
+  });
+  // The view knows when the page shows in full screen, also after the
+  // player left it himself, so Apply can ask for it again.
+  const followFullscreen = () => {
+    if (!stopped) view.setFullscreen(Boolean(document.fullscreenElement));
+  };
+  followFullscreen();
+  document.addEventListener('fullscreenchange', followFullscreen);
   let endGame = () => {};
   let failGame: (error: unknown) => void = () => {};
   const ended = new Promise<void>((resolve, reject) => {
@@ -156,6 +179,7 @@ export function startGame(session: string, canvas: HTMLCanvasElement, profile: G
     stopped = true;
     tearDown([
       () => frames.stop(),
+      () => document.removeEventListener('fullscreenchange', followFullscreen),
       detachKeys,
       () => pointer.detach(),
       () => link.close(),

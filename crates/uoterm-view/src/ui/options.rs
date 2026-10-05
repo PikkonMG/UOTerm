@@ -12,13 +12,15 @@ use super::hues::picker_size;
 use super::layout::{first_place, Spot};
 use super::places::TITLE_ROW;
 use super::theme::{GOAL, PANEL_PAD, ROW_GAP, TEXT};
-use crate::actions::editor::MacroEditor;
+use crate::actions::editor::{step_words, Capture, MacroEditor};
 use crate::geom::{Area, Rgba, Vector};
+use crate::keys::default_keys;
 use crate::model::hue_grid::HuePick;
 use crate::model::options_draft::Draft;
+use crate::pad::default_buttons;
 use crate::settings::{
-    CooldownRule, CooldownSource, CounterItem, InfoBarData, InfoBarItem, JournalTab, Page, Profile,
-    PropertyNeed, DEFAULT_COOLDOWN_SECONDS, NO_HUE,
+    CooldownRule, CooldownSource, CounterItem, InfoBarData, InfoBarItem, JournalTab, KeyChord,
+    PadChord, Page, Profile, PropertyNeed, DEFAULT_COOLDOWN_SECONDS, NO_HUE,
 };
 
 pub const OPTIONS_ID: &str = "modern:options";
@@ -219,6 +221,57 @@ pub fn new_counter_item() -> CounterItem {
     }
 }
 
+/// The words of the key chord of the macro at `at`: "Press a key" while
+/// it waits for one, its chord, or "No key".
+pub fn chord_words(capture: Option<Capture>, at: usize, chord: Option<&KeyChord>) -> String {
+    match (capture, chord) {
+        (Some(Capture::Chord(waiting)), _) if waiting == at => WORDS_PRESS_KEY.to_string(),
+        (_, Some(chord)) => chord.to_string(),
+        (_, None) => WORDS_NO_KEY.to_string(),
+    }
+}
+
+/// The words of the controller buttons of the macro at `at`: "Press a
+/// button" while it waits for them, its buttons, or "No button".
+pub fn pad_words(capture: Option<Capture>, at: usize, pad: Option<&PadChord>) -> String {
+    match (capture, pad) {
+        (Some(Capture::Pad(waiting)), _) if waiting == at => WORDS_PRESS_BUTTON.to_string(),
+        (_, Some(pad)) => pad.to_string(),
+        (_, None) => WORDS_NO_BUTTON.to_string(),
+    }
+}
+
+/// The default keys and controller buttons in words, under the macros:
+/// each list's title and its lines.
+pub fn default_lines() -> [(&'static str, Vec<String>); 2] {
+    let lines = |list: Vec<(&str, &str, &str)>| {
+        list.into_iter()
+            .map(|(trigger, action, argument)| {
+                format!("{trigger}: {}", step_words(action, argument))
+            })
+            .collect()
+    };
+    [
+        (WORDS_DEFAULT_KEYS, lines(default_keys().collect())),
+        (WORDS_DEFAULT_BUTTONS, lines(default_buttons().collect())),
+    ]
+}
+
+/// The words of the list of choices of a step: "Pick" for an argument the
+/// player types, else the argument.
+pub fn step_shown(typed: bool, argument: &str) -> &str {
+    if typed {
+        WORDS_SUGGESTIONS
+    } else {
+        argument
+    }
+}
+
+/// The words of the button that adds a usual highlight rule.
+pub fn preset_words(name: &str) -> String {
+    format!("{WORDS_ADD_PRESET} {name}")
+}
+
 /// Where the Options first stand in `window`.
 pub fn options_first_place(window: Area) -> Area {
     first_place(window, Spot::Middle(0), OPTIONS_SIZE)
@@ -329,6 +382,12 @@ impl OptionsPanel {
         self.draft.get_or_insert_with(|| Draft::of(profile))
     }
 
+    /// Takes the copy out to edit it, made from `profile` when there is
+    /// none; the caller puts it back in `draft`.
+    pub fn take_draft(&mut self, profile: &Profile) -> Draft {
+        self.draft.take().unwrap_or_else(|| Draft::of(profile))
+    }
+
     /// The copy, when the panel holds one.
     pub fn draft_now(&self) -> Option<&Draft> {
         self.draft.as_ref()
@@ -427,6 +486,33 @@ mod tests {
         assert_eq!(snap(17.4, 5.0, 25.0, 1.0), 17.0);
         assert_eq!(snap(260.0, 12.0, 250.0, 1.0), 250.0);
         assert_eq!(snap(1.0, 0.5, 3.0, 0.05), 1.0);
+    }
+
+    #[test]
+    fn the_words_of_a_macro_tell_what_it_waits_for() {
+        let chord: KeyChord = "Ctrl+F1".parse().unwrap();
+        let pad: PadChord = "South".parse().unwrap();
+        assert_eq!(chord_words(None, 0, None), WORDS_NO_KEY);
+        assert_eq!(chord_words(None, 0, Some(&chord)), "Ctrl+F1");
+        assert_eq!(
+            chord_words(Some(Capture::Chord(0)), 0, Some(&chord)),
+            WORDS_PRESS_KEY
+        );
+        assert_eq!(chord_words(Some(Capture::Chord(1)), 0, None), WORDS_NO_KEY);
+        assert_eq!(
+            pad_words(Some(Capture::Pad(2)), 2, Some(&pad)),
+            WORDS_PRESS_BUTTON
+        );
+        assert_eq!(pad_words(Some(Capture::Chord(2)), 2, None), WORDS_NO_BUTTON);
+        assert_eq!(step_shown(true, "hi"), WORDS_SUGGESTIONS);
+        assert_eq!(step_shown(false, "North"), "North");
+        assert_eq!(preset_words("Slayers"), "Add Slayers");
+        let [keys, buttons] = default_lines();
+        assert_eq!(
+            (keys.0, buttons.0),
+            (WORDS_DEFAULT_KEYS, WORDS_DEFAULT_BUTTONS)
+        );
+        assert!(keys.1.iter().any(|line| line.starts_with("Alt+P: ")));
     }
 
     #[test]

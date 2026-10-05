@@ -76,7 +76,7 @@ fn user_markers_file(dir: &Path) -> PathBuf {
 }
 
 /// Adds a marker to the player's own marker file.
-pub fn add_user_marker(dir: &Path, marker: &Marker) -> std::io::Result<()> {
+fn add_user_marker(dir: &Path, marker: &Marker) -> std::io::Result<()> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
     let mut file = std::fs::OpenOptions::new()
@@ -88,7 +88,7 @@ pub fn add_user_marker(dir: &Path, marker: &Marker) -> std::io::Result<()> {
 
 /// Writes the player's own marker file again with these markers, after he
 /// changed or removed some.
-pub fn save_user_markers(dir: &Path, markers: &[Marker]) -> std::io::Result<()> {
+fn save_user_markers(dir: &Path, markers: &[Marker]) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(user_markers_file(dir), markers_csv(markers))
 }
@@ -104,7 +104,7 @@ pub fn user_markers(dir: &Path) -> Vec<Marker> {
 
 /// Writes a marker to the player's own file: a new one, or in the place of
 /// the one at `editing`.
-pub fn keep_user_marker(dir: &Path, editing: Option<usize>, marker: Marker) -> std::io::Result<()> {
+fn keep_user_marker(dir: &Path, editing: Option<usize>, marker: Marker) -> std::io::Result<()> {
     if editing.is_none() {
         return add_user_marker(dir, &marker);
     }
@@ -112,7 +112,7 @@ pub fn keep_user_marker(dir: &Path, editing: Option<usize>, marker: Marker) -> s
 }
 
 /// Takes the marker at a place out of the player's own file.
-pub fn remove_user_marker(dir: &Path, at: usize) -> std::io::Result<()> {
+fn remove_user_marker(dir: &Path, at: usize) -> std::io::Result<()> {
     save_user_markers(dir, &removed_marker(user_markers(dir), at))
 }
 
