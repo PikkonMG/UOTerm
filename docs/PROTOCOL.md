@@ -4,11 +4,13 @@ UOTerm speaks the Ultima Online login and game streams the way a Classic Client 
 
 ## Era
 
-`--era` selects the base packet length table and the default version:
+`--era` selects the base packet length table and the default version. The
+login message of the web client carries the same `era`, `version` and
+`encryption` choices (see the login link in [AGENT_API.md](AGENT_API.md)).
 
 | Value | Default version | Typical use |
 | --- | --- | --- |
-| `t2a` | `2.0.7.0` | 1.26–2.0.x style. The mock shard uses this. |
+| `t2a` | `2.0.7.0` | Clients from 1.26 to 2.0.x. The mock shard uses this. |
 | `modern` (default) | `7.0.102.3` | Classic Client 7.x: 32-bit `0xB9` features, container grid, `0xF3` world item |
 
 `--version` is the string sent as packet `0xBD`. If you omit it, a `modern` session sends the version of `client.exe` in the `uopath` folder. Many shards compare the version with their own copy of `client.exe` and kick an older client. With no `client.exe`, or in the `t2a` era, the session uses the default for the era.
@@ -19,7 +21,6 @@ The version, not the era, picks the rest, the same way a Classic Client does:
 - Packet lengths: each packet that changed size takes the length of the version, for example `0x0B` and `0x16` at 5.0.0a, `0x08` and `0x25` at 6.0.1.7, `0xB9` at 6.0.14.2, and `0x24` and `0xBA` at 7.0.9.0.
 - Character list: start towns carry a place from 7.0.13.0. Empty character slots are kept, so a pick sends the right slot.
 - Character creation: the race and sex value and the expansion flags follow the version.
-
 - `0x78` equipment: hue on every item when version is 7.0.33.1 or later. Older versions read hue only when the graphic high bit is set.
 - `0x78` framing: length prefix when version is 7.0.0.0 or later. Older versions scan to a serial-0 terminator.
 - Container grid on drop when version is 6.0.1.7 or later.
@@ -30,10 +31,10 @@ The version, not the era, picks the rest, the same way a Classic Client does:
 
 | Value | Meaning |
 | --- | --- |
-| `none` (default) | No stream cipher. Usual unencrypted freeshard mode. |
-| `osi` | Classic Client login XOR, then Twofish+MD5 on the game socket. Keys come from client version. |
+| `none` (default) | No stream cipher, the usual mode of an unencrypted private shard. |
+| `osi` | Classic Client login XOR, then Twofish and MD5 on the game socket. The keys come from the client version. |
 
-Huffman is separate. After the client sends `0x91`, inbound game bytes are Huffman-compressed. Outbound game packets are not.
+Huffman compression is separate from the cipher. After the client sends `0x91`, the shard Huffman-compresses the inbound game bytes. Outbound game packets are not compressed.
 
 This repository does not ship `client.exe` or official-server keys.
 
@@ -45,7 +46,7 @@ Login server:
 seed (t2a: 4 bytes) or 0xEF (modern) → 0x80 account login → 0xA8 server list → 0xA0 select → 0x8C relay
 ```
 
-After `0x8C` the client opens a new TCP connection to the game server (the Classic Client reconnect-to-relay behaviour) and seeds it with the relay key. It never stays on the login socket: one server family closes that socket after `0xA0`, and the other reads the seed as a packet and drops the client. If the relay IP is `0.0.0.0`, the reconnect uses `--host`.
+After `0x8C` the client opens a new TCP connection to the game server, as the Classic Client does on a relay, and seeds it with the relay key. It never stays on the login socket: one server family closes that socket after `0xA0`, and the other reads the seed as a packet and drops the client. If the relay IP is `0.0.0.0`, the reconnect uses `--host`.
 
 Game server:
 
@@ -59,9 +60,10 @@ The character is in the world when the server has sent `0x1B`.
 
 ## Entering the world
 
-UOTerm is a headless Classic Client. As the character enters the world it
-tells the shard what the Classic Client tells it, in the same order and from
-the same client versions as the reference client:
+The session speaks for every client: the agent API, the native play window
+and the web client. As the character enters the world, the session tells
+the shard what the Classic Client tells it, in the same order and from the
+same client versions as the reference client:
 
 | When | Packets, in order | From version |
 | --- | --- | --- |
@@ -79,10 +81,10 @@ client type gate as 3.0.0 with the letter e. A shard that asks for the version
 
 - Game view size: width and height, 32 bits each. A session with no window
   tells the size the reference client opens its game window at, 600 by 480.
-  The watch window tells the size of the game view it draws (`game_view` in
-  [AGENT_API.md](AGENT_API.md)), and the shard hears a new size when it has
-  held for half a second, as the reference client tells it when its game
-  window is resized.
+  The native play window and the web client tell the size of the game view
+  they draw (`game_view` in [AGENT_API.md](AGENT_API.md)). The shard hears a
+  new size once it has held for half a second, as the reference client tells
+  it when its game window is resized.
 - Client type: the byte `0x0A`, then 32 flag bits. The reference client sets
   one bit for each step up to the number its expansion bits make, and the
   shift wraps at 32 bits: 2.0.0 sends `0x00000001`, and every version from
@@ -102,7 +104,7 @@ a version with a major of 66 or more, and the expansion bits of `0x5D` keep the
 | `0x1B` / `0x55` | Login confirm / complete | Serial, body, x/y/z, direction, map size |
 | `0x20` / `0x21` / `0x22` / `0x97` | Draw player / walk reject / walk ack / forced walk | See Movement |
 | `0x1C` / `0xAE` / `0xC1` / `0xCC` | Speech and cliloc lines | Journal. Label speech names the item it is about. Affix: type byte, 30-byte name, UTF-16BE args |
-| `0x11` / `0xA1`–`0xA3` / `0x2D` / `0x17` | Status and stat bars | `weight_max` only when flag ≥ 5 |
+| `0x11` / `0xA1` to `0xA3` / `0x2D` / `0x17` | Status and stat bars | `weight_max` only when flag ≥ 5 |
 | `0x3A` | Skills | Type `0x00` has no cap word. Types `0x02` and `0xDF` have cap |
 | `0x1A` / `0xF3` | World item | The graphic step byte and the item flags (movable, hidden) are read |
 | `0x24` / `0x25` / `0x3C` / `0x2E` / `0x89` / `0x1D` / `0x29` / `0x27` | Containers, worn items, delete, drop and lift answers | |
@@ -127,9 +129,9 @@ a version with a major of 66 or more, and the expansion bits of `0x5D` keep the
 | `0x3F` | UltimaLive | Block at byte 3, a count of seven-byte units at 7, the command at 13, the map at 14, the body from 15. `0xFF` hash query, `0x00` statics of one block, `0x01` map definitions (nine bytes each), `0x02` login with the shard name. Nothing is answered or changed before the login. See UltimaLive below |
 | `0x40` | UltimaLive land | Block, the 192 bytes of land in the layout of the map file, and the map at byte 200 |
 | `0xBF` | Extended | Sub-commands: `0x01` / `0x02` fastwalk keys, `0x04` close gump, `0x06` party, `0x08` map change, `0x10` equip info (crafter, unidentified, attributes), `0x14` context menu, `0x16` close window, `0x18` map patches, `0x19` bonded pets and stat locks, `0x1B` spellbook content, `0x1D` house revision, `0x20` house designer, `0x22` damage, `0x26` speed mode, `0x0C` close status bar (`watch` cue `status_bar_closed`), `0x21` clear the armed weapon move, `0x25` a spell or stance on or off (`abilities` in `observe` and `watch`), `0x2A` race change: the sex and the race from 1, any other race closes it (`race_change` in `observe` and `watch`) |
-| other | | Log and skip. The session does not panic |
+| other | | Logged and skipped. The session does not panic |
 
-Packet lengths live in era tables in `uoterm-protocol`. Unknown ids with a plausible variable length are skipped.
+The packet lengths are in the era tables of `uoterm-protocol`. The decoder skips an unknown id that has a plausible variable length.
 
 ## Outbound packets on request
 
@@ -178,12 +180,14 @@ land and then the statics records of the block. The square wraps at the wrap
 size of the map definitions while the middle block lies inside it.
 
 `watch` sends the changed blocks within four blocks of the character under
-`live_map`, as hex, with a revision that counts the changes, so a window can
-lay them over its own map files.
+`live_map`, as hex, with a revision that counts the changes. The native play
+window lays them over its own map files. The web client posts them to
+`POST /v1/sessions/{id}/map/live`, and the server lays them over the map
+files it serves for that session.
 
 ## Movement
 
-Client `0x02`: direction nibble 0–7, run bit `0x80`, sequence, fastwalk key. Sequence starts at 0. After 255 it wraps to 1. A reject resets sequence to 0.
+Client `0x02`: direction nibble 0 to 7, run bit `0x80`, sequence, fastwalk key. The sequence starts at 0 and wraps to 1 after 255. A reject resets it to 0.
 
 The session never predicts position. It may hold a few steps on the wire at
 once, so a slow link does not stall the walk, but it writes the character's

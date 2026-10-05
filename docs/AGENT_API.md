@@ -1,6 +1,6 @@
 # Agent API
 
-Tools return immediately with `action_id`. Completion is an event: `arrived` or `path_failed` for a walk, `job_ended` for a hunt, a walk, a loot, a bank deposit, a script or an agent job (with `<job>: done`, `stopped` or the reason), `job_failed` when one gives up, and `target_requested`, `gump_opened` and the others for what the shard sends.
+Tools return at once with `action_id`. Completion is an event: `arrived` or `path_failed` for a walk, `job_ended` for a hunt, a walk, a loot, a bank deposit, a script or an agent job (with `<job>: done`, `stopped` or the reason), `job_failed` when one gives up, and `target_requested`, `gump_opened` and the others for what the shard sends.
 
 ## Banks
 
@@ -38,15 +38,15 @@ An agent that drives a character must not miss what happens between its calls. R
 
 1. Call `next_event`. It returns the moment something important happens, or after `timeout_ms` (default 5000, max 7000) with no events.
 2. Read `events` and `state`. Act on them in this order:
-   0. `control_taken`: a human took the character through the watch window. Your goal, job and script are stopped. Each acting tool is refused with `a human has control of the character`. Look only (`observe`, `look_around`, `find_*`, `next_event`), and wait. `control_released` gives the character back: read `observe` again, because the human may have moved her. `state.human_control` and `observe.human_control` say which it is now.
+   0. `control_taken`: a human took the character through a play window (the native window or the web client). Your goal, job and script are stopped. Each acting tool is refused with `a human has control of the character`. Look only (`observe`, `look_around`, `find_*`, `next_event`), and wait. `control_released` gives the character back: read `observe` again, because the human may have moved her. `state.human_control` and `observe.human_control` say which it is now.
    1. Danger: `died`, `low_health`, `damaged`, `enemy_near`, `combatant_changed`, `pk_flag`.
    2. Something waits for an answer: `target_requested`, `gump_opened`, `prompt_opened` (answer with `prompt_answer`), `trade_opened`, `party_invite` (answer with `party`), `shop_opened`, `context_menu_opened` and `menu_opened` (`observe` holds the goods, the lines or the entries), `race_change_opened` (answer with `race_change`).
    3. Chat: `spoken_to`, and `state.unanswered`. Answer with `reply`.
    4. A running job: read `doing.job`. Do not `move_to` or `attack` over a hunt or walk job.
    5. `job_ended`: a hunt or walk job handed back (`hunt: <reason>` or `walk: <reason>`). See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md). Then hunt, walk, bank, or rest.
    6. Your own task: `item_added`, `arrived`, `path_failed`, `lift_rejected`, `play_along_ended`, `map_changed` (a moongate or recall took her to another map; the old map's mobiles and items are gone, and a walk or follow there is dropped), `gump_closed`, `buff_changed` (a buff came on or went off, by icon), `system_message` (the shard's own words, such as "that is too far away"), `skill_changed` (`skill 27 70.3 (+0.1)`: the skill number, its value and the change), `stat_changed` (`strength 51 (+1)`), `ability_changed` (the armed weapon move is spent, or a stance came on or went off), `quest_arrow` (`shown at x,y` or `removed`), and `map_opened` (a map item opened; `watch` shows it under `maps`).
-   8. Busy kinds, only when you ask for them with `ambient`: `sound`, `effect`, `animation` (each swing, cast and bow of every mobile in view), `item_deleted` and `member_positions`. Give `ambient: ["sound"]`, a list of kinds, or `["all"]`. A plain call skips them, and a full log drops them first.
    7. `disconnected`: the link to the shard dropped. The session logs in again by itself after 5 s, then after longer waits up to 60 s, and each call meanwhile is refused with the words that say so. `logged_in` comes when the character is back. The `reconnect` setting (`uoterm.toml`, and the session create body) turns this off. A `logout` ends the session for good.
+   8. Busy kinds, only when you ask for them with `ambient`: `sound`, `effect`, `animation` (each swing, cast and bow of every mobile in view), `item_deleted` and `member_positions`. Give `ambient: ["sound"]`, a list of kinds, or `["all"]`. A plain call skips them, and a full log drops them first.
 3. Go back to 1.
 
 Events wait in the session for you. When you are slow, the next call gives you all of them, in order, 50 at most per call. `missed` counts events that were dropped before you asked; the session keeps the last 256, and drops the busy kinds first.
@@ -75,7 +75,7 @@ In both modes:
 - When `asks_if_bot` is true, laugh it off ("lol, you're funny"), dodge ("too busy chopping to chat"), or just keep working. Never flatly say "I am a real person" or "I am not a bot".
 - Never say the same line twice. Change the words each time. The session refuses a line said a short time before.
 
-Start `uoterm connect` or `uoterm populate` first. Then drive the session with CLI, HTTP, or `uoterm mcp`.
+A session comes from `uoterm connect`, `uoterm populate`, `uoterm play`, a login in the web client of `uoterm web`, or the runtime tool `connect`. Drive it with the CLI, HTTP, or `uoterm mcp`.
 
 ## Perception
 
@@ -125,7 +125,7 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `set_goal` | in world; `idle` `travel` `hunt` `gather` (or `chop`) `mine` `bank` `shop` `social` `flee` `ress`. `hunt` starts the hunt job with empty lists. `gather` and `mine` walk to the nearest tree or rock of the map, use the axe or the pickaxe carried, and aim at the spot; a spot the shard says is empty is left for 20 minutes, and the goal ends with `job_failed` when there is no tool or nothing near. `flee` runs away from what threatens the character. `ress` walks a ghost to a healer in view, or to the nearest healer of the marker file, or else to the nearest bank, and takes the healer's offer; it ends with `job_ended` `ress: alive` |
 | `set_persona` | session exists; JSON persona body. `typo_rate` is clamped to `0.0..=1.0` |
 | `cancel_goal` | session exists; also stops a hunt or walk job (`job_ended` reason `stopped`) |
-| `watch` | For a window, not for an agent. `observe` with each list at full length, and what only a screen draws: each container with all its items, `journal_lines` with hue and kind, every skill, `party_members` (with the `hits`, `mana` and `stam` of each, and their most, when the shard told them), `party_can_loot`, `multis`, `gump_layouts` (each gump piece with its place, page and pictures), `maps`, `profiles`, `designed_houses` (the walls and floors a player designed, with their offsets), `placing` (a building that waits for its place; answer with `target` and a tile), `chat`, `designing` (the house, the `floor` worked on, and the `plot_width` and `plot_depth` of its plot when the client files hold the foundation), `house_parts`, `cues` (damage, animations, effects, the death screen and a status bar the shard shut, each with a `seq` that counts up), `buff_icons` (each buff with its icon, title, text and seconds left), `live_map` (the map blocks an UltimaLive shard changed near the character), `season`, `light`, `weather`, `prompt`, `text_entry`, `target_cursor`, `board`, and the items of an open `trade` |
+| `watch` | For a play window (the native window or the web client), not for an agent. `observe` with each list at full length, and what only a screen draws: each container with all its items, `journal_lines` with hue and kind, every skill, `party_members` (with the `hits`, `mana` and `stam` of each, and their most, when the shard told them), `party_can_loot`, `multis`, `gump_layouts` (each gump piece with its place, page and pictures), `maps`, `profiles`, `designed_houses` (the walls and floors a player designed, with their offsets), `placing` (a building that waits for its place; answer with `target` and a tile), `chat`, `designing` (the house, the `floor` worked on, and the `plot_width` and `plot_depth` of its plot when the client files hold the foundation), `house_parts`, `cues` (damage, animations, effects, the death screen and a status bar the shard shut, each with a `seq` that counts up), `buff_icons` (each buff with its icon, title, text and seconds left), `live_map` (the map blocks an UltimaLive shard changed near the character), `season`, `light`, `weather`, `prompt`, `text_entry`, `target_cursor`, `board`, and the items of an open `trade` |
 | (`observe` panels) | `observe` also holds what the shard has open for the character: `shop` (the goods and prices of a buy or sell list), `context_menu` (its lines), `menu` (an old-style menu), `book` (its pages), `paperdoll` (the last paperdoll the shard opened: `serial`, the `text` at its top, and a `seq` that grows with each one; the worn items are in that mobile's `equipment`), and what he knows: `skills` (those trained or locked, with value, base, cap and lock), `spellbooks` (the spells of each book the shard has sent), and `doing.last_walk` (how the last walk ended) |
 | `properties` | in world; `serial`. The tooltip `lines` of one object, and `entries`: the same lines as the shard sent them, each a `cliloc` text number with its `arguments`, so a caller reads a property by its number in any language. It asks the shard when the session has none, so the next call has them |
 | `context_menu` with `serial` only | Asks for the context menu; its lines come in `observe` `context_menu` with a `context_menu_opened` event. With `index`, picks that line. `close_menu` closes it with no pick. With `cliloc`, one call asks and picks. A shard with no context menus says so |
@@ -161,9 +161,9 @@ Start `uoterm connect` or `uoterm populate` first. Then drive the session with C
 | `mount` / `dismount` | `mount` rides `serial`, the remount agent's mount, or the nearest pet of the character's that can be ridden; `dismount` gets off. War mode goes off first, so the double-click is no attack; in a fight both are refused |
 | `attack_nearest` | in world. Attacks the nearest mobile in sight (by the `sight_mode` option) that may be harmed without a crime: never an innocent, a friend, a pet or a party member, or one nobody can harm. `notoriety` (`gray`, `criminal`, `enemy`, `murderer`), `species`, `name` and `distance` narrow it. The shard's rule on closest targets is obeyed |
 | `ignore_list` | session exists. `list` `gumps` or `journal`, `action` `add`, `remove`, `clear` or `show` (default), `value` a gump id or words. An ignored gump is left out of `observe` and does not wake `next_event`; an ignored line (by speaker or words) is left out of `observe`, `journal_search` and `wait_journal` and does not count as spoken to. Saved per character |
-| `command` | For the watch window. One script command line (`text`) as one act of a human; needs `human` true |
-| `take_control` / `release_control` | For the watch window, not for an agent. While a human has control, only a call with `human` true acts. Control goes back by itself after 90 s with no human act |
-| `game_view` | For the watch window, not for an agent. `width` and `height`: the size in pixels of the game view the window draws. The shard hears it (`0xBF` `0x05`) at each login, and at once when it changes in the world. A session with no window tells 600 by 480 |
+| `command` | For a play window. One script command line (`text`) as one act of a human; needs `human` true |
+| `take_control` / `release_control` | For a play window, not for an agent. While a human has control, only a call with `human` true acts. Control goes back by itself after 90 s with no human act |
+| `game_view` | For a play window, not for an agent. `width` and `height`: the size in pixels of the game view the window draws. The native window and the web client both send it once a new size has held for half a second. The shard hears it (`0xBF` `0x05`) at each login, and at once when it changes in the world. A session with no window tells 600 by 480 |
 | `jobs` / `job_start` / `job_stop` | session exists / in world / a job is running. Hunt: `job` `hunt`, optional `include` and `avoid`. Walk: `job` `walk`, `x` and `y` or `name`, `watch`. `replace` true stops the old job (`job_ended` `stopped`) then starts the new one. Hands back with `job_ended`. See [playbooks/hunt.md](playbooks/hunt.md) and [playbooks/walk.md](playbooks/walk.md) |
 
 ## Scripts, agents, hotkeys and macros
@@ -213,118 +213,149 @@ A session reaches the shard through a proxy when the config file (`proxy`), the 
 
 ## HTTP
 
-Default bind: `http://127.0.0.1:7733`.
+`uoterm connect`, `uoterm populate` and `uoterm play` serve the runtime API on `--api-bind`; `uoterm play` starts it after the first login. `uoterm web` serves the same API on `--bind`, together with the web client routes below. The default address is `api_bind` in `uoterm.toml`, which is `http://127.0.0.1:7733` when the file does not set it.
 
 | Route | Notes |
 | --- | --- |
-| `GET /health` | No token |
-| `GET /v1/sessions` | Session ids |
-| `GET /v1/sessions/{id}/state` | Observe JSON |
-| `POST /v1/sessions/{id}/tools/{name}` | Tool body is JSON args |
-| `POST /v1/tools/{name}` | A tool of the runtime (`connect`, `disconnect`, `characters`, `character_create`, `character_delete`); JSON args. 404 for any other name |
-| `POST /v1/sessions` | Create a session. Password is in the body. `proxy` is optional |
+| `GET /health` | `ok`. No token |
+| `GET /v1/sessions` | `{"sessions": [ids]}` |
+| `POST /v1/sessions` | Creates a session. Body: `host`, `port`, `account`, `password`, `character`, and optional `shard`, `era`, `version`, `obey_shard_rules`, `answer_when_named`, `play_along`, `reconnect` and `proxy`. 201 `{"id": ...}`; 502 `{"error": ...}` when the login fails. The client files and markers come from the config file |
+| `GET /v1/sessions/{id}/state` | The `observe` JSON |
+| `POST /v1/sessions/{id}/tools/{name}` | The body is the JSON arguments of the tool. 200 when the tool succeeds, 409 when it refuses, 400 for a session that does not exist. The body is the tool result: `ok`, `result`, and `error` when it failed |
+| `POST /v1/tools/{name}` | A tool of the runtime (`connect`, `disconnect`, `characters`, `character_create`, `character_delete`), with JSON arguments. 200 or 409, as above. 404 for any other name |
+| `POST /v1/web/token` | Gives the token cookie. See below |
+| `GET /v1/sessions/{id}/live` | The live link. See below |
+| `GET /v1/login/live` | The login link. See below |
 
-When `UOTERM_API_TOKEN` is set, every route except `/health` requires `Authorization: Bearer <token>`. A non-loopback `--api-bind` is refused unless that variable is set. CLI and MCP send the same header when the variable is set.
+A session id that does not exist gets 404 `{"error": "not found"}`, except on the tool route.
 
-An API bound to this machine answers only a caller that names this machine in its `Host` header (`127.0.0.1`, `localhost` or `::1`, with any port). A web page that points a name it owns at this machine names itself, and is refused with 403.
+### Who the API answers
 
-### Token cookie and web pages
+When `UOTERM_API_TOKEN` is set, every route except `/health` and `/v1/web/token` requires the token. The CLI and MCP send it as `Authorization: Bearer <token>` when the variable is set. The token may hold only visible ASCII marks, without `"`, `,`, `;` or `\`, and the server refuses to start with any other token. A bind that is not loopback is refused unless the variable is set.
 
-A web page cannot put headers on a WebSocket. So it sends the token once to `POST /v1/web/token` with the body `{"token": "..."}`. A right token gets 204 and a `uoterm_token` cookie (`HttpOnly; SameSite=Strict; Path=/`); a wrong one gets 401. The server takes the token from the bearer header or from this cookie. The token may hold only visible ASCII marks, without `"`, `,`, `;` or `\`; the server refuses to start with another token.
+An API bound to loopback answers only a caller that names this machine in its `Host` header (`127.0.0.1`, `localhost`, `::1` or `[::1]`, with any port), or in the authority of an HTTP/2 request. Any other caller gets 403. This stops a web page that points a name it owns at this machine.
 
-A request with an `Origin` header must come from a page of this server: the `Origin` must be `http://` and the `Host` of the request. Any other `Origin` gets 403. A caller that is no web page sends no `Origin`, and is not affected. `GET /health` and `POST /v1/web/token` need no token.
+A request with an `Origin` header must come from a page of this server: the `Origin` must be `http://` followed by the `Host` of the request, and on a loopback API that host must name this machine. Any other `Origin` gets 403. A caller that is not a web page sends no `Origin` and is not affected.
 
-## Web client routes
+### Token cookie
 
-`uoterm web` serves these routes besides the ones above, behind the same token, loopback and origin rules. `uoterm connect` and `uoterm play` do not serve them, except the live link and the login link, which the HTTP API of every command serves. A path under `/v1/` that has no route is 404 `{"error": "not found"}`. Any other path gets the built page.
+A web page cannot put headers on a WebSocket. So it sends the token once to `POST /v1/web/token` with the body `{"token": "..."}`. The right token gets 204 and a `uoterm_token` cookie (`HttpOnly; SameSite=Strict; Path=/`). A wrong token, or any token when the server has none, gets 401. The server takes the token from the bearer header or from this cookie.
 
 ### Live link
 
-`GET /v1/sessions/{id}/live` is a WebSocket. A message is 1 MiB at most. The server calls the `watch` tool every 33 ms and sends a `frame` only when it differs from the last one it sent on this link.
+`GET /v1/sessions/{id}/live` is a WebSocket. The web client keeps one open to the session it shows. A message from the page is 1 MiB at most. The server calls the `watch` tool every 33 ms and sends a `frame` only when it differs from the last one it sent on this link. The radar size of the frames is 5 until the page sends a `size`.
 
 | Page sends | Meaning |
 | --- | --- |
 | `{"kind":"call","id":1,"tool":"say","args":{...}}` | One tool call |
-| `{"kind":"act","id":2,"calls":[{"tool":"...","args":{...}}]}` | Calls made in order, 650 ms apart (`ACT_STEP_GAP_MS`), stopping at the first that fails. 4 steps at most (`MAX_ACT_STEPS`) |
+| `{"kind":"act","id":2,"calls":[{"tool":"...","args":{...}}]}` | Calls made in order, 650 ms apart (`ACT_STEP_GAP_MS`), stopping at the first that fails. 4 steps at most |
 | `{"kind":"size","size":N}` | The radar size the frames use |
 
 | Server sends | Meaning |
 | --- | --- |
 | `{"kind":"frame","watch":{...}}` | The result of the `watch` tool |
-| `{"kind":"answer","id":1,"ok":true,"result":{...}}` | The answer to the call or act with that `id`. A refused one has `ok: false` and `error` |
-| `{"kind":"ended"}` | The session is gone; the link closes |
+| `{"kind":"answer","id":1,"ok":true,"result":{...}}` | The answer to the call or act with that `id`. A refused one has `ok: false` and `error`. The answer to an act is the result of its last call |
+| `{"kind":"ended"}` | The session is gone, and the link closes |
 
-An act runs on the server, so a page that closes during a lift and its drop does not leave the item in the hand. The acts of one session run one at a time, whatever link sent them. One act runs and 4 wait; one more is answered with an error. An act with no call, or with more than 4, is answered with an error. A message the server cannot read is ignored. A session id that does not exist is 404.
+Each call runs in a task of its own, so a tool that waits does not hold back the other calls of the page. One link runs 8 calls at one time; a call past that is answered with an error.
+
+An act runs on the server, so a page that closes during a lift and its drop does not leave the item in the hand. The acts of one session run one at a time, whatever link sent them. One act runs and 4 wait; one more is answered with an error. An act with no call, or with more than 4, is answered with an error. The server ignores a message it cannot read, and closes the link when the page takes more than 5 s to take one message.
 
 ### Login link
 
-`GET /v1/login/live` is a WebSocket, 64 KiB per message. The first message must come within 10 s and must be a login:
+`GET /v1/login/live` is a WebSocket, 64 KiB per message. The web client logs in through it. The first message must come within 10 s and must be a login:
 
 ```json
 {"kind":"login","host":"127.0.0.1","port":2593,"account":"a","password":"p",
  "shard":"","character":"","era":null,"version":null,"encryption":"none"}
 ```
 
-`shard`, `character`, `era`, `version` and `encryption` are optional. The password is used for this login only and is stored nowhere. The server sends each question of the login, and the page answers each one:
+`shard`, `character`, `era`, `version` and `encryption` are optional. A blank `shard` or `character` lets the page pick. The era and the version default to those of the config file, and `encryption` is `none` or `osi`. The other session options come from the config file. The password is used for this login only and is stored nowhere.
+
+The server sends each question of the login, and the page answers each one:
 
 | Server sends | Page answers |
 | --- | --- |
 | `{"kind":"ask","ask":{"kind":"Shard","names":[...]},"version":"..."}` | `{"kind":"reply","reply":{"kind":"Pick","index":0}}` |
-| `{"kind":"ask","ask":{"kind":"Characters","names":[...],"refused":null,"choices":{...}},"version":"..."}` | `{"kind":"reply","reply":{"kind":"Request","request":{"Play":0}}}`. A request is `{"Play":slot}`, `{"Delete":slot}`, `{"Make":{...wish}}` or `"Leave"` |
+| `{"kind":"ask","ask":{"kind":"Characters","names":[...],"refused":null,"choices":{"towns":[...],"features":0,"list_flags":0}},"version":"..."}` | `{"kind":"reply","reply":{"kind":"Request","request":{"Play":0}}}` |
 | `{"kind":"ready","session":"s1"}` | The page opens the live link of that session. The login link closes |
 | `{"kind":"failed","words":"..."}` | The login ended with a fault. The link closes |
 
-`version` is the client version the login speaks. A reply that does not fit the open question is not taken, and the question is sent again. A page that closes before the end plays no character, and a session the page cannot learn of is stopped. The words of a fault in a message name only its kind and place, never its text.
+A character request is one of these:
+
+- `{"Play":slot}` plays the character in that slot.
+- `{"Delete":slot}` deletes it, and the shard answers a new list or a refusal.
+- `{"Make":{...}}` makes a new character. The wish has `name`, `female`, `race`, `strength`, `dexterity`, `intelligence`, `skills` (a list of `[skill, value]` pairs), `skin_hue`, `hair`, `hair_hue`, `beard`, `beard_hue`, `shirt_hue`, `pants_hue`, `profession`, `start_city` and `slot`.
+- `"Leave"` plays no character, and the login ends at the character list.
+
+`version` is the client version the login speaks, which a new character follows. `refused` holds the words of the last refusal of the shard. A reply that does not fit the open question is not taken, and the question is sent again. A page that closes before the end plays no character: an open character question is answered with `"Leave"`, and an open shard question ends the login. A session the page cannot learn of is stopped. The words of a fault in a message name only its kind and place, never its text.
+
+## Web client routes
+
+`uoterm web` serves the browser client: a Three.js page from the `web/` folder, built with `npm run build`, that runs the WebAssembly build of `crates/uoterm-web`. It shares `crates/uoterm-view` with the native play window. `--web-dir` names the built page folder (default `web/dist`), and `--uopath` the client files (default `uopath` in `uoterm.toml`).
+
+`uoterm web` serves the routes below besides those above, behind the same token, loopback and origin rules. `uoterm connect`, `uoterm populate` and `uoterm play` do not serve them. Any path under `/v1`, including `/v1` and `/v1/`, that has no route gets 404 `{"error": "not found"}`, whatever the method. Any other path gets a file of the built page, or its `index.html`. The page itself needs no token, so a browser on another machine can load it and ask the player for the token; the loopback and origin rules still apply to it.
 
 ### Pictures, map and tables
 
-These need client files (`--uopath`, or `uopath` in `uoterm.toml`). With none, they answer 503 (the sounds and the music too). A picture or a table has an `ETag` from the version of the client files and of UOTerm, and the browser keeps it for a year.
+These need client files. With none, they answer 503. A picture or a table that the browser keeps has an `ETag` from the version of the client files and of UOTerm, with `Cache-Control: public, max-age=31536000, immutable`. 4 pictures are made at one time.
 
 | Route | Notes |
 | --- | --- |
-| `POST /v1/art` | JSON `ArtRequest`. A PNG, with the point of the picture that goes on the tile in the `x-uoterm-anchor` header (`x,y`). 404 for no picture, 400 for one too large. 4 pictures are made at one time |
-| `POST /v1/text/measure` | The lines words break into in a UO font, and the height of one line |
-| `GET /v1/gump-mask/{id}` | The width, height and mask bits (base64) of a gump |
-| `GET /v1/map/{map}/{block_x}/{block_y}` | The 64 tiles of one block. 404 past the edge of the map |
-| `GET /v1/map/near/{map}/{x}/{y}` | PNG: the land round a tile in radar colors |
-| `GET /v1/map-picture/{map}/{tx}/{ty}` | PNG: one tile of the whole-world picture of a map |
-| `GET /v1/map-item/{facet}/{start_x}/{start_y}/{end_x}/{end_y}` | PNG: the land of a map item between its corners |
-| `POST /v1/map/live` | The `live_map` value of `watch`, 8 MiB at most. Gives the blocks that changed. Not kept by the browser |
-| `GET /v1/data/{table}` | `tiledata`, `animdata`, `anim-rules`, `radarcol`, `seasons`, `cliloc`, `item-layers`, and with an id: `multis/{id}`, `lights/{id}`, `hues-text/{hue}`. `frames/{body}/{action}/{direction}/{mounted}` counts the frames of a body |
-| `GET /v1/data/creation?towns=…` | What the character creation reads: `{"professions", "skill_names", "town_texts", "words", "hue_colors"}`. `towns` is a comma-separated list of the text numbers of the start-town words the shard offers (it may be empty or left out). `words` holds only the text numbers of the professions and of these towns (null when the client files have no `Cliloc.enu`). `hue_colors` gives `[r, g, b]` by hue for each hue of the palettes. 400 for a `towns` value that is not a list of numbers |
+| `POST /v1/art` | JSON `ArtRequest`, tagged by `kind`: `Land`, `Texture`, `Item`, `Gump`, `Cursor`, `Text` or `Figure`. A PNG, with the point of the picture that goes on the tile in the `x-uoterm-anchor` header (`x,y`). 404 for no picture, 400 for one too large |
+| `POST /v1/text/measure` | Body `{"text": ..., "look": ...}`, as a `Text` picture asks. `{"lines": [...], "line_height": N}`: the lines the words break into in a UO font, and the height of one line. 400 for words a picture would refuse, 404 with no UO fonts |
+| `GET /v1/gump-mask/{id}` | `{"width", "height", "bits"}`: the drawn pixels of a gump, one bit for each pixel, row by row from the top left, the lowest bit of each byte first, in base64. 404 for no gump |
+
+The map routes take an optional `?session={id}`. With it, the map has the UltimaLive changes that session sent (see `POST /v1/sessions/{id}/map/live`); without it, the map files alone. A map picture of a facet that a live map changed is sent with `Cache-Control: no-store`, so the browser does not keep it.
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/map/{map}/{block_x}/{block_y}` | The 64 tiles of one block, row by row from its north west corner. Never kept (`no-store`). 404 past the edge of the map |
+| `GET /v1/map/near/{map}/{x}/{y}` | PNG: the land round a tile in radar colors, with the tile in the middle. 404 when no tile round it has a color |
+| `GET /v1/map-picture/{map}/{tx}/{ty}` | PNG: one tile of the whole-world picture of a map. 404 past the picture |
+| `GET /v1/map-item/{facet}/{start_x}/{start_y}/{end_x}/{end_y}` | PNG: the land of a map item between its corners. 400 when the end is not past the start |
+| `POST /v1/sessions/{id}/map/live` | Body: the `live_map` value of `watch`, 8 MiB at most. Lays it over the map files of that session, and answers the blocks that changed as `[{"map", "bx", "by"}]`, for the page to ask for again. 404 for a session that does not exist. The changes of a session are dropped when it ends |
+
+| Route | Notes |
+| --- | --- |
+| `GET /v1/data/{table}` | `tiledata`, `animdata`, `anim-rules`, `radarcol`, `seasons`, `cliloc` and `item-layers`, and with an id: `multis/{id}`, `lights/{id}` and `hues-text/{hue}` |
+| `GET /v1/data/frames/{body}/{action}/{direction}/{mounted}` | The frame count of a body for an action (`stand`, `walk`, `run` or a group number), a direction, on a mount or not. 400 for a question the animation files cannot hold |
+| `GET /v1/data/creation?towns=...` | What the character creation reads: `{"professions", "skill_names", "town_texts", "words", "hue_colors"}`. `towns` is a comma-separated list of the text numbers of the start-town words the shard offers (it may be empty or left out). `words` holds only the text numbers of the professions and of these towns (null when the client files have no `Cliloc.enu`). `hue_colors` gives `[r, g, b]` by hue for each hue of the palettes. 400 for a `towns` value that is not a list of numbers |
+
+A table the client files do not hold gets 404.
 
 ### Sound
 
 | Route | Notes |
 | --- | --- |
-| `GET /v1/sound/{id}` | One sound as a WAV file |
-| `GET /v1/music/{id}?midi=true` | The MP3 file of a track. A MIDI file only with `midi=true`. The `x-uoterm-repeats` header says if the track repeats |
-| `GET /v1/soundfont?shard=&character=` | The MIDI sound font the profile names (the default profile with no query). 404 when none |
+| `GET /v1/sound/{id}` | One sound as a WAV file (16-bit mono). 503 when the client files hold no sounds, 404 for no sound |
+| `GET /v1/music/{id}?midi=true` | The file of a track: MP3, or MIDI only with `midi=true` (a page with a sound font). The `x-uoterm-repeats` header says if the track repeats. 503 when the client files hold no music, 404 for no track |
+| `GET /v1/soundfont?shard=&character=` | The MIDI sound font the profile names: the profile of that character, or the default profile with neither. 400 for one of the two alone. 404 when the profile names none, or names a file that is no sound font or that is outside the config folder and the client files folder |
 
 ### Files of the config folder
 
-These are the same files the play window reads, so the options are the same in both.
+These are the same files the native play window reads, so the options are the same in both clients.
 
 | Route | Notes |
 | --- | --- |
-| `GET`, `PUT /v1/profiles/default` | The default profile, as JSON |
-| `GET`, `PUT /v1/profiles/{shard}/{character}` | The profile of a character. `shard` is `host:port`. A character with no profile has the default one |
-| `GET`, `PUT /v1/kept/{name}` | `watch-hotbar.toml` and `watch-grab-bags.toml` are read and written. `markers` is read only (PUT is 405) |
-| `POST /v1/map-markers/user` | Changes the own marker file, 64 KiB at most. 400 for an invalid marker, 409 when the file no longer holds the marker the change expects |
+| `GET`, `PUT /v1/profiles/default` | The default profile, as JSON. PUT answers 204 |
+| `GET`, `PUT /v1/profiles/{shard}/{character}` | The profile of a character. `shard` is `host:port`; 400 without a port. A character with no profile has the default one. PUT answers 204 |
+| `GET`, `PUT /v1/kept/{name}` | `watch-hotbar.toml` and `watch-grab-bags.toml` are read and written as JSON. PUT answers 204, or 400 for JSON the file cannot hold. `markers` gives the marker and zone files of the map folder, and is read only (PUT is 405). 404 for any other name |
+| `POST /v1/map-markers/user` | Changes the player's own marker file, 64 KiB at most. Body: `{"add": marker}`, `{"keep": {"at", "marker", "expected"}}` or `{"remove": {"at", "expected"}}`. 200 `{"changed": true}`; 400 for an invalid marker, 409 when the file no longer holds the marker the change expects, 422 when the file is full |
 | `GET /v1/fonts`, `GET /v1/fonts/{name}` | The player fonts of the `Fonts` folder. Only a listed name is read |
 | `POST /v1/screenshots` | Body: a PNG, 32 MiB at most. Saves it in the `screenshots` folder. 201 `{"file": name}`; 400 for a body that is no PNG |
-| `GET /v1/logins` | The saved logins and the server of the config file. No password |
-| `PUT /v1/logins/{name}` | Saves a login form under `name`, and gives the list. A body with a password is refused |
+| `GET /v1/logins` | The saved logins, as the login screen of `uoterm play` lists them, and the server of the config file: `{"host", "port", "logins": [{"name", "host", "port", "account", "shard", "character", "encryption", "era", "version"}]}`. No password |
+| `PUT /v1/logins/{name}` | Saves a login form under `name` and gives the list. The body has `host`, `port`, `account`, and optional `shard`, `character` and `encryption`. A body with any other field, such as a password, is refused; so is an empty name |
 
 ### Jev
 
-These run in UOTerm, so the TypeSafe key never goes to the browser. `GET /v1/jev` tells the page whether Jev can answer: `{"on": bool}`, true when UOTerm has a TypeSafe key. The key itself is not sent. The other routes give 503 when there is no key, 404 for an unknown session, and 409 with `{"error": words}` when Jev gives no answer.
+These run in UOTerm, so the TypeSafe key (`TYPESAFE_API_KEY`) never goes to the browser. `GET /v1/jev` tells the page whether Jev can answer: `{"on": bool}`, true when UOTerm has the key. The other routes answer 503 when there is no key, 404 for an unknown session, and 409 when Jev gives no answer, each with `{"error": words}`.
 
 | Route | Body | Answer |
 | --- | --- | --- |
 | `GET /v1/jev` | None | `{"on": bool}` |
-| `POST /v1/sessions/{id}/jev/order` | `{"words": "...", "frame": {...}}` (`frame` is a `watch` result) | `{"act": ...}`, in the form the page sends on its live link |
-| `POST /v1/sessions/{id}/jev/pick` | `{"question": ..., "names": [...], "wish": "..."}` | `{"index": N}`, or null when Jev is not sure |
+| `POST /v1/sessions/{id}/jev/order` | `{"words": "...", "frame": {...}}` (`frame` is a `watch` result) | `{"act": {"calls": [{"tool", "args"}], "words": "..."}}`: the calls go on the live link as an act, each marked `human`, and `words` tells the player what was done |
+| `POST /v1/sessions/{id}/jev/pick` | `{"question": ..., "names": [...], "wish": "..."}`. `question` is `shard`, `profile`, `house_part`, `wear`, `channel` or `landmark` | `{"index": N}`, or null when Jev is not sure |
 | `POST /v1/sessions/{id}/jev/lines` | `{"wish": "..."}` | `{"lines": [...]}`: the script lines of the hotkey the wish names |
 
 ## Names on a shard with no property lists
@@ -337,7 +368,7 @@ A shard says at login whether it sends property lists, the tooltips that name ev
 uoterm mcp
 ```
 
-JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`). Newline JSON and `Content-Length` framing. A blank line is skipped. Bad JSON returns `-32700`. Bodies larger than 1 MiB are rejected.
+JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`), with newline JSON or `Content-Length` framing. The server skips a blank line, answers bad JSON with `-32700`, and refuses a body larger than 1 MiB.
 
 Methods: `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`.
 
@@ -345,8 +376,8 @@ Methods: `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/
 
 Resource URIs:
 
-- `uo://session/{id}/state` — observe JSON for that session
-- `uo://playbook/{name}` — markdown playbook (`text/markdown`)
+- `uo://session/{id}/state`: the observe JSON of that session.
+- `uo://playbook/{name}`: a Markdown playbook (`text/markdown`).
 
 Playbooks:
 
@@ -372,7 +403,7 @@ Playbooks:
 
 ### The `screenshot` tool
 
-The MCP server adds one tool that is not a session tool: `screenshot`. It opens the watch window for one picture and gives it back as a JPEG image (at most 1024 px on its long side). A vision model then sees what a human sees: the real map, the mobiles with their names, and the panels. Use it when the text radar is not enough, for example in a crowd or in a dungeon. It needs a desktop, and it takes some seconds. It is not on the HTTP API.
+The MCP server adds one tool that is not a session tool: `screenshot`. It opens the native watch window for one picture and gives it back as a JPEG image (at most 1024 px on its long side). A vision model then sees what a human sees: the real map, the mobiles with their names, and the panels. Use it when the text radar is not enough, for example in a crowd or in a dungeon. It needs a desktop, and it takes some seconds. It is not on the HTTP API.
 
 ## CLI against a running process
 

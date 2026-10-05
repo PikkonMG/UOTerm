@@ -2,11 +2,11 @@
 
 Agents are helpers that work for your character on their own: they loot,
 pick up, bandage, remount, and more. Hotkeys are named actions you press by
-name. Both go at the pace a person plays, and both run after the
-character's own self-care on each tick.
+name. Both go at the pace a person plays. Agents run on each session tick,
+after the character's reflexes and before a script.
 
-Hunt and walk are session jobs, not these agents. See `docs/playbooks/`
-and `docs/AGENT_API.md`. The bandage agent still heals while a job runs.
+Hunt and walk are session jobs, not agents. See `docs/playbooks/` and
+`docs/AGENT_API.md`. The bandage agent still heals while a job runs.
 
 ## Settings
 
@@ -61,9 +61,9 @@ selector = "nearest"
 
 ## Options
 
-The `[options]` part holds switches that change how the character plays.
-All are off until you set them. Set them in the file, or with `agent_set`
-and `"agent": "options"`.
+The `[options]` part holds settings that change how the character plays.
+Each switch is off until you set it. Set them in the file, or with
+`agent_set` and `"agent": "options"`.
 
 | Option | What it does |
 | --- | --- |
@@ -104,7 +104,7 @@ item rules. A field you leave out matches anything.
 | Agent | What it does |
 | --- | --- |
 | `autoloot` | Opens corpses in range and moves the items its list wants into the bag. It stops while the pack has less than 5 stones free. |
-| `scavenger` | Picks up the ground items its list wants. |
+| `scavenger` | Picks up the ground items its list wants. It also stops while the pack has less than 5 stones free. |
 | `organizer` | A job: moves listed items from one bag to another, then stops. |
 | `restock` | A job: tops listed items up to their amount, from the bank box or a bag. |
 | `dress` | A job: puts on a dress list, taking off what is in the way. Also `undress`. |

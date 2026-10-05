@@ -1,9 +1,9 @@
 # UOTerm scripts
 
-A script is a list of things for your character to do, one on each line.
-UOTerm does the lines in order, at the pace a person plays. The commands
-follow the command style that UO assistant scripts have long used, so a
-script you already have will most likely run.
+A script is a list of actions for your character, one on each line. UOTerm
+runs the lines in order, at the pace a person plays. The commands follow
+the style that UO assistant scripts have long used, so a script you
+already have will most likely run.
 
 ## A first script
 
@@ -317,10 +317,12 @@ yourself when you give none.
 
 ## Running scripts
 
-Save a script as a `.txt` file in a `scripts` folder: in the folder you run
-UOTerm from, or in your config folder (on Linux `~/.config/uoterm/scripts`).
-The file name without `.txt` is the script name. Files with other extensions
-are not scripts.
+Save a script as a `.txt` file in a `scripts` folder, either in the folder
+you run UOTerm from or in your config folder (on Linux `~/.config/uoterm/scripts`).
+The file name without `.txt` is the script name. Files with other
+extensions are not scripts. The macro editor of the browser web client
+(`uoterm web`) lists, edits, records and runs the scripts of the same
+folder.
 
 | Tool | What it does |
 | --- | --- |
@@ -332,7 +334,7 @@ are not scripts.
 
 ## What does nothing here
 
-UOTerm has no game window and no mouse.
+The script runner has no game window and no mouse.
 
 - `playsound`, `snapshot`, `hotkeys`, `messagebox`, `mapuo`, `clickscreen`
   and `info` only draw on a game window. They write a note and go on.

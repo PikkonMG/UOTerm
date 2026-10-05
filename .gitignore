@@ -57,6 +57,15 @@ personas/*.toml
 **/*.rs.bk
 *.pdb
 
+# Web client build output. web/.gitignore also lists the files the page
+# build makes inside web/ (the wasm glue, fonts and theme CSS).
+node_modules/
+web/dist/
+.vite/
+coverage/
+*.tsbuildinfo
+pkg/
+
 # ---------------------------------------------------------------------------
 # Test and run artifacts
 # ---------------------------------------------------------------------------
