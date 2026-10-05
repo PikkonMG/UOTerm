@@ -14,7 +14,7 @@ describe('Plates', () => {
       },
     ];
     const floats = [{ words: 'hail', x: 100, y: 50, color: [102, 102, 102, 102] as [number, number, number, number], alpha: 0.5, number: false }];
-    const { getByText } = render(<Plates plates={plates} floats={floats} />);
+    const { getByText } = render(<Plates plates={plates} floats={floats} scale={1} />);
     const name = getByText('an orc');
     expect(name.style.color).toBe('rgb(244, 72, 128)');
     expect(name.parentElement?.style.left).toBe('10px');

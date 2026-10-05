@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { drawFrame, followSize, startFrames, type DrawnFrame } from '../src/frame_loop';
+import { setPointScale } from '../src/points';
 
 /** The animation frames asked for, run by hand. */
 function fakeFrames() {
@@ -107,5 +108,17 @@ describe('followSize', () => {
       [{ width: 1280, height: 769, ratio: 1.4 }],
       [{ width: 1280, height: 769, ratio: 2 }],
     ]);
+  });
+
+  it('counts_the_view_in_the_points_the_ui_scale_grows', () => {
+    const canvas = { clientWidth: 1000, clientHeight: 800 };
+    vi.stubGlobal('devicePixelRatio', 1);
+    const apply = vi.fn();
+    const follow = followSize(canvas, apply);
+    follow();
+    setPointScale(2);
+    expect(follow()).toEqual({ width: 500, height: 400, ratio: 2 });
+    expect(apply).toHaveBeenCalledTimes(2);
+    setPointScale(1);
   });
 });

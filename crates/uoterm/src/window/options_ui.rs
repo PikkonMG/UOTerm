@@ -195,7 +195,7 @@ impl OptionsUi {
         frame: &WatchFrame,
         tools: &mut Tools<'_>,
         profile: &mut Profile,
-        audio: &Audio,
+        audio: &mut Audio,
     ) -> Vec<Rect> {
         if !self.panel.open {
             return Vec::new();
@@ -1014,11 +1014,11 @@ mod tests {
 
     /// Draws the Options once. Gives the places they cover.
     fn draw_once(options: &mut OptionsUi, profile: &mut Profile) -> Vec<Rect> {
-        let audio = Audio::new(None);
+        let mut audio = Audio::new(None);
         let frame = WatchFrame::default();
         let mut covered = Vec::new();
         draw_frames(profile, &[Vec::new()], |ui, rect, tools, profile| {
-            covered = options.draw(ui, rect, &frame, tools, profile, &audio);
+            covered = options.draw(ui, rect, &frame, tools, profile, &mut audio);
         });
         covered
     }

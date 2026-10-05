@@ -302,11 +302,10 @@ impl WebView {
         match pointer.at.filter(|_| pointer.down) {
             Some(at) => {
                 let size = bar_size(&health_bars::facts(frame, serial));
-                let center = self.to_panel(at);
                 places::remember(
                     &mut self.profile,
                     &bar_id(serial),
-                    Area::from_center_size(center, size),
+                    Area::from_center_size(at, size),
                     false,
                 );
             }
@@ -315,12 +314,6 @@ impl WebView {
                 self.keep_profile();
             }
         }
-    }
-
-    /// A point of the view in the points of the panel layer.
-    pub(crate) fn to_panel(&self, at: Point) -> Point {
-        let scale = self.profile.video.ui_scale.max(f32::EPSILON);
-        Point::new(at.x / scale, at.y / scale)
     }
 
     /// Opens a bar for each mobile in the box that has none, by the
@@ -440,7 +433,7 @@ impl WebView {
             NearAction::Pull(at) => {
                 self.open_bar(at.serial);
                 let size = bar_size(&health_bars::facts(&frame, at.serial));
-                let center = self.to_panel(Point::new(at.x, at.y));
+                let center = Point::new(at.x, at.y);
                 places::remember(
                     &mut self.profile,
                     &bar_id(at.serial),

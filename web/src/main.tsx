@@ -8,7 +8,7 @@ import { login } from './net/login';
 import type { CreationWords } from './screens/creation_model';
 import { Game } from './screens/Game';
 import { LoginScreens } from './screens/LoginScreens';
-import { profilePath, readPlace, sessionSearch, type CharacterPlace, type LoginRules, type LoginWords } from './screens/login_state';
+import { profilePath, readPlace, sessionSearch, soundFontPath, type CharacterPlace, type LoginRules, type LoginWords } from './screens/login_state';
 import { Token } from './screens/Token';
 import './theme.css';
 import { canMake, creationWords, CreationView, loginFault, loginWords, savedDetail, saveName } from './wasm/uoterm_web.js';
@@ -54,7 +54,7 @@ const loginScreen = (note: string | null): Screen => ({
 async function gameOf(session: string, place: CharacterPlace | null): Promise<Screen> {
   const path = profilePath(place);
   const value = await api<unknown>(path);
-  return { kind: 'game', session, profile: { path, value } };
+  return { kind: 'game', session, profile: { path, value, soundFont: soundFontPath(place) } };
 }
 
 const faultOf = (error: unknown): Screen => ({ kind: 'fault', words: error instanceof Error ? error.message : String(error) });

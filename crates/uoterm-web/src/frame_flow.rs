@@ -31,6 +31,7 @@ use uoterm_view::model::counters::slot_act;
 use uoterm_view::model::health_bars::{MapDrag, Pointer};
 use uoterm_view::model::places;
 use uoterm_view::model::spell_data::book_of;
+use uoterm_view::pad::soft_pointer;
 use uoterm_view::scene::plates::lay_out;
 use uoterm_view::scene::{
     overlays, SceneDraw, SceneInput, SceneState, DEATH_FONT, DEATH_HUE, DEATH_WORDS,
@@ -234,6 +235,9 @@ impl WebView {
         self.scene.set_panels(self.covered.clone());
         self.art.end_frame();
         buffers.world = MeshArrays::from(world.into_mesh());
+        if let Some(at) = self.soft_pointer {
+            overlay.overlay(soft_pointer(at));
+        }
         buffers.overlay = MeshArrays::from(overlay.into_mesh());
         buffers.uploads = self.art.take_uploads();
         buffers.atlas_reset = self.art.take_atlas_reset();
@@ -465,7 +469,8 @@ impl WebView {
         world: &mut Shapes,
         buffers: &mut DrawBuffers,
     ) {
-        buffers.steps = draw.steps;
+        let steps = self.mixer.steps(&draw.steps, &self.profile.sound);
+        self.audio.extend(steps);
         if draw.death.is_some() {
             world.fill(view, BLACK);
             let words = ArtRequest::Text {

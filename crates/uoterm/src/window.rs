@@ -816,7 +816,7 @@ impl eframe::App for WatchApp {
                                 frame,
                                 &mut tools,
                                 &mut self.profile,
-                                &self.audio,
+                                &mut self.audio,
                             ));
                         }
                         let places = Places {

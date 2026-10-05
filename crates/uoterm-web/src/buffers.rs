@@ -7,7 +7,6 @@
 use crate::to_js;
 use crate::web_art::Upload;
 use serde::Serialize;
-use uoterm_view::audio::Step;
 use uoterm_view::geom::{Area, Point, Rgba, Vector};
 use uoterm_view::lights::{LightCells, LIGHT_CELL};
 use uoterm_view::scene::plates::PlacedPlate;
@@ -287,7 +286,6 @@ pub struct DrawBuffers {
     pub(crate) light: Option<LightCells>,
     pub(crate) plates: Vec<PlacedPlate>,
     pub(crate) floats: Vec<PlacedWords>,
-    pub(crate) steps: Vec<Step>,
     pub(crate) moving: bool,
 }
 
@@ -395,11 +393,6 @@ impl DrawBuffers {
     /// The words and numbers over heads, laid out: `PlacedWords[]`.
     pub fn floats(&self) -> JsValue {
         to_js(&self.floats)
-    }
-
-    /// The footsteps of this frame, for the sound: `Step[]`.
-    pub fn steps(&self) -> JsValue {
-        to_js(&self.steps)
     }
 
     /// Something still moves, so the next frame must come at once.

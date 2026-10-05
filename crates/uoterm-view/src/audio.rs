@@ -3,6 +3,10 @@
 //! which sound effects play when too many ask at once. The rules are the
 //! reference client's; the window plays the sounds.
 
+mod mixer;
+
+pub use mixer::{AudioOut, Mixer, VoiceVolume};
+
 use crate::frame::WatchSound;
 use crate::settings::{SoundKind, SoundOptions};
 use std::ops::RangeInclusive;

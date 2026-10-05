@@ -1,4 +1,5 @@
 import { mods } from '../input/keys';
+import { toPoints } from '../points';
 import { followDrag, ZONE_ATTRIBUTE } from './drag';
 import { hoverOn, type Hover } from './hover';
 import { Picture } from './Picture';
@@ -47,7 +48,7 @@ function Cell({ cell, data, send, hover }: { cell: GridCell; data: GridData; sen
       onDblClick={(event) => press(event, { double: true })}
       onContextMenu={(event) => {
         event.preventDefault();
-        press(event, { secondary: true, x: event.clientX, y: event.clientY });
+        press(event, { secondary: true, ...toPoints(event.clientX, event.clientY) });
       }}
       onPointerDown={(event) => {
         if (item && data.live && event.button === PRIMARY) followDrag(event, { carries: true, started: () => send({ drag: cell.slot }) });

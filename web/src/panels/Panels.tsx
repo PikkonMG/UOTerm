@@ -1,6 +1,7 @@
 import { memo } from 'preact/compat';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { InputEvent } from '../input/events';
+import { toPoints } from '../points';
 import { Abilities, Racial } from './Abilities';
 import { Activity } from './Activity';
 import { Agents } from './Agents';
@@ -147,7 +148,7 @@ function AtMouse({ tooltip, carried }: { tooltip: TooltipData | null; carried: C
 function coveredAreas(root: HTMLElement): CoveredArea[] {
   return [...root.querySelectorAll(`[${PANEL_ATTRIBUTE}]`)].map((element) => {
     const box = element.getBoundingClientRect();
-    return { min: { x: box.left, y: box.top }, max: { x: box.right, y: box.bottom } };
+    return { min: toPoints(box.left, box.top), max: toPoints(box.right, box.bottom) };
   });
 }
 
@@ -171,7 +172,7 @@ export function Panels({ data, send, input, covered }: PanelsProps) {
     const up = (event: PointerEvent) => {
       if (!carried.current && !isCarrying()) return;
       const target = dropTarget(document.elementFromPoint(event.clientX, event.clientY));
-      send('desk', { drop: { x: event.clientX, y: event.clientY, ...target, shift: event.shiftKey } });
+      send('desk', { drop: { ...toPoints(event.clientX, event.clientY), ...target, shift: event.shiftKey } });
     };
     window.addEventListener('pointerup', up);
     return () => window.removeEventListener('pointerup', up);

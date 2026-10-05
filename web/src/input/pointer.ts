@@ -11,6 +11,7 @@
 
 import type { InputEvent, Mods, PointerButton } from './events';
 import { mods } from './keys';
+import { toPoints } from '../points';
 
 export const LONG_PRESS_MS = 500;
 /** Two taps this close in time are a double click, as egui counts one. */
@@ -80,7 +81,7 @@ export function attachPointer(target: HTMLElement, send: (event: InputEvent) => 
 
   const at = (client: { clientX: number; clientY: number }): Point => {
     const box = target.getBoundingClientRect();
-    return { x: client.clientX - box.left, y: client.clientY - box.top };
+    return toPoints(client.clientX - box.left, client.clientY - box.top);
   };
   const press = (button: PointerButton, held: Mods, at: Point, double = false) => send({ kind: 'PointerDown', button, mods: held, double, ...at });
   const release = (button: PointerButton, point: Point, held: Mods) => send({ kind: 'PointerUp', ...point, button, mods: held });

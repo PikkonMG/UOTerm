@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InputEvent } from '../src/input/events';
 import { attachPointer, LONG_PRESS_MS, type PointerInput } from '../src/input/pointer';
+import { setPointScale } from '../src/points';
 
 /** The points of a wheel notch the tests use (the view gives 40). */
 const POINTS_PER_NOTCH = 40;
@@ -24,6 +25,7 @@ function attach(): { el: HTMLElement; events: InputEvent[]; pointer: PointerInpu
 }
 
 afterEach(() => {
+  setPointScale(1);
   attached?.detach();
   attached = undefined;
   vi.useRealTimers();
@@ -95,6 +97,15 @@ describe('pointer', () => {
     const { events } = attach();
     window.dispatchEvent(new MouseEvent('mouseup', { button: 2, clientX: 7, clientY: 9 }));
     expect(events).toEqual([{ kind: 'PointerUp', x: 7, y: 9, button: 'Secondary', mods: NO_MODS }]);
+  });
+
+  it('gives_places_in_the_points_the_ui_scale_grows', () => {
+    setPointScale(2);
+    const { el, events, pointer } = attach();
+    el.dispatchEvent(new MouseEvent('mousemove', { clientX: 30, clientY: 40 }));
+    expect(pointer.mouse()).toEqual({ x: 15, y: 20 });
+    window.dispatchEvent(new MouseEvent('mouseup', { button: 0, clientX: 8, clientY: 6 }));
+    expect(events).toEqual([{ kind: 'PointerUp', x: 4, y: 3, button: 'Primary', mods: NO_MODS }]);
   });
 
   it('knows_where_the_mouse_is_until_it_leaves', () => {

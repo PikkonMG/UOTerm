@@ -688,14 +688,13 @@ impl WebView {
     /// points one.
     pub(super) fn quest_arrow_data(&self, frame: &WatchFrame) -> Option<QuestArrowData> {
         let (_, arrow) = quest_arrow(&self.scene.projection(self.view), frame)?;
-        let scale = self.profile.video.ui_scale.max(f32::EPSILON);
         let area = arrow_click_area(arrow);
         Some(QuestArrowData {
             place: Place {
-                x: area.min.x / scale,
-                y: area.min.y / scale,
-                w: area.width() / scale,
-                h: area.height() / scale,
+                x: area.min.x,
+                y: area.min.y,
+                w: area.width(),
+                h: area.height(),
             },
             hint: frame.human_control.then_some(HINT_ARROW),
         })

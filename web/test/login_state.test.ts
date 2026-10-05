@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { WISH } from './fake_creation';
-import { characterOf, leave, make, nextScreen, pick, play, profilePath, readPlace, remove, sessionSearch } from '../src/screens/login_state';
+import { characterOf, leave, make, nextScreen, pick, play, profilePath, readPlace, remove, sessionSearch, soundFontPath } from '../src/screens/login_state';
 
 const NO_CHOICES = { towns: [], features: 0, list_flags: 0 };
 const MARA = { ...WISH, name: 'Mara' };
@@ -33,6 +33,11 @@ describe('login state', () => {
   it('keeps_the_profile_of_the_character_of_the_shard', () => {
     expect(profilePath({ shard: '127.0.0.1:2593', character: 'Mara Dell' })).toBe('/v1/profiles/127.0.0.1%3A2593/Mara%20Dell');
     expect(profilePath(null)).toBe('/v1/profiles/default');
+  });
+
+  it('asks_for_the_sound_font_the_profile_of_the_character_names', () => {
+    expect(soundFontPath({ shard: '127.0.0.1:2593', character: 'Mara Dell' })).toBe('/v1/soundfont?shard=127.0.0.1%3A2593&character=Mara+Dell');
+    expect(soundFontPath(null)).toBe('/v1/soundfont');
   });
 
   it('carries_the_session_and_its_character_in_the_address_for_a_reload', () => {

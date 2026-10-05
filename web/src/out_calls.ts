@@ -84,7 +84,7 @@ function fullscreen(on: boolean): void {
   if (!on && shown) document.exitFullscreen?.().catch(() => {});
 }
 
-/** Makes each call. Screenshots are the page's own work, done by the screenshot of the page, not here. */
+/** Makes each call. A screenshot is taken by the game right after its next draw (`screenshot.ts`), not here. */
 export function sendOut(calls: OutCall[], places: OutPlaces): void {
   for (const call of calls) {
     switch (call.kind) {

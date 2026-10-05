@@ -7,6 +7,7 @@
  * `Desk::landing` of the view decides what that does.
  */
 
+import { toPoints } from '../points';
 import type { DropZone, Point } from './types';
 
 /** The attribute of an element a carried thing lands on, as JSON. */
@@ -36,7 +37,7 @@ export interface DragSteps {
   carries?: boolean;
   /** The press moved far enough: the drag starts. */
   started?(): void;
-  /** The button came up after the drag started, at this point of the page. */
+  /** The button came up after the drag started, at this point of the view, in points. */
   dropped?(at: Point): void;
 }
 
@@ -58,7 +59,7 @@ export function followDrag(from: { clientX: number; clientY: number }, steps: Dr
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     if (!started) return;
-    steps.dropped?.({ x: event.clientX, y: event.clientY });
+    steps.dropped?.(toPoints(event.clientX, event.clientY));
     carrying = false;
   };
   window.addEventListener('pointermove', move);
