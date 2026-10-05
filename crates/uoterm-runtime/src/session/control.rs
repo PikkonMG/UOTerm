@@ -29,8 +29,10 @@ impl HumanControl {
     }
 }
 
-fn by_human(call: &ToolCall) -> bool {
-    call.args.get(ARG_HUMAN).and_then(Value::as_bool) == Some(true)
+/// True when a human at the window made the call that carries these
+/// arguments.
+pub(super) fn by_human(args: &Value) -> bool {
+    args.get(ARG_HUMAN).and_then(Value::as_bool) == Some(true)
 }
 
 /// The refusal for a call the agent may not make now. None lets it through.
@@ -38,7 +40,7 @@ pub(super) fn gate(inner: &mut Inner, call: &ToolCall, now: Instant) -> Option<T
     if !inner.human.active() {
         return None;
     }
-    if by_human(call) {
+    if by_human(&call.args) {
         inner.human.last_act = Some(now);
         return None;
     }

@@ -206,6 +206,7 @@ const HOLD_STEP_CAP: usize = 50;
 const HOLD_MS_NONE: u64 = 0;
 const WALK_STEPS_ONE: usize = 1;
 const SPEECH_REJECTED: &str = "speech rejected by persona policy";
+const SPEECH_EMPTY: &str = "there are no words to say";
 /// The most characters a shard reads from one line. It drops a longer line
 /// without a word.
 const SPEECH_MAX_CHARS: usize = 128;
@@ -8420,14 +8421,21 @@ mod relay_tests {
     #[test]
     fn a_chat_line_said_again_is_refused() {
         let mut inner = test_session();
-        queue_speech(&mut inner, SAID_CHATTER, SPEECH_WHISPER, DEFAULT_SPEECH_HUE)
-            .expect("the first line is allowed");
+        queue_speech(
+            &mut inner,
+            SAID_CHATTER,
+            SPEECH_WHISPER,
+            DEFAULT_SPEECH_HUE,
+            Speaker::Agent,
+        )
+        .expect("the first line is allowed");
         assert_eq!(
             queue_speech(
                 &mut inner,
                 SAID_CHATTER_AGAIN,
                 SPEECH_WHISPER,
-                DEFAULT_SPEECH_HUE
+                DEFAULT_SPEECH_HUE,
+                Speaker::Agent
             ),
             Err(SPEECH_REPEATED),
             "case, spacing and punctuation do not make a line new"
@@ -8437,6 +8445,7 @@ mod relay_tests {
             SAID_OTHER_CHATTER,
             SPEECH_WHISPER,
             DEFAULT_SPEECH_HUE,
+            Speaker::Agent,
         )
         .expect("new words are allowed");
     }
@@ -8446,10 +8455,22 @@ mod relay_tests {
     fn a_command_may_be_said_again() {
         let mut inner = test_session();
         with_speech_table(&mut inner);
-        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
-            .expect("the first bank");
-        queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
-            .expect("the second bank");
+        queue_speech(
+            &mut inner,
+            PHRASE_BANK,
+            SPEECH_REGULAR,
+            DEFAULT_SPEECH_HUE,
+            Speaker::Agent,
+        )
+        .expect("the first bank");
+        queue_speech(
+            &mut inner,
+            PHRASE_BANK,
+            SPEECH_REGULAR,
+            DEFAULT_SPEECH_HUE,
+            Speaker::Agent,
+        )
+        .expect("the second bank");
     }
     const VENDOR_NAME: &str = "Shopkeeper";
     const GRAPHIC_FOR_SALE: u64 = 0x1408;
@@ -8643,8 +8664,14 @@ mod relay_tests {
     fn a_command_phrase_goes_out_with_the_keyword_the_shard_obeys() {
         let mut inner = test_session();
         with_speech_table(&mut inner);
-        queue_speech(&mut inner, SAID_BALANCE, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
-            .expect("a command is sent");
+        queue_speech(
+            &mut inner,
+            SAID_BALANCE,
+            SPEECH_REGULAR,
+            DEFAULT_SPEECH_HUE,
+            Speaker::Agent,
+        )
+        .expect("a command is sent");
         let expected = encode::keyword_speech(
             SPEECH_REGULAR,
             DEFAULT_SPEECH_HUE,
@@ -8666,8 +8693,14 @@ mod relay_tests {
         let mut inner = test_session();
         with_speech_table(&mut inner);
         for _ in 0..COMMANDS_IN_A_ROW {
-            queue_speech(&mut inner, PHRASE_BANK, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
-                .expect("every command goes out");
+            queue_speech(
+                &mut inner,
+                PHRASE_BANK,
+                SPEECH_REGULAR,
+                DEFAULT_SPEECH_HUE,
+                Speaker::Agent,
+            )
+            .expect("every command goes out");
         }
         assert_eq!(inner.outbound.len(), COMMANDS_IN_A_ROW);
     }
@@ -8677,18 +8710,88 @@ mod relay_tests {
     fn plain_chatter_still_waits_on_the_chat_budget() {
         let mut inner = test_session();
         with_speech_table(&mut inner);
-        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
-            .expect("the first line is allowed");
+        queue_speech(
+            &mut inner,
+            SAID_CHATTER,
+            SPEECH_REGULAR,
+            DEFAULT_SPEECH_HUE,
+            Speaker::Agent,
+        )
+        .expect("the first line is allowed");
         assert_eq!(
             queue_speech(
                 &mut inner,
                 SAID_OTHER_CHATTER,
                 SPEECH_REGULAR,
-                DEFAULT_SPEECH_HUE
+                DEFAULT_SPEECH_HUE,
+                Speaker::Agent
             ),
             Err(SPEECH_RATE_LIMITED),
             "a second line straight after the first waits"
         );
+    }
+
+    /// A GM command, typed by hand in the window.
+    const TYPED_GM_COMMAND: &str = "[admin";
+    const TYPED_WORD: &str = "hmm";
+    const TYPED_EMOTE: &str = "*waves*";
+    /// A persona that changes a letter of every line it says.
+    const TYPO_EVERY_LINE: f32 = 1.0;
+
+    /// Measured live: a GM took control in the window, typed "[admin" and
+    /// then "hmm", and each was refused as persona chat over budget. A human
+    /// speaks as he typed: no chat budget, repeat check, typo or emote rule of
+    /// the persona holds his words.
+    #[test]
+    fn a_human_in_control_says_every_line_exactly_as_typed() {
+        let mut inner = test_session();
+        inner.persona.typo_rate = TYPO_EVERY_LINE;
+        inner.persona.allow_emote = false;
+        let take = ToolCall {
+            name: TOOL_TAKE_CONTROL.into(),
+            args: json!({ "human": true }),
+        };
+        assert!(answer_agent(&mut inner, take).ok);
+        let typed = [TYPED_GM_COMMAND, TYPED_WORD, TYPED_WORD, TYPED_EMOTE];
+        for text in typed {
+            inner.outbound.clear();
+            let say = ToolCall {
+                name: TOOL_SAY.into(),
+                args: json!({ "text": text, "human": true }),
+            };
+            let result = answer_agent(&mut inner, say);
+            assert!(result.ok, "'{text}' goes out: {:?}", result.error);
+            assert_eq!(
+                inner.outbound.back(),
+                Some(&encode::ascii_speech(
+                    SPEECH_REGULAR,
+                    DEFAULT_SPEECH_HUE,
+                    text
+                )),
+                "'{text}' goes out word for word"
+            );
+        }
+    }
+
+    /// A human's line to the party is not held by the persona either.
+    #[test]
+    fn a_human_party_line_skips_the_persona() {
+        let mut inner = test_session();
+        let line = json!({ "text": TYPED_WORD, "channel": CHANNEL_PARTY, "human": true });
+        for _ in 0..COMMANDS_IN_A_ROW {
+            let say = ToolCall {
+                name: TOOL_SAY.into(),
+                args: line.clone(),
+            };
+            assert!(answer_agent(&mut inner, say).ok);
+        }
+        assert_eq!(inner.outbound.len(), COMMANDS_IN_A_ROW);
+    }
+
+    /// A human who types nothing says nothing.
+    #[test]
+    fn a_human_line_of_blanks_is_refused() {
+        assert_eq!(typed_words("   "), Err(SPEECH_EMPTY));
     }
 
     /// Measured live: a character said one line, and the sell command after it
@@ -8696,8 +8799,14 @@ mod relay_tests {
     #[test]
     fn a_vendor_sell_goes_out_after_the_character_has_chatted() {
         let mut inner = test_session();
-        queue_speech(&mut inner, SAID_CHATTER, SPEECH_REGULAR, DEFAULT_SPEECH_HUE)
-            .expect("the first line is allowed");
+        queue_speech(
+            &mut inner,
+            SAID_CHATTER,
+            SPEECH_REGULAR,
+            DEFAULT_SPEECH_HUE,
+            Speaker::Agent,
+        )
+        .expect("the first line is allowed");
         let result = handle_tool(
             &mut inner,
             ToolCall {
@@ -12639,13 +12748,64 @@ const PLAY_ALONG_HURT: &str = "hurt past the persona's play-along risk";
 /// Sends a line of speech to everyone who hears it. It answers the lines
 /// said to the character by name in that channel group, whichever way the
 /// line goes out.
+/// Who chose the words of a line. The agent speaks in the persona's voice,
+/// with its chat budget, repeat check and typos. A human at the window speaks
+/// as he typed: a GM command or a quick word is never held back or changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Speaker {
+    Agent,
+    Human,
+}
+
+impl Speaker {
+    /// The speaker of a tool call with these arguments.
+    fn of(args: &Value) -> Self {
+        if control::by_human(args) {
+            Self::Human
+        } else {
+            Self::Agent
+        }
+    }
+}
+
+/// The words of a chat line as they go out. `reply` is true when the line
+/// answers a player who spoke to the character.
+fn spoken_words(
+    inner: &mut Inner,
+    text: &str,
+    kind: u8,
+    reply: bool,
+    speaker: Speaker,
+) -> std::result::Result<String, &'static str> {
+    match speaker {
+        Speaker::Agent => {
+            let t = speech_allowed(&mut inner.speech, &inner.persona, text, kind, reply)?;
+            Ok(inner.persona.maybe_typo(&t, &mut rand::thread_rng()))
+        }
+        Speaker::Human => typed_words(text),
+    }
+}
+
+/// The words a human typed, as the shard can read them.
+fn typed_words(text: &str) -> std::result::Result<String, &'static str> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Err(SPEECH_EMPTY);
+    }
+    if t.chars().count() > SPEECH_MAX_CHARS {
+        return Err(SPEECH_TOO_LONG);
+    }
+    Ok(t.to_owned())
+}
+
 fn queue_speech(
     inner: &mut Inner,
     text: &str,
     kind: u8,
     hue: u16,
+    speaker: Speaker,
 ) -> std::result::Result<(), &'static str> {
-    send_speech_hued(inner, text, kind, hue)?;
+    send_speech_hued(inner, text, kind, hue, speaker)?;
     answer_group(inner, speech_group(kind));
     Ok(())
 }
@@ -12681,7 +12841,7 @@ fn answer_group(inner: &Inner, group: uoterm_world::ChannelGroup) {
 
 fn send_speech(inner: &mut Inner, text: &str, kind: u8) -> std::result::Result<(), &'static str> {
     let hue = speech_hue(inner);
-    send_speech_hued(inner, text, kind, hue)
+    send_speech_hued(inner, text, kind, hue, Speaker::Agent)
 }
 
 fn send_speech_hued(
@@ -12689,6 +12849,7 @@ fn send_speech_hued(
     text: &str,
     kind: u8,
     hue: u16,
+    speaker: Speaker,
 ) -> std::result::Result<(), &'static str> {
     if kind == SPEECH_REGULAR {
         let keywords = inner
@@ -12697,7 +12858,7 @@ fn send_speech_hued(
             .map(|table| table.keywords(inner.version, text))
             .unwrap_or_default();
         if !keywords.is_empty() {
-            return queue_command_speech_hued(inner, text, &keywords, hue);
+            return queue_command_speech_hued(inner, text, &keywords, hue, speaker);
         }
     }
     let reply = !inner
@@ -12706,9 +12867,7 @@ fn send_speech_hued(
         .spoken_to
         .unanswered(uoterm_world::unix_now_ms())
         .is_empty();
-    let t = speech_allowed(&mut inner.speech, &inner.persona, text, kind, reply)?;
-    let mut rng = rand::thread_rng();
-    let t = inner.persona.maybe_typo(&t, &mut rng);
+    let t = spoken_words(inner, text, kind, reply, speaker)?;
     let unicode = inner.era == Era::Modern;
     let pkt = match kind {
         SPEECH_GUILD | SPEECH_ALLIANCE => encode::keyword_speech(kind, hue, &[], &t),
@@ -12731,7 +12890,7 @@ fn queue_command_speech(
     keywords: &[u16],
 ) -> std::result::Result<(), &'static str> {
     let hue = speech_hue(inner);
-    queue_command_speech_hued(inner, text, keywords, hue)
+    queue_command_speech_hued(inner, text, keywords, hue, Speaker::Agent)
 }
 
 fn queue_command_speech_hued(
@@ -12739,8 +12898,12 @@ fn queue_command_speech_hued(
     text: &str,
     keywords: &[u16],
     hue: u16,
+    speaker: Speaker,
 ) -> std::result::Result<(), &'static str> {
-    let text = inner.persona.filter_speech(text).ok_or(SPEECH_REJECTED)?;
+    let text = match speaker {
+        Speaker::Agent => inner.persona.filter_speech(text).ok_or(SPEECH_REJECTED)?,
+        Speaker::Human => typed_words(text)?,
+    };
     inner
         .outbound
         .push_back(encode::keyword_speech(SPEECH_REGULAR, hue, keywords, &text));
@@ -12778,8 +12941,10 @@ fn reply(inner: &mut Inner, args: &Value) -> ToolResult {
         uoterm_world::Channel::Whisper => send_speech(inner, text, SPEECH_WHISPER),
         uoterm_world::Channel::Guild => send_speech(inner, text, SPEECH_GUILD),
         uoterm_world::Channel::Alliance => send_speech(inner, text, SPEECH_ALLIANCE),
-        uoterm_world::Channel::Party => send_party_line(inner, None, text),
-        uoterm_world::Channel::PartyPrivate => send_party_line(inner, Some(line.serial), text),
+        uoterm_world::Channel::Party => send_party_line(inner, None, text, Speaker::Agent),
+        uoterm_world::Channel::PartyPrivate => {
+            send_party_line(inner, Some(line.serial), text, Speaker::Agent)
+        }
     };
     match sent {
         Ok(()) => {
@@ -12804,15 +12969,9 @@ fn send_party_line(
     inner: &mut Inner,
     to: Option<Serial>,
     text: &str,
+    speaker: Speaker,
 ) -> std::result::Result<(), &'static str> {
-    let t = speech_allowed(
-        &mut inner.speech,
-        &inner.persona,
-        text,
-        uoterm_world::SPEECH_KIND_PARTY,
-        true,
-    )?;
-    let t = inner.persona.maybe_typo(&t, &mut rand::thread_rng());
+    let t = spoken_words(inner, text, uoterm_world::SPEECH_KIND_PARTY, true, speaker)?;
     inner.outbound.push_back(encode::party_message(to, &t));
     Ok(())
 }
@@ -12833,7 +12992,7 @@ fn say_in_channel(inner: &mut Inner, args: &Value) -> ToolResult {
         CHANNEL_YELL => speak(inner, args, SPEECH_YELL),
         CHANNEL_PARTY => {
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            match send_party_line(inner, None, text) {
+            match send_party_line(inner, None, text, Speaker::of(args)) {
                 Ok(()) => {
                     answer_group(inner, uoterm_world::ChannelGroup::Party);
                     ToolResult::action(TOOL_SAY)
@@ -12917,7 +13076,7 @@ fn speak(inner: &mut Inner, args: &Value, kind: u8) -> ToolResult {
     let hue = arg_number(args, ARG_HUE)
         .and_then(|h| u16::try_from(h).ok())
         .unwrap_or_else(|| speech_hue(inner));
-    match queue_speech(inner, text, kind, hue) {
+    match queue_speech(inner, text, kind, hue, Speaker::of(args)) {
         Ok(()) => ToolResult::action(TOOL_SAY),
         Err(e) => ToolResult::err(e),
     }
