@@ -11,7 +11,7 @@ import { LoginScreens } from './screens/LoginScreens';
 import { profilePath, readPlace, sessionSearch, soundFontPath, type CharacterPlace, type LoginRules, type LoginWords } from './screens/login_state';
 import { Token } from './screens/Token';
 import './theme.css';
-import { canMake, creationWords, CreationView, loginFault, loginWords, savedDetail, saveName } from './wasm/uoterm_web.js';
+import { CharacterList, creationWords, CreationView, loginFault, loginWords, noRoomNote, savedDetail, saveName } from './wasm/uoterm_web.js';
 
 const APP_ROOT = 'app';
 const NO_SUCH_SESSION = 'That session is not running.';
@@ -38,7 +38,8 @@ const VIEW_RULES: LoginRules = {
   fault: (host, port, account, password) => loginFault(host, port, account, password) ?? null,
   saveName,
   detail: savedDetail,
-  canMake: (names, listFlags) => canMake(JSON.stringify(names), listFlags),
+  noRoomNote: (names, listFlags) => noRoomNote(JSON.stringify(names), listFlags) ?? null,
+  characterList: () => new CharacterList(),
 };
 
 /** The login screens, with the words of why the page shows them, if any. */

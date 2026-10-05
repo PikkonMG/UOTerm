@@ -134,7 +134,8 @@ export function LoginScreens({ words, creationWords, rules, start, newCreation, 
           key={listed.asked}
           names={listed.names}
           refused={listed.refused}
-          room={rules.canMake(listed.names, listed.choices.list_flags)}
+          noRoom={rules.noRoomNote(listed.names, listed.choices.list_flags)}
+          newList={rules.characterList}
           words={words}
           onReply={(sent) => reply(sent, listed.names)}
           onMake={() => setStage({ kind: 'creating', listed, maker: newCreation(listed.version, listed.choices) })}

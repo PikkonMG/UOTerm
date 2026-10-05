@@ -1,6 +1,7 @@
 /** The words and the rules of the login screens, as the view gives them, for the tests of the screens. */
 
-import type { LoginRules, LoginWords } from '../src/screens/login_state';
+import { vi } from 'vitest';
+import type { CharacterList, LoginRules, LoginWords } from '../src/screens/login_state';
 
 export const LOGIN_WORDS: LoginWords = {
   title: 'UOTerm',
@@ -37,6 +38,17 @@ export function rules(fault: string | null = null): LoginRules {
     fault: () => fault,
     saveName: (account, host) => `${account}@${host}`,
     detail: (account, host, port) => `${account} @ ${host}:${port}`,
-    canMake: () => true,
+    noRoomNote: () => null,
+    characterList: () => fakeList(),
+  };
+}
+
+/** A character list whose Delete asks each time; a test scripts it further. */
+export function fakeList(): CharacterList {
+  return {
+    pressDelete: vi.fn(() => false),
+    deleteWords: vi.fn(() => LOGIN_WORDS.delete),
+    deleteAsked: vi.fn(() => undefined),
+    free: vi.fn(),
   };
 }

@@ -6,7 +6,7 @@ import { Characters } from '../src/screens/Characters';
 import { Login, type KeptLogin, type SavedLogin } from '../src/screens/Login';
 import { leave, play, remove } from '../src/screens/login_state';
 import { Picking } from '../src/screens/Picking';
-import { LOGIN_WORDS as WORDS, rules } from './fake_login';
+import { fakeList, LOGIN_WORDS as WORDS, rules } from './fake_login';
 
 const CEDRIC: SavedLogin = {
   name: 'cedric',
@@ -135,14 +135,27 @@ describe('Picking', () => {
 describe('Characters', () => {
   const names = ['Mara', '', 'Cedric'];
 
-  it('plays_a_slot_and_asks_twice_before_a_delete', () => {
+  it('plays_a_slot_and_deletes_when_the_view_says_so', () => {
     const onReply = vi.fn();
-    const root = mount(<Characters names={names} refused={null} room={true} words={WORDS} onReply={onReply} onMake={vi.fn()} />);
+    const list = fakeList();
+    let asked: number | undefined;
+    vi.mocked(list.deleteAsked).mockImplementation(() => asked);
+    vi.mocked(list.deleteWords).mockImplementation((slot) => (slot === asked ? WORDS.delete_sure : WORDS.delete));
+    vi.mocked(list.pressDelete).mockImplementationOnce((slot) => {
+      asked = slot;
+      return false;
+    });
+    vi.mocked(list.pressDelete).mockImplementationOnce(() => {
+      asked = undefined;
+      return true;
+    });
+    const root = mount(<Characters names={names} refused={null} noRoom={null} newList={() => list} words={WORDS} onReply={onReply} onMake={vi.fn()} />);
     act(() => button(root, WORDS.empty_slot).click());
     expect(onReply).not.toHaveBeenCalled();
     const deletes = () => [...root.querySelectorAll('button')].filter((each) => each.textContent?.startsWith(WORDS.delete));
     expect(deletes().length).toBe(2);
     act(() => deletes()[1].click());
+    expect(list.pressDelete).toHaveBeenLastCalledWith(2);
     expect(onReply).not.toHaveBeenCalled();
     expect(button(root, WORDS.delete_sure)).toBeTruthy();
     act(() => button(root, WORDS.delete_sure).click());
@@ -155,7 +168,9 @@ describe('Characters', () => {
 
   it('shows_every_slot_the_refusal_and_whether_a_new_character_has_room', () => {
     const onMake = vi.fn();
-    const full = mount(<Characters names={names} refused="That name is taken." room={false} words={WORDS} onReply={vi.fn()} onMake={onMake} />);
+    const full = mount(
+      <Characters names={names} refused="That name is taken." noRoom={WORDS.no_room} newList={fakeList} words={WORDS} onReply={vi.fn()} onMake={onMake} />,
+    );
     expect(full.textContent).toContain('That name is taken.');
     const slots = [...full.querySelectorAll('button')].filter((each) => each.textContent === WORDS.empty_slot);
     expect(slots.length).toBe(WORDS.character_slots - 2);
@@ -163,8 +178,19 @@ describe('Characters', () => {
     expect(onMake).not.toHaveBeenCalled();
     expect(full.textContent).toContain(WORDS.no_room);
     document.body.innerHTML = '';
-    const open = mount(<Characters names={names} refused={null} room={true} words={WORDS} onReply={vi.fn()} onMake={onMake} />);
+    const open = mount(<Characters names={names} refused={null} noRoom={null} newList={fakeList} words={WORDS} onReply={vi.fn()} onMake={onMake} />);
     act(() => button(open, WORDS.make).click());
     expect(onMake).toHaveBeenCalledOnce();
+  });
+
+  it('makes_one_list_and_frees_it_once_the_screen_is_gone', () => {
+    const list = fakeList();
+    const newList = vi.fn(() => list);
+    const root = mount(<Characters names={names} refused={null} noRoom={null} newList={newList} words={WORDS} onReply={vi.fn()} onMake={vi.fn()} />);
+    act(() => [...root.querySelectorAll('button')].find((each) => each.textContent === WORDS.delete)?.click());
+    expect(newList).toHaveBeenCalledOnce();
+    expect(list.free).not.toHaveBeenCalled();
+    act(() => render(null, root));
+    expect(list.free).toHaveBeenCalledOnce();
   });
 });

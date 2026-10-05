@@ -4,7 +4,6 @@
 //! asks once more. They are the rules of the window's login screens.
 
 use crate::to_js;
-use uoterm_view::model::creation::can_make;
 use uoterm_view::model::login::{
     login_fault, no_room_note, save_name, saved_detail, CharacterList, LOGIN_WORDS,
 };
@@ -41,18 +40,9 @@ pub fn saved_detail_js(account: &str, host: &str, port: u16) -> String {
     saved_detail(account, host, port)
 }
 
-/// True when an account with the characters of `names_json` (a JSON list
-/// of names, empty for a free slot) and the flags of its list may make one
-/// more.
-#[wasm_bindgen(js_name = canMake)]
-pub fn can_make_js(names_json: &str, list_flags: u32) -> bool {
-    let names: Vec<String> = serde_json::from_str(names_json).unwrap_or_default();
-    can_make(&names, list_flags)
-}
-
-/// The note New character gives when the account of `names_json` (as for
-/// `canMake`) has no room for one more, or undefined when the making may
-/// begin.
+/// The note New character gives when the account of `names_json` (a JSON
+/// list of names, empty for a free slot) has no room for one more, or
+/// undefined when the making may begin.
 #[wasm_bindgen(js_name = noRoomNote)]
 pub fn no_room_note_js(names_json: &str, list_flags: u32) -> Option<String> {
     let names: Vec<String> = serde_json::from_str(names_json).unwrap_or_default();
@@ -97,7 +87,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_page_checks_the_form_and_the_room_by_the_rules_of_the_window() {
+    fn the_page_checks_the_form_by_the_rules_of_the_window() {
         let fault = |password: Option<&str>| {
             login_fault_js("h", "2593", "mara", password.map(str::to_string))
         };
@@ -106,8 +96,6 @@ mod tests {
         assert_eq!(fault(None), None);
         assert_eq!(save_name_js("mara", "h"), "mara@h");
         assert_eq!(saved_detail_js("mara", "h", 2593), "mara @ h:2593");
-        assert!(can_make_js(r#"["Mara",""]"#, 0));
-        assert!(!can_make_js(r#"["A","B","C","D","E"]"#, 0));
     }
 
     #[test]

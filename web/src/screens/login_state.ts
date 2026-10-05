@@ -47,8 +47,21 @@ export interface LoginRules {
   saveName(account: string, host: string): string;
   /** The line under the name of a saved login. */
   detail(account: string, host: string, port: number): string;
-  /** True when the account may make one more character. */
-  canMake(names: string[], listFlags: number): boolean;
+  /** The note New character gives when the account has no room for one more, or null. */
+  noRoomNote(names: string[], listFlags: number): string | null;
+  /** A new character list, for one list the shard sends. */
+  characterList(): CharacterList;
+}
+
+/** The character list as the view keeps it: the Delete that asks once more. Freed once the list is gone. */
+export interface CharacterList {
+  /** A press on the Delete of a slot; true when the delete goes now, false when it only asked. */
+  pressDelete(slot: number): boolean;
+  /** The words of the Delete button of a slot. */
+  deleteWords(slot: number): string;
+  /** The slot whose Delete was pressed once, or undefined. */
+  deleteAsked(): number | undefined;
+  free(): void;
 }
 
 /** One character of one shard: whose profile the game keeps. */
