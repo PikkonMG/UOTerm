@@ -24,7 +24,7 @@ use crate::appearance::{Race, RaceChange};
 use crate::assist::AssistRules;
 use crate::events::{unix_now_ms, Event, EventKind, EVENT_LOG_CAP};
 use crate::journal::{Journal, JournalEntry};
-use crate::names::{display_name, display_title, NameBook};
+use crate::names::{display_name, display_title, label_title, NameBook};
 use crate::observe::Observe;
 use crate::radar::{default_tile, render_radar, RadarOptions, TileKind, RADAR_DEFAULT};
 
@@ -211,7 +211,8 @@ pub struct Mobile {
     pub serial: Serial,
     pub name: String,
     /// The title after the name, such as "the banker", from the property
-    /// list. Empty when the shard sends none.
+    /// list, or from the click label on a shard with no property lists.
+    /// Empty when the shard sends none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
     pub body: u16,
@@ -2146,8 +2147,18 @@ impl World {
     }
 
     /// A label is the name a shard shows over an object that was clicked. On
-    /// a shard with no property lists it is the only name an item has.
+    /// a shard with no property lists it is the only name an item has, and
+    /// the only place the title of a mobile shows ("Milton the carpenter").
+    /// A property list, when there is one, holds the title instead.
     fn take_label(&mut self, serial: Serial, text: &str) {
+        if let Some(mob) = self.mobiles.get_mut(&serial) {
+            if !self.properties.contains_key(&serial) {
+                if let Some(title) = label_title(text, &mob.name) {
+                    mob.title = title;
+                }
+            }
+            return;
+        }
         let Some(item) = self.items.get_mut(&serial) else {
             return;
         };

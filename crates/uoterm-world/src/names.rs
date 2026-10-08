@@ -149,6 +149,19 @@ pub fn display_title(properties: &[ObjectProperty]) -> Option<String> {
         .map(|title| title.to_string())
 }
 
+/// The title after the name in a click label, such as "the carpenter" in
+/// "Milton the carpenter". A shard with no property lists shows the title of
+/// a mobile only in this label. A fame title such as "Lord" stands before
+/// the name and is not the title. Empty when the label has no title; None
+/// when the name is unknown or is not in the label.
+pub fn label_title(label: &str, name: &str) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    let (_, after_name) = label.split_once(name)?;
+    Some(after_name.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +196,23 @@ mod tests {
             display_title(&[property(CLILOC_PLAIN_NAME, "Pikkon")]),
             None
         );
+    }
+
+    /// A click label holds the name and the title in one line. The title
+    /// is what follows the name; a fame title before it is left out.
+    #[test]
+    fn a_label_gives_the_title_after_the_name() {
+        assert_eq!(
+            label_title("Milton the carpenter", "Milton").as_deref(),
+            Some("the carpenter")
+        );
+        assert_eq!(
+            label_title("Lord Milton the carpenter", "Milton").as_deref(),
+            Some("the carpenter")
+        );
+        assert_eq!(label_title("a cow", "a cow").as_deref(), Some(""));
+        assert_eq!(label_title("Milton the carpenter", ""), None);
+        assert_eq!(label_title("Milton the carpenter", "Bradford"), None);
     }
 
     #[test]

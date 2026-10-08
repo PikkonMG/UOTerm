@@ -1163,6 +1163,61 @@ mod tests {
         assert_eq!(w.mobiles[&STRANGER].name, "Someone");
     }
 
+    /// On a shard with no property lists a mobile's title shows only in the
+    /// label a click brings. It is kept, so a search by trade finds him.
+    #[test]
+    fn a_label_gives_a_mobile_its_title_on_a_shard_with_no_property_lists() {
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::MobileIncoming(stranger_view(Vec::new())));
+        assert!(!w.mobiles[&STRANGER].answers_to("carpenter"));
+        w.apply(&Inbound::Speech(SpeechLine {
+            affix: None,
+            serial: STRANGER,
+            graphic: 0x190,
+            kind: uoterm_protocol::SPEECH_LABEL,
+            hue: 0,
+            name: "Milton".into(),
+            text: "Milton the carpenter".into(),
+        }));
+        let milton = &w.mobiles[&STRANGER];
+        assert_eq!(milton.name, "Milton");
+        assert_eq!(milton.title, "the carpenter");
+        assert!(milton.answers_to("carpenter"));
+        w.apply(&Inbound::MobileMoving(stranger_view(Vec::new())));
+        assert_eq!(
+            w.mobiles[&STRANGER].title, "the carpenter",
+            "a step keeps the title"
+        );
+    }
+
+    /// Where a property list gives the title, a label does not change it.
+    #[test]
+    fn a_label_leaves_the_title_of_a_property_list() {
+        const CLILOC_NAME_WITH_AFFIX: u32 = 1050045;
+        let mut w = World::new();
+        login(&mut w);
+        w.apply(&Inbound::MobileIncoming(stranger_view(Vec::new())));
+        w.apply(&Inbound::ObjectPropertyList {
+            serial: STRANGER,
+            hash: 1,
+            properties: vec![uoterm_protocol::ObjectProperty {
+                cliloc: CLILOC_NAME_WITH_AFFIX,
+                arguments: "\tMilton\tthe carpenter".into(),
+            }],
+        });
+        w.apply(&Inbound::Speech(SpeechLine {
+            affix: None,
+            serial: STRANGER,
+            graphic: 0x190,
+            kind: uoterm_protocol::SPEECH_LABEL,
+            hue: 0,
+            name: "Milton".into(),
+            text: "Milton".into(),
+        }));
+        assert_eq!(w.mobiles[&STRANGER].title, "the carpenter");
+    }
+
     /// One click can bring more than one label: a bag says its name and
     /// then what it holds. Both are kept as the answer of that click.
     #[test]
