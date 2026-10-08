@@ -45,7 +45,7 @@ use uoterm_protocol::encode;
 use uoterm_protocol::frame::GameDecoder;
 use uoterm_protocol::lengths::PacketTable;
 use uoterm_protocol::types::*;
-use uoterm_protocol::{parse_with_version, GroundItem, Inbound};
+use uoterm_protocol::{parse_with_version, ContainerItem, GroundItem, Inbound};
 use uoterm_world::{AssistFeature, DoorUpdate, MultiUpdate, World, RADAR_DEFAULT};
 
 mod actions;
@@ -592,6 +592,9 @@ struct Inner {
     walk: Option<WalkJob>,
     deposit: Option<DepositJob>,
     sent_drop: Option<Serial>,
+    /// The graphic of the item last lifted. The lift deletes it from the
+    /// world, and a drop that merges it into a stack shows only the stack.
+    held_graphic: Option<u16>,
     /// The next server-authored sell list is filtered to this graphic, then
     /// the request is cleared.
     pending_vendor_sell_graphic: Option<u16>,
@@ -1138,6 +1141,7 @@ async fn run_session(
         walk: None,
         deposit: None,
         sent_drop: None,
+        held_graphic: None,
         pending_vendor_sell_graphic: None,
         pending_context_menu: None,
         last_path_fail: None,
@@ -2267,6 +2271,7 @@ mod relay_tests {
             walk: None,
             deposit: None,
             sent_drop: None,
+            held_graphic: None,
             pending_vendor_sell_graphic: None,
             pending_context_menu: None,
             last_path_fail: None,
@@ -4642,6 +4647,93 @@ mod relay_tests {
         inner.sent_drop = Some(HELD_COINS);
         ingest(&mut inner, &delete_item(HELD_COINS));
         assert_eq!(inner.world.read().holding, None);
+    }
+
+    /// A container add, as a shard sends it to a client with grid slots.
+    fn container_add(serial: Serial, graphic: u16, amount: u16, container: Serial) -> Vec<u8> {
+        let mut w = uoterm_protocol::buf::PacketWriter::new(PKT_ADD_ITEM);
+        w.serial(serial)
+            .u16(graphic)
+            .u8(0)
+            .u16(amount)
+            .u16(0)
+            .u16(0)
+            .u8(0)
+            .serial(container)
+            .u16(0);
+        w.finish()
+    }
+
+    /// The bank and the gold stack in it, in tests of a drop that merges.
+    const BANK: Serial = Serial(0x4003_3E30);
+    const BANK_GOLD: Serial = Serial(0x4003_3E31);
+    const BANK_GOLD_BEFORE: u16 = 100;
+    const HELD_COIN_COUNT: u16 = 50;
+
+    /// A session that holds coins over a bank with a gold stack in it.
+    fn holding_coins_over_a_bank(drop_sent: bool) -> Inner {
+        let mut inner = test_session();
+        ingest(
+            &mut inner,
+            &container_add(BANK_GOLD, GRAPHIC_GOLD_COINS, BANK_GOLD_BEFORE, BANK),
+        );
+        inner.world.write().holding = Some(HELD_COINS);
+        inner.held_graphic = Some(GRAPHIC_GOLD_COINS);
+        inner.sent_drop = drop_sent.then_some(HELD_COINS);
+        inner
+    }
+
+    /// Seen live on ModernUO: coins dropped into a bank merged into the
+    /// gold stack there. The shard deleted them while they were still off
+    /// the map, so no delete came; only the stack grew. Held on, the agents
+    /// waited out the whole hold limit after every deposit.
+    #[test]
+    fn a_drop_that_merges_into_a_stack_lets_the_coins_go() {
+        let mut inner = holding_coins_over_a_bank(true);
+        ingest(
+            &mut inner,
+            &container_add(
+                BANK_GOLD,
+                GRAPHIC_GOLD_COINS,
+                BANK_GOLD_BEFORE + HELD_COIN_COUNT,
+                BANK,
+            ),
+        );
+        assert_eq!(inner.world.read().holding, None);
+    }
+
+    /// A stack that grows before the drop goes out, or a stack of another
+    /// kind, says nothing about the item on the cursor.
+    #[test]
+    fn a_stack_that_grows_before_the_drop_keeps_the_coins_held() {
+        const BOARDS: Serial = Serial(0x4003_3E32);
+        const GRAPHIC_BOARDS: u16 = 0x1BD7;
+        const BOARD_COUNT: u16 = 10;
+        let mut inner = holding_coins_over_a_bank(false);
+        ingest(
+            &mut inner,
+            &container_add(
+                BANK_GOLD,
+                GRAPHIC_GOLD_COINS,
+                BANK_GOLD_BEFORE + HELD_COIN_COUNT,
+                BANK,
+            ),
+        );
+        assert_eq!(inner.world.read().holding, Some(HELD_COINS), "no drop yet");
+        let mut inner = holding_coins_over_a_bank(true);
+        ingest(
+            &mut inner,
+            &container_add(BOARDS, GRAPHIC_BOARDS, BOARD_COUNT, BANK),
+        );
+        ingest(
+            &mut inner,
+            &container_add(BOARDS, GRAPHIC_BOARDS, BOARD_COUNT * 2, BANK),
+        );
+        assert_eq!(
+            inner.world.read().holding,
+            Some(HELD_COINS),
+            "boards are not coins"
+        );
     }
 
     /// Stop ends a loot too, and whatever the loot held on the cursor goes
@@ -8945,6 +9037,15 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         let s = &inner.world.read().self_state;
                         (s.location, s.map)
                     };
+                    let stack_before = match &msg {
+                        Inbound::AddItem(item) => inner
+                            .world
+                            .read()
+                            .items
+                            .get(&item.serial)
+                            .map(|it| it.amount),
+                        _ => None,
+                    };
                     {
                         let mut world = inner.world.write();
                         world.apply(&msg);
@@ -8981,6 +9082,11 @@ fn ingest(inner: &mut Inner, data: &[u8]) -> Vec<Inbound> {
                         if inner.sent_drop == Some(*serial)
                             && inner.world.read().holding == Some(*serial)
                         {
+                            inner.world.write().holding = None;
+                        }
+                    }
+                    if let Inbound::AddItem(item) = &msg {
+                        if merged_into_stack(inner, item, stack_before) {
                             inner.world.write().holding = None;
                         }
                     }
@@ -10166,6 +10272,7 @@ fn mark_action(inner: &mut Inner) {
 /// Sends a lift. The shard counts its action delay from when the lift
 /// arrives, so the next action waits a little longer than the budget.
 fn send_lift(inner: &mut Inner, item: Serial, amount: u16) {
+    inner.held_graphic = inner.world.read().items.get(&item).map(|it| it.graphic);
     inner.outbound.push_back(encode::lift(item, amount));
     inner.next_action_at = Instant::now() + ACTION_BUDGET + LIFT_ARRIVAL_MARGIN;
 }
@@ -10292,6 +10399,19 @@ fn first_number(line: &str) -> Option<f64> {
         .take_while(|c| c.is_ascii_digit())
         .collect();
     digits.parse().ok()
+}
+
+/// True when a held item, dropped after its drop went out, merged into a
+/// stack of its kind. The shard deletes the dropped item while it is still
+/// off the map, so that delete reaches no client: only the stack shows,
+/// with a larger amount than before.
+fn merged_into_stack(inner: &Inner, added: &ContainerItem, amount_before: Option<u16>) -> bool {
+    let held = inner.world.read().holding;
+    held.is_some()
+        && held == inner.sent_drop
+        && held != Some(added.serial)
+        && inner.held_graphic == Some(added.graphic)
+        && amount_before.is_some_and(|before| added.amount > before)
 }
 
 /// Where a moved item goes.
