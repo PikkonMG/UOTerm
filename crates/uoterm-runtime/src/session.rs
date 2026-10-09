@@ -11399,22 +11399,14 @@ fn queue_move(inner: &mut Inner, dest: Point3) -> bool {
                 tracing::warn!(steps = points.len(), "z-path failed; using walkable tiles");
             }
             // A walk that may stop short ends where its route ends, and that
-            // tile is the goal it arrives at.
+            // tile is the spot it arrives at. The travel goal keeps the tile
+            // the caller asked for: a goal moved to each route's end let every
+            // new plan stop short of the last one, and the walk drifted off.
             let end = if inner.trip.arrive_within == 0 {
                 dest
             } else {
                 points.last().copied().unwrap_or(from)
             };
-            if end != dest {
-                if let Goal::Travel {
-                    dest: travelling_to,
-                } = &mut inner.goal
-                {
-                    if *travelling_to == dest {
-                        *travelling_to = end;
-                    }
-                }
-            }
             apply_path(inner, points, end)
         }
         // Both searches go around the doors, so a way that is shut only by

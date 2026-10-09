@@ -342,7 +342,7 @@ pub(super) fn move_to(inner: &mut Inner, args: &Value) -> ToolResult {
     if queue_move(inner, dest) {
         inner.movement.run_override = ask.run;
         let mut moving = ToolResult::action(TOOL_MOVE_TO);
-        if let Goal::Travel { dest: heading_to } = inner.goal {
+        if let Some(heading_to) = inner.movement.goal {
             moving.result["heading_to"] = json!(heading_to);
         }
         if let Some(stats) = inner.trip.last {
@@ -583,6 +583,35 @@ mod tests {
         assert!(near.reached(HERE, goal));
         assert!(!Trip::default().reached(HERE, goal));
         assert!(!near.reached(HERE, Point3::new(HERE.x + 3, HERE.y, 0)));
+    }
+
+    #[test]
+    fn a_walk_that_may_stop_short_keeps_its_goal_when_planned_again() {
+        const REPLANS: usize = 4;
+        let mut inner = test_session();
+        inner.world.write().self_state.location = HERE;
+        let wall = Point3::new(HERE.x + 8, HERE.y, 0);
+        inner.map.set_block(wall.x, wall.y, true);
+        let walking = move_to(
+            &mut inner,
+            &json!({ "x": wall.x, "y": wall.y, "accuracy": 1 }),
+        );
+        assert!(walking.ok, "{walking:?}");
+        for _ in 0..REPLANS {
+            // The walk stops before its end, and the reflex plans it again
+            // toward the travel goal.
+            inner.movement.hold();
+            let Goal::Travel { dest } = inner.goal else {
+                panic!("the walk lost its goal: {:?}", inner.goal);
+            };
+            assert_eq!(dest, wall, "the travel goal is the asked tile");
+            assert!(queue_move(&mut inner, dest));
+            let end = inner.movement.goal.expect("a route was planned");
+            assert!(
+                inner.trip.reached(end, wall),
+                "{end} is too far from {wall}"
+            );
+        }
     }
 
     #[test]
