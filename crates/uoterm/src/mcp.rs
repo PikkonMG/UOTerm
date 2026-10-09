@@ -3,7 +3,7 @@
 use crate::remote;
 use base64::Engine;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use uoterm_protocol::types::EXIT_OK;
 use uoterm_runtime::error::{Result, RuntimeError};
 use uoterm_runtime::playbooks;
@@ -55,9 +55,7 @@ fn decode_rpc_json(raw: &[u8]) -> std::result::Result<Value, Value> {
     serde_json::from_slice(raw).map_err(|_| parse_error_response())
 }
 
-async fn read_rpc_message(
-    stdin: &mut BufReader<tokio::io::Stdin>,
-) -> Result<Option<(Value, bool)>> {
+async fn read_rpc_message<R: AsyncBufRead + Unpin>(stdin: &mut R) -> Result<Option<(Value, bool)>> {
     let mut first = String::new();
     loop {
         first.clear();
@@ -100,6 +98,12 @@ async fn read_rpc_message(
         return Ok(None);
     };
     if !content_length_allowed(len) {
+        let skipped = tokio::io::copy(&mut (&mut *stdin).take(len as u64), &mut tokio::io::sink())
+            .await
+            .map_err(|e| RuntimeError::Network(e.to_string()))?;
+        if skipped < len as u64 {
+            return Ok(None);
+        }
         return Ok(Some((parse_error_response(), true)));
     }
     let mut buf = vec![0u8; len];
@@ -368,6 +372,25 @@ mod tests {
         assert!(content_length_allowed(MAX_RPC_BODY));
         assert!(!content_length_allowed(MAX_RPC_BODY + 1));
         assert!(parse_content_length("Content-Length: 12").is_some());
+    }
+
+    #[tokio::test]
+    async fn oversized_body_is_skipped_and_the_next_message_reads() {
+        const NEXT: &str = r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#;
+        let oversized = MAX_RPC_BODY + 1;
+        let mut input = format!("Content-Length: {oversized}\r\n\r\n").into_bytes();
+        input.extend(std::iter::repeat_n(b'x', oversized));
+        input.extend(format!("Content-Length: {}\r\n\r\n{NEXT}", NEXT.len()).into_bytes());
+        let mut reader = BufReader::new(input.as_slice());
+
+        let (refused, framed) = read_rpc_message(&mut reader).await.unwrap().unwrap();
+        assert!(framed);
+        assert!(is_parse_error(&refused));
+
+        let (next, framed) = read_rpc_message(&mut reader).await.unwrap().unwrap();
+        assert!(framed);
+        assert_eq!(next["id"], 7);
+        assert_eq!(next["method"], "ping");
     }
 
     #[test]

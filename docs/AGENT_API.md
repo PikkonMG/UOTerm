@@ -659,7 +659,8 @@ Start `connect`, `populate`, `play` or `web` first. `uoterm mcp` speaks
 JSON-RPC 2.0 on stdio (`protocolVersion` `2024-11-05`) and sends each call
 to the HTTP API of `--api`. It reads newline JSON and `Content-Length`
 framing. It skips a blank line, and answers bad JSON with `-32700`. A
-`Content-Length` body larger than 1 MiB is refused.
+`Content-Length` body larger than 1 MiB gets a `-32700` answer. The server
+skips that body and goes on with the next message.
 
 Methods: `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`,
 `resources/read`. It takes the notifications `initialized`,
