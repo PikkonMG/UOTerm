@@ -1,8 +1,12 @@
 # Equip playbook
 
-1. Open the pack (`use` the backpack serial from equipment layer 0x15).
-2. `equip` an item serial onto a layer. `unequip` takes a layer number.
-3. Dress agent can wear a saved set. Restock agent fills listed graphics.
-4. Layer 0 (invalid), the backpack, and the bank layer cannot be unequipped as gear.
+1. Open the pack (`use` the backpack serial, worn on layer 0x15).
+2. `equip` an item serial onto a `layer`. With no layer, it goes on the
+   one-handed layer. `unequip` takes a layer number.
+3. The dress agent can wear a saved set. The restock agent fills listed
+   graphics.
+4. `unequip` refuses layer 0, the backpack, and any layer above the bank
+   layer.
 
-After death, re-equip from the pack or the bank before you hunt again.
+After a death, wear your gear again from the pack or the bank before you
+hunt again.

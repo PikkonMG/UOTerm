@@ -1,10 +1,16 @@
 # Loot playbook
 
-Hunt already drains corpses it killed. Use this for a corpse you did not just kill, or when hunt is not running.
+A hunt already empties the corpses it made. Use this for a corpse you did
+not just kill, or when no hunt runs.
 
-1. Do not loot while a hostile is adjacent. Finish or flee first.
-2. `loot` with the corpse serial. The client walks up, opens, and lifts.
-3. If `job_failed`, the corpse decayed, a lift was refused, or the pack is full. Bank or drop junk, then try once more.
-4. Bags inside a corpse: `use` the bag, then loot that serial. Do not lift the bag itself if it stays on the corpse.
+1. Do not loot while a hostile stands next to you. Finish it or run first.
+2. `loot` with the corpse serial. The client walks up, opens the corpse, and
+   lifts each item in it, a bag as one item. It ends with `job_ended`
+   `loot: done`.
+3. A `job_failed` says why: the corpse is gone, the shard refused every
+   lift, or the job took too long (60 seconds). When the pack is too heavy,
+   bank or drop junk, then try once more.
 
-The autoloot agent can take extra ground rules. Hunt still only takes corpses it made.
+The scavenger agent picks up items from the ground by its list. The
+autoloot agent loots corpses by its list. A hunt still loots only the
+corpses it made.

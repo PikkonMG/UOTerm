@@ -1,7 +1,7 @@
 # Walk playbook
 
-Use the walk job for travel on ground that may have hostiles. Ordinary
-`move_to` stays for towns and for a walk you make while already fighting.
+Use the walk job to travel on ground where hostiles may be. Plain `move_to`
+is for towns, and for a walk you make while you already fight.
 
 ## Start
 
@@ -9,32 +9,36 @@ Use the walk job for travel on ground that may have hostiles. Ordinary
 { "job": "walk", "x": 1425, "y": 1695, "watch": false }
 ```
 
-Or a named place from the marker file:
+Or a named place from the marker file (`markers` in `uoterm.toml`, or
+`--markers`):
 
 ```json
 { "job": "walk", "name": "britain bank" }
 ```
 
-`watch: true` stands at the destination and still hands back if a hostile
-comes near.
+The walk arrives when the character is within 1 tile of the spot.
+`watch: true` stays at the spot and still hands back when a hostile comes
+near.
 
-Do not call `move_to` while walk is running.
+Do not call `move_to` while a walk runs.
 
-A second `job_start` is refused unless `replace` is true. Replace stops
-the old job first (`job_ended` reason `stopped`), then starts the new one.
+A second `job_start` is refused unless `replace` is true. With `replace`,
+the old job ends first (`job_ended` reason `stopped`), then the new one
+starts.
 
 ## Reasons on `job_ended`
 
 | Reason | What you do |
 | --- | --- |
-| `arrived` | You are there. Start hunt, bank, or the next leg. |
-| `hostile` | A fightable mobile came within 15 tiles. The character stepped off. A flee that cannot path still reports `hostile`. Scan, fight, or pick another line. |
-| `unreachable` | No path to the dest (and not a hostile). Try a gate, a pad, or a shorter dest. |
-| `dead` | Recover from death. |
+| `arrived` | You are there. Start a hunt, bank, or the next leg. |
+| `hostile` | A mobile you may fight came within 15 tiles, and the character stepped away. A run away that finds no path still says `hostile`. Scan, fight, or pick another way. |
+| `unreachable` | No path to the spot, and no hostile. Try a gate, a pad, or a nearer spot. |
+| `dead` | Come back from death. |
 | `stopped` | You stopped it, or `replace` took it over. |
 
 ## Driver
 
 1. `job_start` walk.
 2. `next_event` until `job_ended`.
-3. Act on the reason. Do not restart walk on the same line after `hostile`.
+3. Act on the reason. After `hostile`, do not start a walk again on the
+   same line.
