@@ -1,10 +1,14 @@
 # Copy to uoterm.toml (gitignored). Every AppConfig key is here.
 # Password is UO_PASS, not a key in this file.
 # Encryption is a connect flag (`none` or `osi`), not a key in this file.
+#
+# Keep the first six keys. If one is missing, or the file has an error,
+# UOTerm skips the whole file without a word and uses its defaults.
 
 host = "127.0.0.1"
 port = 2593
 era = "modern"
+# Must be here, but has no effect. Set the log level with RUST_LOG.
 log_level = "info"
 api_bind = "127.0.0.1:7733"
 max_sessions = 32
@@ -27,8 +31,9 @@ answer_when_named = true
 # true  = play along.
 play_along = false
 
-# Open the watch window each time `connect` starts, as `--view` does.
-# The window only looks. If you close it, the character stays logged in.
+# Open the play window each time `connect` starts, as `--view` does.
+# The window only looks until you take control. Closing it ends `connect`,
+# and the character leaves the world, as on Ctrl+C.
 # false = no window (default).
 # true  = open the window.
 view = false
