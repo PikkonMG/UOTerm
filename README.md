@@ -9,6 +9,18 @@ It speaks the Ultima Online wire protocol, as the Classic Client does. When
 you want to see the game, or play it, UOTerm has two clients: a native play
 window and a web client.
 
+![The web client in a browser: the Modern look, with the world, the backpack, the radar, the journal and the status bars](docs/images/web-client.png)
+
+*The web client (`uoterm web`) in a browser, on the built-in test shard.*
+
+![The native play window in the Modern look, with the map of the land open over the world](docs/images/play-window-map.png)
+
+*The native play window with the map of the land open.*
+
+![The native play window in the Classic look, with the backpack gump and the Character Status gump](docs/images/play-window-classic.png)
+
+*The same window in the Classic look, which draws the gumps from your own client files.*
+
 Ultima Online is a trademark of its owners. UOTerm is independent and has no
 tie to them. This repository ships no game files. You use your own legal
 client folder when you need the map, the art or the walk data. Use UOTerm on
