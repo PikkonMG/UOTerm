@@ -1,9 +1,9 @@
 # UOTerm scripts
 
 A script is a list of actions for your character, one on each line. UOTerm
-runs the lines in order, at the pace a person plays. The commands follow
-the style that UO assistant scripts have long used, so a script you
-already have will most likely run.
+runs the lines in order, at the pace a person plays. The commands use the
+style that UO assistant scripts have used for a long time, so many old
+scripts run as they are.
 
 ## A first script
 
@@ -22,39 +22,55 @@ endwhile
 
 ## The rules
 
-1. **One line, one thing.** A line holds one command, or one check.
+1. **One line, one thing.** A line holds one command or one check.
 2. **A person's pace.** A command that acts waits until the character may act
    again. After a line that speaks, clicks or asks the shard for something,
-   the script rests a quarter of a second. A script never acts faster than
-   a person can.
+   the script rests for a quarter of a second. A script never acts faster
+   than a person can.
 3. **A wait always ends.** Every `waitfor...` command has a time, in
-   milliseconds. With no time given, it waits 5 seconds. When the time runs
-   out, the script goes on to the next line.
+   milliseconds. With no time, it waits 5 seconds. When the time runs out,
+   the script goes on to the next line.
 4. **A bad line stops the script.** An unknown command, a missing argument or
-   a spell name that does not exist stops the script. `script_status` tells
-   you the line number and the reason.
+   a spell name that does not exist stops it. `script_status` tells you the
+   line number and the reason.
 5. **Safety comes first.** The character still heals and fights back while a
-   script runs. The agents act before the script on each tick.
-6. **Scripts run side by side.** Each runs in a slot of its own, such as a
-   healer beside a task, up to 8 at once. They share one pace: each tick
-   they take turns, and once one has sent something the others wait for the
-   gap after it. One slot holds one script: stop it before you start another
-   in that slot.
-7. **Death stops a script.** So does a lost connection.
+   script runs. On each tick the agents act before the script.
+6. **Scripts run side by side.** Each one runs in a slot of its own, such as
+   a healer beside a task. Up to 8 run at once. They share one pace: on each
+   tick they take turns, and after one sends something, the others wait for
+   the gap after it. One slot holds one script. Stop it before you start
+   another one in that slot.
+7. **Death stops a script.** So does a lost link to the shard.
+8. **The shard's rules count.** A shard can send a list of assistant
+   features it forbids. When it forbids script macros, no script starts.
+   When it forbids looped macros, a script with `loop` or `replay` does not
+   start. It can also forbid `drinkpotion`, `useonce`, and `getenemy` or
+   `getfriend` with `closest` or `nearest`. Set `obey_shard_rules = false`
+   in `uoterm.toml` to ignore the shard's list.
+
+Some limits: a script keeps its last 50 lines of output, and one tick runs
+at most 200 steps. A walk gives up after 60 seconds. A search with no range
+looks 18 tiles out. A line of speech is at most 512 characters.
 
 ## How to write a line
 
 - Put text in quotes: `msg 'Hello'`. Use double quotes for text with an
   apostrophe: `cast "Nature's Fury"`.
 - Numbers are decimal or hex: `useobject 0x40001234`, `pause 500`.
-- Case does not matter: `CAST 'heal'` is the same as `cast 'Heal'`.
+- Case does not matter: `CAST 'heal'` is the same as `cast 'Heal'`. Text
+  compares ignore case too.
 - `//` starts a note. UOTerm skips the rest of the line.
 - `;` puts two commands on one line: `msg 'hi'; pause 500`.
 - `@` in front of a command keeps it quiet when it finds nothing:
-  `@findtype 0x0E21`.
-- `!` after a command gives its stronger form. For `target!`, the target goes
-  only to a cursor that is open now, and is not held for the next one. For
-  `pushlist!`, the value goes in only when the list does not hold it.
+  `@usetype 0x0E21`.
+- `!` after a command gives its stronger form:
+  - `target!`, `targettype!`, `targetground!`, `targettile!`,
+    `targettileoffset!` and `targettilerelative!` answer only a cursor that
+    is open now. They do not hold the target for the next cursor.
+  - `pushlist!` adds the value only when the list does not hold it.
+  - `poplist!` removes every copy.
+  - `inlist!` matches the case exactly.
+  - `counttype!` and `counttypeground!` count stacks, not items.
 
 ## Names for objects (aliases)
 
@@ -68,13 +84,16 @@ A command that needs an object takes a serial (`0x40001234`) or a name.
 | `last`, `lasttarget` | The last object you targeted. |
 | `lastobject` | The last object you used. |
 | `lefthand`, `righthand` | What you hold in that hand. |
-| `found` | What the last `findtype`, `findobject` or `findlayer` found. |
-| `enemy`, `friend` | What the last `getenemy` or `getfriend` picked. |
+| `found` | What the last `findtype`, `findobject`, `findlayer` or `findwand` found. |
+| `enemy`, `friend` | What the last `getenemy` or `getfriend` picked. `targetfilter` sets `enemy` too. |
 | `mount` | Your mount, when you set it: `setalias 'mount' 0x00001234`. |
 
 Make your own: `setalias 'pet' 0x00001234`, then `useobject 'pet'`.
-`unsetalias 'pet'` forgets it.
-Names you make stay for every script of the character, until its session ends.
+`unsetalias 'pet'` forgets it. The names you make stay for every script of
+the character until its session ends.
+
+The built-in names win over your own. So a name of your own such as `bank`
+or `self` does nothing. Pick another word, such as `banker`.
 
 ## Checks and loops
 
@@ -92,16 +111,17 @@ endif
 - `while check` ... `endwhile` repeats while the check is true:
   `while hits < 50`. A check has no brackets.
 - `for 5` ... `endfor` repeats 5 times.
-- `for 1 to 10` ... `endfor` counts from 1 to 10, both ends included.
+- `for 1 to 10` ... `endfor` counts from 1 to 10. Both ends count.
 - `for 0 to 'fruit'` ... `endfor` walks the list `fruit`. In the body,
   `fruit[]` is the item it is on. `fruit[2]` is the item at place 2.
 - `for 0 to 2 in 'fruit'` walks places 0 to 2 of the list.
 - `break` leaves the loop. `continue` goes on with the next pass.
 - `stop` ends the script. `replay` starts it again from the top.
-- `not`, `and`, `or`: `if not dead and hits < 50`. They are read left to
-  right, with no brackets.
+- `not`, `and`, `or`: `if not dead and hits < 50`. UOTerm reads them from
+  left to right, with no brackets.
 - Compare signs: `==`, `!=`, `<`, `>`, `<=`, `>=`. The right side can be a
   number, text, or another word: `if hits < maxhits`.
+- `true` and `false` are words too: `while true`.
 
 ## Commands
 
@@ -113,9 +133,9 @@ endif
 | `cast 'Greater Heal' 'self'` | Casts it and answers its target cursor with that object. |
 | `cast 'Lightning' 'enemy'` | The same, on the enemy. |
 | `cast 'last'` | Casts the last spell again. |
-| `miniheal ['friend']` | Heal, or Cure when the target is poisoned. Yourself when no target. |
-| `bigheal ['friend']` | Greater Heal, or Arch Cure when poisoned. |
-| `chivalryheal ['friend']` | Close Wounds, or Cleanse by Fire when poisoned. |
+| `miniheal ['friend']` | Heal, or Cure when the target is poisoned. On yourself when you name no one. |
+| `bigheal ['friend']` | Greater Heal, or Arch Cure when the target is poisoned. |
+| `chivalryheal ['friend']` | Close Wounds, or Cleanse by Fire when the target is poisoned. |
 | `bandageself` | Uses a bandage on yourself. |
 | `bandagetarget 'friend'` | Uses a bandage on someone else. |
 | `drinkpotion 'heal'` | Drinks a potion by name: heal, cure, refresh, agility, strength, explosion, night sight, and more. |
@@ -126,21 +146,26 @@ endif
 | Line | What it does |
 | --- | --- |
 | `waitfortarget 3000` | Waits up to 3 seconds for a target cursor. |
-| `target 'self'` | Answers the cursor. With no cursor open, the target waits 5 seconds for one. |
+| `target 'self'` | Answers the cursor. With no cursor open, it waits for one: 5 seconds, or the time you add, such as `target 'self' 2000`. |
 | `target! 'enemy'` | Answers only a cursor that is open now. |
-| `targettype 0x0F7A` | Targets the nearest object of that graphic: pack, then ground, then mobiles. |
+| `targettype 0x0F7A` | Targets the nearest object of that graphic: in the pack, then on the ground, then the mobiles. |
 | `targetground 0x0F7A 'any' 8` | The same, on the ground only, within 8 tiles. |
-| `targettile 1440 1695 0` | Targets a map tile. Also `targettile 'current'` and `targettile 'last'`. |
+| `targettile 1440 1695 0` | Targets a map tile. Also `targettile 'current'` and `targettile 'last'`. A graphic after the tile is optional. |
 | `targettileoffset 1 0 0` | Targets the tile one step east of you. |
 | `targettilerelative 'self' 2` | Targets the tile 2 steps in front of you. Add `'true'` for behind. |
 | `targetresource 0x40001234 'ore'` | Uses a tool on ore, sand, wood, graves or red mushrooms, with no cursor. |
 | `canceltarget` | Closes the open cursor. |
-| `autotargetobject 'enemy'` | The next cursor goes to that object. Also `autotargetself`, `autotargetlast`, `autotargettype`, `autotargetground`, `autotargettile`, `autotargettileoffset`, `autotargettilerelative`, `autotargetghost`. |
+| `autotargetobject 'enemy'` | The next cursor goes to that object. Also `autotargetself`, `autotargetlast`, `autotargettype`, `autotargetground`, `autotargettileoffset`, `autotargettilerelative` and `autotargetghost` (with an optional range). |
+| `autotargettile 1440 1695 0` | Answers the open cursor with that tile, or the next cursor when none is open. |
 | `cancelautotarget`, `cleartargetqueue` | Drops a target that waits for a cursor. |
 | `clearlasttarget` | Forgets the last target. |
-| `getenemy 'gray' 'criminal' 'closest'` | Sets `enemy` to a mobile. Words: any, innocent, friend, gray, criminal, enemy, murderer; humanoid, transformation; closest (the nearest), nearest (takes turns between the two nearest). With neither, each call moves to the next match. |
+| `getenemy 'gray' 'criminal' 'closest'` | Sets `enemy` to a mobile. Words: any, innocent, friend, gray, criminal, enemy, murderer; humanoid, transformation; closest (the nearest), nearest (takes turns between the two nearest). With neither, each call moves to the next match. It skips the mobiles on your friends list. |
 | `getfriend 'innocent' 'friend'` | Sets `friend` the same way. |
-| `targetfilter 'greys'` | Uses a named target filter (see the agents guide) and sets `enemy`. |
+| `targetfilter 'greys'` | Uses a named target filter (see [AGENTS.md](AGENTS.md)) and sets `enemy`. |
+
+The notoriety words also take colours: blue (innocent), green or ally
+(friend), grey, orange (enemy), red (murderer) and yellow (invulnerable).
+`gray` also matches criminals.
 
 ### Items
 
@@ -149,16 +174,16 @@ endif
 | `useobject 0x40001234` | Uses (double-clicks) an object. |
 | `usetype 0x0E21 ['any'] ['backpack'] [range]` | Uses the first item of a graphic. Places: `backpack`, `ground`, `world`, or a container. |
 | `useonce 0x0F0C` | Uses an item of that graphic that `useonce` has not used yet. `clearuseonce` (or `clearusequeue`) forgets them. |
-| `moveitem 'found' 'backpack' [amount]` | Moves an item into a container, or onto a mobile to give it. |
+| `moveitem 'found' 'backpack' [amount]` | Moves an item into a container, or onto a mobile to give it. The item must be within 2 tiles. |
 | `moveitem 'found' 'ground' 1440 1695 0` | Drops an item on a tile. |
 | `moveitemoffset 'found' 'ground' 1 0 0` | Drops it on the tile east of you. |
-| `movetype 0x0F7A 'backpack' 0x40005555` | Moves the first item of a graphic from one place to another. |
+| `movetype 0x0F7A 'backpack' 0x40005555` | Moves the first item of a graphic from one place to another. A tile, a colour, an amount and a range may follow. |
 | `movetypeoffset 0x0F7A 'backpack' 'ground' 1 0 0` | The same, onto the tile at that offset from you. |
 | `equipitem 0x40001234 1` | Wears an item on a layer (1 right hand, 2 left hand). |
 | `clearhands 'both'` | Puts what you hold into the pack. Also `'left'` and `'right'`. |
 | `togglehands 'right'` | Puts the weapon away, or takes it out again. |
 | `equipwand 'Heal' 5` | Wears a wand of that spell with at least 5 charges. |
-| `feed 'pet' 'Fruits and Vegetables'` | Gives food to a mobile: a food name, a group (Fish, Fruits and Vegetables, Meat), `any`, or a graphic. |
+| `feed 'pet' 'Fruits and Vegetables'` | Gives food to a mobile: a food name, a group (Fish, Fruits and Vegetables, Meat), `any`, or a graphic. A colour and an amount may follow. |
 | `clickobject 'found'` | Single-clicks, so the name shows in the journal. |
 | `shownames 'mobiles'` | Shows the names of the mobiles near you. Also `'corpses'`. |
 | `rename 'pet' 'Snorlax'` | Renames your pet. |
@@ -177,13 +202,13 @@ endif
 | `pathfindto 1440 1695` | Walks to a tile and waits until you get there. |
 | `opendoor` | Opens the door beside you. |
 | `attack 'enemy'` | Attacks. |
-| `warmode 'on'` | Goes into war mode. `togglewar` switches it. |
-| `setability 'primary' 'on'` | Arms your weapon's primary move. Also `'secondary'`, `'stun'`, `'disarm'`, and `'off'`. |
+| `warmode 'on'` | Goes into war mode. `war` is a short form. `togglewar` switches it. |
+| `setability 'primary' 'on'` | Arms your weapon's primary move. Also `'secondary'`, `'stun'` and `'disarm'`. `setability 'primary' 'off'` clears it. |
 | `fly`, `land`, `togglefly` | A gargoyle takes off or lands. |
 | `togglemounted` | Mounts or dismounts. Set the `mount` alias first. |
 | `useskill 'Hiding'` | Uses a skill. `useskill 'last'` uses the last one again. |
 | `setskill 'Magery' 'locked'` | Sets a skill lock: up, down or locked. |
-| `virtue 'honor'` | Invokes a virtue: humility, sacrifice, compassion, spirituality, valor, honor, justice or honesty. Honor, sacrifice and valor go as the virtue macro; the others as a press in the virtue gump. The shard says when one is not active. |
+| `virtue 'honor'` | Invokes a virtue: humility, sacrifice, compassion, spirituality, valor, honor, justice or honesty. Honor, sacrifice and valor go as the virtue macro. The others go as a press in the virtue gump. |
 | `setstatlock 'str' 'locked'` | Sets a stat lock: str, dex or int; up, down or locked. |
 | `emoteaction 'bow'` | Plays an emote animation, such as bow or salute. |
 
@@ -206,21 +231,21 @@ endif
 | `waitforprompt 5000` | Waits for a text prompt. |
 | `cancelprompt` | Cancels the open prompt. |
 | `sysmsg 'done'` | Writes a line in the script's output. So does `headmsg`. |
-| `timermsg 5000 'time to eat'` | Writes a line after 5 seconds, and goes on now. |
+| `timermsg 5000 'time to eat'` | Goes on at once, and after 5 seconds writes the line in the `shown` list of `script_status`. |
 
 ### Gumps and menus
 
 | Line | What it does |
 | --- | --- |
 | `waitforgump 0x1EC8C837 5000` | Waits for a gump. `'any'` for any gump. |
-| `replygump 0x1EC8C837 1 [switches...]` | Presses a gump button. A button or a switch the gump does not have stops the script, because a shard drops or disconnects on it. |
+| `replygump 0x1EC8C837 1 [switches...]` | Presses a gump button. A button or a switch the gump does not have stops the script. |
 | `gumptext 3 'Mara'` | Types words in text field 3 of the next gump the script answers. Every other field sends the words it opened with. |
 | `closegump 'gump' 'any'` | Closes a gump, as its close button does. |
 | `closegump 'container' 'found'` | Forgets an open container. |
 | `waitformenu 5000` | Waits for an old-style menu: a question with a list of answers. |
 | `replymenu 'kryss'` | Answers the menu with the first entry whose words hold these, or with the entry at a place: `replymenu 2`. |
 | `closemenu` | Closes the menu with no answer. |
-| `contextmenu 'bank' 'Open Bankbox'` | Picks a context menu entry by its words, or by its number. A number of 500000 or more is the entry's client text number, such as `3000489`; a smaller number is its place in the menu. |
+| `contextmenu 'banker' 'Open Bankbox'` | Picks a context menu entry by its words, or by its number. A number of 500000 or more is the entry's client text number, such as `3000489`. A smaller number is its place in the menu. Here `banker` is a name you set first with `setalias`. |
 | `waitforcontext 'vendor' 'Buy' 3000` | Asks for the menu and waits until the entry is picked. |
 | `autocolorpick 35` | The next dye tub gets colour 35. |
 
@@ -236,8 +261,8 @@ endif
 | Line | What it does |
 | --- | --- |
 | `createlist 'fruit'` | Makes a list. |
-| `pushlist 'fruit' 'apple' ['front']` | Adds to the back, or the front. |
-| `poplist 'fruit' 'apple'` | Removes a value, or `'front'`, or `'back'`. `!` removes every copy. |
+| `pushlist 'fruit' 'apple' ['front']` | Adds to the back, or the front. A name such as `'found'` goes in as the serial it holds now. |
+| `poplist 'fruit' 'apple'` | Removes a value, or `'front'`, or `'back'`. |
 | `clearlist 'fruit'`, `removelist 'fruit'` | Empties or deletes a list. |
 | `createtimer 'band'` | Makes a timer that counts up from 0, in milliseconds. |
 | `settimer 'band' 0` | Sets a timer. |
@@ -246,14 +271,14 @@ endif
 
 ### Agents
 
-See the agents guide for the lists these use.
+[AGENTS.md](AGENTS.md) explains the lists these use.
 
 | Line | What it does |
 | --- | --- |
-| `organizer 'reagents' [source] [destination] [delay]` | Runs an organizer list. |
-| `restock 'reagents' [source] [destination] [delay]` | Runs a restock list. |
-| `dress ['pvp']`, `undress ['pvp']` | Puts on or takes off a dress list. With no name, `undress` takes off everything but the pack. |
-| `dressconfig` | Saves what you wear now as the dress list `temp`. |
+| `organizer 'reagents' [source] [destination] [delay]` | Runs an organizer list. `-1` keeps the list's own value. Any other value changes the list for later runs too. |
+| `restock 'reagents' [source] [destination] [delay]` | Runs a restock list, in the same way. |
+| `dress ['pvp']`, `undress ['pvp']` | Puts on or takes off a dress list. With no name, `dress` uses the list `temp`, and `undress` takes off all but the pack, the bank box, hair, beard and mount. |
+| `dressconfig` | Sets the dress list `temp` to what you wear now. It is not written to the settings file. |
 | `autoloot` | Loots the corpses in range once with the autoloot list. |
 | `toggleautoloot`, `togglescavenger` | Switches the agent on or off. |
 | `buy ['reagents']`, `sell ['loot']` | Switches the vendor agent on, with that list. |
@@ -267,7 +292,7 @@ See the agents guide for the lists these use.
 | `script 'run' 'heal'` | The same. |
 | `script 'stop'` | Stops this script. `script 'stop' 'healer'` stops the script of another slot. |
 | `script 'suspend' 'gather'`, `script 'resume' 'gather'` | Holds the script of another slot where it is, and lets it go on. |
-| `script 'isrunning' 'healer' 'on'` | Sets the alias `on` to 1 when a script runs in that slot, else 0. `script 'issuspended' 'gather' 'on'` sets it to 1 when that slot is held. |
+| `script 'isrunning' 'healer' 'on'` | Sets the alias `on` to 1 when a script runs in that slot and is not held, else 0. `script 'issuspended' 'gather' 'on'` sets it to 1 when that slot is held. With no alias named, the alias is `<slot>_running` or `<slot>_suspended`. |
 | `where` | Writes your tile in the script's output. `location 'friend'` writes someone else's. |
 | `resync`, `ping` | Asks the shard to send your place again; pings the shard. |
 | `paperdoll ['friend']` | Opens a paperdoll. |
@@ -275,7 +300,7 @@ See the agents guide for the lists these use.
 
 ## Condition words
 
-Use these after `if`, `elseif` and `while`. Words that name an object read
+Use these after `if`, `elseif` and `while`. A word that names an object reads
 yourself when you give none.
 
 | Word | What it gives |
@@ -290,12 +315,12 @@ yourself when you give none.
 | `serial`, `graphic`, `color`, `amount`, `name`, `direction`, `directionname` `[serial]` | Details of an object. |
 | `skill 'Magery'`, `skillbase 'Magery'` | A skill value and base value. `skillvalue` is the same as `skill`. |
 | `skillstate 'Magery' == 'locked'` | A skill lock: up, down or locked. |
-| `findtype 0x0F7A ['any'] ['backpack'] [amount] [range]` | True when found. Sets `found`. |
+| `findtype 0x0F7A ['any'] ['backpack'] [amount] [range]` | True when found. Sets `found`. The source `'any'` searches everywhere. |
 | `findobject 'pet' ['any'] ['ground'] [amount] [range]` | True when the object is there. Sets `found`. |
 | `findlayer 'self' 2` | True when a mobile wears something on the layer. Sets `found`. |
 | `findwand 'Heal' ['backpack'] [charges]` | True when you have such a wand. Sets `found`. |
 | `counttype 0x0F7A 'any' 'backpack' > 10` | How many of a graphic. With `!`, how many stacks. |
-| `counttypeground 0x0F7A 'any' 8 > 0` | How many on the ground within 8 tiles. |
+| `counttypeground 0x0F7A 'any' 8 > 0` | How many items and mobiles of a graphic are on the ground within 8 tiles. |
 | `counter 'bp' < 20` | How many of a supply: band, bp, bm, gl, gs, mr, ns, sa, ss, bw, db, gd, nc, pi. |
 | `bandage` | How many bandages you carry. |
 | `contents 'backpack' > 100` | How many items are in a container. |
@@ -307,7 +332,7 @@ yourself when you give none.
 | `injournal 'too far away' ['system']` | True when the words are in the journal. |
 | `ingump 'any' 'Home'`, `gumpexists 'any'` | Gump checks. |
 | `menuexists` | True while an old-style menu waits for an answer. |
-| `targetexists ['harmful']` | True when a target cursor is open: any, harmful, beneficial or neutral. |
+| `targetexists ['harmful']` | True when a target cursor is open: any, harmful, beneficial, neutral, server or system. |
 | `waitingfortarget` | True when a target waits for a cursor. |
 | `inparty 'friend'`, `infriendlist 'friend'` | Party and friends list. |
 | `findalias 'pet'`, `listexists 'fruit'`, `list 'fruit' > 2`, `inlist 'fruit' 'apple'` | Aliases and lists. `findalias` also knows the game's own names, such as `'bank'` once the bank box is open. |
@@ -317,20 +342,28 @@ yourself when you give none.
 
 ## Running scripts
 
-Save a script as a `.txt` file in a `scripts` folder, either in the folder
-you run UOTerm from or in your config folder (on Linux `~/.config/uoterm/scripts`).
-The file name without `.txt` is the script name. Files with other
-extensions are not scripts. The macro editor of the browser web client
-(`uoterm web`) lists, edits, records and runs the scripts of the same
-folder.
+Save a script as a `.txt` file in a `scripts` folder: the one in the folder
+you run UOTerm from, or the one in your config folder (on Linux
+`~/.config/uoterm/scripts`). The file name without `.txt` is the script
+name. A file with another ending is not a script.
+
+The macro editor of the play window (`uoterm play`, `uoterm watch`) and of
+the web client (`uoterm web`) lists, edits, records and runs the scripts of
+the same folder.
 
 | Tool | What it does |
 | --- | --- |
-| `run_script` | `name` runs a saved script; `text` runs the text you give. `slot` names its slot (default the script name, or `text`). `loop: true` runs it again each time it ends. `for` (seconds) and `iterations` (runs from the top; more than 1 loops) end it by themselves, and its status then says `ended_by`: `time up` or `iterations done`. |
+| `run_script` | `name` runs a saved script. `text` runs the text you give. `slot` names its slot (default: the script name, or `text`). `loop: true` runs it again each time it ends. `for` (seconds) and `iterations` (runs from the top; more than 1 loops) end it by themselves. Its status then says `ended_by`: `time up` or `iterations done`. |
 | `stop_script` | Stops the script of one `slot`, or every script. |
-| `script_status` | One `slot`: the status (running, suspended, done, stopped or failed), the line, the runs from the top, the reason for a failure, and the script's own output. With no slot: the first running script, every slot under `slots`, the last 16 that ended under `ended`, and the lines of hotkeys and commands under `shown`. |
+| `script_status` | For one `slot`: the status (running, suspended, done, stopped or failed), the line, the reason for a failure, and the script's own output. While it runs, it also gives the runs from the top. With no slot: the first running script, every slot under `slots`, the last 16 that ended under `ended`, and the lines of hotkeys and commands under `shown`. |
 | `list_scripts` | The saved scripts. |
-| `record_macro` | Records what you do as a script: `action: start` with a `name`, then `stop` to save it. |
+| `script_read` | The text of one saved script: `name`. |
+| `script_save` | Saves `text` as the script `name`. A name has letters, digits, spaces, `-` and `_` only, 48 at most. A script that does not parse is refused, with the line of the fault. |
+| `record_macro` | Records what you do as a script: `action: start` with a `name` (letters, digits, `-` and `_`), then `stop` to save it, or `cancel` to drop it. |
+
+Each saved script also gets a hotkey, `Script <name>`, which starts or stops
+it. `Stop All Scripts` stops them all. See [AGENTS.md](AGENTS.md) for
+hotkeys.
 
 ## What does nothing here
 
