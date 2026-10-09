@@ -50,7 +50,7 @@ endwhile
 
 Some limits: a script keeps its last 50 lines of output, and one tick runs
 at most 200 steps. A walk gives up after 60 seconds. A search with no range
-looks 18 tiles out. A line of speech is at most 512 characters.
+looks 18 tiles out.
 
 ## How to write a line
 
