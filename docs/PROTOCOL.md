@@ -1,29 +1,30 @@
 # Protocol
 
-UOTerm speaks the Ultima Online login and game streams the way a Classic Client does. It does not special-case a shard by name. Target shards: private shards that accept a Classic Client.
+UOTerm speaks the Ultima Online login and game streams the way a Classic Client does. It treats every shard the same way, whatever its name. It is made for private shards that accept a Classic Client.
 
 ## Era
 
-`--era` selects the base packet length table and the default version. The
+`--era` picks the base table of packet lengths and the default version. The
 login message of the web client carries the same `era`, `version` and
 `encryption` choices (see the login link in [AGENT_API.md](AGENT_API.md)).
 
 | Value | Default version | Typical use |
 | --- | --- | --- |
-| `t2a` | `2.0.7.0` | Clients from 1.26 to 2.0.x. The mock shard uses this. |
+| `t2a` | `2.0.7.0` | Clients from 1.26 to 2.0.x. |
 | `modern` (default) | `7.0.102.3` | Classic Client 7.x: 32-bit `0xB9` features, container grid, `0xF3` world item |
 
-`--version` is the string sent as packet `0xBD`. If you omit it, a `modern` session sends the version of `client.exe` in the `uopath` folder. Many shards compare the version with their own copy of `client.exe` and kick an older client. With no `client.exe`, or in the `t2a` era, the session uses the default for the era.
+The mock shard (`uoterm mock-shard`) takes both eras. It reads the era from the seed the client sends.
+
+`--version` is the string sent in packet `0xBD`. If you leave it out, a `modern` session sends the version of `client.exe` in the `uopath` folder. Many shards compare the version with their own copy of `client.exe` and kick an older client. With no `client.exe`, or in the `t2a` era, the session uses the default of the era.
 
 The version, not the era, picks the rest, the same way a Classic Client does:
 
-- Login seed: packet `0xEF` (seed and version) from 6.0.4.0. Older versions send four bare bytes.
+- Login seed: from 6.0.4.0, packet `0xEF`, 21 bytes: the seed and the four parts of the version. Older versions send four bare bytes.
 - Packet lengths: each packet that changed size takes the length of the version, for example `0x0B` and `0x16` at 5.0.0a, `0x08` and `0x25` at 6.0.1.7, `0xB9` at 6.0.14.2, and `0x24` and `0xBA` at 7.0.9.0.
 - Character list: start towns carry a place from 7.0.13.0. Empty character slots are kept, so a pick sends the right slot.
 - Character creation: the race and sex value and the expansion flags follow the version.
-- `0x78` equipment: hue on every item when version is 7.0.33.1 or later. Older versions read hue only when the graphic high bit is set.
-- `0x78` framing: length prefix when version is 7.0.0.0 or later. Older versions scan to a serial-0 terminator.
-- Container grid on drop when version is 6.0.1.7 or later.
+- `0x78` equipment: a hue on every item from 7.0.33.1. Older versions read a hue only when the high bit of the graphic is set. In every version `0x78` has a length word, and its list of worn items ends at serial 0.
+- Container grid on drop from 6.0.1.7.
 
 ## Encryption
 
@@ -34,7 +35,7 @@ The version, not the era, picks the rest, the same way a Classic Client does:
 | `none` (default) | No stream cipher, the usual mode of an unencrypted private shard. |
 | `osi` | Classic Client login XOR, then Twofish and MD5 on the game socket. The keys come from the client version. |
 
-Huffman compression is separate from the cipher. After the client sends `0x91`, the shard Huffman-compresses the inbound game bytes. Outbound game packets are not compressed.
+Huffman compression is not part of the cipher. After the client sends `0x91`, the shard compresses the game bytes it sends with Huffman. The client does not compress what it sends.
 
 This repository does not ship `client.exe` or official-server keys.
 
@@ -43,10 +44,10 @@ This repository does not ship `client.exe` or official-server keys.
 Login server:
 
 ```
-seed (t2a: 4 bytes) or 0xEF (modern) → 0x80 account login → 0xA8 server list → 0xA0 select → 0x8C relay
+seed (4 bytes, or 0xEF from 6.0.4.0) → 0x80 account login → 0xA8 server list → 0xA0 select → 0x8C relay
 ```
 
-After `0x8C` the client opens a new TCP connection to the game server, as the Classic Client does on a relay, and seeds it with the relay key. It never stays on the login socket: one server family closes that socket after `0xA0`, and the other reads the seed as a packet and drops the client. If the relay IP is `0.0.0.0`, the reconnect uses `--host`.
+After `0x8C` the client opens a new TCP connection to the game server, as the Classic Client does on a relay. It seeds the new socket with the 4-byte key of the relay. It never stays on the login socket: one server family closes that socket after `0xA0`, and the other reads the seed as a packet and drops the client. If the relay IP is `0.0.0.0`, the new connection goes to `--host`.
 
 Game server:
 
@@ -57,6 +58,8 @@ seed (if a new socket) → 0x91 game login → Huffman on inbound → 0xB9 featu
 The mock shard accepts both paths after the seed: `0x80` account login, or `0x91` game login.
 
 The character is in the world when the server has sent `0x1B`.
+
+Times: a login gives up when the shard does not answer one request within 15 seconds, and one read waits at most 5 seconds. When the link drops later, the session logs in again after 5 seconds, then waits twice as long after each failed try, up to 60 seconds (see `reconnect` in the README).
 
 ## Entering the world
 
@@ -87,8 +90,10 @@ client type gate as 3.0.0 with the letter e. A shard that asks for the version
   it when its game window is resized.
 - Client type: the byte `0x0A`, then 32 flag bits. The reference client sets
   one bit for each step up to the number its expansion bits make, and the
-  shift wraps at 32 bits: 2.0.0 sends `0x00000001`, and every version from
-  Age of Shadows up sends `0xFFFFFFFF`. Both server families ignore it.
+  shift wraps at 32 bits. So 2.0.0 sends `0x00000001`, 3.0.0 sends
+  `0x00000007`, 3.0.8 sends `0x0000007F`, 4.0.5a sends `0x7FFFFFFF`, and
+  6.0.14.4 and later (the default 7.0.102.3 too) send `0xFFFFFFFF`. Both
+  server families ignore it.
 - View range: the largest, 24 tiles, until the shard names one with its own
   `0xC8`; the range goes out inside 5 to 24 tiles.
 
@@ -108,7 +113,9 @@ a version with a major of 66 or more, and the expansion bits of `0x5D` keep the
 | `0x3A` | Skills | Type `0x00` has no cap word. Types `0x02` and `0xDF` have cap |
 | `0x1A` / `0xF3` | World item | The graphic step byte and the item flags (movable, hidden) are read |
 | `0x24` / `0x25` / `0x3C` / `0x2E` / `0x89` / `0x1D` / `0x29` / `0x27` | Containers, worn items, delete, drop and lift answers | |
-| `0x77` / `0x78` / `0xD2` / `0xD3` / `0x98` | Mobiles | `0x78` has a framed length on modern and equipment hue by version |
+| `0x77` / `0x78` / `0xD2` / `0xD3` / `0x98` | Mobiles | `0x78` has a length word in every version, and a hue on worn items by version |
+| `0x72` | War mode | The shard sets war mode on or off |
+| `0xDE` | Mobile status | Whom a mobile fights, or nobody |
 | `0xF6` | Boat moving | The boat, and each rider and item it carries |
 | `0xF7` | Packet list | Each world item it holds |
 | `0xB0` / `0xDD` | Gump / compressed gump | Layout and text lines. `0xDD` inflates both, and a count of 0 lines ends the list |
@@ -131,7 +138,7 @@ a version with a major of 66 or more, and the expansion bits of `0x5D` keep the
 | `0xBF` | Extended | Sub-commands: `0x01` / `0x02` fastwalk keys, `0x04` close gump, `0x06` party, `0x08` map change, `0x10` equip info (crafter, unidentified, attributes), `0x14` context menu, `0x16` close window, `0x18` map patches, `0x19` bonded pets and stat locks, `0x1B` spellbook content, `0x1D` house revision, `0x20` house designer, `0x22` damage, `0x26` speed mode, `0x0C` close status bar (`watch` cue `status_bar_closed`), `0x21` clear the armed weapon move, `0x25` a spell or stance on or off (`abilities` in `observe` and `watch`), `0x2A` race change: the sex and the race from 1, any other race closes it (`race_change` in `observe` and `watch`) |
 | other | | Logged and skipped. The session does not panic |
 
-The packet lengths are in the era tables of `uoterm-protocol`. The decoder skips an unknown id that has a plausible variable length.
+The packet lengths are in the era tables of `uoterm-protocol`. The decoder skips an unknown id when its length word is between 3 and 8192 bytes.
 
 ## Outbound packets on request
 
@@ -201,6 +208,6 @@ The session never walks faster than the game allows. A step waits for the
 pace of the walk, the run and the mount, and for the speed mode the shard
 sets (`0xBF` `0x26`). A turn on the spot costs one fast step.
 
-The reason is that a guessed position a shard silently ignores would otherwise
-stand as fact, and every route, scene and decision after it would read a tile
-the character is not standing on.
+Why: a guessed position that the shard quietly refused would stand as fact.
+Every route, picture and choice after it would then use a tile the character
+is not on.
