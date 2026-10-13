@@ -2491,8 +2491,22 @@ impl World {
         None
     }
 
-    pub fn find_item_graphic(&self, graphic: u16) -> Option<&Item> {
-        self.items.values().find(|i| i.graphic == graphic)
+    /// True when the character carries the item: worn, or in his pack or a
+    /// bag inside it. The bank box hangs on him too, but what lies in it is
+    /// out of reach away from a banker, and the shard sends no delete when the
+    /// box shuts, so its items stay in the world.
+    pub fn carries(&self, item: Serial) -> bool {
+        self.is_inside(item, self.self_state.serial)
+            && !self
+                .bank_box()
+                .is_some_and(|bank| item == bank || self.is_inside(item, bank))
+    }
+
+    /// An item of this graphic the character carries.
+    pub fn carried_item_graphic(&self, graphic: u16) -> Option<&Item> {
+        self.items
+            .values()
+            .find(|i| i.graphic == graphic && self.carries(i.serial))
     }
 
     pub fn nearby_mobiles(&self, dist: u16) -> Vec<&Mobile> {

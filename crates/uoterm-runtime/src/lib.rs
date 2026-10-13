@@ -454,7 +454,7 @@ mod tests {
             if handle
                 .world
                 .read()
-                .find_item_graphic(GRAPHIC_LOGS)
+                .carried_item_graphic(GRAPHIC_LOGS)
                 .is_some()
             {
                 saw_logs = true;

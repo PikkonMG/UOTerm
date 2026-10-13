@@ -148,7 +148,7 @@ fn tool(world: &World, resource: Harvest) -> Option<Serial> {
     resource
         .tools()
         .iter()
-        .find_map(|graphic| world.find_item_graphic(*graphic))
+        .find_map(|graphic| world.carried_item_graphic(*graphic))
         .map(|item| item.serial)
 }
 
@@ -279,6 +279,58 @@ mod tests {
         let mut exhausted = HashMap::new();
         exhausted.insert((tree_at.x, tree_at.y), Instant::now() + EXHAUSTED_FOR);
         assert!(nearest_spot(&map, &world, Harvest::Lumber, HERE, &exhausted).is_none());
+    }
+
+    /// A pickaxe seen in the bank box stays in the world after the box shuts.
+    /// It is no tool to mine with: the shard drops a use of it in silence, so
+    /// the goal must say it has no tool and end, not swing it for ever.
+    #[test]
+    fn a_tool_in_the_bank_box_is_no_tool() {
+        use uoterm_protocol::types::{
+            GRAPHIC_BACKPACK, GRAPHIC_BANK_BOX, LAYER_BACKPACK, LAYER_BANK,
+        };
+        const ME: Serial = Serial(0x0000_00AB);
+        const PACK: Serial = Serial(0x4000_0001);
+        const BANK: Serial = Serial(0x4000_0002);
+        const BANKED: Serial = Serial(0x4000_0003);
+        const PACKED: Serial = Serial(0x4000_0004);
+        const PICKAXE: u16 = 0x0E86;
+        let held_by = |serial, graphic, parent, layer| uoterm_world::Item {
+            serial,
+            graphic,
+            amount: 1,
+            hue: 0,
+            location: HERE,
+            parent: Some(parent),
+            layer,
+            grid: 0,
+            name: String::new(),
+            flags: 0,
+        };
+        let mut world = World::new();
+        world.self_state.serial = ME;
+        for (serial, graphic, layer) in [
+            (PACK, GRAPHIC_BACKPACK, LAYER_BACKPACK),
+            (BANK, GRAPHIC_BANK_BOX, LAYER_BANK),
+        ] {
+            world
+                .items
+                .insert(serial, held_by(serial, graphic, ME, Some(layer)));
+            world.self_state.equipment.push(uoterm_protocol::EquipItem {
+                serial,
+                graphic,
+                layer,
+                hue: 0,
+            });
+        }
+        world
+            .items
+            .insert(BANKED, held_by(BANKED, PICKAXE, BANK, None));
+        assert_eq!(tool(&world, Harvest::Ore), None, "the bank is out of reach");
+        world
+            .items
+            .insert(PACKED, held_by(PACKED, PICKAXE, PACK, None));
+        assert_eq!(tool(&world, Harvest::Ore), Some(PACKED));
     }
 
     /// The walk to a tree ends on a tile beside it, in reach, that a person

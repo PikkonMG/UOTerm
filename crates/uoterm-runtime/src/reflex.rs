@@ -113,7 +113,7 @@ pub(crate) fn self_care(world: &World) -> Option<ReflexAction> {
         && stat_pct(world.self_state.hits, world.self_state.hits_max) < BANDAGE_HP_PCT;
     if hurt
         && world.assist.allows(AssistFeature::AutoBandage)
-        && world.find_item_graphic(GRAPHIC_BANDAGE).is_some()
+        && world.carried_item_graphic(GRAPHIC_BANDAGE).is_some()
     {
         return Some(ReflexAction::BandageSelf);
     }
@@ -243,7 +243,7 @@ fn drinkable_potion(world: &World, graphic: u16, name_part: Option<&str>) -> Opt
         return None;
     }
     world.items.values().find_map(|item| {
-        if item.graphic != graphic {
+        if item.graphic != graphic || !world.carries(item.serial) {
             return None;
         }
         if let Some(part) = name_part {
@@ -499,29 +499,69 @@ mod tests {
         uoterm_world::AssistRules::from_bits(1 << feature as u32)
     }
 
-    /// Half her hits gone, and bandages in her pack.
-    fn hurt_with_bandages() -> World {
-        const BANDAGES: Serial = Serial(0x4000_0401);
+    const PACK: Serial = Serial(0x4000_0002);
+    const BANK: Serial = Serial(0x4000_0003);
+
+    /// One item of this graphic and name, held by `parent`, on `layer` when
+    /// it is worn.
+    fn item(
+        serial: Serial,
+        graphic: u16,
+        name: &str,
+        parent: Serial,
+        layer: Option<u8>,
+    ) -> uoterm_world::Item {
+        uoterm_world::Item {
+            serial,
+            graphic,
+            amount: 1,
+            hue: 0,
+            location: Point3::new(0, 0, 0),
+            parent: Some(parent),
+            layer,
+            grid: 0,
+            name: name.into(),
+            flags: 0,
+        }
+    }
+
+    /// She wears a pack and a bank box, as every character does.
+    fn wear_pack_and_bank(w: &mut World) {
+        w.self_state.serial = SELF;
+        for (serial, graphic, layer) in [
+            (PACK, GRAPHIC_BACKPACK, LAYER_BACKPACK),
+            (BANK, GRAPHIC_BANK_BOX, LAYER_BANK),
+        ] {
+            w.items
+                .insert(serial, item(serial, graphic, "", SELF, Some(layer)));
+            w.self_state.equipment.push(uoterm_protocol::EquipItem {
+                serial,
+                graphic,
+                layer,
+                hue: 0,
+            });
+        }
+    }
+
+    const BANDAGES: Serial = Serial(0x4000_0401);
+
+    /// Half her hits gone, and bandages in `bag`.
+    fn hurt_with_bandages_in(bag: Serial) -> World {
         let mut w = World::new();
         w.logged_in = true;
         w.self_state.hits = 50;
         w.self_state.hits_max = 100;
+        wear_pack_and_bank(&mut w);
         w.items.insert(
             BANDAGES,
-            uoterm_world::Item {
-                serial: BANDAGES,
-                graphic: GRAPHIC_BANDAGE,
-                amount: 1,
-                hue: 0,
-                location: Point3::new(0, 0, 0),
-                parent: Some(Serial(0x4000_0002)),
-                layer: None,
-                grid: 0,
-                name: "bandages".into(),
-                flags: 0,
-            },
+            item(BANDAGES, GRAPHIC_BANDAGE, "bandages", bag, None),
         );
         w
+    }
+
+    /// Half her hits gone, and bandages in her pack.
+    fn hurt_with_bandages() -> World {
+        hurt_with_bandages_in(PACK)
     }
 
     #[test]
@@ -746,26 +786,21 @@ mod tests {
 
     const CURE: Serial = Serial(0x4000_0F07);
 
-    /// Poisoned, with a cure potion in her pack and a grey beside her.
-    fn poisoned_with_a_cure() -> World {
+    /// Poisoned, with a cure potion in `bag` and a grey beside her.
+    fn poisoned_with_a_cure_in(bag: Serial) -> World {
         let mut w = world_with_one_mobile(NOTO_GREY, 0);
         w.self_state.poisoned = true;
+        wear_pack_and_bank(&mut w);
         w.items.insert(
             CURE,
-            uoterm_world::Item {
-                serial: CURE,
-                graphic: GRAPHIC_POTION_CURE,
-                amount: 1,
-                hue: 0,
-                location: Point3::new(0, 0, 0),
-                parent: Some(Serial(0x4000_0002)),
-                layer: None,
-                grid: 0,
-                name: "a lesser cure potion".into(),
-                flags: 0,
-            },
+            item(CURE, GRAPHIC_POTION_CURE, "a lesser cure potion", bag, None),
         );
         w
+    }
+
+    /// Poisoned, with a cure potion in her pack and a grey beside her.
+    fn poisoned_with_a_cure() -> World {
+        poisoned_with_a_cure_in(PACK)
     }
 
     #[test]
@@ -787,6 +822,29 @@ mod tests {
         w.assist = forbidding(AssistFeature::PotionHotkeys);
         assert_eq!(
             tick(&w, &Persona::lumberjack_yew(), &Goal::Idle),
+            ReflexAction::None
+        );
+    }
+
+    /// The bank box shuts without a word from the shard, so what was seen in
+    /// it stays in the world. A bandage or a potion there is out of reach,
+    /// and a use of it is dropped in silence.
+    #[test]
+    fn she_uses_nothing_that_lies_in_her_bank() {
+        assert_eq!(
+            tick(
+                &hurt_with_bandages_in(BANK),
+                &Persona::lumberjack_yew(),
+                &Goal::Idle
+            ),
+            ReflexAction::None
+        );
+        assert_eq!(
+            tick(
+                &poisoned_with_a_cure_in(BANK),
+                &Persona::lumberjack_yew(),
+                &Goal::Idle
+            ),
             ReflexAction::None
         );
     }

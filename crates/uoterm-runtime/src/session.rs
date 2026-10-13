@@ -10865,7 +10865,7 @@ fn send_bandage_self(inner: &mut Inner) {
     }
     let (item, me, dex) = {
         let world = inner.world.read();
-        let Some(item) = world.find_item_graphic(GRAPHIC_BANDAGE) else {
+        let Some(item) = world.carried_item_graphic(GRAPHIC_BANDAGE) else {
             return;
         };
         (item.serial, world.self_state.serial, world.self_state.dex)

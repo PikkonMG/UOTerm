@@ -64,7 +64,7 @@ mod tests {
     use uoterm_protocol::{
         ContainerItem, EquipItem, GroundItem, Inbound, MobileView, ObjectProperty, OpenGump,
         PartyEvent, Point3, Serial, SpeechLine, TargetCursor, FLAG_FROZEN, FLAG_HIDDEN, FLAG_WAR,
-        GRAPHIC_BACKPACK, LAYER_BACKPACK, LAYER_BANK, NOTO_INNOCENT,
+        GRAPHIC_BACKPACK, GRAPHIC_BANK_BOX, LAYER_BACKPACK, LAYER_BANK, NOTO_INNOCENT,
     };
 
     const LEADER: Serial = Serial(0x0000_0042);
@@ -1299,6 +1299,58 @@ mod tests {
         );
     }
 
+    /// The bank box hangs on the character, but what lies in it is not
+    /// carried. The shard sends no delete when the box shuts, so a pickaxe
+    /// seen in it at the banker stays in the world 30 tiles away. A double
+    /// click on it is dropped without a word, and the swing never comes.
+    #[test]
+    fn an_item_in_the_bank_box_is_not_carried() {
+        const BANK: Serial = Serial(0x4000_0B0B);
+        const BANKED_PICKAXE: Serial = Serial(0x4000_0B01);
+        const PACKED_PICKAXE: Serial = Serial(0x4000_0B02);
+        const GRAPHIC_PICKAXE: u16 = 0x0E86;
+        let mut w = World::new();
+        login(&mut w);
+        for (serial, graphic, layer) in [
+            (BANK, GRAPHIC_BANK_BOX, LAYER_BANK),
+            (BACKPACK, GRAPHIC_BACKPACK, LAYER_BACKPACK),
+        ] {
+            w.apply(&Inbound::Equipped {
+                owner: Serial(0xAB),
+                item: EquipItem {
+                    serial,
+                    graphic,
+                    layer,
+                    hue: 0,
+                },
+            });
+        }
+        w.apply(&Inbound::AddItem(in_container(
+            BANK,
+            BANKED_PICKAXE,
+            GRAPHIC_PICKAXE,
+            ONE_OF_IT,
+        )));
+        assert!(!w.carries(BANKED_PICKAXE), "the bank is not the pack");
+        assert!(!w.carries(BANK), "nor is the box itself");
+        assert!(w.carries(BACKPACK), "the pack is worn");
+        assert!(
+            w.carried_item_graphic(GRAPHIC_PICKAXE).is_none(),
+            "a pickaxe in the bank is no tool to mine with"
+        );
+        w.apply(&Inbound::AddItem(in_container(
+            BACKPACK,
+            PACKED_PICKAXE,
+            GRAPHIC_PICKAXE,
+            ONE_OF_IT,
+        )));
+        assert_eq!(
+            w.carried_item_graphic(GRAPHIC_PICKAXE).map(|i| i.serial),
+            Some(PACKED_PICKAXE),
+            "the one in the pack is"
+        );
+    }
+
     /// Lifting an item takes it off the map, and the shard says so with a
     /// delete. That delete is the lift working, not the item being lost: the
     /// item is on the character's cursor until he drops it. Forgetting it
@@ -1671,8 +1723,8 @@ mod tests {
             "and it hangs on her, not on the ground"
         );
         assert!(
-            w.find_item_graphic(GRAPHIC_DAGGER).is_some(),
-            "so a search by graphic finds it"
+            w.carried_item_graphic(GRAPHIC_DAGGER).is_some(),
+            "so a search of what she carries finds it"
         );
     }
 
